@@ -261,12 +261,27 @@ function setupNav() {
   document.querySelector('.nav-item[data-section="dashboard"]').classList.add('active');
 }
 
+const SECCIONES_IMPRIMIBLES = ['efectivo', 'bancos', 'pl', 'flujo'];
+
 function updateTopbar() {
   const meta = SECTION_META[STATE.currentSection];
   const b = biz();
-  document.getElementById('pageTitle').textContent = meta.title + (meta.needsBiz && b ? ' — ' + b.name : '');
+  const titulo = meta.title + (meta.needsBiz && b ? ' — ' + b.name : '');
+  document.getElementById('pageTitle').textContent = titulo;
   document.getElementById('pageSub').textContent = meta.sub;
   document.getElementById('monthPicker').style.display = meta.showMonth ? 'block' : 'none';
+
+  const printBtn = document.getElementById('printBtn');
+  if (SECCIONES_IMPRIMIBLES.includes(STATE.currentSection)) {
+    printBtn.style.display = 'inline-flex';
+    printBtn.onclick = () => {
+      document.getElementById('printTitle').textContent = titulo;
+      document.getElementById('printSub').textContent = `${meta.showMonth ? STATE.currentMonth + ' · ' : ''}Impreso el ${new Date().toLocaleDateString('es-MX', { year:'numeric', month:'long', day:'numeric' })}`;
+      window.print();
+    };
+  } else {
+    printBtn.style.display = 'none';
+  }
 }
 
 function renderCurrentSection() {
@@ -320,6 +335,46 @@ async function computeMonedaSaldo(businessId, moneda, conceptosEfectivo) {
   return (Number(moneda.saldo_inicial) || 0) + autoDepositos + manualNet;
 }
 
+/* ---------- Vinculación Tarjetas (Ventas) → Cuenta bancaria ---------- */
+function conceptosParaBanco(cuenta, conceptosTarjetas) {
+  return conceptosTarjetas.filter(c => c.banco_cuenta_id === cuenta.id);
+}
+async function computeBancoSaldo(businessId, cuenta, conceptosTarjetas) {
+  const concepts = conceptosParaBanco(cuenta, conceptosTarjetas);
+  let autoDepositos = 0;
+  if (concepts.length) {
+    const { data: allVentas } = await sb.from('fz_ventas').select('recon_data').eq('business_id', businessId);
+    (allVentas || []).forEach(v => {
+      concepts.forEach(concepto => {
+        const entry = (v.recon_data || {})[concepto.id];
+        if (entry) autoDepositos += Number(entry.monto) || 0;
+      });
+    });
+  }
+  const { data: movs } = await sb.from('fz_bancos_mov').select('depositos,cargos').eq('cuenta_id', cuenta.id);
+  const manualNet = (movs || []).reduce((s, m) => s + (Number(m.depositos) || 0) - (Number(m.cargos) || 0), 0);
+  return (Number(cuenta.saldo_inicial) || 0) + autoDepositos + manualNet;
+}
+async function getBancoLedgerRows(businessId, cuenta, conceptosTarjetas) {
+  const concepts = conceptosParaBanco(cuenta, conceptosTarjetas);
+  const autoRows = [];
+  if (concepts.length) {
+    const { data: ventas } = await sb.from('fz_ventas').select('id,fecha,recon_data').eq('business_id', businessId).order('fecha');
+    (ventas || []).forEach(v => {
+      concepts.forEach(concepto => {
+        const entry = (v.recon_data || {})[concepto.id];
+        if (entry && Number(entry.monto)) {
+          autoRows.push({ id: 'auto-' + v.id + '-' + concepto.id, fecha: v.fecha, descripcion: `Tarjetas conciliadas en Ventas (${concepto.nombre})`, concepto: 'Corte de caja', cargos: 0, depositos: Number(entry.monto) || 0, auto: true });
+        }
+      });
+    });
+  }
+  const { data: movs } = await sb.from('fz_bancos_mov').select('*').eq('cuenta_id', cuenta.id).order('fecha');
+  const manualRows = (movs || []).map(m => ({ ...m, auto: false }));
+  return [...autoRows, ...manualRows].sort((a, b) => a.fecha.localeCompare(b.fecha));
+}
+
+
 async function computeBusinessSummary(businessId, ym) {
   const { start, end } = monthBounds(ym);
 
@@ -336,6 +391,7 @@ async function computeBusinessSummary(businessId, ym) {
   const conceptosVenta = conceptosVentaQ.data || [];
   const conceptos = conceptosQ.data || [];
   const conceptosEfectivo = conceptos.filter(c => c.categoria === 'efectivo');
+  const conceptosTarjetas = conceptos.filter(c => c.categoria === 'tarjetas');
 
   const ventasMes = ventasMesRows.reduce((s, v) => s + totalVentaDinamico(v, conceptosVenta), 0);
   const gastosOperativosMes = ventasMesRows.reduce((s, v) => s + (Number(v.gastos) || 0), 0);
@@ -354,8 +410,7 @@ async function computeBusinessSummary(businessId, ym) {
   let bancosTotal = 0;
   const bancosDetalle = [];
   for (const c of cuentas) {
-    const { data: movs } = await sb.from('fz_bancos_mov').select('depositos,cargos').eq('cuenta_id', c.id);
-    const saldo = (Number(c.saldo_inicial) || 0) + (movs || []).reduce((s, m) => s + (Number(m.depositos) || 0) - (Number(m.cargos) || 0), 0);
+    const saldo = await computeBancoSaldo(businessId, c, conceptosTarjetas);
     if (c.activo !== false) bancosTotal += saldo;
     bancosDetalle.push({ nombre: c.nombre, saldo, activo: c.activo !== false });
   }
@@ -733,9 +788,14 @@ function ventasRowHtml(r, conceptosVenta, porCat, recibidoCats) {
 /* ---------- Modal: conceptos de recibido (efectivo/tarjetas/cxc/propinas) ---------- */
 async function openConceptosModal(businessId) {
   await renderConceptosList(businessId);
-  const { data: monedas } = await sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).order('orden');
+  const [{ data: monedas }, { data: cuentasBanco }] = await Promise.all([
+    sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).order('orden'),
+    sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).order('nombre'),
+  ]);
   document.getElementById('newConceptoMonedaId').innerHTML = `<option value="">— no vincular —</option>` +
     (monedas || []).map(m => `<option value="${m.id}">${m.nombre}</option>`).join('');
+  document.getElementById('newConceptoBancoId').innerHTML = `<option value="">— no vincular —</option>` +
+    (cuentasBanco || []).map(c => `<option value="${c.id}">${c.nombre}</option>`).join('');
   document.getElementById('modalConceptos').classList.add('show');
   document.getElementById('newConceptoCategoria').onchange = updateConceptoFieldsVisibility;
   updateConceptoFieldsVisibility();
@@ -750,8 +810,9 @@ async function openConceptosModal(businessId) {
     const es_moneda = categoria === 'efectivo' && document.getElementById('newConceptoMoneda').checked;
     const medio = categoria === 'propinas' ? document.getElementById('newConceptoMedio').value : null;
     const moneda_id = categoria === 'efectivo' ? (document.getElementById('newConceptoMonedaId').value || null) : null;
+    const banco_cuenta_id = categoria === 'tarjetas' ? (document.getElementById('newConceptoBancoId').value || null) : null;
     if (!nombre) { toast('Escribe un nombre para el concepto.', 'error'); return; }
-    const { error } = await sb.from('fz_conceptos').insert({ business_id: businessId, nombre, categoria, es_moneda, medio, moneda_id, orden: 99 });
+    const { error } = await sb.from('fz_conceptos').insert({ business_id: businessId, nombre, categoria, es_moneda, medio, moneda_id, banco_cuenta_id, orden: 99 });
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     document.getElementById('newConceptoNombre').value = '';
     document.getElementById('newConceptoMoneda').checked = false;
@@ -763,13 +824,16 @@ function updateConceptoFieldsVisibility() {
   document.getElementById('esMonedaLabel').style.display = cat === 'efectivo' ? 'flex' : 'none';
   document.getElementById('medioWrap').style.display = cat === 'propinas' ? 'block' : 'none';
   document.getElementById('monedaVinculoWrap').style.display = cat === 'efectivo' ? 'block' : 'none';
+  document.getElementById('bancoVinculoWrap').style.display = cat === 'tarjetas' ? 'block' : 'none';
 }
 async function renderConceptosList(businessId) {
-  const [conceptos, monedasQ] = await Promise.all([
+  const [conceptos, monedasQ, cuentasQ] = await Promise.all([
     loadConceptos(businessId),
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).order('orden'),
+    sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).order('nombre'),
   ]);
   const monedas = monedasQ.data || [];
+  const cuentasBanco = cuentasQ.data || [];
   const box = document.getElementById('conceptosList');
   if (!conceptos.length) { box.innerHTML = `<div class="empty" style="padding:16px;">Aún no hay conceptos. Agrega el primero abajo.</div>`; return; }
   box.innerHTML = conceptos.map(c => `
@@ -781,11 +845,21 @@ async function renderConceptosList(businessId) {
         <option value="">— no vincular —</option>
         ${monedas.map(m => `<option value="${m.id}" ${c.moneda_id===m.id?'selected':''}>${m.nombre}</option>`).join('')}
       </select>` : ''}
+      ${c.categoria === 'tarjetas' ? `<select class="cell concepto-banco-vinculo" data-id="${c.id}" style="max-width:170px;flex-shrink:0;">
+        <option value="">— no vincular —</option>
+        ${cuentasBanco.map(cb => `<option value="${cb.id}" ${c.banco_cuenta_id===cb.id?'selected':''}>${cb.nombre}</option>`).join('')}
+      </select>` : ''}
       <button class="row-del concepto-del" data-id="${c.id}" style="font-size:16px;flex-shrink:0;">✕</button>
     </div>`).join('');
   box.querySelectorAll('.concepto-moneda-vinculo').forEach(sel => {
     sel.addEventListener('change', async () => {
       await sb.from('fz_conceptos').update({ moneda_id: sel.value || null }).eq('id', sel.dataset.id);
+      toast('Vínculo actualizado.');
+    });
+  });
+  box.querySelectorAll('.concepto-banco-vinculo').forEach(sel => {
+    sel.addEventListener('change', async () => {
+      await sb.from('fz_conceptos').update({ banco_cuenta_id: sel.value || null }).eq('id', sel.dataset.id);
       toast('Vínculo actualizado.');
     });
   });
@@ -924,12 +998,15 @@ async function openProveedoresCatModal(businessId, onClose) {
   document.getElementById('closeProveedoresCat').onclick = () => { document.getElementById('modalProveedoresCat').classList.remove('show'); if (onClose) onClose(); };
   document.getElementById('saveProveedorCat').onclick = async () => {
     const nombre = document.getElementById('newProveedorCatNombre').value.trim();
+    const razon_social = document.getElementById('newProveedorCatRazonSocial').value.trim() || null;
     if (!nombre) { toast('Escribe un nombre.', 'error'); return; }
-    const { error } = await sb.from('fz_proveedores_catalogo').insert({ business_id: businessId, nombre });
+    const { error } = await sb.from('fz_proveedores_catalogo').insert({ business_id: businessId, nombre, nombre_comercial: nombre, razon_social });
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     document.getElementById('newProveedorCatNombre').value = '';
+    document.getElementById('newProveedorCatRazonSocial').value = '';
     renderProveedoresCatList(businessId);
   };
+  document.getElementById('importProveedoresBtn').onclick = () => openImportExcelModal('proveedores', businessId, () => renderProveedoresCatList(businessId));
 }
 async function renderProveedoresCatList(businessId) {
   const provs = await loadProveedoresCatalogo(businessId);
@@ -937,7 +1014,7 @@ async function renderProveedoresCatList(businessId) {
   if (!provs.length) { box.innerHTML = `<div class="empty" style="padding:16px;">Aún no hay proveedores. Agrega el primero abajo.</div>`; return; }
   box.innerHTML = provs.map(p => `
     <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 4px;border-bottom:1px solid var(--line);">
-      <strong>${p.nombre}</strong>
+      <div><strong>${p.nombre_comercial || p.nombre}</strong>${p.razon_social ? `<div style="color:var(--muted);font-size:12px;">${p.razon_social}</div>` : ''}</div>
       <button class="row-del provcat-del" data-id="${p.id}" style="font-size:16px;">✕</button>
     </div>`).join('');
   box.querySelectorAll('.provcat-del').forEach(btn => btn.addEventListener('click', async () => {
@@ -1033,6 +1110,65 @@ async function crearCuentaOCajaRapida(businessId, tipo) {
   const { data, error } = await sb.from('fz_efectivo_monedas').insert({ business_id: businessId, nombre, saldo_inicial: saldoInicial, tc_reporte: tcReporte, activo: true }).select().single();
   if (error) { toast('Error: ' + error.message, 'error'); return null; }
   return 'efectivo:' + data.id;
+}
+
+/* ============================================================
+   IMPORTAR DESDE EXCEL (bancos o proveedores)
+   ============================================================ */
+function normalizarEncabezado(k) {
+  return k.toString().trim().toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, ''); // quita acentos
+}
+function buscarColumna(row, candidatos) {
+  const claves = Object.keys(row);
+  for (const c of candidatos) {
+    const found = claves.find(k => normalizarEncabezado(k) === c);
+    if (found) return row[found];
+  }
+  return null;
+}
+
+function openImportExcelModal(tipo, businessId, onDone) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.xlsx,.xls,.csv';
+  input.onchange = async () => {
+    const file = input.files[0];
+    if (!file) return;
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array' });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+      if (!rows.length) { toast('El archivo no tiene filas.', 'error'); return; }
+
+      if (tipo === 'proveedores') {
+        const payload = rows.map(r => {
+          const nombre_comercial = buscarColumna(r, ['nombre comercial', 'nombre', 'proveedor']) || '';
+          const razon_social = buscarColumna(r, ['razon social', 'razón social']) || null;
+          return { business_id: businessId, nombre: String(nombre_comercial).trim(), nombre_comercial: String(nombre_comercial).trim(), razon_social: razon_social ? String(razon_social).trim() : null };
+        }).filter(p => p.nombre);
+        if (!payload.length) { toast('No se encontró la columna "Nombre Comercial" en el archivo.', 'error'); return; }
+        const { error } = await sb.from('fz_proveedores_catalogo').insert(payload);
+        if (error) { toast('Error al importar: ' + error.message, 'error'); return; }
+        toast(`${payload.length} proveedores importados.`);
+      } else if (tipo === 'bancos') {
+        const payload = rows.map(r => {
+          const nombre = buscarColumna(r, ['nombre', 'banco', 'cuenta']) || '';
+          const saldo_inicial = Number(buscarColumna(r, ['saldo inicial', 'saldo'])) || 0;
+          return { business_id: businessId, nombre: String(nombre).trim(), saldo_inicial, activo: true };
+        }).filter(c => c.nombre);
+        if (!payload.length) { toast('No se encontró la columna "Nombre" en el archivo.', 'error'); return; }
+        const { error } = await sb.from('fz_bancos_cuentas').insert(payload);
+        if (error) { toast('Error al importar: ' + error.message, 'error'); return; }
+        toast(`${payload.length} cuentas bancarias importadas.`);
+      }
+      if (onDone) onDone();
+    } catch (e) {
+      toast('No se pudo leer el archivo: ' + e.message, 'error');
+    }
+  };
+  input.click();
 }
 
 async function openTraspasoModal(businessId, onDone) {
@@ -1151,11 +1287,12 @@ async function renderEfectivo() {
   const [monedasQ, cuentasQ, conceptosQ] = await Promise.all([
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', b.id).order('orden'),
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', b.id),
-    sb.from('fz_conceptos').select('*').eq('business_id', b.id).eq('categoria', 'efectivo'),
+    sb.from('fz_conceptos').select('*').eq('business_id', b.id),
   ]);
   const monedas = monedasQ.data || [];
   const cuentas = cuentasQ.data || [];
-  const conceptosEfectivo = conceptosQ.data || [];
+  const conceptosEfectivo = (conceptosQ.data || []).filter(c => c.categoria === 'efectivo');
+  const conceptosTarjetas = (conceptosQ.data || []).filter(c => c.categoria === 'tarjetas');
 
   const monedasConSaldo = [];
   for (const m of monedas) {
@@ -1164,8 +1301,7 @@ async function renderEfectivo() {
   }
   const bancosConSaldo = [];
   for (const c of cuentas) {
-    const { data: movs } = await sb.from('fz_bancos_mov').select('depositos,cargos').eq('cuenta_id', c.id);
-    const saldo = (Number(c.saldo_inicial) || 0) + (movs || []).reduce((s, m) => s + (Number(m.depositos) || 0) - (Number(m.cargos) || 0), 0);
+    const saldo = await computeBancoSaldo(b.id, c, conceptosTarjetas);
     bancosConSaldo.push({ nombre: c.nombre, saldo, activo: c.activo !== false });
   }
 
@@ -1177,13 +1313,13 @@ async function renderEfectivo() {
 
   el.innerHTML = `
     <div class="card">
-      <div class="card-head"><h3>Resumen de liquidez — ${b.name}</h3><span class="hint">Al día de hoy</span></div>
+      <div class="card-head"><h3>Resumen de liquidez — ${b.name}</h3><span class="hint">Al día de hoy · edita el TC si cambió</span></div>
       <table>
         <tbody>
           ${monedasConSaldo.map(m => `<tr>
             <td>${m.nombre}${m.activo===false?' (inactiva)':''}</td>
             <td class="num">${fmtNum(m.saldo)}</td>
-            <td class="num" style="color:var(--muted);">TC ${fmtNum(m.tc_reporte)}</td>
+            <td class="num"><input class="cell tc-reporte-cell" type="number" step="0.0001" value="${m.tc_reporte}" data-id="${m.id}" style="width:75px;color:var(--muted);"></td>
             <td class="num" style="font-weight:700;">${fmt(m.pesoEquiv)}</td>
           </tr>`).join('')}
           ${bancosConSaldo.map(c => `<tr>
@@ -1212,6 +1348,13 @@ async function renderEfectivo() {
     </div>
   `;
 
+  el.querySelectorAll('.tc-reporte-cell').forEach(inp => {
+    inp.addEventListener('change', async () => {
+      const val = Number(inp.value) || 1;
+      await sb.from('fz_efectivo_monedas').update({ tc_reporte: val }).eq('id', inp.dataset.id);
+      renderEfectivo();
+    });
+  });
   document.getElementById('traspasoBtnEfvo').addEventListener('click', () => openTraspasoModal(b.id, renderEfectivo));
   document.getElementById('addMonedaBtn').addEventListener('click', async () => {
     const nombre = prompt('Nombre de la moneda / caja (ej. Pesos, Dólares, Euros, Canadienses):');
@@ -1314,13 +1457,16 @@ async function renderBancos() {
   const b = biz();
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
 
-  const { data: cuentas, error } = await sb.from('fz_bancos_cuentas').select('*').eq('business_id', b.id).order('nombre');
-  if (error) { el.innerHTML = `<div class="empty">Error: ${error.message}</div>`; return; }
+  const [cuentasQ, conceptosQ] = await Promise.all([
+    sb.from('fz_bancos_cuentas').select('*').eq('business_id', b.id).order('nombre'),
+    sb.from('fz_conceptos').select('*').eq('business_id', b.id).eq('categoria', 'tarjetas'),
+  ]);
+  if (cuentasQ.error) { el.innerHTML = `<div class="empty">Error: ${cuentasQ.error.message}</div>`; return; }
+  const conceptosTarjetas = conceptosQ.data || [];
 
   const cuentasConSaldo = [];
-  for (const c of (cuentas || [])) {
-    const { data: movs } = await sb.from('fz_bancos_mov').select('depositos,cargos').eq('cuenta_id', c.id);
-    const saldo = (Number(c.saldo_inicial)||0) + (movs||[]).reduce((s,m)=>s+(Number(m.depositos)||0)-(Number(m.cargos)||0),0);
+  for (const c of (cuentasQ.data || [])) {
+    const saldo = await computeBancoSaldo(b.id, c, conceptosTarjetas);
     cuentasConSaldo.push({ ...c, saldo });
   }
   const totalBancos = cuentasConSaldo.filter(c=>c.activo!==false).reduce((s,c)=>s+c.saldo,0);
@@ -1337,10 +1483,12 @@ async function renderBancos() {
       <div class="card-head">
         <h3>Cuentas bancarias</h3>
         <div style="display:flex;gap:8px;">
+          <button class="btn btn-ghost btn-sm" id="importBancosBtn">📥 Importar Excel</button>
           <button class="btn btn-ghost btn-sm" id="traspasoBtnBanco">🔁 Transferir</button>
           <button class="btn btn-gold btn-sm" id="addCuentaBtn">+ Agregar cuenta</button>
         </div>
       </div>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">Las terminales/tarjetas conciliadas en Ventas que estén vinculadas a una cuenta (en "⚙ Conceptos de recibido") entran aquí automáticamente como "Corte de caja".</p>
       <div class="tag-row">
         ${cuentasConSaldo.map(c => `<div class="tag banco-tab ${c.id===STATE_bancoCuentaAbierta?'active':''}" data-id="${c.id}">${c.nombre} · ${fmt(c.saldo)}</div>`).join('') || '<span class="hint">Aún no hay cuentas.</span>'}
       </div>
@@ -1348,6 +1496,7 @@ async function renderBancos() {
     </div>
   `;
 
+  document.getElementById('importBancosBtn').addEventListener('click', () => openImportExcelModal('bancos', b.id, renderBancos));
   document.getElementById('traspasoBtnBanco').addEventListener('click', () => openTraspasoModal(b.id, renderBancos));
   document.getElementById('addCuentaBtn').addEventListener('click', async () => {
     const nombre = prompt('Nombre de la cuenta / banco (ej. Banco-Peibo):');
@@ -1363,25 +1512,38 @@ async function renderBancos() {
     tab.addEventListener('click', () => { STATE_bancoCuentaAbierta = tab.dataset.id; renderBancos(); });
   });
 
-  if (STATE_bancoCuentaAbierta) renderBancoLedger(STATE_bancoCuentaAbierta, b.id);
+  if (STATE_bancoCuentaAbierta) renderBancoLedger(STATE_bancoCuentaAbierta, b.id, conceptosTarjetas);
   else document.getElementById('bancoLedger').innerHTML = `<div class="empty">Agrega tu primera cuenta bancaria.</div>`;
 }
 
-async function renderBancoLedger(cuentaId, businessId) {
+async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
   const box = document.getElementById('bancoLedger');
-  const [movsQ, subcuentas, mayores, facturasPend, cuentaQ] = await Promise.all([
-    sb.from('fz_bancos_mov').select('*').eq('cuenta_id', cuentaId).order('fecha'),
+  const cuentaQ = await sb.from('fz_bancos_cuentas').select('*').eq('id', cuentaId).single();
+  const cuentaArr = cuentaQ.data;
+  if (!conceptosTarjetas) {
+    const { data } = await sb.from('fz_conceptos').select('*').eq('business_id', businessId).eq('categoria', 'tarjetas');
+    conceptosTarjetas = data || [];
+  }
+  const [ledger, subcuentas, mayores, facturasPend] = await Promise.all([
+    getBancoLedgerRows(businessId, cuentaArr, conceptosTarjetas),
     loadSubcuentas(businessId),
     loadCuentasMayor(businessId),
     sb.from('fz_proveedores').select('id,proveedor,factura,importe').eq('business_id', businessId).eq('estatus', 'Pendiente').then(r => r.data || []),
-    sb.from('fz_bancos_cuentas').select('*').eq('id', cuentaId).single(),
   ]);
-  const movs = movsQ.data;
-  if (movsQ.error) { box.innerHTML = `<div class="empty">Error: ${movsQ.error.message}</div>`; return; }
-  const cuentaArr = cuentaQ.data;
   let saldo = Number(cuentaArr?.saldo_inicial) || 0;
-  const rowsHtml = (movs||[]).map(m => {
+  const rowsHtml = ledger.map(m => {
     saldo += (Number(m.depositos)||0) - (Number(m.cargos)||0);
+    if (m.auto) {
+      return `<tr style="background:#f7f9fc;">
+        <td>${m.fecha}</td>
+        <td><em>${m.descripcion}</em> <span style="color:var(--muted);font-size:11px;">· auto</span></td>
+        <td>${m.concepto}</td>
+        <td class="num">${fmtNum(m.depositos)}</td>
+        <td class="num">—</td>
+        <td class="num" style="font-weight:700;">${fmt(saldo)}</td>
+        <td>—</td><td>—</td><td></td>
+      </tr>`;
+    }
     return `<tr>
       <td><input class="cell mov-cell" type="date" value="${m.fecha}" data-id="${m.id}" data-field="fecha"></td>
       <td><input class="cell mov-cell" type="text" value="${m.descripcion||''}" data-id="${m.id}" data-field="descripcion"></td>
@@ -1409,21 +1571,21 @@ async function renderBancoLedger(cuentaId, businessId) {
 
   document.getElementById('addMovBtn').addEventListener('click', async () => {
     await sb.from('fz_bancos_mov').insert({ cuenta_id: cuentaId, business_id: businessId, fecha: todayStr(), tipo_salida: 'otro' });
-    renderBancoLedger(cuentaId, businessId);
+    renderBancoLedger(cuentaId, businessId, conceptosTarjetas);
   });
-  wireSalidaCellHandlers(box, 'fz_bancos_mov', () => renderBancoLedger(cuentaId, businessId));
+  wireSalidaCellHandlers(box, 'fz_bancos_mov', () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas));
   box.querySelectorAll('.mov-cell').forEach(inp => {
     inp.addEventListener('change', async () => {
       const field = inp.dataset.field;
       const val = (field === 'fecha' || field === 'descripcion' || field === 'concepto') ? inp.value : Number(inp.value) || 0;
       await sb.from('fz_bancos_mov').update({ [field]: val }).eq('id', inp.dataset.id);
-      renderBancoLedger(cuentaId, businessId);
+      renderBancoLedger(cuentaId, businessId, conceptosTarjetas);
     });
   });
   box.querySelectorAll('.mov-del').forEach(btn => {
     btn.addEventListener('click', async () => {
       await sb.from('fz_bancos_mov').delete().eq('id', btn.dataset.id);
-      renderBancoLedger(cuentaId, businessId);
+      renderBancoLedger(cuentaId, businessId, conceptosTarjetas);
     });
   });
 }
