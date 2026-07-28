@@ -1284,9 +1284,19 @@ function salidaCellsHtml(r, subcuentas, mayores, facturasPend, prefix, traspasoC
       ${subcuentas.map(s => { const m = mayores.find(x=>x.id===s.cuenta_mayor_id); return `<option value="${s.id}" ${r.subcuenta_id===s.id?'selected':''}>${m?m.nombre+' › ':''}${s.nombre}</option>`; }).join('')}
     </select>`;
   } else if (tipo === 'proveedor') {
+    const opcionesFactura = facturasPend.filter(f => f.estatus !== 'Pagado' || f.id === r.proveedor_factura_id);
+    const porProveedor = {};
+    opcionesFactura.forEach(f => {
+      const key = f.proveedor || '(sin proveedor)';
+      (porProveedor[key] = porProveedor[key] || []).push(f);
+    });
+    const gruposHtml = Object.keys(porProveedor).sort((a,b)=>a.localeCompare(b)).map(nombreProv => `
+      <optgroup label="${nombreProv}">
+        ${porProveedor[nombreProv].map(f => `<option value="${f.id}" ${r.proveedor_factura_id===f.id?'selected':''}>${f.fecha} · ${f.factura||'s/f'} · ${fmt(f.importe)}${f.estatus==='Pagado'?' (ya pagada)':''}</option>`).join('')}
+      </optgroup>`).join('');
     detalle = `<select class="cell salida-detalle" data-id="${r.id}" data-field="proveedor_factura_id">
       <option value="">— elegir factura —</option>
-      ${facturasPend.map(f => `<option value="${f.id}" ${r.proveedor_factura_id===f.id?'selected':''}>${f.proveedor} · ${f.factura||'s/f'} · ${fmt(f.importe)}</option>`).join('')}
+      ${gruposHtml}
     </select>`;
   } else if (tipo === 'traspaso_banco' && traspasoCtx) {
     const opciones = (traspasoCtx.cuentasBanco || []).filter(c => !(traspasoCtx.origenTipo === 'banco' && c.id === traspasoCtx.origenId));
@@ -1486,7 +1496,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
     getMonedaLedgerRows(businessId, moneda, conceptosEfectivo),
     loadSubcuentas(businessId),
     loadCuentasMayor(businessId),
-    sb.from('fz_proveedores').select('id,proveedor,factura,importe').eq('business_id', businessId).eq('estatus', 'Pendiente').then(r => r.data || []),
+    sb.from('fz_proveedores').select('id,proveedor,factura,importe,estatus,fecha').eq('business_id', businessId).order('proveedor').order('fecha').then(r => r.data || []),
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
   ]);
@@ -1631,7 +1641,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     getBancoLedgerRows(businessId, cuentaArr, conceptosTarjetas),
     loadSubcuentas(businessId),
     loadCuentasMayor(businessId),
-    sb.from('fz_proveedores').select('id,proveedor,factura,importe').eq('business_id', businessId).eq('estatus', 'Pendiente').then(r => r.data || []),
+    sb.from('fz_proveedores').select('id,proveedor,factura,importe,estatus,fecha').eq('business_id', businessId).order('proveedor').order('fecha').then(r => r.data || []),
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
   ]);
