@@ -242,6 +242,21 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   </div>
 </div>
 
+<!-- ============ ACCESO NO AUTORIZADO ============ -->
+<div id="accessDeniedScreen" style="display:none;position:fixed;inset:0;z-index:210;background:radial-gradient(1200px 800px at 15% 10%, var(--navy-3), var(--navy-1) 60%);align-items:center;justify-content:center;">
+  <div class="login-card" style="text-align:center;">
+    <div class="login-brand">
+      <img class="logo-img" src="logo-cya.jpg" alt="CYA Roma & Associates">
+      <h1>Acceso no disponible</h1>
+    </div>
+    <p style="font-size:13.5px;color:var(--muted);line-height:1.6;margin-bottom:20px;">
+      Tu cuenta (<strong id="deniedEmail"></strong>) no tiene acceso al módulo de Finanzas.
+      Contacta al administrador si crees que esto es un error.
+    </p>
+    <button class="btn btn-ghost" id="deniedLogoutBtn" style="width:100%;">Salir</button>
+  </div>
+</div>
+
 <!-- ============ APP ============ -->
 <div id="app">
   <div class="shell">
@@ -298,6 +313,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
       </nav>
 
       <div class="sb-foot">
+        <button class="add-biz-btn" id="openUsuariosBtn" style="margin-bottom:10px;">👥 Usuarios autorizados</button>
         <div class="sb-user">
           <span id="userEmail"></span>
           <button class="logout-btn" id="logoutBtn">Salir</button>
@@ -524,6 +540,29 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
     <div class="modal-actions">
       <button class="btn btn-ghost" id="cancelTraspaso">Cancelar</button>
       <button class="btn btn-gold" id="saveTraspaso">Realizar traspaso</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: usuarios autorizados -->
+<div class="modal-bg" id="modalUsuarios">
+  <div class="modal">
+    <h3>Usuarios autorizados</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px;">Solo estos correos pueden entrar a Finanzas (aunque tengan cuenta compartida con tus otras apps). Escribe el correo exacto con el que inician sesión.</p>
+    <div id="usuariosList" style="max-height:280px;overflow-y:auto;margin-bottom:16px;"></div>
+    <div class="grid-2">
+      <div class="field" style="margin-bottom:0;">
+        <label>Correo</label>
+        <input type="email" id="newUsuarioEmail" placeholder="correo@cyaroma.com.mx">
+      </div>
+      <div class="field" style="margin-bottom:0;">
+        <label>Nombre (opcional)</label>
+        <input type="text" id="newUsuarioNombre" placeholder="Ej. Rodolfo Arcos">
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="closeUsuarios">Cerrar</button>
+      <button class="btn btn-gold" id="saveUsuario">+ Agregar usuario</button>
     </div>
   </div>
 </div>
