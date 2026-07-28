@@ -296,14 +296,23 @@ function totalVentaDinamico(v, conceptosVenta) {
   return total;
 }
 
+function conceptosParaMoneda(moneda, conceptosEfectivo) {
+  const porId = conceptosEfectivo.filter(c => c.moneda_id === moneda.id);
+  if (porId.length) return porId;
+  // respaldo: conceptos creados antes de que existiera el vínculo explícito
+  return conceptosEfectivo.filter(c => !c.moneda_id && c.nombre.trim().toLowerCase() === moneda.nombre.trim().toLowerCase());
+}
+
 async function computeMonedaSaldo(businessId, moneda, conceptosEfectivo) {
-  const matchConcept = conceptosEfectivo.find(c => c.nombre.trim().toLowerCase() === moneda.nombre.trim().toLowerCase());
+  const concepts = conceptosParaMoneda(moneda, conceptosEfectivo);
   let autoDepositos = 0;
-  if (matchConcept) {
+  if (concepts.length) {
     const { data: allVentas } = await sb.from('fz_ventas').select('recon_data').eq('business_id', businessId);
     (allVentas || []).forEach(v => {
-      const entry = (v.recon_data || {})[matchConcept.id];
-      if (entry) autoDepositos += Number(entry.monto) || 0; // valor en la moneda tal cual, sin convertir
+      concepts.forEach(concepto => {
+        const entry = (v.recon_data || {})[concepto.id];
+        if (entry) autoDepositos += Number(entry.monto) || 0; // valor en la moneda tal cual, sin convertir
+      });
     });
   }
   const { data: movs } = await sb.from('fz_efectivo_mov').select('depositos,cargos').eq('moneda_id', moneda.id);
@@ -724,6 +733,9 @@ function ventasRowHtml(r, conceptosVenta, porCat, recibidoCats) {
 /* ---------- Modal: conceptos de recibido (efectivo/tarjetas/cxc/propinas) ---------- */
 async function openConceptosModal(businessId) {
   await renderConceptosList(businessId);
+  const { data: monedas } = await sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).order('orden');
+  document.getElementById('newConceptoMonedaId').innerHTML = `<option value="">— no vincular —</option>` +
+    (monedas || []).map(m => `<option value="${m.id}">${m.nombre}</option>`).join('');
   document.getElementById('modalConceptos').classList.add('show');
   document.getElementById('newConceptoCategoria').onchange = updateConceptoFieldsVisibility;
   updateConceptoFieldsVisibility();
@@ -737,8 +749,9 @@ async function openConceptosModal(businessId) {
     const categoria = document.getElementById('newConceptoCategoria').value;
     const es_moneda = categoria === 'efectivo' && document.getElementById('newConceptoMoneda').checked;
     const medio = categoria === 'propinas' ? document.getElementById('newConceptoMedio').value : null;
+    const moneda_id = categoria === 'efectivo' ? (document.getElementById('newConceptoMonedaId').value || null) : null;
     if (!nombre) { toast('Escribe un nombre para el concepto.', 'error'); return; }
-    const { error } = await sb.from('fz_conceptos').insert({ business_id: businessId, nombre, categoria, es_moneda, medio, orden: 99 });
+    const { error } = await sb.from('fz_conceptos').insert({ business_id: businessId, nombre, categoria, es_moneda, medio, moneda_id, orden: 99 });
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     document.getElementById('newConceptoNombre').value = '';
     document.getElementById('newConceptoMoneda').checked = false;
@@ -749,16 +762,33 @@ function updateConceptoFieldsVisibility() {
   const cat = document.getElementById('newConceptoCategoria').value;
   document.getElementById('esMonedaLabel').style.display = cat === 'efectivo' ? 'flex' : 'none';
   document.getElementById('medioWrap').style.display = cat === 'propinas' ? 'block' : 'none';
+  document.getElementById('monedaVinculoWrap').style.display = cat === 'efectivo' ? 'block' : 'none';
 }
 async function renderConceptosList(businessId) {
-  const conceptos = await loadConceptos(businessId);
+  const [conceptos, monedasQ] = await Promise.all([
+    loadConceptos(businessId),
+    sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).order('orden'),
+  ]);
+  const monedas = monedasQ.data || [];
   const box = document.getElementById('conceptosList');
   if (!conceptos.length) { box.innerHTML = `<div class="empty" style="padding:16px;">Aún no hay conceptos. Agrega el primero abajo.</div>`; return; }
   box.innerHTML = conceptos.map(c => `
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 4px;border-bottom:1px solid var(--line);">
-      <div><strong>${c.nombre}</strong> <span style="color:var(--muted);font-size:12px;">— ${CAT_LABEL[c.categoria]}${c.es_moneda ? ' · con TC' : ''}${c.categoria==='propinas' ? ' · '+(c.medio==='tarjetas'?'Tarjetas':'Efectivo') : ''}</span></div>
-      <button class="row-del concepto-del" data-id="${c.id}" style="font-size:16px;">✕</button>
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 4px;border-bottom:1px solid var(--line);gap:10px;">
+      <div style="min-width:0;">
+        <strong>${c.nombre}</strong> <span style="color:var(--muted);font-size:12px;">— ${CAT_LABEL[c.categoria]}${c.es_moneda ? ' · con TC' : ''}${c.categoria==='propinas' ? ' · '+(c.medio==='tarjetas'?'Tarjetas':'Efectivo') : ''}</span>
+      </div>
+      ${c.categoria === 'efectivo' ? `<select class="cell concepto-moneda-vinculo" data-id="${c.id}" style="max-width:170px;flex-shrink:0;">
+        <option value="">— no vincular —</option>
+        ${monedas.map(m => `<option value="${m.id}" ${c.moneda_id===m.id?'selected':''}>${m.nombre}</option>`).join('')}
+      </select>` : ''}
+      <button class="row-del concepto-del" data-id="${c.id}" style="font-size:16px;flex-shrink:0;">✕</button>
     </div>`).join('');
+  box.querySelectorAll('.concepto-moneda-vinculo').forEach(sel => {
+    sel.addEventListener('change', async () => {
+      await sb.from('fz_conceptos').update({ moneda_id: sel.value || null }).eq('id', sel.dataset.id);
+      toast('Vínculo actualizado.');
+    });
+  });
   box.querySelectorAll('.concepto-del').forEach(btn => {
     btn.addEventListener('click', async () => {
       await sb.from('fz_conceptos').delete().eq('id', btn.dataset.id);
@@ -1095,15 +1125,17 @@ function wireSalidaCellHandlers(container, table, onChange) {
 let STATE_monedaAbierta = null;
 
 async function getMonedaLedgerRows(businessId, moneda, conceptosEfectivo) {
-  const matchConcept = conceptosEfectivo.find(c => c.nombre.trim().toLowerCase() === moneda.nombre.trim().toLowerCase());
+  const concepts = conceptosParaMoneda(moneda, conceptosEfectivo);
   const autoRows = [];
-  if (matchConcept) {
+  if (concepts.length) {
     const { data: ventas } = await sb.from('fz_ventas').select('id,fecha,recon_data').eq('business_id', businessId).order('fecha');
     (ventas || []).forEach(v => {
-      const entry = (v.recon_data || {})[matchConcept.id];
-      if (entry && Number(entry.monto)) {
-        autoRows.push({ id: 'auto-' + v.id, fecha: v.fecha, proveedor: 'Corte de caja', descripcion: 'Efectivo conciliado en Ventas', factura: '', cargos: 0, depositos: Number(entry.monto) || 0, auto: true });
-      }
+      concepts.forEach(concepto => {
+        const entry = (v.recon_data || {})[concepto.id];
+        if (entry && Number(entry.monto)) {
+          autoRows.push({ id: 'auto-' + v.id + '-' + concepto.id, fecha: v.fecha, proveedor: 'Corte de caja', descripcion: `Efectivo conciliado en Ventas (${concepto.nombre})`, factura: '', cargos: 0, depositos: Number(entry.monto) || 0, auto: true });
+        }
+      });
     });
   }
   const { data: movs } = await sb.from('fz_efectivo_mov').select('*').eq('moneda_id', moneda.id).order('fecha');
