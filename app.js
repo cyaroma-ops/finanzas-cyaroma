@@ -1113,7 +1113,7 @@ async function crearCuentaOCajaRapida(businessId, tipo) {
 }
 
 /* ============================================================
-   IMPORTAR DESDE EXCEL (bancos o proveedores)
+   IMPORTAR DESDE EXCEL (catálogo de proveedores, facturas o movimientos bancarios)
    ============================================================ */
 function normalizarEncabezado(k) {
   return k.toString().trim().toLowerCase()
@@ -1127,8 +1127,22 @@ function buscarColumna(row, candidatos) {
   }
   return null;
 }
+function parseFechaExcel(val) {
+  if (val === null || val === undefined || val === '') return todayStr();
+  if (val instanceof Date) return val.toISOString().slice(0, 10);
+  if (typeof val === 'number') {
+    const d = new Date(Math.round((val - 25569) * 86400 * 1000));
+    return d.toISOString().slice(0, 10);
+  }
+  const s = String(val).trim();
+  let m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  m = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
+  if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+  return todayStr();
+}
 
-function openImportExcelModal(tipo, businessId, onDone) {
+function openImportExcelModal(tipo, businessId, onDone, extra) {
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = '.xlsx,.xls,.csv';
@@ -1137,7 +1151,7 @@ function openImportExcelModal(tipo, businessId, onDone) {
     if (!file) return;
     try {
       const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: 'array' });
+      const wb = XLSX.read(buf, { type: 'array', cellDates: true });
       const sheet = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
       if (!rows.length) { toast('El archivo no tiene filas.', 'error'); return; }
@@ -1152,16 +1166,47 @@ function openImportExcelModal(tipo, businessId, onDone) {
         const { error } = await sb.from('fz_proveedores_catalogo').insert(payload);
         if (error) { toast('Error al importar: ' + error.message, 'error'); return; }
         toast(`${payload.length} proveedores importados.`);
-      } else if (tipo === 'bancos') {
+
+      } else if (tipo === 'facturas') {
+        const { data: catalogo } = await sb.from('fz_proveedores_catalogo').select('*').eq('business_id', businessId);
         const payload = rows.map(r => {
-          const nombre = buscarColumna(r, ['nombre', 'banco', 'cuenta']) || '';
-          const saldo_inicial = Number(buscarColumna(r, ['saldo inicial', 'saldo'])) || 0;
-          return { business_id: businessId, nombre: String(nombre).trim(), saldo_inicial, activo: true };
-        }).filter(c => c.nombre);
-        if (!payload.length) { toast('No se encontró la columna "Nombre" en el archivo.', 'error'); return; }
-        const { error } = await sb.from('fz_bancos_cuentas').insert(payload);
+          const proveedorTexto = String(buscarColumna(r, ['proveedor', 'nombre comercial', 'nombre']) || '').trim();
+          const match = (catalogo || []).find(c => (c.nombre_comercial || c.nombre || '').trim().toLowerCase() === proveedorTexto.toLowerCase());
+          const estatusRaw = String(buscarColumna(r, ['estatus', 'status']) || '').trim().toLowerCase();
+          return {
+            business_id: businessId,
+            fecha: parseFechaExcel(buscarColumna(r, ['fecha'])),
+            proveedor: proveedorTexto || (match ? (match.nombre_comercial || match.nombre) : ''),
+            proveedor_id: match ? match.id : null,
+            factura: String(buscarColumna(r, ['factura', 'no factura', 'numero factura']) || '').trim() || null,
+            importe: Number(buscarColumna(r, ['importe', 'monto', 'total'])) || 0,
+            estatus: estatusRaw.startsWith('pag') ? 'Pagado' : 'Pendiente',
+            desglose: {},
+          };
+        }).filter(f => f.proveedor && f.importe);
+        if (!payload.length) { toast('No se encontraron filas válidas (revisa las columnas Proveedor e Importe).', 'error'); return; }
+        const { error } = await sb.from('fz_proveedores').insert(payload);
         if (error) { toast('Error al importar: ' + error.message, 'error'); return; }
-        toast(`${payload.length} cuentas bancarias importadas.`);
+        toast(`${payload.length} facturas importadas. Ya puedes desglosarlas por subcuenta.`);
+
+      } else if (tipo === 'bancos_mov') {
+        const cuentaId = extra;
+        if (!cuentaId) { toast('Selecciona primero una cuenta bancaria.', 'error'); return; }
+        const payload = rows.map(r => ({
+          business_id: businessId,
+          cuenta_id: cuentaId,
+          fecha: parseFechaExcel(buscarColumna(r, ['fecha'])),
+          descripcion: String(buscarColumna(r, ['descripcion', 'descripción']) || '').trim() || null,
+          concepto: String(buscarColumna(r, ['concepto']) || '').trim() || null,
+          referencia: String(buscarColumna(r, ['referencia']) || '').trim() || null,
+          depositos: Number(buscarColumna(r, ['depositos', 'depósitos', 'abono', 'abonos'])) || 0,
+          cargos: Number(buscarColumna(r, ['cargos', 'cargo'])) || 0,
+          tipo_salida: 'otro',
+        })).filter(m => m.depositos || m.cargos);
+        if (!payload.length) { toast('No se encontraron filas válidas (revisa las columnas Depósitos/Cargos).', 'error'); return; }
+        const { error } = await sb.from('fz_bancos_mov').insert(payload);
+        if (error) { toast('Error al importar: ' + error.message, 'error'); return; }
+        toast(`${payload.length} movimientos importados.`);
       }
       if (onDone) onDone();
     } catch (e) {
@@ -1483,12 +1528,11 @@ async function renderBancos() {
       <div class="card-head">
         <h3>Cuentas bancarias</h3>
         <div style="display:flex;gap:8px;">
-          <button class="btn btn-ghost btn-sm" id="importBancosBtn">📥 Importar Excel</button>
           <button class="btn btn-ghost btn-sm" id="traspasoBtnBanco">🔁 Transferir</button>
           <button class="btn btn-gold btn-sm" id="addCuentaBtn">+ Agregar cuenta</button>
         </div>
       </div>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">Las terminales/tarjetas conciliadas en Ventas que estén vinculadas a una cuenta (en "⚙ Conceptos de recibido") entran aquí automáticamente como "Corte de caja".</p>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">Las terminales/tarjetas conciliadas en Ventas que estén vinculadas a una cuenta (en "⚙ Conceptos de recibido") entran aquí automáticamente como "Corte de caja". Dentro de cada cuenta puedes importar su estado de cuenta desde Excel.</p>
       <div class="tag-row">
         ${cuentasConSaldo.map(c => `<div class="tag banco-tab ${c.id===STATE_bancoCuentaAbierta?'active':''}" data-id="${c.id}">${c.nombre} · ${fmt(c.saldo)}</div>`).join('') || '<span class="hint">Aún no hay cuentas.</span>'}
       </div>
@@ -1496,7 +1540,6 @@ async function renderBancos() {
     </div>
   `;
 
-  document.getElementById('importBancosBtn').addEventListener('click', () => openImportExcelModal('bancos', b.id, renderBancos));
   document.getElementById('traspasoBtnBanco').addEventListener('click', () => openTraspasoModal(b.id, renderBancos));
   document.getElementById('addCuentaBtn').addEventListener('click', async () => {
     const nombre = prompt('Nombre de la cuenta / banco (ej. Banco-Peibo):');
@@ -1538,6 +1581,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
         <td>${m.fecha}</td>
         <td><em>${m.descripcion}</em> <span style="color:var(--muted);font-size:11px;">· auto</span></td>
         <td>${m.concepto}</td>
+        <td>—</td>
         <td class="num">${fmtNum(m.depositos)}</td>
         <td class="num">—</td>
         <td class="num" style="font-weight:700;">${fmt(saldo)}</td>
@@ -1548,6 +1592,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
       <td><input class="cell mov-cell" type="date" value="${m.fecha}" data-id="${m.id}" data-field="fecha"></td>
       <td><input class="cell mov-cell" type="text" value="${m.descripcion||''}" data-id="${m.id}" data-field="descripcion"></td>
       <td><input class="cell mov-cell" type="text" value="${m.concepto||''}" data-id="${m.id}" data-field="concepto"></td>
+      <td><input class="cell mov-cell" type="text" value="${m.referencia||''}" data-id="${m.id}" data-field="referencia"></td>
       <td><input class="cell mov-cell num" type="number" step="0.01" value="${m.depositos ?? 0}" data-id="${m.id}" data-field="depositos"></td>
       <td><input class="cell mov-cell num" type="number" step="0.01" value="${m.cargos ?? 0}" data-id="${m.id}" data-field="cargos"></td>
       <td class="num" style="font-weight:700;">${fmt(saldo)}</td>
@@ -1559,16 +1604,20 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
   box.innerHTML = `
     <div class="card-head" style="margin-top:14px;">
       <span class="hint">Saldo inicial: ${fmt(cuentaArr?.saldo_inicial || 0)}</span>
-      <button class="btn btn-ghost btn-sm" id="addMovBtn">+ Agregar movimiento</button>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-ghost btn-sm" id="importMovBtn">📥 Importar movimientos (Excel)</button>
+        <button class="btn btn-ghost btn-sm" id="addMovBtn">+ Agregar movimiento</button>
+      </div>
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Fecha</th><th>Descripción</th><th>Concepto</th><th>Depósitos</th><th>Cargos</th><th>Saldo</th><th>Tipo de salida</th><th>Detalle</th><th></th></tr></thead>
-        <tbody>${rowsHtml || `<tr><td colspan="9" class="empty">Sin movimientos.</td></tr>`}</tbody>
+        <thead><tr><th>Fecha</th><th>Descripción</th><th>Concepto</th><th>Referencia</th><th>Depósitos</th><th>Cargos</th><th>Saldo</th><th>Tipo de salida</th><th>Detalle</th><th></th></tr></thead>
+        <tbody>${rowsHtml || `<tr><td colspan="10" class="empty">Sin movimientos.</td></tr>`}</tbody>
       </table>
     </div>
   `;
 
+  document.getElementById('importMovBtn').addEventListener('click', () => openImportExcelModal('bancos_mov', businessId, () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas), cuentaId));
   document.getElementById('addMovBtn').addEventListener('click', async () => {
     await sb.from('fz_bancos_mov').insert({ cuenta_id: cuentaId, business_id: businessId, fecha: todayStr(), tipo_salida: 'otro' });
     renderBancoLedger(cuentaId, businessId, conceptosTarjetas);
@@ -1577,7 +1626,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
   box.querySelectorAll('.mov-cell').forEach(inp => {
     inp.addEventListener('change', async () => {
       const field = inp.dataset.field;
-      const val = (field === 'fecha' || field === 'descripcion' || field === 'concepto') ? inp.value : Number(inp.value) || 0;
+      const val = (field === 'fecha' || field === 'descripcion' || field === 'concepto' || field === 'referencia') ? inp.value : Number(inp.value) || 0;
       await sb.from('fz_bancos_mov').update({ [field]: val }).eq('id', inp.dataset.id);
       renderBancoLedger(cuentaId, businessId, conceptosTarjetas);
     });
@@ -1621,6 +1670,7 @@ async function renderProveedores() {
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           <button class="btn btn-ghost btn-sm" id="openProveedoresCatBtn">⚙ Catálogo de proveedores</button>
           <button class="btn btn-ghost btn-sm" id="openCuentasBtnProv">⚙ Catálogo de cuentas</button>
+          <button class="btn btn-ghost btn-sm" id="importFacturasBtn">📥 Importar facturas (Excel)</button>
           <button class="btn btn-gold btn-sm" id="addProvBtn">+ Agregar factura</button>
         </div>
       </div>
@@ -1644,6 +1694,7 @@ async function renderProveedores() {
   });
   document.getElementById('openProveedoresCatBtn').addEventListener('click', () => openProveedoresCatModal(b.id, renderProveedores));
   document.getElementById('openCuentasBtnProv').addEventListener('click', () => openCuentasModal(b.id, renderProveedores));
+  document.getElementById('importFacturasBtn').addEventListener('click', () => openImportExcelModal('facturas', b.id, renderProveedores));
   el.querySelectorAll('.prov-tab').forEach(t => t.addEventListener('click', () => { STATE_provFiltro = t.dataset.f; renderProveedores(); }));
   el.querySelectorAll('.prov-cell').forEach(inp => {
     inp.addEventListener('change', async () => {
