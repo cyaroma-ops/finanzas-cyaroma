@@ -94,9 +94,29 @@ document.getElementById('logoutBtn').addEventListener('click', async () => {
   await sb.auth.signOut();
   location.reload();
 });
+document.getElementById('deniedLogoutBtn').addEventListener('click', async () => {
+  await sb.auth.signOut();
+  location.reload();
+});
+
+/* ---------- CONTROL DE ACCESO ---------- */
+async function checkAcceso(email) {
+  const { data, error } = await sb.from('fz_usuarios_autorizados').select('*').ilike('email', email).limit(1);
+  if (error) { toast('Error verificando acceso: ' + error.message, 'error'); return false; }
+  const row = data?.[0];
+  return !!(row && row.activo !== false);
+}
 
 /* ---------- BOOT ---------- */
 async function boot() {
+  const autorizado = await checkAcceso(STATE.user.email);
+  if (!autorizado) {
+    document.getElementById('loginScreen').style.display = 'none';
+    document.getElementById('deniedEmail').textContent = STATE.user.email;
+    document.getElementById('accessDeniedScreen').style.display = 'flex';
+    return;
+  }
+
   document.getElementById('loginScreen').style.display = 'none';
   document.getElementById('app').style.display = 'block';
   document.getElementById('userEmail').textContent = STATE.user.email;
@@ -105,6 +125,7 @@ async function boot() {
   await loadBusinesses();
   setupNav();
   setupBizControls();
+  setupUsuariosControls();
 
   document.getElementById('monthPicker').addEventListener('change', (e) => {
     STATE.currentMonth = e.target.value;
@@ -112,6 +133,58 @@ async function boot() {
   });
 
   renderCurrentSection();
+}
+
+/* ---------- USUARIOS AUTORIZADOS ---------- */
+function setupUsuariosControls() {
+  document.getElementById('openUsuariosBtn').addEventListener('click', openUsuariosModal);
+}
+async function loadUsuariosAutorizados() {
+  const { data, error } = await sb.from('fz_usuarios_autorizados').select('*').order('email');
+  if (error) { toast('Error: ' + error.message, 'error'); return []; }
+  return data || [];
+}
+async function openUsuariosModal() {
+  await renderUsuariosList();
+  document.getElementById('modalUsuarios').classList.add('show');
+  document.getElementById('closeUsuarios').onclick = () => document.getElementById('modalUsuarios').classList.remove('show');
+  document.getElementById('saveUsuario').onclick = async () => {
+    const email = document.getElementById('newUsuarioEmail').value.trim().toLowerCase();
+    const nombre = document.getElementById('newUsuarioNombre').value.trim();
+    if (!email) { toast('Escribe un correo.', 'error'); return; }
+    const { error } = await sb.from('fz_usuarios_autorizados').insert({ email, nombre: nombre || null });
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    document.getElementById('newUsuarioEmail').value = '';
+    document.getElementById('newUsuarioNombre').value = '';
+    renderUsuariosList();
+  };
+}
+async function renderUsuariosList() {
+  const usuarios = await loadUsuariosAutorizados();
+  const box = document.getElementById('usuariosList');
+  if (!usuarios.length) { box.innerHTML = `<div class="empty" style="padding:16px;">Sin usuarios autorizados todavía.</div>`; return; }
+  box.innerHTML = usuarios.map(u => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 4px;border-bottom:1px solid var(--line);gap:10px;">
+      <div style="min-width:0;">
+        <strong>${u.email}</strong>${u.email.toLowerCase()===STATE.user.email.toLowerCase()?' <span style="color:var(--muted);font-size:11px;">(tú)</span>':''}
+        ${u.nombre ? `<div style="color:var(--muted);font-size:12px;">${u.nombre}</div>` : ''}
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+        <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer;">
+          <input type="checkbox" class="usuario-activo" data-id="${u.id}" ${u.activo!==false?'checked':''}> Activo
+        </label>
+        <button class="row-del usuario-del" data-id="${u.id}" style="font-size:15px;">✕</button>
+      </div>
+    </div>`).join('');
+  box.querySelectorAll('.usuario-activo').forEach(chk => chk.addEventListener('change', async () => {
+    await sb.from('fz_usuarios_autorizados').update({ activo: chk.checked }).eq('id', chk.dataset.id);
+    renderUsuariosList();
+  }));
+  box.querySelectorAll('.usuario-del').forEach(btn => btn.addEventListener('click', async () => {
+    if (usuarios.length <= 1) { toast('Debe quedar al menos un usuario autorizado.', 'error'); return; }
+    await sb.from('fz_usuarios_autorizados').delete().eq('id', btn.dataset.id);
+    renderUsuariosList();
+  }));
 }
 
 /* ---------- NEGOCIOS ---------- */
@@ -789,11 +862,21 @@ async function renderCuentasList(businessId) {
         </div>`).join('') || `<div style="padding:5px 4px 5px 16px;color:var(--muted);font-size:12px;">Sin subcuentas todavía.</div>`}
     </div>`).join('');
   box.querySelectorAll('.mayor-del').forEach(btn => btn.addEventListener('click', async () => {
-    await sb.from('fz_cuentas_mayor').delete().eq('id', btn.dataset.id);
+    if (!confirm('¿Eliminar esta cuenta mayor y todas sus subcuentas?')) return;
+    const { error } = await sb.from('fz_cuentas_mayor').delete().eq('id', btn.dataset.id);
+    if (error) {
+      toast('No se puede eliminar: ya tiene movimientos, facturas o pólizas registradas con alguna de sus subcuentas. Si ya no la usas, deja de seleccionarla en capturas nuevas — el historial se conserva.', 'error');
+      return;
+    }
     renderCuentasList(businessId);
   }));
   box.querySelectorAll('.sub-del').forEach(btn => btn.addEventListener('click', async () => {
-    await sb.from('fz_subcuentas').delete().eq('id', btn.dataset.id);
+    if (!confirm('¿Eliminar esta subcuenta?')) return;
+    const { error } = await sb.from('fz_subcuentas').delete().eq('id', btn.dataset.id);
+    if (error) {
+      toast('No se puede eliminar: ya tiene movimientos, facturas o pólizas registradas. Si ya no la usas, simplemente deja de seleccionarla en capturas nuevas — el historial se conserva.', 'error');
+      return;
+    }
     renderCuentasList(businessId);
   }));
 }
