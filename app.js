@@ -628,6 +628,8 @@ async function renderVentas() {
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           <button class="btn btn-ghost btn-sm" id="openVentaConceptosBtn">⚙ Categorías de venta</button>
           <button class="btn btn-ghost btn-sm" id="openConceptosBtn">⚙ Conceptos de recibido</button>
+          <button class="btn btn-ghost btn-sm" id="descargarPlantillaBtn">📄 Descargar plantilla</button>
+          <button class="btn btn-ghost btn-sm" id="importVentasBtn">📥 Importar ventas (Excel)</button>
           <button class="btn btn-gold btn-sm" id="addVentaRow">+ Agregar día</button>
         </div>
       </div>
@@ -681,6 +683,8 @@ async function renderVentas() {
   });
   document.getElementById('openConceptosBtn').addEventListener('click', () => openConceptosModal(b.id));
   document.getElementById('openVentaConceptosBtn').addEventListener('click', () => openVentaConceptosModal(b.id));
+  document.getElementById('descargarPlantillaBtn').addEventListener('click', () => descargarPlantillaVentas(b.id));
+  document.getElementById('importVentasBtn').addEventListener('click', () => openImportExcelModal('ventas', b.id, renderVentas));
 
   el.querySelectorAll('.ventas-cell').forEach(inp => {
     inp.addEventListener('change', async () => {
@@ -1026,6 +1030,13 @@ async function renderProveedoresCatList(businessId) {
 /* ============================================================
    DESGLOSE DE FACTURA (por subcuenta)
    ============================================================ */
+function desgloseLineas(desglose) {
+  if (!desglose) return [];
+  if (Array.isArray(desglose)) return desglose;
+  // formato antiguo: objeto { subcuenta_id: monto } — se sigue leyendo, ya no se escribe así
+  return Object.entries(desglose).filter(([,v]) => Number(v)).map(([subcuenta_id, monto]) => ({ subcuenta_id, monto: Number(monto), descripcion: null }));
+}
+
 async function openDesgloseModal(businessId, facturaId, onClose) {
   const subcuentas = await loadSubcuentas(businessId);
   const mayores = await loadCuentasMayor(businessId);
@@ -1041,34 +1052,38 @@ async function openDesgloseModal(businessId, facturaId, onClose) {
   document.getElementById('addDesgloseLinea').onclick = async () => {
     const subId = document.getElementById('newDesgloseSubcuenta').value;
     const monto = Number(document.getElementById('newDesgloseMonto').value) || 0;
+    const descripcion = document.getElementById('newDesgloseDescripcion').value.trim() || null;
     if (!subId || !monto) { toast('Selecciona subcuenta y monto.', 'error'); return; }
     const { data: fRow } = await sb.from('fz_proveedores').select('desglose').eq('id', facturaId).single();
-    const desglose = { ...(fRow?.desglose || {}) };
-    desglose[subId] = (Number(desglose[subId]) || 0) + monto;
-    await sb.from('fz_proveedores').update({ desglose }).eq('id', facturaId);
+    const lineas = desgloseLineas(fRow?.desglose);
+    lineas.push({ subcuenta_id: subId, monto, descripcion });
+    await sb.from('fz_proveedores').update({ desglose: lineas }).eq('id', facturaId);
     document.getElementById('newDesgloseMonto').value = '';
+    document.getElementById('newDesgloseDescripcion').value = '';
     renderDesgloseList(businessId, facturaId, subcuentas, mayores);
   };
 }
 async function renderDesgloseList(businessId, facturaId, subcuentas, mayores) {
   const { data: fRow } = await sb.from('fz_proveedores').select('*').eq('id', facturaId).single();
-  const desglose = fRow?.desglose || {};
+  const lineas = desgloseLineas(fRow?.desglose);
   const box = document.getElementById('desgloseList');
-  const entries = Object.entries(desglose).filter(([,v]) => Number(v));
-  const totalAsignado = entries.reduce((s,[,v])=>s+Number(v),0);
+  const totalAsignado = lineas.reduce((s,l)=>s+Number(l.monto||0),0);
   document.getElementById('desgloseTotales').innerHTML = `Factura: ${fmt(fRow?.importe||0)} &nbsp;|&nbsp; Asignado: <span style="color:${Math.abs(totalAsignado-(fRow?.importe||0))<1?'var(--green)':'var(--red)'}">${fmt(totalAsignado)}</span>`;
-  box.innerHTML = entries.map(([subId, monto]) => {
-    const sub = subcuentas.find(s=>s.id===subId);
+  box.innerHTML = lineas.map((linea, idx) => {
+    const sub = subcuentas.find(s=>s.id===linea.subcuenta_id);
     const mayor = mayores.find(m=>m.id===sub?.cuenta_mayor_id);
-    return `<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 4px;border-bottom:1px solid var(--line);font-size:13px;">
-      <span>${mayor ? mayor.nombre+' › ' : ''}${sub ? sub.nombre : '(subcuenta eliminada)'}</span>
-      <span style="display:flex;align-items:center;gap:10px;"><strong>${fmt(monto)}</strong><button class="row-del desglose-del" data-sub="${subId}" style="font-size:14px;">✕</button></span>
+    return `<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 4px;border-bottom:1px solid var(--line);font-size:13px;gap:8px;">
+      <div style="min-width:0;">
+        <div>${mayor ? mayor.nombre+' › ' : ''}${sub ? sub.nombre : '(subcuenta eliminada)'}</div>
+        ${linea.descripcion ? `<div style="color:var(--muted);font-size:11.5px;">${linea.descripcion}</div>` : ''}
+      </div>
+      <span style="display:flex;align-items:center;gap:10px;flex-shrink:0;"><strong>${fmt(linea.monto)}</strong><button class="row-del desglose-del" data-idx="${idx}" style="font-size:14px;">✕</button></span>
     </div>`;
   }).join('') || `<div class="empty" style="padding:10px;">Sin líneas todavía.</div>`;
   box.querySelectorAll('.desglose-del').forEach(btn => btn.addEventListener('click', async () => {
-    const d = { ...desglose };
-    delete d[btn.dataset.sub];
-    await sb.from('fz_proveedores').update({ desglose: d }).eq('id', facturaId);
+    const idx = Number(btn.dataset.idx);
+    const nuevas = lineas.filter((_,i)=>i!==idx);
+    await sb.from('fz_proveedores').update({ desglose: nuevas }).eq('id', facturaId);
     renderDesgloseList(businessId, facturaId, subcuentas, mayores);
   }));
 }
@@ -1142,6 +1157,21 @@ function parseFechaExcel(val) {
   return todayStr();
 }
 
+async function descargarPlantillaVentas(businessId) {
+  const [conceptosVenta, conceptos] = await Promise.all([loadConceptosVenta(businessId), loadConceptos(businessId)]);
+  if (!conceptosVenta.length) { toast('Primero configura las categorías de venta de este negocio.', 'error'); return; }
+  const headers = ['Fecha', ...conceptosVenta.map(c => c.nombre), 'Efectivo Sistema', 'Tarjetas Sistema', 'CxC Sistema', 'Gastos del día'];
+  conceptos.forEach(c => {
+    headers.push(c.nombre);
+    if (c.es_moneda) headers.push(c.nombre + ' TC');
+  });
+  const ejemplo = headers.map((h,i) => i === 0 ? todayStr() : '');
+  const ws = XLSX.utils.aoa_to_sheet([headers, ejemplo]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Ventas');
+  XLSX.writeFile(wb, 'plantilla-ventas.xlsx');
+}
+
 function openImportExcelModal(tipo, businessId, onDone, extra) {
   const input = document.createElement('input');
   input.type = 'file';
@@ -1207,6 +1237,79 @@ function openImportExcelModal(tipo, businessId, onDone, extra) {
         const { error } = await sb.from('fz_bancos_mov').insert(payload);
         if (error) { toast('Error al importar: ' + error.message, 'error'); return; }
         toast(`${payload.length} movimientos importados.`);
+
+      } else if (tipo === 'ventas') {
+        const [conceptosVentaQ, conceptosQ] = await Promise.all([
+          sb.from('fz_conceptos_venta').select('*').eq('business_id', businessId),
+          sb.from('fz_conceptos').select('*').eq('business_id', businessId),
+        ]);
+        const cVenta = conceptosVentaQ.data || [];
+        const cRecon = conceptosQ.data || [];
+        const payload = rows.map(r => {
+          const fecha = parseFechaExcel(buscarColumna(r, ['fecha']));
+          const venta_data = {};
+          cVenta.forEach(c => {
+            const val = buscarColumna(r, [normalizarEncabezado(c.nombre)]);
+            if (val !== null && val !== '') venta_data[c.id] = Number(val) || 0;
+          });
+          const efectivo_sistema = Number(buscarColumna(r, ['efectivo sistema', 'efectivo'])) || 0;
+          const tarjetas_sistema = Number(buscarColumna(r, ['tarjetas sistema', 'tarjetas'])) || 0;
+          const cxc = Number(buscarColumna(r, ['cxc sistema', 'cxc'])) || 0;
+          const gastos = Number(buscarColumna(r, ['gastos del dia', 'gastos del día', 'gastos'])) || 0;
+          const recon_data = {};
+          cRecon.forEach(c => {
+            const val = buscarColumna(r, [normalizarEncabezado(c.nombre)]);
+            if (val === null || val === '') return;
+            if (c.es_moneda) {
+              const tc = Number(buscarColumna(r, [normalizarEncabezado(c.nombre + ' TC')])) || 0;
+              recon_data[c.id] = { monto: Number(val) || 0, tc };
+            } else {
+              recon_data[c.id] = { monto: Number(val) || 0 };
+            }
+          });
+          return { business_id: businessId, fecha, venta_data, efectivo_sistema, tarjetas_sistema, cxc, gastos, recon_data };
+        });
+        if (!payload.length) { toast('El archivo no tiene filas.', 'error'); return; }
+        const { error } = await sb.from('fz_ventas').insert(payload);
+        if (error) { toast('Error al importar: ' + error.message, 'error'); return; }
+        toast(`${payload.length} días de ventas importados.`);
+
+      } else if (tipo === 'polizas') {
+        const [subcuentasQ] = await Promise.all([
+          sb.from('fz_subcuentas').select('*').eq('business_id', businessId),
+        ]);
+        const subcuentas = subcuentasQ.data || [];
+        const grupos = {};
+        rows.forEach(r => {
+          const fecha = parseFechaExcel(buscarColumna(r, ['fecha']));
+          const concepto = String(buscarColumna(r, ['concepto', 'concepto poliza', 'concepto póliza']) || '').trim();
+          const key = fecha + '||' + concepto;
+          (grupos[key] = grupos[key] || []).push(r);
+        });
+        const { data: existentes } = await sb.from('fz_polizas').select('numero').eq('business_id', businessId);
+        let maxNum = (existentes || []).reduce((mx,p)=>Math.max(mx, p.numero||0), 0);
+        let countPolizas = 0, countLineas = 0;
+        for (const key of Object.keys(grupos)) {
+          const [fecha, concepto] = key.split('||');
+          maxNum++;
+          const { data: nuevaPoliza, error: e1 } = await sb.from('fz_polizas').insert({ business_id: businessId, numero: maxNum, fecha, concepto }).select().single();
+          if (e1 || !nuevaPoliza) continue;
+          const lineasPayload = grupos[key].map(r => {
+            const subNombre = String(buscarColumna(r, ['subcuenta']) || '').trim();
+            const sub = subcuentas.find(s => s.nombre.trim().toLowerCase() === subNombre.toLowerCase());
+            return {
+              business_id: businessId, poliza_id: nuevaPoliza.id,
+              subcuenta_id: sub ? sub.id : null,
+              descripcion: String(buscarColumna(r, ['descripcion', 'descripción']) || '').trim() || null,
+              cargo: Number(buscarColumna(r, ['cargo'])) || 0,
+              abono: Number(buscarColumna(r, ['abono'])) || 0,
+            };
+          });
+          await sb.from('fz_polizas_lineas').insert(lineasPayload);
+          countPolizas++; countLineas += lineasPayload.length;
+        }
+        if (!countPolizas) { toast('No se encontraron filas válidas (revisa Fecha y Concepto).', 'error'); return; }
+        toast(`${countPolizas} pólizas importadas (${countLineas} líneas).`);
       }
       if (onDone) onDone();
     } catch (e) {
@@ -1797,7 +1900,7 @@ async function renderProveedores() {
 }
 
 function provRowHtml(p, catalogo, opcionesPagoDesde) {
-  const desgloseTotal = Object.values(p.desglose || {}).reduce((s,v)=>s+(Number(v)||0),0);
+  const desgloseTotal = desgloseLineas(p.desglose).reduce((s,l)=>s+(Number(l.monto)||0),0);
   const desgloseOk = Math.abs(desgloseTotal - (Number(p.importe)||0)) < 1 && desgloseTotal > 0;
   return `<tr>
     <td><input class="cell prov-cell" type="date" value="${p.fecha}" data-id="${p.id}" data-field="fecha"></td>
@@ -1824,7 +1927,7 @@ function provRowHtml(p, catalogo, opcionesPagoDesde) {
 /* ============================================================
    P&L — ESTADO DE RESULTADOS
    ============================================================ */
-let STATE_plVista = 'mensual'; // 'mensual' | 'acumulado'
+let STATE_plVista = 'mensual'; // 'mensual' | 'acumulado' | 'anual'
 
 function periodoPL(ym, vista) {
   const { start, end } = monthBounds(ym);
@@ -1858,8 +1961,8 @@ async function computeGastosClasificados(businessId, periodo, subcuentas, mayore
   ]);
 
   (provQ.data || []).forEach(f => {
-    Object.entries(f.desglose || {}).forEach(([subId, monto]) => {
-      porSubcuenta[subId] = (porSubcuenta[subId] || 0) + (Number(monto) || 0);
+    desgloseLineas(f.desglose).forEach(linea => {
+      porSubcuenta[linea.subcuenta_id] = (porSubcuenta[linea.subcuenta_id] || 0) + (Number(linea.monto) || 0);
     });
   });
   [...(bancosMovQ.data || []), ...(efvoMovQ.data || [])].forEach(m => {
@@ -1911,10 +2014,110 @@ async function computeIngresosPoliza(businessId, periodo, subcuentas, mayores) {
   return { porMayor, total: porMayor.reduce((s,m)=>s+m.subtotal,0) };
 }
 
+function plTagsHtml() {
+  return `<div class="tag-row">
+    <div class="tag ${STATE_plVista==='mensual'?'active':''}" id="plTabMensual">Mensual</div>
+    <div class="tag ${STATE_plVista==='acumulado'?'active':''}" id="plTabAcumulado">Acumulado</div>
+    <div class="tag ${STATE_plVista==='anual'?'active':''}" id="plTabAnual">Todos los meses</div>
+  </div>`;
+}
+function wirePLTags(el) {
+  el.querySelector('#plTabMensual').addEventListener('click', () => { STATE_plVista = 'mensual'; renderPL(); });
+  el.querySelector('#plTabAcumulado').addEventListener('click', () => { STATE_plVista = 'acumulado'; renderPL(); });
+  el.querySelector('#plTabAnual').addEventListener('click', () => { STATE_plVista = 'anual'; renderPL(); });
+}
+
+async function renderPLAnual(el, b) {
+  el.innerHTML = plTagsHtml() + `<div class="empty">Calculando el año completo…</div>`;
+  wirePLTags(el);
+
+  const year = STATE.currentMonth.slice(0, 4);
+  const [conceptosVenta, conceptos, subcuentas, mayores] = await Promise.all([
+    loadConceptosVenta(b.id), loadConceptos(b.id), loadSubcuentas(b.id), loadCuentasMayor(b.id),
+  ]);
+  const porCatPL = { efectivo: conceptos.filter(c=>c.categoria==='efectivo'), tarjetas: conceptos.filter(c=>c.categoria==='tarjetas'), cxc: conceptos.filter(c=>c.categoria==='cxc'), propinas: conceptos.filter(c=>c.categoria==='propinas') };
+  const mayoresGasto = mayores.filter(m => m.tipo === 'gasto');
+  const mesesYm = Array.from({ length: 12 }, (_, i) => `${year}-${String(i + 1).padStart(2, '0')}`);
+  const mesesLabel = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+
+  const datos = [];
+  for (const ym of mesesYm) {
+    const periodo = periodoPL(ym, 'mensual');
+    const { data: v } = await sb.from('fz_ventas').select('*').eq('business_id', b.id).gte('fecha', periodo.start).lte('fecha', periodo.end);
+    const ventas = v || [];
+    const ingresosPorConcepto = conceptosVenta.map(c => ventas.reduce((s,r)=>s+(Number((r.venta_data||{})[c.id])||0),0));
+    const totalIngresosVentas = conceptosVenta.reduce((s,c,idx)=>s+(c.tipo==='resta'?-ingresosPorConcepto[idx]:ingresosPorConcepto[idx]),0);
+    const gastosOperativos = ventas.reduce((s,r)=>s+(Number(r.gastos)||0),0);
+    let diffPeriodo = 0;
+    ventas.forEach(r => { diffPeriodo += computeRowDiffs(r, conceptosVenta, porCatPL).difTotal; });
+    const faltanteCaja = diffPeriodo>0?diffPeriodo:0;
+    const sobranteCaja = diffPeriodo<0?-diffPeriodo:0;
+    const gClas = await computeGastosClasificados(b.id, periodo, subcuentas, mayores);
+    const iPoliza = await computeIngresosPoliza(b.id, periodo, subcuentas, mayores);
+    const totalIngresosFinal = totalIngresosVentas + sobranteCaja + iPoliza.total;
+    const gastosTotales = gastosOperativos + gClas.totalClasificado + gClas.sinClasificar + faltanteCaja;
+    const utilidad = totalIngresosFinal - gastosTotales;
+    datos.push({ ym, ingresosPorConcepto, sobranteCaja, iPolizaTotal: iPoliza.total, totalIngresosFinal, gastosOperativos, faltanteCaja, gClas, gastosTotales, utilidad });
+  }
+
+  const sum = arr => arr.reduce((s,x)=>s+x,0);
+  const filaHtml = (label, valores, opts={}) => `<tr class="${opts.total?'total-row':''}" style="${opts.bg?'background:#f7f9fc;':''}${opts.indent?'':''}">
+    <td style="${opts.indent?'padding-left:22px;':''}${opts.italic?'font-style:italic;color:var(--muted);':''}${opts.bold?'font-weight:700;':''}">${label}</td>
+    ${valores.map(v => `<td class="num" style="${opts.color?`color:${opts.color};`:''}">${fmt(v)}</td>`).join('')}
+    <td class="num" style="font-weight:700;${opts.color?`color:${opts.color};`:''}">${fmt(sum(valores))}</td>
+  </tr>`;
+
+  const filasIngreso = conceptosVenta.map((c, idx) => filaHtml(
+    c.nombre + (c.tipo==='resta'?' (descuento)':''),
+    datos.map(d => d.ingresosPorConcepto[idx]),
+    { color: c.tipo==='resta' ? 'var(--red)' : null }
+  )).join('');
+  const filaSobrante = datos.some(d=>d.sobranteCaja) ? filaHtml('Sobrante de caja (conciliación)', datos.map(d=>d.sobranteCaja), { color:'var(--green)' }) : '';
+  const filaPoliza = datos.some(d=>d.iPolizaTotal) ? filaHtml('Ingresos por póliza', datos.map(d=>d.iPolizaTotal)) : '';
+  const filaTotalIngresos = filaHtml('Total ingresos', datos.map(d=>d.totalIngresosFinal), { total:true });
+
+  const filaGastosOp = filaHtml('Gastos operativos (sin clasificar, Ventas)', datos.map(d=>d.gastosOperativos));
+  const filaFaltante = datos.some(d=>d.faltanteCaja) ? filaHtml('Faltante de caja (conciliación)', datos.map(d=>d.faltanteCaja), { color:'var(--red)' }) : '';
+  const filasMayor = mayoresGasto.map(m => filaHtml(m.nombre, datos.map(d => d.gClas.porMayor.find(pm=>pm.nombre===m.nombre)?.subtotal || 0), { bold:true, bg:true })).join('');
+  const filaSinClasificar = datos.some(d=>d.gClas.sinClasificar) ? filaHtml('Otros gastos sin subcuenta', datos.map(d=>d.gClas.sinClasificar)) : '';
+  const filaTotalGastos = filaHtml('Total gastos', datos.map(d=>d.gastosTotales), { total:true });
+
+  const filaUtilidad = filaHtml('Utilidad / Pérdida', datos.map(d=>d.utilidad), { total:true, color: sum(datos.map(d=>d.utilidad))>=0?'var(--green)':'var(--red)' });
+  const margenRow = `<tr><td style="font-style:italic;color:var(--muted);">Margen</td>${datos.map(d=>`<td class="num">${d.totalIngresosFinal?((d.utilidad/d.totalIngresosFinal*100).toFixed(0)+'%'):'—'}</td>`).join('')}<td class="num">—</td></tr>`;
+
+  el.innerHTML = plTagsHtml() + `
+    <div class="card">
+      <div class="card-head"><h3>P&L — Todos los meses de ${year}</h3><button class="btn btn-ghost btn-sm" id="openCuentasBtnPLAnual">⚙ Catálogo de cuentas</button></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Concepto</th>${mesesLabel.map(m=>`<th>${m}</th>`).join('')}<th>Acumulado</th></tr></thead>
+          <tbody>
+            <tr style="background:#f7f9fc;"><td colspan="14" style="font-weight:700;">Ingresos</td></tr>
+            ${filasIngreso}
+            ${filaSobrante}
+            ${filaPoliza}
+            ${filaTotalIngresos}
+            <tr style="background:#f7f9fc;"><td colspan="14" style="font-weight:700;">Gastos</td></tr>
+            ${filaGastosOp}
+            ${filaFaltante}
+            ${filasMayor}
+            ${filaSinClasificar}
+            ${filaTotalGastos}
+            ${filaUtilidad}
+            ${margenRow}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  document.getElementById('openCuentasBtnPLAnual').addEventListener('click', () => openCuentasModal(b.id, () => renderPLAnual(el, b)));
+}
+
 async function renderPL() {
   const el = document.getElementById('sec-pl');
   const b = biz();
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
+  if (STATE_plVista === 'anual') { await renderPLAnual(el, b); return; }
   const periodo = periodoPL(STATE.currentMonth, STATE_plVista);
 
   const [ventasQ, conceptosVenta, conceptos, subcuentas, mayores] = await Promise.all([
@@ -1950,10 +2153,7 @@ async function renderPL() {
   const periodoLabel = STATE_plVista === 'acumulado' ? `Acumulado ${STATE.currentMonth.slice(0,4)} (ene—${STATE.currentMonth.slice(5,7)})` : STATE.currentMonth;
 
   el.innerHTML = `
-    <div class="tag-row">
-      <div class="tag ${STATE_plVista==='mensual'?'active':''}" id="plTabMensual">Mensual</div>
-      <div class="tag ${STATE_plVista==='acumulado'?'active':''}" id="plTabAcumulado">Acumulado</div>
-    </div>
+    ${plTagsHtml()}
     <div class="kpi-grid">
       <div class="kpi"><div class="label">Total ingresos</div><div class="value num">${fmt(totalIngresosFinal)}</div></div>
       <div class="kpi"><div class="label">Total gastos</div><div class="value num red">${fmt(gastosTotales)}</div></div>
@@ -2001,7 +2201,7 @@ async function renderPL() {
       ${gClas.gastosManuales.length ? `
       <div class="table-wrap" style="margin-top:14px;">
         <table>
-          <thead><tr><th>Mes</th><th>Subcuenta</th><th>Monto</th><th></th></tr></thead>
+          <thead><tr><th>Mes</th><th>Subcuenta</th><th>Descripción</th><th>Monto</th><th></th></tr></thead>
           <tbody>
             ${gClas.gastosManuales.map(g => `<tr>
               <td>${g.mes}</td>
@@ -2009,6 +2209,7 @@ async function renderPL() {
                 <option value="">— sin subcuenta —</option>
                 ${subcuentas.map(s => { const mm = mayores.find(x=>x.id===s.cuenta_mayor_id); return `<option value="${s.id}" ${g.subcuenta_id===s.id?'selected':''}>${mm?mm.nombre+' › ':''}${s.nombre}</option>`; }).join('')}
               </select></td>
+              <td><input class="cell gasto-cell" type="text" placeholder="Ej. Cloro, Servilletas" value="${g.descripcion||''}" data-id="${g.id}" data-field="descripcion"></td>
               <td><input class="cell gasto-cell num" type="number" step="0.01" value="${g.monto ?? 0}" data-id="${g.id}" data-field="monto"></td>
               <td><button class="row-del gasto-del" data-id="${g.id}">✕</button></td>
             </tr>`).join('')}
@@ -2029,8 +2230,7 @@ async function renderPL() {
     </div>
   `;
 
-  document.getElementById('plTabMensual').addEventListener('click', () => { STATE_plVista = 'mensual'; renderPL(); });
-  document.getElementById('plTabAcumulado').addEventListener('click', () => { STATE_plVista = 'acumulado'; renderPL(); });
+  wirePLTags(el);
   document.getElementById('openCuentasBtnPL').addEventListener('click', () => openCuentasModal(b.id, renderPL));
   document.getElementById('addGastoBtn').addEventListener('click', async () => {
     await sb.from('fz_pl_gastos').insert({ business_id: b.id, mes: STATE.currentMonth, monto: 0 });
@@ -2127,9 +2327,11 @@ async function renderPolizas() {
         <h3>Pólizas de Diario</h3>
         <div style="display:flex;gap:8px;">
           <button class="btn btn-ghost btn-sm" id="openCuentasBtnPolizas">⚙ Catálogo de cuentas</button>
+          <button class="btn btn-ghost btn-sm" id="importPolizasBtn">📥 Importar pólizas (Excel)</button>
           <button class="btn btn-gold btn-sm" id="addPolizaBtn">+ Nueva póliza</button>
         </div>
       </div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">El Excel de pólizas debe tener columnas: Fecha, Concepto, Subcuenta, Descripción, Cargo, Abono — las filas con la misma Fecha y Concepto se agrupan en una sola póliza.</p>
       ${subcuentas.length === 0 ? `<div class="empty">Aún no tienes cuentas en el catálogo. Crea al menos una (de cualquier tipo) para poder registrar pólizas.</div>` : ''}
       <div id="polizasList">
         ${polizas.length === 0 ? `<div class="empty">Sin pólizas todavía.</div>` : polizas.map(p => polizaCardHtml(p, lineas.filter(l=>l.poliza_id===p.id), subcuentaOptions, subcuentas, mayores)).join('')}
@@ -2138,6 +2340,7 @@ async function renderPolizas() {
   `;
 
   document.getElementById('openCuentasBtnPolizas').addEventListener('click', () => openCuentasModal(b.id, renderPolizas));
+  document.getElementById('importPolizasBtn').addEventListener('click', () => openImportExcelModal('polizas', b.id, renderPolizas));
   document.getElementById('addPolizaBtn').addEventListener('click', async () => {
     const maxNum = polizas.reduce((mx,p)=>Math.max(mx, p.numero||0), 0);
     const { data, error } = await sb.from('fz_polizas').insert({ business_id: b.id, numero: maxNum+1, fecha: todayStr(), concepto: '' }).select().single();
