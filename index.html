@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Finanzas | Control Financiero Multi-Negocio</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --navy-1:#0a1f3d;
+  --navy-2:#0d2b57;
+  --navy-3:#123a70;
+  --ink:#0e1c2e;
+  --paper:#f4f6f9;
+  --card:#ffffff;
+  --line:#e3e8ef;
+  --muted:#6b7a90;
+  --gold:#b98a2e;
+  --green:#1f9d6b;
+  --green-bg:#e7f6ef;
+  --red:#c94a4a;
+  --red-bg:#fbeaea;
+  --blue:#2464c7;
+  --blue-bg:#eaf1fc;
+  --radius:12px;
+  --shadow:0 8px 24px rgba(10,31,61,.08);
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{
+  font-family:'Inter',sans-serif;
+  background:var(--paper);
+  color:var(--ink);
+  -webkit-font-smoothing:antialiased;
+}
+h1,h2,h3,.serif{font-family:'Cormorant Garamond',serif;}
+.num{font-variant-numeric:tabular-nums;}
+::selection{background:var(--gold);color:#fff;}
+
+/* ---------- LOGIN ---------- */
+#loginScreen{
+  position:fixed;inset:0;z-index:200;
+  background:radial-gradient(1200px 800px at 15% 10%, var(--navy-3), var(--navy-1) 60%);
+  display:flex;align-items:center;justify-content:center;
+}
+.login-card{
+  width:min(400px,92vw);
+  background:var(--card);
+  border-radius:18px;
+  padding:40px 36px;
+  box-shadow:0 30px 80px rgba(0,0,0,.35);
+  text-align:center;
+}
+.login-brand{
+  display:flex;flex-direction:column;align-items:center;gap:6px;margin-bottom:24px;
+}
+.login-brand .mark{
+  width:52px;height:52px;border-radius:12px;
+  background:linear-gradient(145deg,var(--navy-2),var(--navy-1));
+  display:flex;align-items:center;justify-content:center;
+  color:var(--gold);font-family:'Cormorant Garamond',serif;font-weight:700;font-size:26px;
+}
+.login-brand .logo-img{height:74px;width:auto;margin-bottom:6px;}
+.login-brand h1{font-size:24px;color:var(--navy-1);letter-spacing:.3px;}
+.login-brand p{font-size:12.5px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;margin-top:2px;}
+.field{margin-bottom:14px;text-align:left;}
+.field label{font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:5px;letter-spacing:.3px;}
+.field input,.field select{
+  width:100%;padding:11px 13px;border:1.5px solid var(--line);border-radius:9px;
+  font-family:'Inter',sans-serif;font-size:14px;background:#fbfcfe;
+  transition:border-color .15s;
+}
+.field input:focus,.field select:focus{outline:none;border-color:var(--navy-3);background:#fff;}
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  padding:11px 18px;border-radius:9px;border:none;cursor:pointer;
+  font-family:'Inter',sans-serif;font-weight:600;font-size:13.5px;
+  transition:transform .1s, box-shadow .15s, background .15s;
+}
+.btn:active{transform:scale(.98);}
+.btn-primary{background:var(--navy-1);color:#fff;width:100%;padding:12px;margin-top:6px;}
+.btn-primary:hover{background:var(--navy-2);}
+.btn-gold{background:var(--gold);color:#fff;}
+.btn-gold:hover{background:#a67827;}
+.btn-ghost{background:transparent;color:var(--navy-1);border:1.5px solid var(--line);}
+.btn-ghost:hover{border-color:var(--navy-3);}
+.btn-danger{background:var(--red-bg);color:var(--red);}
+.btn-danger:hover{background:#f6d9d9;}
+.btn-sm{padding:6px 12px;font-size:12.5px;border-radius:7px;}
+.login-error{color:var(--red);font-size:12.5px;min-height:18px;margin:6px 0;}
+
+/* ---------- APP LAYOUT ---------- */
+#app{display:none;min-height:100vh;}
+.shell{display:flex;min-height:100vh;}
+
+/* Sidebar */
+.sidebar{
+  width:250px;flex-shrink:0;
+  background:linear-gradient(180deg,var(--navy-1),#081830);
+  color:#dce6f5;
+  display:flex;flex-direction:column;
+  position:sticky;top:0;height:100vh;
+}
+.sb-brand{padding:22px 20px 16px;display:flex;align-items:center;gap:11px;border-bottom:1px solid rgba(255,255,255,.08);}
+.sb-brand .mark{width:36px;height:36px;border-radius:9px;background:rgba(185,138,46,.18);border:1px solid rgba(185,138,46,.4);display:flex;align-items:center;justify-content:center;color:var(--gold);font-family:'Cormorant Garamond',serif;font-weight:700;font-size:18px;flex-shrink:0;}
+.sb-brand .logo-box{background:#fff;border-radius:9px;padding:5px 7px;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+.sb-brand .logo-box img{height:30px;width:auto;display:block;}
+.sb-brand .txt h1{font-size:17px;color:#fff;line-height:1.1;font-family:'Inter',sans-serif;font-weight:700;}
+.sb-brand .txt span{font-size:10px;color:#8ea3c2;letter-spacing:1.5px;text-transform:uppercase;}
+
+.biz-select-wrap{padding:16px 16px 10px;}
+.biz-select-wrap label{font-size:10px;color:#7e93b5;text-transform:uppercase;letter-spacing:1.2px;font-weight:700;display:block;margin-bottom:7px;}
+#bizSelect{
+  width:100%;padding:10px 12px;border-radius:9px;border:1px solid rgba(255,255,255,.14);
+  background:rgba(255,255,255,.06);color:#fff;font-size:13.5px;font-weight:600;font-family:'Inter',sans-serif;
+  cursor:pointer;
+}
+#bizSelect option{background:#0d2547;color:#fff;}
+.add-biz-btn{
+  width:100%;margin-top:8px;padding:8px;border-radius:8px;border:1px dashed rgba(255,255,255,.25);
+  background:transparent;color:#a9bcd8;font-size:12px;font-weight:600;cursor:pointer;
+}
+.add-biz-btn:hover{border-color:var(--gold);color:var(--gold);}
+
+.nav{padding:10px 12px;flex:1;overflow-y:auto;}
+.nav-item{
+  display:flex;align-items:center;gap:11px;padding:11px 12px;border-radius:9px;
+  color:#b7c6df;font-size:13.5px;font-weight:600;cursor:pointer;margin-bottom:2px;
+  transition:background .12s,color .12s;
+}
+.nav-item svg{width:17px;height:17px;flex-shrink:0;opacity:.85;}
+.nav-item:hover{background:rgba(255,255,255,.06);color:#fff;}
+.nav-item.active{background:linear-gradient(90deg,rgba(185,138,46,.22),rgba(185,138,46,.05));color:#fff;box-shadow:inset 3px 0 0 var(--gold);}
+.nav-divider{font-size:10px;color:#63769a;text-transform:uppercase;letter-spacing:1.3px;font-weight:700;padding:14px 12px 6px;}
+
+.sb-foot{padding:14px 16px;border-top:1px solid rgba(255,255,255,.08);}
+.sb-user{display:flex;align-items:center;justify-content:space-between;gap:8px;}
+.sb-user span{font-size:12.5px;color:#9fb3d1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.logout-btn{background:none;border:none;color:#7e93b5;cursor:pointer;font-size:12px;font-weight:600;}
+.logout-btn:hover{color:var(--red);}
+
+/* Main */
+.main{flex:1;min-width:0;}
+.topbar{
+  background:#fff;border-bottom:1px solid var(--line);padding:18px 32px;
+  display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:10;
+}
+.topbar h2{font-size:24px;color:var(--navy-1);}
+.topbar .sub{font-size:12.5px;color:var(--muted);margin-top:2px;}
+.topbar-actions{display:flex;align-items:center;gap:10px;}
+.month-picker{padding:9px 12px;border:1.5px solid var(--line);border-radius:9px;font-family:'Inter';font-size:13px;font-weight:600;color:var(--navy-1);}
+
+.content{padding:26px 32px 60px;}
+.section{display:none;}
+.section.active{display:block;}
+
+/* Cards / KPIs */
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:16px;margin-bottom:24px;}
+.kpi{background:var(--card);border-radius:var(--radius);padding:18px 20px;box-shadow:var(--shadow);border:1px solid var(--line);}
+.kpi .label{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;font-weight:700;margin-bottom:8px;}
+.kpi .value{font-size:26px;font-weight:800;color:var(--navy-1);}
+.kpi .value.green{color:var(--green);}
+.kpi .value.red{color:var(--red);}
+.kpi .delta{font-size:12px;margin-top:6px;font-weight:600;}
+.kpi .delta.up{color:var(--green);}
+.kpi .delta.down{color:var(--red);}
+
+.card{background:var(--card);border-radius:var(--radius);padding:22px 24px;box-shadow:var(--shadow);border:1px solid var(--line);margin-bottom:22px;}
+.card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px;}
+.card-head h3{font-size:19px;color:var(--navy-1);}
+.card-head .hint{font-size:12px;color:var(--muted);}
+
+table{width:100%;border-collapse:collapse;font-size:13px;}
+th{
+  text-align:left;padding:10px 12px;background:#f7f9fc;color:var(--muted);
+  font-size:11px;text-transform:uppercase;letter-spacing:.5px;font-weight:700;
+  border-bottom:2px solid var(--line);white-space:nowrap;
+}
+td{padding:9px 12px;border-bottom:1px solid var(--line);white-space:nowrap;}
+tr.total-row td{font-weight:800;background:#f7f9fc;color:var(--navy-1);border-top:2px solid var(--line);}
+.table-wrap{overflow-x:auto;}
+.table-wrap.scroll-sticky{max-height:65vh;overflow-y:auto;}
+.table-wrap.scroll-sticky table thead th{position:sticky;top:0;background:#f7f9fc;z-index:4;}
+.table-wrap.scroll-sticky table tfoot td,.table-wrap.scroll-sticky table tfoot th{position:sticky;bottom:0;z-index:4;}
+input.cell,select.cell{width:100%;min-width:80px;border:1px solid transparent;background:transparent;padding:5px 6px;border-radius:6px;font-family:'Inter';font-size:13px;}
+input.cell:hover,select.cell:hover{border-color:var(--line);}
+input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);background:#fff;}
+.row-del{color:var(--muted);cursor:pointer;background:none;border:none;font-size:15px;}
+.row-del:hover{color:var(--red);}
+
+.badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11.5px;font-weight:700;}
+.badge.pend{background:var(--red-bg);color:var(--red);}
+.badge.pag{background:var(--green-bg);color:var(--green);}
+
+.tag-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;}
+.tag{padding:6px 14px;border-radius:20px;font-size:12.5px;font-weight:600;background:#f0f3f8;color:var(--muted);cursor:pointer;border:1px solid transparent;}
+.tag.active{background:var(--navy-1);color:#fff;}
+
+.empty{padding:36px;text-align:center;color:var(--muted);font-size:13.5px;}
+
+/* Modal */
+.modal-bg{position:fixed;inset:0;background:rgba(10,20,40,.5);z-index:150;display:none;align-items:center;justify-content:center;}
+.modal-bg.show{display:flex;}
+.modal{background:#fff;border-radius:16px;padding:28px;width:min(420px,92vw);box-shadow:0 30px 80px rgba(0,0,0,.3);}
+.modal h3{color:var(--navy-1);margin-bottom:16px;font-size:20px;}
+.modal-actions{display:flex;gap:10px;margin-top:18px;}
+.modal-actions .btn{flex:1;}
+
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;}
+
+@media(max-width:900px){
+  .sidebar{position:fixed;left:-260px;z-index:100;transition:left .2s;}
+  .sidebar.open{left:0;}
+  .content{padding:18px;}
+  .topbar{padding:14px 18px;}
+  .grid-2,.grid-3{grid-template-columns:1fr;}
+}
+</style>
+</head>
+<body>
+
+<!-- ============ LOGIN ============ -->
+<div id="loginScreen">
+  <div class="login-card">
+    <div class="login-brand">
+      <img class="logo-img" src="logo-cya.jpg" alt="CYA Roma & Associates">
+      <h1>Control Financiero</h1>
+      <p>Grupo &middot; Multi-negocio</p>
+    </div>
+    <div class="field">
+      <label>Correo</label>
+      <input type="email" id="loginEmail" placeholder="tucorreo@despacho.com">
+    </div>
+    <div class="field">
+      <label>Contraseña</label>
+      <input type="password" id="loginPass" placeholder="••••••••">
+    </div>
+    <div class="login-error" id="loginError"></div>
+    <button class="btn btn-primary" id="loginBtn">Entrar</button>
+  </div>
+</div>
+
+<!-- ============ APP ============ -->
+<div id="app">
+  <div class="shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="sb-brand">
+        <div class="logo-box"><img src="logo-cya.jpg" alt="CYA Roma & Associates"></div>
+        <div class="txt">
+          <h1>Finanzas</h1>
+          <span>Control Grupo</span>
+        </div>
+      </div>
+
+      <div class="biz-select-wrap">
+        <label>Negocio activo</label>
+        <select id="bizSelect"></select>
+        <button class="add-biz-btn" id="addBizBtn">+ Agregar negocio</button>
+      </div>
+
+      <nav class="nav" id="navList">
+        <div class="nav-divider">General</div>
+        <div class="nav-item" data-section="dashboard">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+          Dashboard
+        </div>
+        <div class="nav-divider">Negocio seleccionado</div>
+        <div class="nav-item" data-section="ventas">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/></svg>
+          Ventas
+        </div>
+        <div class="nav-item" data-section="efectivo">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="3"/></svg>
+          Efectivo &amp; Divisas
+        </div>
+        <div class="nav-item" data-section="bancos">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18"/><path d="M4 21V9l8-6 8 6v12"/><path d="M9 21V12h6v9"/></svg>
+          Bancos
+        </div>
+        <div class="nav-item" data-section="proveedores">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7H4a2 2 0 00-2 2v9a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"/></svg>
+          Proveedores
+        </div>
+        <div class="nav-item" data-section="pl">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><rect x="7" y="12" width="3" height="6"/><rect x="12" y="8" width="3" height="10"/><rect x="17" y="5" width="3" height="13"/></svg>
+          P&amp;L
+        </div>
+        <div class="nav-item" data-section="flujo">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 014-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>
+          Flujo de Efectivo
+        </div>
+        <div class="nav-item" data-section="polizas">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3v4a1 1 0 001 1h4"/><path d="M17 21H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/><path d="M9 13h6"/><path d="M9 17h6"/></svg>
+          Pólizas de Diario
+        </div>
+      </nav>
+
+      <div class="sb-foot">
+        <div class="sb-user">
+          <span id="userEmail"></span>
+          <button class="logout-btn" id="logoutBtn">Salir</button>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <div>
+          <h2 id="pageTitle">Dashboard</h2>
+          <div class="sub" id="pageSub">Vista consolidada de todos los negocios</div>
+        </div>
+        <div class="topbar-actions" id="topbarActions">
+          <input type="month" class="month-picker" id="monthPicker">
+        </div>
+      </div>
+      <div class="content" id="content">
+        <!-- Sections injected by module scripts -->
+        <section class="section active" id="sec-dashboard"></section>
+        <section class="section" id="sec-ventas"></section>
+        <section class="section" id="sec-efectivo"></section>
+        <section class="section" id="sec-bancos"></section>
+        <section class="section" id="sec-proveedores"></section>
+        <section class="section" id="sec-pl"></section>
+        <section class="section" id="sec-flujo"></section>
+        <section class="section" id="sec-polizas"></section>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- Modal: agregar negocio -->
+<div class="modal-bg" id="modalBiz">
+  <div class="modal">
+    <h3>Agregar negocio</h3>
+    <div class="field">
+      <label>Nombre del negocio</label>
+      <input type="text" id="newBizName" placeholder="Ej. Nuevo Restaurante">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="cancelBiz">Cancelar</button>
+      <button class="btn btn-gold" id="saveBiz">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: configurar conceptos de conciliación -->
+<div class="modal-bg" id="modalConceptos">
+  <div class="modal" style="width:min(520px,92vw);">
+    <h3>Conceptos de conciliación</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px;">Define las categorías de "lo recibido" para este negocio (cada negocio puede tener las suyas).</p>
+    <div id="conceptosList" style="max-height:260px;overflow-y:auto;margin-bottom:16px;"></div>
+    <div class="grid-3" style="align-items:end;">
+      <div class="field" style="margin-bottom:0;">
+        <label>Nombre</label>
+        <input type="text" id="newConceptoNombre" placeholder="Ej. Terminal Banorte">
+      </div>
+      <div class="field" style="margin-bottom:0;">
+        <label>Categoría</label>
+        <select id="newConceptoCategoria">
+          <option value="efectivo">Efectivo</option>
+          <option value="tarjetas" selected>Tarjetas</option>
+          <option value="cxc">CxC</option>
+          <option value="propinas">Propinas</option>
+        </select>
+      </div>
+      <div class="field" style="margin-bottom:0;display:flex;align-items:center;gap:6px;">
+        <label style="margin:0;" id="esMonedaLabel"><input type="checkbox" id="newConceptoMoneda"> Requiere tipo de cambio</label>
+      </div>
+      <div class="field" style="margin-bottom:0;" id="medioWrap">
+        <label>Medio (para la diferencia)</label>
+        <select id="newConceptoMedio">
+          <option value="efectivo">Efectivo</option>
+          <option value="tarjetas">Tarjetas</option>
+        </select>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="closeConceptos">Cerrar</button>
+      <button class="btn btn-gold" id="saveConcepto">+ Agregar concepto</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: configurar categorías de venta (lo vendido) -->
+<div class="modal-bg" id="modalConceptosVenta">
+  <div class="modal" style="width:min(480px,92vw);">
+    <h3>Categorías de venta</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px;">Define qué vende este negocio (Alimentos, Bebidas, Daypass, etc.) — cada negocio puede tener las suyas.</p>
+    <div id="conceptosVentaList" style="max-height:260px;overflow-y:auto;margin-bottom:16px;"></div>
+    <div class="grid-2" style="align-items:end;">
+      <div class="field" style="margin-bottom:0;">
+        <label>Nombre</label>
+        <input type="text" id="newConceptoVentaNombre" placeholder="Ej. Hamburguesas">
+      </div>
+      <div class="field" style="margin-bottom:0;">
+        <label>Tipo</label>
+        <select id="newConceptoVentaTipo">
+          <option value="suma" selected>Suma (ingreso)</option>
+          <option value="resta">Resta (ej. descuentos)</option>
+        </select>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="closeConceptosVenta">Cerrar</button>
+      <button class="btn btn-gold" id="saveConceptoVenta">+ Agregar categoría</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: catálogo de cuentas (cuenta mayor + subcuentas) -->
+<div class="modal-bg" id="modalCuentas">
+  <div class="modal" style="width:min(560px,92vw);">
+    <h3>Catálogo de cuentas</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px;">Crea tus cuentas mayor (ej. Nómina, Servicios, Pasivos, Otros Ingresos) y dentro de cada una sus subcuentas — así se clasifican los gastos e ingresos en el P&L y las pólizas de diario.</p>
+    <div id="cuentasMayorList" style="max-height:280px;overflow-y:auto;margin-bottom:16px;"></div>
+    <div class="grid-3" style="margin-bottom:10px;">
+      <div class="field" style="margin-bottom:0;">
+        <label>Nueva cuenta mayor</label>
+        <input type="text" id="newCuentaMayorNombre" placeholder="Ej. Servicios">
+      </div>
+      <div class="field" style="margin-bottom:0;">
+        <label>Tipo</label>
+        <select id="newCuentaMayorTipo">
+          <option value="gasto" selected>Gasto</option>
+          <option value="ingreso">Ingreso</option>
+          <option value="activo">Activo</option>
+          <option value="pasivo">Pasivo</option>
+          <option value="capital">Capital</option>
+        </select>
+      </div>
+      <div class="field" style="margin-bottom:0;display:flex;align-items:flex-end;">
+        <button class="btn btn-ghost" id="saveCuentaMayor" style="width:100%;">+ Agregar cuenta mayor</button>
+      </div>
+    </div>
+    <div class="grid-3">
+      <div class="field" style="margin-bottom:0;grid-column:span 1;">
+        <label>Cuenta mayor</label>
+        <select id="newSubcuentaMayor"></select>
+      </div>
+      <div class="field" style="margin-bottom:0;">
+        <label>Nueva subcuenta</label>
+        <input type="text" id="newSubcuentaNombre" placeholder="Ej. Internet">
+      </div>
+      <div class="field" style="margin-bottom:0;display:flex;align-items:flex-end;">
+        <button class="btn btn-ghost" id="saveSubcuenta" style="width:100%;">+ Agregar</button>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-gold" id="closeCuentas" style="width:100%;">Cerrar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: catálogo de proveedores -->
+<div class="modal-bg" id="modalProveedoresCat">
+  <div class="modal">
+    <h3>Catálogo de proveedores</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px;">Da de alta tus proveedores una vez; luego los seleccionas al capturar facturas o pagos.</p>
+    <div id="proveedoresCatList" style="max-height:260px;overflow-y:auto;margin-bottom:16px;"></div>
+    <div class="field">
+      <label>Nombre del proveedor</label>
+      <input type="text" id="newProveedorCatNombre" placeholder="Ej. Distribuidora de Bebidas">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="closeProveedoresCat">Cerrar</button>
+      <button class="btn btn-gold" id="saveProveedorCat">+ Agregar proveedor</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: desglose de factura -->
+<div class="modal-bg" id="modalDesglose">
+  <div class="modal" style="width:min(480px,92vw);">
+    <h3>Desglose de factura</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:10px;">Reparte el importe de esta factura entre las subcuentas que correspondan.</p>
+    <div id="desgloseTotales" style="font-size:13px;margin-bottom:12px;font-weight:600;"></div>
+    <div id="desgloseList" style="max-height:220px;overflow-y:auto;margin-bottom:14px;"></div>
+    <div class="grid-3" style="align-items:end;">
+      <div class="field" style="margin-bottom:0;grid-column:span 2;">
+        <label>Subcuenta</label>
+        <select id="newDesgloseSubcuenta"></select>
+      </div>
+      <div class="field" style="margin-bottom:0;">
+        <label>Monto</label>
+        <input type="number" step="0.01" id="newDesgloseMonto" placeholder="0.00">
+      </div>
+    </div>
+    <button class="btn btn-ghost btn-sm" id="addDesgloseLinea" style="margin-top:8px;">+ Agregar línea</button>
+    <div class="modal-actions">
+      <button class="btn btn-gold" id="closeDesglose" style="width:100%;">Cerrar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: traspaso entre cuentas -->
+<div class="modal-bg" id="modalTraspaso">
+  <div class="modal">
+    <h3>Traspaso entre cuentas</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px;">Mueve dinero entre bancos y/o cajas de efectivo del mismo negocio. Se registra automáticamente en ambas cuentas.</p>
+    <div class="field">
+      <label>Origen</label>
+      <select id="traspasoOrigen"></select>
+    </div>
+    <div class="field">
+      <label>Destino</label>
+      <select id="traspasoDestino"></select>
+    </div>
+    <div class="grid-2">
+      <div class="field">
+        <label>Fecha</label>
+        <input type="date" id="traspasoFecha">
+      </div>
+      <div class="field">
+        <label>Monto</label>
+        <input type="number" step="0.01" id="traspasoMonto" placeholder="0.00">
+      </div>
+    </div>
+    <div class="field">
+      <label>Descripción (opcional)</label>
+      <input type="text" id="traspasoDescripcion" placeholder="Ej. Traspaso para pago de nómina">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="cancelTraspaso">Cancelar</button>
+      <button class="btn btn-gold" id="saveTraspaso">Realizar traspaso</button>
+    </div>
+  </div>
+</div>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
