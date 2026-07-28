@@ -391,7 +391,7 @@ async function computeBusinessSummary(businessId, ym) {
   const conceptosVenta = conceptosVentaQ.data || [];
   const conceptos = conceptosQ.data || [];
   const conceptosEfectivo = conceptos.filter(c => c.categoria === 'efectivo');
-  const conceptosTarjetas = conceptos.filter(c => c.categoria === 'tarjetas');
+  const conceptosTarjetas = conceptos.filter(c => c.categoria === 'tarjetas' || c.categoria === 'bancos');
 
   const ventasMes = ventasMesRows.reduce((s, v) => s + totalVentaDinamico(v, conceptosVenta), 0);
   const gastosOperativosMes = ventasMesRows.reduce((s, v) => s + (Number(v.gastos) || 0), 0);
@@ -530,7 +530,7 @@ const SISTEMA_COLS = [
   ['efectivo_sistema', 'Efectivo (sistema)'], ['tarjetas_sistema', 'Tarjetas (sistema)'],
   ['cxc', 'CxC (sistema)'], ['gastos', 'Gastos del día'],
 ];
-const CAT_LABEL = { efectivo: 'Efectivo', tarjetas: 'Tarjetas', cxc: 'CxC', propinas: 'Propinas' };
+const CAT_LABEL = { efectivo: 'Efectivo', tarjetas: 'Tarjetas', bancos: 'Bancos', cxc: 'CxC', propinas: 'Propinas' };
 const conceptoValor = (concepto, entry) => {
   if (!entry) return 0;
   return concepto.es_moneda ? (Number(entry.monto)||0) * (Number(entry.tc)||0) : (Number(entry.monto)||0);
@@ -542,16 +542,17 @@ function computeRowDiffs(r, conceptosVenta, porCat) {
   const totalVenta = totalVentaDinamico(r, conceptosVenta);
   const totalEfvo = porCat.efectivo.reduce((s,c)=>s+conceptoValor(c, rd[c.id]),0);
   const totalTarj = porCat.tarjetas.reduce((s,c)=>s+conceptoValor(c, rd[c.id]),0);
+  const totalBancos = (porCat.bancos||[]).reduce((s,c)=>s+conceptoValor(c, rd[c.id]),0);
   const totalCxc = porCat.cxc.reduce((s,c)=>s+conceptoValor(c, rd[c.id]),0);
   const totalProp = porCat.propinas.reduce((s,c)=>s+conceptoValor(c, rd[c.id]),0);
   const propEfvo = porCat.propinas.filter(c=>(c.medio||'efectivo')==='efectivo').reduce((s,c)=>s+conceptoValor(c, rd[c.id]),0);
   const propTarj = porCat.propinas.filter(c=>c.medio==='tarjetas').reduce((s,c)=>s+conceptoValor(c, rd[c.id]),0);
   const gastos = Number(r.gastos)||0;
   const difEfvo = ((Number(r.efectivo_sistema)||0) + propEfvo) - totalEfvo - gastos;
-  const difTarj = ((Number(r.tarjetas_sistema)||0) + propTarj) - totalTarj;
+  const difTarj = ((Number(r.tarjetas_sistema)||0) + propTarj) - (totalTarj + totalBancos);
   const difCxc = (Number(r.cxc)||0) - totalCxc;
   const difTotal = difEfvo + difTarj + difCxc;
-  return { totalVenta, totalEfvo, totalTarj, totalCxc, totalProp, propEfvo, propTarj, difEfvo, difTarj, difCxc, difTotal };
+  return { totalVenta, totalEfvo, totalTarj, totalBancos, totalCxc, totalProp, propEfvo, propTarj, difEfvo, difTarj, difCxc, difTotal };
 }
 
 async function loadConceptosVenta(businessId) {
@@ -578,19 +579,19 @@ async function renderVentas() {
   if (ventasQ.error) { el.innerHTML = `<div class="empty">Error: ${ventasQ.error.message}</div>`; return; }
   const rows = ventasQ.data || [];
 
-  const porCat = { efectivo: conceptos.filter(c=>c.categoria==='efectivo'), tarjetas: conceptos.filter(c=>c.categoria==='tarjetas'), cxc: conceptos.filter(c=>c.categoria==='cxc'), propinas: conceptos.filter(c=>c.categoria==='propinas') };
-  const recibidoCats = ['efectivo','tarjetas','cxc','propinas'].filter(cat => porCat[cat].length);
+  const porCat = { efectivo: conceptos.filter(c=>c.categoria==='efectivo'), tarjetas: conceptos.filter(c=>c.categoria==='tarjetas'), bancos: conceptos.filter(c=>c.categoria==='bancos'), cxc: conceptos.filter(c=>c.categoria==='cxc'), propinas: conceptos.filter(c=>c.categoria==='propinas') };
+  const recibidoCats = ['efectivo','tarjetas','bancos','cxc','propinas'].filter(cat => porCat[cat].length);
 
   const totalGeneral = rows.reduce((s, r) => s + totalVentaDinamico(r, conceptosVenta), 0);
   const gastosMes = rows.reduce((s, r) => s + (Number(r.gastos)||0), 0);
 
   let mesProp=0, mesDifTotal=0;
-  let sumEfvo=0, sumTarj=0, sumCxc=0, sumDifEfvo=0, sumDifTarj=0;
+  let sumEfvo=0, sumTarj=0, sumBancos=0, sumCxc=0, sumDifEfvo=0, sumDifTarj=0;
   rows.forEach(r => {
     const d = computeRowDiffs(r, conceptosVenta, porCat);
     mesProp += d.totalProp;
     mesDifTotal += d.difTotal;
-    sumEfvo += d.totalEfvo; sumTarj += d.totalTarj; sumCxc += d.totalCxc;
+    sumEfvo += d.totalEfvo; sumTarj += d.totalTarj; sumBancos += d.totalBancos; sumCxc += d.totalCxc;
     sumDifEfvo += d.difEfvo; sumDifTarj += d.difTarj;
   });
 
@@ -642,7 +643,7 @@ async function renderVentas() {
               <th rowspan="2">Total venta</th>
               ${SISTEMA_COLS.map(([k,l])=>`<th rowspan="2">${l}</th>`).join('')}
               ${recibidoCats.map(cat => `<th colspan="${porCat[cat].length}" style="text-align:center;">${CAT_LABEL[cat]} recibido</th>`).join('')}
-              <th rowspan="2">Total Efvo.</th><th rowspan="2">Total Tarj.</th><th rowspan="2">Total CxC</th><th rowspan="2">Total Prop.</th>
+              <th rowspan="2">Total Efvo.</th><th rowspan="2">Total Tarj.</th><th rowspan="2">Total Bancos</th><th rowspan="2">Total CxC</th><th rowspan="2">Total Prop.</th>
               <th rowspan="2">Dif. Efvo.</th><th rowspan="2">Dif. Tarj.</th><th rowspan="2">Dif. Total</th>
               <th rowspan="2"></th>
             </tr>
@@ -660,6 +661,7 @@ async function renderVentas() {
               ${recibidoCats.flatMap(cat => porCat[cat].map(c => `<td class="num">${fmt(totReconCols[c.id])}</td>`)).join('')}
               <td class="num">${fmt(sumEfvo)}</td>
               <td class="num">${fmt(sumTarj)}</td>
+              <td class="num">${fmt(sumBancos)}</td>
               <td class="num">${fmt(sumCxc)}</td>
               <td class="num">${fmt(mesProp)}</td>
               <td class="num" style="color:${Math.abs(sumDifEfvo)<1?'inherit':'var(--red)'}">${fmt(sumDifEfvo)}</td>
@@ -770,7 +772,7 @@ function ventasRowHtml(r, conceptosVenta, porCat, recibidoCats) {
     }
     return `<td><input class="cell recon-cell num" type="number" step="0.01" value="${entry.monto ?? 0}" data-venta-id="${r.id}" data-concepto="${c.id}" data-field="monto"></td>`;
   };
-  const { totalEfvo, totalTarj, totalCxc, totalProp, difEfvo, difTarj, difTotal } = computeRowDiffs(r, conceptosVenta, porCat);
+  const { totalEfvo, totalTarj, totalBancos, totalCxc, totalProp, difEfvo, difTarj, difTotal } = computeRowDiffs(r, conceptosVenta, porCat);
   const colorDif = (v) => Math.abs(v) < 1 ? 'inherit' : 'var(--red)';
   return `<tr>
     <td><input class="cell ventas-cell" type="date" value="${r.fecha}" data-id="${r.id}" data-field="fecha"></td>
@@ -780,6 +782,7 @@ function ventasRowHtml(r, conceptosVenta, porCat, recibidoCats) {
     ${recibidoCats.flatMap(cat => porCat[cat].map(cellForRecon)).join('')}
     <td class="num" style="font-weight:700;">${fmt(totalEfvo)}</td>
     <td class="num" style="font-weight:700;">${fmt(totalTarj)}</td>
+    <td class="num" style="font-weight:700;">${fmt(totalBancos)}</td>
     <td class="num" style="font-weight:700;">${fmt(totalCxc)}</td>
     <td class="num" style="font-weight:700;">${fmt(totalProp)}</td>
     <td class="num" style="color:${colorDif(difEfvo)}">${fmt(difEfvo)}</td>
@@ -814,7 +817,7 @@ async function openConceptosModal(businessId) {
     const es_moneda = categoria === 'efectivo' && document.getElementById('newConceptoMoneda').checked;
     const medio = categoria === 'propinas' ? document.getElementById('newConceptoMedio').value : null;
     const moneda_id = categoria === 'efectivo' ? (document.getElementById('newConceptoMonedaId').value || null) : null;
-    const banco_cuenta_id = categoria === 'tarjetas' ? (document.getElementById('newConceptoBancoId').value || null) : null;
+    const banco_cuenta_id = (categoria === 'tarjetas' || categoria === 'bancos') ? (document.getElementById('newConceptoBancoId').value || null) : null;
     if (!nombre) { toast('Escribe un nombre para el concepto.', 'error'); return; }
     const { error } = await sb.from('fz_conceptos').insert({ business_id: businessId, nombre, categoria, es_moneda, medio, moneda_id, banco_cuenta_id, orden: 99 });
     if (error) { toast('Error: ' + error.message, 'error'); return; }
@@ -828,7 +831,7 @@ function updateConceptoFieldsVisibility() {
   document.getElementById('esMonedaLabel').style.display = cat === 'efectivo' ? 'flex' : 'none';
   document.getElementById('medioWrap').style.display = cat === 'propinas' ? 'block' : 'none';
   document.getElementById('monedaVinculoWrap').style.display = cat === 'efectivo' ? 'block' : 'none';
-  document.getElementById('bancoVinculoWrap').style.display = cat === 'tarjetas' ? 'block' : 'none';
+  document.getElementById('bancoVinculoWrap').style.display = (cat === 'tarjetas' || cat === 'bancos') ? 'block' : 'none';
 }
 async function renderConceptosList(businessId) {
   const [conceptos, monedasQ, cuentasQ] = await Promise.all([
@@ -849,7 +852,7 @@ async function renderConceptosList(businessId) {
         <option value="">— no vincular —</option>
         ${monedas.map(m => `<option value="${m.id}" ${c.moneda_id===m.id?'selected':''}>${m.nombre}</option>`).join('')}
       </select>` : ''}
-      ${c.categoria === 'tarjetas' ? `<select class="cell concepto-banco-vinculo" data-id="${c.id}" style="max-width:170px;flex-shrink:0;">
+      ${(c.categoria === 'tarjetas' || c.categoria === 'bancos') ? `<select class="cell concepto-banco-vinculo" data-id="${c.id}" style="max-width:170px;flex-shrink:0;">
         <option value="">— no vincular —</option>
         ${cuentasBanco.map(cb => `<option value="${cb.id}" ${c.banco_cuenta_id===cb.id?'selected':''}>${cb.nombre}</option>`).join('')}
       </select>` : ''}
@@ -1507,7 +1510,7 @@ async function renderEfectivo() {
   const monedas = monedasQ.data || [];
   const cuentas = cuentasQ.data || [];
   const conceptosEfectivo = (conceptosQ.data || []).filter(c => c.categoria === 'efectivo');
-  const conceptosTarjetas = (conceptosQ.data || []).filter(c => c.categoria === 'tarjetas');
+  const conceptosTarjetas = (conceptosQ.data || []).filter(c => c.categoria === 'tarjetas' || c.categoria === 'bancos');
 
   const monedasConSaldo = [];
   for (const m of monedas) {
@@ -1677,7 +1680,7 @@ async function renderBancos() {
 
   const [cuentasQ, conceptosQ] = await Promise.all([
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', b.id).order('nombre'),
-    sb.from('fz_conceptos').select('*').eq('business_id', b.id).eq('categoria', 'tarjetas'),
+    sb.from('fz_conceptos').select('*').eq('business_id', b.id).in('categoria', ['tarjetas','bancos']),
   ]);
   if (cuentasQ.error) { el.innerHTML = `<div class="empty">Error: ${cuentasQ.error.message}</div>`; return; }
   const conceptosTarjetas = conceptosQ.data || [];
@@ -1737,7 +1740,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
   const cuentaQ = await sb.from('fz_bancos_cuentas').select('*').eq('id', cuentaId).single();
   const cuentaArr = cuentaQ.data;
   if (!conceptosTarjetas) {
-    const { data } = await sb.from('fz_conceptos').select('*').eq('business_id', businessId).eq('categoria', 'tarjetas');
+    const { data } = await sb.from('fz_conceptos').select('*').eq('business_id', businessId).in('categoria', ['tarjetas','bancos']);
     conceptosTarjetas = data || [];
   }
   const [ledger, subcuentas, mayores, facturasPend, cuentasBancoQ, monedasEfectivoQ] = await Promise.all([
@@ -2035,7 +2038,7 @@ async function renderPLAnual(el, b) {
   const [conceptosVenta, conceptos, subcuentas, mayores] = await Promise.all([
     loadConceptosVenta(b.id), loadConceptos(b.id), loadSubcuentas(b.id), loadCuentasMayor(b.id),
   ]);
-  const porCatPL = { efectivo: conceptos.filter(c=>c.categoria==='efectivo'), tarjetas: conceptos.filter(c=>c.categoria==='tarjetas'), cxc: conceptos.filter(c=>c.categoria==='cxc'), propinas: conceptos.filter(c=>c.categoria==='propinas') };
+  const porCatPL = { efectivo: conceptos.filter(c=>c.categoria==='efectivo'), tarjetas: conceptos.filter(c=>c.categoria==='tarjetas'), bancos: conceptos.filter(c=>c.categoria==='bancos'), cxc: conceptos.filter(c=>c.categoria==='cxc'), propinas: conceptos.filter(c=>c.categoria==='propinas') };
   const mayoresGasto = mayores.filter(m => m.tipo === 'gasto');
   const mesesYm = Array.from({ length: 12 }, (_, i) => `${year}-${String(i + 1).padStart(2, '0')}`);
   const mesesLabel = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
@@ -2136,7 +2139,7 @@ async function renderPL() {
   const gastosOperativos = v.reduce((s,r)=>s+(Number(r.gastos)||0),0);
 
   // Faltantes / sobrantes de caja detectados en la conciliación de Ventas
-  const porCatPL = { efectivo: conceptos.filter(c=>c.categoria==='efectivo'), tarjetas: conceptos.filter(c=>c.categoria==='tarjetas'), cxc: conceptos.filter(c=>c.categoria==='cxc'), propinas: conceptos.filter(c=>c.categoria==='propinas') };
+  const porCatPL = { efectivo: conceptos.filter(c=>c.categoria==='efectivo'), tarjetas: conceptos.filter(c=>c.categoria==='tarjetas'), bancos: conceptos.filter(c=>c.categoria==='bancos'), cxc: conceptos.filter(c=>c.categoria==='cxc'), propinas: conceptos.filter(c=>c.categoria==='propinas') };
   let diffPeriodo = 0;
   v.forEach(r => { diffPeriodo += computeRowDiffs(r, conceptosVenta, porCatPL).difTotal; });
   const faltanteCaja = diffPeriodo > 0 ? diffPeriodo : 0;
