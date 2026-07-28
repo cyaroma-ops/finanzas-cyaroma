@@ -6,6 +6,7 @@
 <title>Finanzas | Control Financiero Multi-Negocio</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 :root{
@@ -217,6 +218,20 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   .topbar{padding:14px 18px;}
   .grid-2,.grid-3{grid-template-columns:1fr;}
 }
+
+.print-header{display:none;}
+@media print{
+  .sidebar, .topbar-actions, .btn, .modal-bg, .tag-row, .card-head button, #topbarActions, .row-del{display:none !important;}
+  input.cell, select.cell{border:none !important;background:transparent !important;color:inherit !important;-webkit-appearance:none;appearance:none;}
+  .card{box-shadow:none;border:1px solid #ccc;break-inside:avoid;}
+  .content{padding:0 !important;}
+  .topbar{position:static;border-bottom:none;padding:0 0 10px 0;}
+  body{background:#fff;}
+  .main{width:100%;}
+  .print-header{display:block !important;margin-bottom:14px;border-bottom:2px solid var(--navy-1);padding-bottom:10px;}
+  .print-header h2{font-family:'Cormorant Garamond',serif;font-size:22px;color:var(--navy-1);}
+  .print-header p{font-size:12px;color:var(--muted);}
+}
 </style>
 </head>
 <body>
@@ -328,10 +343,15 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
           <div class="sub" id="pageSub">Vista consolidada de todos los negocios</div>
         </div>
         <div class="topbar-actions" id="topbarActions">
+          <button class="btn btn-ghost btn-sm" id="printBtn" style="display:none;">🖨 Imprimir</button>
           <input type="month" class="month-picker" id="monthPicker">
         </div>
       </div>
       <div class="content" id="content">
+        <div class="print-header">
+          <h2 id="printTitle"></h2>
+          <p id="printSub"></p>
+        </div>
         <!-- Sections injected by module scripts -->
         <section class="section active" id="sec-dashboard"></section>
         <section class="section" id="sec-ventas"></section>
@@ -394,6 +414,12 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
       <div class="field" style="margin-bottom:0;grid-column:span 3;" id="monedaVinculoWrap">
         <label>Vincular a caja de efectivo (para el "Corte de caja" automático)</label>
         <select id="newConceptoMonedaId">
+          <option value="">— no vincular —</option>
+        </select>
+      </div>
+      <div class="field" style="margin-bottom:0;grid-column:span 3;" id="bancoVinculoWrap">
+        <label>Vincular a cuenta bancaria (para el "Corte de caja" automático)</label>
+        <select id="newConceptoBancoId">
           <option value="">— no vincular —</option>
         </select>
       </div>
@@ -477,18 +503,26 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 
 <!-- Modal: catálogo de proveedores -->
 <div class="modal-bg" id="modalProveedoresCat">
-  <div class="modal">
+  <div class="modal" style="width:min(520px,92vw);">
     <h3>Catálogo de proveedores</h3>
     <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px;">Da de alta tus proveedores una vez; luego los seleccionas al capturar facturas o pagos.</p>
     <div id="proveedoresCatList" style="max-height:260px;overflow-y:auto;margin-bottom:16px;"></div>
-    <div class="field">
-      <label>Nombre del proveedor</label>
-      <input type="text" id="newProveedorCatNombre" placeholder="Ej. Distribuidora de Bebidas">
+    <div class="grid-2">
+      <div class="field">
+        <label>Nombre comercial</label>
+        <input type="text" id="newProveedorCatNombre" placeholder="Ej. Distribuidora de Bebidas">
+      </div>
+      <div class="field">
+        <label>Razón social (opcional)</label>
+        <input type="text" id="newProveedorCatRazonSocial" placeholder="Ej. Distribuidora ABC SA de CV">
+      </div>
     </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="closeProveedoresCat">Cerrar</button>
+      <button class="btn btn-ghost" id="importProveedoresBtn">📥 Importar Excel</button>
       <button class="btn btn-gold" id="saveProveedorCat">+ Agregar proveedor</button>
     </div>
+    <p style="font-size:11px;color:var(--muted);margin-top:10px;">El Excel debe tener columnas "Nombre Comercial" y "Razón Social" (una fila por proveedor).</p>
   </div>
 </div>
 
