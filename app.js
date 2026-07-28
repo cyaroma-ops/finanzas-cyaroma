@@ -1265,7 +1265,7 @@ async function openTraspasoModal(businessId, onDone) {
 }
 
 /* ---------- Celdas compartidas: clasificación de una salida (gasto/proveedor/otro) ---------- */
-function salidaCellsHtml(r, subcuentas, mayores, facturasPend, prefix) {
+function salidaCellsHtml(r, subcuentas, mayores, facturasPend, prefix, traspasoCtx) {
   if (r.tipo_salida === 'traspaso') {
     return `<td><span style="color:var(--muted);">🔁 Traspaso</span></td><td>—</td>`;
   }
@@ -1274,6 +1274,8 @@ function salidaCellsHtml(r, subcuentas, mayores, facturasPend, prefix) {
     <option value="otro" ${tipo==='otro'?'selected':''}>Sin clasificar</option>
     <option value="gasto" ${tipo==='gasto'?'selected':''}>Gasto</option>
     <option value="proveedor" ${tipo==='proveedor'?'selected':''}>Pago a proveedor</option>
+    <option value="traspaso_banco" ${tipo==='traspaso_banco'?'selected':''}>Traspaso a banco</option>
+    <option value="traspaso_efectivo" ${tipo==='traspaso_efectivo'?'selected':''}>Traspaso a caja de efectivo</option>
   </select>`;
   let detalle = '—';
   if (tipo === 'gasto') {
@@ -1286,16 +1288,61 @@ function salidaCellsHtml(r, subcuentas, mayores, facturasPend, prefix) {
       <option value="">— elegir factura —</option>
       ${facturasPend.map(f => `<option value="${f.id}" ${r.proveedor_factura_id===f.id?'selected':''}>${f.proveedor} · ${f.factura||'s/f'} · ${fmt(f.importe)}</option>`).join('')}
     </select>`;
+  } else if (tipo === 'traspaso_banco' && traspasoCtx) {
+    const opciones = (traspasoCtx.cuentasBanco || []).filter(c => !(traspasoCtx.origenTipo === 'banco' && c.id === traspasoCtx.origenId));
+    detalle = `<select class="cell salida-traspaso-destino" data-id="${r.id}" data-tipo="banco">
+      <option value="">— elegir cuenta destino —</option>
+      ${opciones.map(c => `<option value="${c.id}">${c.nombre}</option>`).join('')}
+    </select>`;
+  } else if (tipo === 'traspaso_efectivo' && traspasoCtx) {
+    const opciones = (traspasoCtx.monedasEfectivo || []).filter(m => !(traspasoCtx.origenTipo === 'efectivo' && m.id === traspasoCtx.origenId));
+    detalle = `<select class="cell salida-traspaso-destino" data-id="${r.id}" data-tipo="efectivo">
+      <option value="">— elegir caja destino —</option>
+      ${opciones.map(m => `<option value="${m.id}">${m.nombre}</option>`).join('')}
+    </select>`;
   }
   return `<td>${tipoSelect}</td><td>${detalle}</td>`;
 }
-function wireSalidaCellHandlers(container, table, onChange) {
+function wireSalidaCellHandlers(container, table, onChange, traspasoCtx) {
   container.querySelectorAll('.salida-tipo').forEach(sel => sel.addEventListener('change', async () => {
     await sb.from(table).update({ tipo_salida: sel.value, subcuenta_id: null, proveedor_factura_id: null }).eq('id', sel.dataset.id);
     onChange();
   }));
   container.querySelectorAll('.salida-detalle').forEach(sel => sel.addEventListener('change', async () => {
     await sb.from(table).update({ [sel.dataset.field]: sel.value || null }).eq('id', sel.dataset.id);
+    onChange();
+  }));
+  container.querySelectorAll('.salida-traspaso-destino').forEach(sel => sel.addEventListener('change', async () => {
+    if (!sel.value) return;
+    const { data: origenRow } = await sb.from(table).select('*').eq('id', sel.dataset.id).single();
+    if (!origenRow) return;
+    const monto = Number(origenRow.cargos) > 0 ? Number(origenRow.cargos) : Number(origenRow.depositos) || 0;
+    if (!monto) { toast('Este movimiento no tiene monto en cargos o depósitos.', 'error'); return; }
+    const esSalida = Number(origenRow.cargos) > 0;
+    const traspasoId = uid();
+    const destinoTipo = sel.dataset.tipo;
+    const origenLabel = traspasoCtx?.origenNombre || 'otra cuenta';
+    const destinoPayload = {
+      business_id: origenRow.business_id, fecha: origenRow.fecha, tipo_salida: 'traspaso', traspaso_id: traspasoId,
+      cargos: esSalida ? 0 : monto, depositos: esSalida ? monto : 0,
+    };
+    let destErr;
+    if (destinoTipo === 'banco') {
+      destinoPayload.cuenta_id = sel.value;
+      destinoPayload.descripcion = `Traspaso desde ${origenLabel}`;
+      destinoPayload.concepto = 'Traspaso';
+      const { error } = await sb.from('fz_bancos_mov').insert(destinoPayload);
+      destErr = error;
+    } else {
+      destinoPayload.moneda_id = sel.value;
+      destinoPayload.proveedor = 'Traspaso';
+      destinoPayload.descripcion = `Traspaso desde ${origenLabel}`;
+      const { error } = await sb.from('fz_efectivo_mov').insert(destinoPayload);
+      destErr = error;
+    }
+    if (destErr) { toast('Error al crear el traspaso: ' + destErr.message, 'error'); return; }
+    await sb.from(table).update({ tipo_salida: 'traspaso', traspaso_id: traspasoId }).eq('id', sel.dataset.id);
+    toast('Traspaso vinculado correctamente.');
     onChange();
   }));
 }
@@ -1425,12 +1472,15 @@ async function renderEfectivo() {
 
 async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
   const box = document.getElementById('monedaLedger');
-  const [ledger, subcuentas, mayores, facturasPend] = await Promise.all([
+  const [ledger, subcuentas, mayores, facturasPend, cuentasBancoQ, monedasEfectivoQ] = await Promise.all([
     getMonedaLedgerRows(businessId, moneda, conceptosEfectivo),
     loadSubcuentas(businessId),
     loadCuentasMayor(businessId),
     sb.from('fz_proveedores').select('id,proveedor,factura,importe').eq('business_id', businessId).eq('estatus', 'Pendiente').then(r => r.data || []),
+    sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
+    sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
   ]);
+  const traspasoCtx = { cuentasBanco: cuentasBancoQ.data || [], monedasEfectivo: monedasEfectivoQ.data || [], origenTipo: 'efectivo', origenId: moneda.id, origenNombre: 'la caja ' + moneda.nombre };
   let saldo = Number(moneda.saldo_inicial) || 0;
   const rowsHtml = ledger.map(r => {
     saldo += (Number(r.depositos) || 0) - (Number(r.cargos) || 0);
@@ -1452,7 +1502,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
       <td><input class="cell mov-cell num" type="number" step="0.01" value="${r.cargos ?? 0}" data-id="${r.id}" data-field="cargos"></td>
       <td><input class="cell mov-cell num" type="number" step="0.01" value="${r.depositos ?? 0}" data-id="${r.id}" data-field="depositos"></td>
       <td class="num" style="font-weight:700;">${fmtNum(saldo)}</td>
-      ${salidaCellsHtml(r, subcuentas, mayores, facturasPend, 'mov')}
+      ${salidaCellsHtml(r, subcuentas, mayores, facturasPend, 'mov', traspasoCtx)}
       <td><button class="row-del mov-del" data-id="${r.id}">✕</button></td>
     </tr>`;
   }).join('');
@@ -1475,7 +1525,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
     const m2 = { ...moneda };
     renderMonedaLedger(m2, businessId, conceptosEfectivo);
   });
-  wireSalidaCellHandlers(box, 'fz_efectivo_mov', () => renderMonedaLedger(moneda, businessId, conceptosEfectivo));
+  wireSalidaCellHandlers(box, 'fz_efectivo_mov', () => renderMonedaLedger(moneda, businessId, conceptosEfectivo), traspasoCtx);
   box.querySelectorAll('.mov-cell').forEach(inp => {
     inp.addEventListener('change', async () => {
       const field = inp.dataset.field;
@@ -1567,12 +1617,15 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     const { data } = await sb.from('fz_conceptos').select('*').eq('business_id', businessId).eq('categoria', 'tarjetas');
     conceptosTarjetas = data || [];
   }
-  const [ledger, subcuentas, mayores, facturasPend] = await Promise.all([
+  const [ledger, subcuentas, mayores, facturasPend, cuentasBancoQ, monedasEfectivoQ] = await Promise.all([
     getBancoLedgerRows(businessId, cuentaArr, conceptosTarjetas),
     loadSubcuentas(businessId),
     loadCuentasMayor(businessId),
     sb.from('fz_proveedores').select('id,proveedor,factura,importe').eq('business_id', businessId).eq('estatus', 'Pendiente').then(r => r.data || []),
+    sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
+    sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
   ]);
+  const traspasoCtx = { cuentasBanco: cuentasBancoQ.data || [], monedasEfectivo: monedasEfectivoQ.data || [], origenTipo: 'banco', origenId: cuentaId, origenNombre: 'el banco ' + (cuentaArr?.nombre || '') };
   let saldo = Number(cuentaArr?.saldo_inicial) || 0;
   const rowsHtml = ledger.map(m => {
     saldo += (Number(m.depositos)||0) - (Number(m.cargos)||0);
@@ -1596,7 +1649,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
       <td><input class="cell mov-cell num" type="number" step="0.01" value="${m.depositos ?? 0}" data-id="${m.id}" data-field="depositos"></td>
       <td><input class="cell mov-cell num" type="number" step="0.01" value="${m.cargos ?? 0}" data-id="${m.id}" data-field="cargos"></td>
       <td class="num" style="font-weight:700;">${fmt(saldo)}</td>
-      ${salidaCellsHtml(m, subcuentas, mayores, facturasPend, 'mov')}
+      ${salidaCellsHtml(m, subcuentas, mayores, facturasPend, 'mov', traspasoCtx)}
       <td><button class="row-del mov-del" data-id="${m.id}">✕</button></td>
     </tr>`;
   }).join('');
@@ -1622,7 +1675,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     await sb.from('fz_bancos_mov').insert({ cuenta_id: cuentaId, business_id: businessId, fecha: todayStr(), tipo_salida: 'otro' });
     renderBancoLedger(cuentaId, businessId, conceptosTarjetas);
   });
-  wireSalidaCellHandlers(box, 'fz_bancos_mov', () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas));
+  wireSalidaCellHandlers(box, 'fz_bancos_mov', () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas), traspasoCtx);
   box.querySelectorAll('.mov-cell').forEach(inp => {
     inp.addEventListener('change', async () => {
       const field = inp.dataset.field;
