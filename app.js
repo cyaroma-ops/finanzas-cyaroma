@@ -1309,7 +1309,17 @@ function wireSalidaCellHandlers(container, table, onChange, traspasoCtx) {
     onChange();
   }));
   container.querySelectorAll('.salida-detalle').forEach(sel => sel.addEventListener('change', async () => {
-    await sb.from(table).update({ [sel.dataset.field]: sel.value || null }).eq('id', sel.dataset.id);
+    const field = sel.dataset.field;
+    await sb.from(table).update({ [field]: sel.value || null }).eq('id', sel.dataset.id);
+    if (field === 'proveedor_factura_id' && sel.value) {
+      const { data: movRow } = await sb.from(table).select('fecha').eq('id', sel.dataset.id).single();
+      await sb.from('fz_proveedores').update({
+        estatus: 'Pagado',
+        fecha_pago: movRow?.fecha || todayStr(),
+        pagado_desde: traspasoCtx?.origenCorto || null,
+      }).eq('id', sel.value);
+      toast('Factura marcada como pagada.');
+    }
     onChange();
   }));
   container.querySelectorAll('.salida-traspaso-destino').forEach(sel => sel.addEventListener('change', async () => {
@@ -1480,7 +1490,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
   ]);
-  const traspasoCtx = { cuentasBanco: cuentasBancoQ.data || [], monedasEfectivo: monedasEfectivoQ.data || [], origenTipo: 'efectivo', origenId: moneda.id, origenNombre: 'la caja ' + moneda.nombre };
+  const traspasoCtx = { cuentasBanco: cuentasBancoQ.data || [], monedasEfectivo: monedasEfectivoQ.data || [], origenTipo: 'efectivo', origenId: moneda.id, origenNombre: 'la caja ' + moneda.nombre, origenCorto: 'Caja — ' + moneda.nombre };
   let saldo = Number(moneda.saldo_inicial) || 0;
   const rowsHtml = ledger.map(r => {
     saldo += (Number(r.depositos) || 0) - (Number(r.cargos) || 0);
@@ -1625,7 +1635,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
   ]);
-  const traspasoCtx = { cuentasBanco: cuentasBancoQ.data || [], monedasEfectivo: monedasEfectivoQ.data || [], origenTipo: 'banco', origenId: cuentaId, origenNombre: 'el banco ' + (cuentaArr?.nombre || '') };
+  const traspasoCtx = { cuentasBanco: cuentasBancoQ.data || [], monedasEfectivo: monedasEfectivoQ.data || [], origenTipo: 'banco', origenId: cuentaId, origenNombre: 'el banco ' + (cuentaArr?.nombre || ''), origenCorto: 'Banco — ' + (cuentaArr?.nombre || '') };
   let saldo = Number(cuentaArr?.saldo_inicial) || 0;
   const rowsHtml = ledger.map(m => {
     saldo += (Number(m.depositos)||0) - (Number(m.cargos)||0);
@@ -1701,12 +1711,18 @@ async function renderProveedores() {
   const el = document.getElementById('sec-proveedores');
   const b = biz();
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
-  const [provQ, catalogo] = await Promise.all([
+  const [provQ, catalogo, cuentasBancoQ, monedasQ] = await Promise.all([
     sb.from('fz_proveedores').select('*').eq('business_id', b.id).order('fecha', { ascending: false }),
     loadProveedoresCatalogo(b.id),
+    sb.from('fz_bancos_cuentas').select('*').eq('business_id', b.id).eq('activo', true),
+    sb.from('fz_efectivo_monedas').select('*').eq('business_id', b.id).eq('activo', true),
   ]);
   if (provQ.error) { el.innerHTML = `<div class="empty">Error: ${provQ.error.message}</div>`; return; }
   const all = provQ.data || [];
+  const opcionesPagoDesde = [
+    ...(cuentasBancoQ.data || []).map(c => 'Banco — ' + c.nombre),
+    ...(monedasQ.data || []).map(m => 'Caja — ' + m.nombre),
+  ];
   const pendiente = all.filter(p => p.estatus === 'Pendiente').reduce((s,p)=>s+(Number(p.importe)||0),0);
   const pagado = all.filter(p => p.estatus === 'Pagado').reduce((s,p)=>s+(Number(p.importe)||0),0);
   const rows = STATE_provFiltro === 'Todos' ? all : all.filter(p => p.estatus === STATE_provFiltro);
@@ -1732,9 +1748,9 @@ async function renderProveedores() {
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Importe</th><th>Desglose</th><th>Estatus</th><th>Fecha pago</th><th></th></tr></thead>
+          <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Importe</th><th>Desglose</th><th>Estatus</th><th>Fecha pago</th><th>Pagado desde</th><th></th></tr></thead>
           <tbody>
-            ${rows.map(p => provRowHtml(p, catalogo)).join('') || `<tr><td colspan="8" class="empty">Sin registros.</td></tr>`}
+            ${rows.map(p => provRowHtml(p, catalogo, opcionesPagoDesde)).join('') || `<tr><td colspan="9" class="empty">Sin registros.</td></tr>`}
           </tbody>
         </table>
       </div>
@@ -1770,7 +1786,7 @@ async function renderProveedores() {
   el.querySelectorAll('.prov-desglosar').forEach(btn => btn.addEventListener('click', () => openDesgloseModal(b.id, btn.dataset.id, renderProveedores)));
 }
 
-function provRowHtml(p, catalogo) {
+function provRowHtml(p, catalogo, opcionesPagoDesde) {
   const desgloseTotal = Object.values(p.desglose || {}).reduce((s,v)=>s+(Number(v)||0),0);
   const desgloseOk = Math.abs(desgloseTotal - (Number(p.importe)||0)) < 1 && desgloseTotal > 0;
   return `<tr>
@@ -1787,6 +1803,10 @@ function provRowHtml(p, catalogo) {
       <option ${p.estatus==='Pagado'?'selected':''}>Pagado</option>
     </select></td>
     <td><input class="cell prov-cell" type="date" value="${p.fecha_pago||''}" data-id="${p.id}" data-field="fecha_pago"></td>
+    <td><select class="cell prov-cell" data-id="${p.id}" data-field="pagado_desde" style="min-width:150px;">
+      <option value="">— sin especificar —</option>
+      ${opcionesPagoDesde.map(o => `<option ${p.pagado_desde===o?'selected':''}>${o}</option>`).join('')}
+    </select></td>
     <td><button class="row-del prov-del" data-id="${p.id}">✕</button></td>
   </tr>`;
 }
