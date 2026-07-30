@@ -1374,7 +1374,7 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
   })();
 }
 
-function openMovimientoModal(contexto) {
+async function openMovimientoModal(contexto) {
   const modal = document.getElementById('modalMovimiento');
   document.getElementById('movFecha').value = todayStr();
   document.getElementById('movCampo1').value = '';
@@ -1383,6 +1383,9 @@ function openMovimientoModal(contexto) {
   document.getElementById('movDescripcion').value = '';
   document.getElementById('movCargos').value = 0;
   document.getElementById('movDepositos').value = 0;
+  document.getElementById('movTipoSalida').value = 'otro';
+  document.getElementById('movSubcuentaWrap').style.display = 'none';
+  document.getElementById('movFacturasWrap').style.display = 'none';
 
   if (contexto.tipo === 'efectivo') {
     document.getElementById('movLabel1').textContent = 'Proveedor / Concepto';
@@ -1396,6 +1399,38 @@ function openMovimientoModal(contexto) {
     document.getElementById('movReferenciaWrap').style.display = 'block';
   }
 
+  // Datos para clasificar (subcuentas y facturas pendientes) y para el nombre de "pagado desde"
+  const [subcuentas, mayores, facturasPend, cuentaInfo] = await Promise.all([
+    loadSubcuentas(contexto.businessId),
+    loadCuentasMayor(contexto.businessId),
+    sb.from('fz_proveedores').select('id,proveedor,fecha,factura,importe,estatus').eq('business_id', contexto.businessId).then(r => r.data || []),
+    contexto.tipo === 'efectivo'
+      ? sb.from('fz_efectivo_monedas').select('nombre').eq('id', contexto.refId).single().then(r => r.data)
+      : sb.from('fz_bancos_cuentas').select('nombre').eq('id', contexto.refId).single().then(r => r.data),
+  ]);
+  const origenCorto = contexto.tipo === 'efectivo' ? 'Caja — ' + (cuentaInfo?.nombre || '') : 'Banco — ' + (cuentaInfo?.nombre || '');
+
+  document.getElementById('movSubcuenta').innerHTML = `<option value="">— elegir subcuenta —</option>` +
+    subcuentas.map(s => { const m = mayores.find(x => x.id === s.cuenta_mayor_id); return `<option value="${s.id}">${m ? m.nombre + ' › ' : ''}${s.nombre}</option>`; }).join('');
+
+  const pendientes = facturasPend.filter(f => f.estatus !== 'Pagado');
+  const porProveedor = {};
+  pendientes.forEach(f => { const key = f.proveedor || '(sin proveedor)'; (porProveedor[key] = porProveedor[key] || []).push(f); });
+  document.getElementById('movFacturasList').innerHTML = Object.keys(porProveedor).sort((a,b)=>a.localeCompare(b)).map(prov => `
+    <div style="margin-bottom:8px;">
+      <div style="font-weight:700;font-size:12px;color:var(--navy-1);">${prov}</div>
+      ${porProveedor[prov].map(f => `
+        <label style="display:flex;align-items:center;gap:8px;padding:4px 2px;font-size:12.5px;cursor:pointer;">
+          <input type="checkbox" class="mov-factura-check" value="${f.id}">
+          <span>${f.fecha} · ${f.factura||'s/f'} · ${fmt(f.importe)}</span>
+        </label>`).join('')}
+    </div>`).join('') || `<div class="empty" style="padding:8px;">No hay facturas pendientes.</div>`;
+
+  document.getElementById('movTipoSalida').onchange = (e) => {
+    document.getElementById('movSubcuentaWrap').style.display = e.target.value === 'gasto' ? 'block' : 'none';
+    document.getElementById('movFacturasWrap').style.display = e.target.value === 'proveedor' ? 'block' : 'none';
+  };
+
   modal.classList.add('show');
   document.getElementById('closeMovimiento').onclick = () => modal.classList.remove('show');
   document.getElementById('saveMovimiento').onclick = async () => {
@@ -1403,17 +1438,30 @@ function openMovimientoModal(contexto) {
     const cargos = Number(document.getElementById('movCargos').value) || 0;
     const depositos = Number(document.getElementById('movDepositos').value) || 0;
     const descripcion = document.getElementById('movDescripcion').value || null;
+    const tipoSalida = document.getElementById('movTipoSalida').value;
     if (!cargos && !depositos) { toast('Escribe un monto en Cargos o Depósitos.', 'error'); return; }
+    const idsFacturas = tipoSalida === 'proveedor' ? Array.from(document.querySelectorAll('.mov-factura-check:checked')).map(c => c.value) : [];
     let payload, table;
     if (contexto.tipo === 'efectivo') {
       table = 'fz_efectivo_mov';
-      payload = { business_id: contexto.businessId, moneda_id: contexto.refId, fecha, proveedor: document.getElementById('movCampo1').value || null, descripcion, cargos, depositos, tipo_salida: 'otro' };
+      payload = { business_id: contexto.businessId, moneda_id: contexto.refId, fecha, proveedor: document.getElementById('movCampo1').value || null, descripcion, cargos, depositos, tipo_salida: tipoSalida };
     } else {
       table = 'fz_bancos_mov';
-      payload = { business_id: contexto.businessId, cuenta_id: contexto.refId, fecha, concepto: document.getElementById('movCampo1').value || null, referencia: document.getElementById('movReferencia').value || null, descripcion, cargos, depositos, tipo_salida: 'otro' };
+      payload = { business_id: contexto.businessId, cuenta_id: contexto.refId, fecha, concepto: document.getElementById('movCampo1').value || null, referencia: document.getElementById('movReferencia').value || null, descripcion, cargos, depositos, tipo_salida: tipoSalida };
     }
+    if (tipoSalida === 'gasto') payload.subcuenta_id = document.getElementById('movSubcuenta').value || null;
+    if (tipoSalida === 'proveedor') { payload.proveedor_factura_ids = idsFacturas; payload.proveedor_factura_id = idsFacturas[0] || null; }
+
     const { error } = await sb.from(table).insert(payload);
     if (error) { toast('Error: ' + error.message, 'error'); return; }
+    if (tipoSalida === 'proveedor' && idsFacturas.length) {
+      const { error: e2 } = await sb.from('fz_proveedores').update({
+        estatus: 'Pagado', fecha_pago: fecha, pagado_desde: origenCorto,
+        pagado_desde_tipo: contexto.tipo === 'efectivo' ? 'efectivo' : 'banco',
+        pagado_desde_cuenta_id: contexto.refId,
+      }).in('id', idsFacturas);
+      if (e2) toast('El movimiento se guardó, pero hubo un error marcando las facturas: ' + e2.message, 'error');
+    }
     modal.classList.remove('show');
     toast('Movimiento agregado.');
     if (contexto.onDone) contexto.onDone();
