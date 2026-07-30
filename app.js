@@ -1330,6 +1330,50 @@ function openImportExcelModal(tipo, businessId, onDone, extra) {
   input.click();
 }
 
+function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) {
+  (async () => {
+    const { data: row } = await sb.from(table).select('*').eq('id', rowId).single();
+    const idsActuales = new Set(facturaIdsDe(row || {}));
+    const opciones = facturasPend.filter(f => f.estatus !== 'Pagado' || idsActuales.has(f.id));
+    const porProveedor = {};
+    opciones.forEach(f => {
+      const key = f.proveedor || '(sin proveedor)';
+      (porProveedor[key] = porProveedor[key] || []).push(f);
+    });
+    const box = document.getElementById('facturasPagoList');
+    box.innerHTML = Object.keys(porProveedor).sort((a,b)=>a.localeCompare(b)).map(prov => `
+      <div style="margin-bottom:10px;">
+        <div style="font-weight:700;font-size:12.5px;color:var(--navy-1);margin-bottom:4px;">${prov}</div>
+        ${porProveedor[prov].map(f => `
+          <label style="display:flex;align-items:center;gap:8px;padding:5px 4px;border-bottom:1px solid var(--line);font-size:13px;cursor:pointer;">
+            <input type="checkbox" class="factura-check" value="${f.id}" ${idsActuales.has(f.id)?'checked':''}>
+            <span>${f.fecha} · ${f.factura||'s/f'} · ${fmt(f.importe)}${f.estatus==='Pagado'?' (ya pagada)':''}</span>
+          </label>`).join('')}
+      </div>`).join('') || `<div class="empty">No hay facturas disponibles.</div>`;
+
+    document.getElementById('modalFacturasPago').classList.add('show');
+    document.getElementById('closeFacturasPago').onclick = () => document.getElementById('modalFacturasPago').classList.remove('show');
+    document.getElementById('applyFacturasPago').onclick = async () => {
+      const idsSeleccionados = Array.from(box.querySelectorAll('.factura-check:checked')).map(c => c.value);
+      const { error: e1 } = await sb.from(table).update({ proveedor_factura_ids: idsSeleccionados, proveedor_factura_id: idsSeleccionados[0] || null }).eq('id', rowId);
+      if (e1) { toast('Error al guardar: ' + e1.message, 'error'); return; }
+      if (idsSeleccionados.length) {
+        const { error: e2 } = await sb.from('fz_proveedores').update({
+          estatus: 'Pagado',
+          fecha_pago: row?.fecha || todayStr(),
+          pagado_desde: traspasoCtx?.origenCorto || null,
+          pagado_desde_tipo: traspasoCtx?.origenTipo || null,
+          pagado_desde_cuenta_id: traspasoCtx?.origenId || null,
+        }).in('id', idsSeleccionados);
+        if (e2) { toast('Error al marcar como pagadas: ' + e2.message, 'error'); return; }
+        toast(`${idsSeleccionados.length} factura(s) marcada(s) como pagada(s).`);
+      }
+      document.getElementById('modalFacturasPago').classList.remove('show');
+      onDone();
+    };
+  })();
+}
+
 function openMovimientoModal(contexto) {
   const modal = document.getElementById('modalMovimiento');
   document.getElementById('movFecha').value = todayStr();
@@ -1462,19 +1506,7 @@ function salidaCellsHtml(r, subcuentas, mayores, facturasPend, prefix, traspasoC
     </select>`;
   } else if (tipo === 'proveedor') {
     const idsVinculados = facturaIdsDe(r);
-    const opcionesFactura = facturasPend.filter(f => f.estatus !== 'Pagado' || idsVinculados.includes(f.id));
-    const porProveedor = {};
-    opcionesFactura.forEach(f => {
-      const key = f.proveedor || '(sin proveedor)';
-      (porProveedor[key] = porProveedor[key] || []).push(f);
-    });
-    const gruposHtml = Object.keys(porProveedor).sort((a,b)=>a.localeCompare(b)).map(nombreProv => `
-      <optgroup label="${nombreProv}">
-        ${porProveedor[nombreProv].map(f => `<option value="${f.id}" ${idsVinculados.includes(f.id)?'selected':''}>${f.fecha} · ${f.factura||'s/f'} · ${fmt(f.importe)}${f.estatus==='Pagado'?' (ya pagada)':''}</option>`).join('')}
-      </optgroup>`).join('');
-    detalle = `<select class="cell salida-detalle-multi" data-id="${r.id}" multiple size="4" style="min-width:220px;">
-      ${gruposHtml}
-    </select><div style="font-size:10.5px;color:var(--muted);margin-top:2px;">Ctrl/Cmd+clic para elegir varias</div>`;
+    detalle = `<button class="btn btn-ghost btn-sm salida-abrir-facturas" data-id="${r.id}">${idsVinculados.length ? '🧾 ' + idsVinculados.length + ' factura(s)' : '🧾 Elegir facturas'}</button>`;
   } else if (tipo === 'traspaso_banco' && traspasoCtx) {
     const opciones = (traspasoCtx.cuentasBanco || []).filter(c => !(traspasoCtx.origenTipo === 'banco' && c.id === traspasoCtx.origenId));
     detalle = `<select class="cell salida-traspaso-destino" data-id="${r.id}" data-tipo="banco">
@@ -1496,7 +1528,7 @@ function facturaIdsDe(r) {
   return [];
 }
 
-function wireSalidaCellHandlers(container, table, onChange, traspasoCtx) {
+function wireSalidaCellHandlers(container, table, onChange, traspasoCtx, facturasPend) {
   container.querySelectorAll('.salida-tipo').forEach(sel => sel.addEventListener('change', async () => {
     await sb.from(table).update({ tipo_salida: sel.value, subcuenta_id: null, proveedor_factura_id: null, proveedor_factura_ids: [] }).eq('id', sel.dataset.id);
     onChange();
@@ -1506,21 +1538,8 @@ function wireSalidaCellHandlers(container, table, onChange, traspasoCtx) {
     await sb.from(table).update({ [field]: sel.value || null }).eq('id', sel.dataset.id);
     onChange();
   }));
-  container.querySelectorAll('.salida-detalle-multi').forEach(sel => sel.addEventListener('change', async () => {
-    const idsSeleccionados = Array.from(sel.selectedOptions).map(o => o.value);
-    await sb.from(table).update({ proveedor_factura_ids: idsSeleccionados, proveedor_factura_id: idsSeleccionados[0] || null }).eq('id', sel.dataset.id);
-    if (idsSeleccionados.length) {
-      const { data: movRow } = await sb.from(table).select('fecha').eq('id', sel.dataset.id).single();
-      await sb.from('fz_proveedores').update({
-        estatus: 'Pagado',
-        fecha_pago: movRow?.fecha || todayStr(),
-        pagado_desde: traspasoCtx?.origenCorto || null,
-        pagado_desde_tipo: traspasoCtx?.origenTipo || null,
-        pagado_desde_cuenta_id: traspasoCtx?.origenId || null,
-      }).in('id', idsSeleccionados);
-      toast(`${idsSeleccionados.length} factura(s) marcada(s) como pagada(s).`);
-    }
-    onChange();
+  container.querySelectorAll('.salida-abrir-facturas').forEach(btn => btn.addEventListener('click', () => {
+    openFacturasPagoModal(btn.dataset.id, table, facturasPend, traspasoCtx, onChange);
   }));
   container.querySelectorAll('.salida-traspaso-destino').forEach(sel => sel.addEventListener('change', async () => {
     if (!sel.value) return;
@@ -1724,7 +1743,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
   box.innerHTML = `
     <div class="card-head" style="margin-top:14px;">
       <span class="hint">Saldo inicial: ${fmtNum(moneda.saldo_inicial || 0)} ${moneda.nombre}</span>
-      <button class="btn btn-ghost btn-sm" id="addMovBtn">+ Agregar movimiento (pago en efectivo)</button>
+      <button class="btn btn-ghost btn-sm" id="addMovBtnEfvo">+ Agregar movimiento (pago en efectivo)</button>
     </div>
     <div class="table-wrap">
       <table>
@@ -1734,10 +1753,10 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
     </div>
   `;
 
-  document.getElementById('addMovBtn').addEventListener('click', () => {
+  document.getElementById('addMovBtnEfvo').addEventListener('click', () => {
     openMovimientoModal({ tipo: 'efectivo', refId: moneda.id, businessId, onDone: () => renderMonedaLedger({ ...moneda }, businessId, conceptosEfectivo) });
   });
-  wireSalidaCellHandlers(box, 'fz_efectivo_mov', () => renderMonedaLedger(moneda, businessId, conceptosEfectivo), traspasoCtx);
+  wireSalidaCellHandlers(box, 'fz_efectivo_mov', () => renderMonedaLedger(moneda, businessId, conceptosEfectivo), traspasoCtx, facturasPend);
   box.querySelectorAll('.mov-cell').forEach(inp => {
     inp.addEventListener('change', async () => {
       const field = inp.dataset.field;
@@ -1871,7 +1890,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
       <span class="hint">Saldo inicial: ${fmt(cuentaArr?.saldo_inicial || 0)}</span>
       <div style="display:flex;gap:8px;">
         <button class="btn btn-ghost btn-sm" id="importMovBtn">📥 Importar movimientos (Excel)</button>
-        <button class="btn btn-ghost btn-sm" id="addMovBtn">+ Agregar movimiento</button>
+        <button class="btn btn-ghost btn-sm" id="addMovBtnBanco">+ Agregar movimiento</button>
       </div>
     </div>
     <div class="table-wrap">
@@ -1883,10 +1902,10 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
   `;
 
   document.getElementById('importMovBtn').addEventListener('click', () => openImportExcelModal('bancos_mov', businessId, () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas), cuentaId));
-  document.getElementById('addMovBtn').addEventListener('click', () => {
+  document.getElementById('addMovBtnBanco').addEventListener('click', () => {
     openMovimientoModal({ tipo: 'banco', refId: cuentaId, businessId, onDone: () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas) });
   });
-  wireSalidaCellHandlers(box, 'fz_bancos_mov', () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas), traspasoCtx);
+  wireSalidaCellHandlers(box, 'fz_bancos_mov', () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas), traspasoCtx, facturasPend);
   box.querySelectorAll('.mov-cell').forEach(inp => {
     inp.addEventListener('change', async () => {
       const field = inp.dataset.field;
@@ -2003,7 +2022,8 @@ async function renderProveedores() {
 }
 
 async function syncPagoProveedor(businessId, facturaId) {
-  const { data: factura } = await sb.from('fz_proveedores').select('*').eq('id', facturaId).single();
+  const { data: factura, error: eFactura } = await sb.from('fz_proveedores').select('*').eq('id', facturaId).single();
+  if (eFactura) { toast('Error leyendo la factura: ' + eFactura.message, 'error'); return; }
   if (!factura) return;
   const [bmQ, emQ] = await Promise.all([
     sb.from('fz_bancos_mov').select('*').eq('business_id', businessId).eq('tipo_salida', 'proveedor'),
@@ -2025,15 +2045,18 @@ async function syncPagoProveedor(businessId, facturaId) {
   for (const m of movesUnicos) { if (m.id !== yaCorrecta?.id) await sb.from(m._t).delete().eq('id', m.id); }
 
   if (yaCorrecta) {
-    await sb.from(yaCorrecta._t).update({ cargos: factura.importe, fecha: factura.fecha_pago || todayStr() }).eq('id', yaCorrecta.id);
+    const { error } = await sb.from(yaCorrecta._t).update({ cargos: factura.importe, fecha: factura.fecha_pago || todayStr() }).eq('id', yaCorrecta.id);
+    if (error) toast('Error actualizando el movimiento del pago: ' + error.message, 'error');
   } else {
     const payload = {
       business_id: businessId, fecha: factura.fecha_pago || todayStr(), cargos: factura.importe, depositos: 0,
       tipo_salida: 'proveedor', proveedor_factura_id: facturaId, proveedor_factura_ids: [facturaId],
       descripcion: `Pago factura ${factura.factura || 's/f'} — ${factura.proveedor}`,
     };
-    if (factura.pagado_desde_tipo === 'banco') await sb.from('fz_bancos_mov').insert({ ...payload, cuenta_id: factura.pagado_desde_cuenta_id, concepto: 'Pago a proveedor' });
-    else await sb.from('fz_efectivo_mov').insert({ ...payload, moneda_id: factura.pagado_desde_cuenta_id, proveedor: factura.proveedor });
+    const { error } = factura.pagado_desde_tipo === 'banco'
+      ? await sb.from('fz_bancos_mov').insert({ ...payload, cuenta_id: factura.pagado_desde_cuenta_id, concepto: 'Pago a proveedor' })
+      : await sb.from('fz_efectivo_mov').insert({ ...payload, moneda_id: factura.pagado_desde_cuenta_id, proveedor: factura.proveedor });
+    if (error) toast('Error creando el movimiento del pago: ' + error.message, 'error');
   }
 }
 
@@ -2578,13 +2601,15 @@ function wirePolizaHandlers(el, businessId) {
     renderPolizas();
   }));
   el.querySelectorAll('.linea-tipo').forEach(sel => sel.addEventListener('change', async () => {
-    await sb.from('fz_polizas_lineas').update({ cuenta_tipo: sel.value, subcuenta_id: null, cuenta_ref_id: null }).eq('id', sel.dataset.id);
+    const { error } = await sb.from('fz_polizas_lineas').update({ cuenta_tipo: sel.value, subcuenta_id: null, cuenta_ref_id: null }).eq('id', sel.dataset.id);
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
     renderPolizas();
   }));
   el.querySelectorAll('.linea-cuenta').forEach(sel => sel.addEventListener('change', async () => {
     const tipo = sel.dataset.tipo;
     const payload = tipo === 'subcuenta' ? { subcuenta_id: sel.value || null, cuenta_ref_id: null } : { cuenta_ref_id: sel.value || null, subcuenta_id: null };
-    await sb.from('fz_polizas_lineas').update(payload).eq('id', sel.dataset.id);
+    const { error } = await sb.from('fz_polizas_lineas').update(payload).eq('id', sel.dataset.id);
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
     renderPolizas();
   }));
   el.querySelectorAll('.linea-cell').forEach(inp => inp.addEventListener('change', async () => {
