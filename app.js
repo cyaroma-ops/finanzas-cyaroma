@@ -238,8 +238,8 @@ function setupBizControls() {
 const SECTION_META = {
   dashboard: { title: 'Dashboard', sub: 'Vista consolidada de todos los negocios', showMonth: true, needsBiz: false },
   ventas: { title: 'Ventas', sub: '', showMonth: true, needsBiz: true },
-  efectivo: { title: 'Efectivo & Divisas', sub: '', showMonth: false, needsBiz: true },
-  bancos: { title: 'Bancos', sub: '', showMonth: false, needsBiz: true },
+  efectivo: { title: 'Efectivo & Divisas', sub: '', showMonth: true, needsBiz: true },
+  bancos: { title: 'Bancos', sub: '', showMonth: true, needsBiz: true },
   proveedores: { title: 'Proveedores', sub: '', showMonth: false, needsBiz: true },
   pl: { title: 'P&L', sub: '', showMonth: true, needsBiz: true },
   flujo: { title: 'Flujo de Efectivo', sub: '', showMonth: false, needsBiz: true },
@@ -359,7 +359,7 @@ async function computeBancoSaldo(businessId, cuenta, conceptosTarjetas) {
   const polizaNet = polizaLineas.reduce((s, l) => s + (Number(l.cargo) || 0) - (Number(l.abono) || 0), 0);
   return (Number(cuenta.saldo_inicial) || 0) + autoDepositos + manualNet + polizaNet;
 }
-async function getBancoLedgerRows(businessId, cuenta, conceptosTarjetas) {
+async function getBancoLedgerRows(businessId, cuenta, conceptosTarjetas, mesFiltro) {
   const concepts = conceptosParaBanco(cuenta, conceptosTarjetas);
   const autoRows = [];
   if (concepts.length) {
@@ -379,7 +379,14 @@ async function getBancoLedgerRows(businessId, cuenta, conceptosTarjetas) {
   });
   const { data: movs } = await sb.from('fz_bancos_mov').select('*').eq('cuenta_id', cuenta.id).order('fecha');
   const manualRows = (movs || []).map(m => ({ ...m, auto: false }));
-  return [...autoRows, ...manualRows].sort((a, b) => a.fecha.localeCompare(b.fecha));
+  const todas = [...autoRows, ...manualRows].sort((a, b) => a.fecha.localeCompare(b.fecha));
+  if (!mesFiltro) return todas;
+  const mesStart = mesFiltro + '-01';
+  const mesEnd = mesFiltro + '-31';
+  const antes = todas.filter(r => r.fecha < mesStart);
+  const delMes = todas.filter(r => r.fecha >= mesStart && r.fecha <= mesEnd);
+  const saldoApertura = (Number(cuenta.saldo_inicial) || 0) + antes.reduce((s,r)=>s+(Number(r.depositos)||0)-(Number(r.cargos)||0),0);
+  return { saldoApertura, rows: delMes };
 }
 
 
@@ -686,10 +693,8 @@ async function renderVentas() {
     </div>
   `;
 
-  document.getElementById('addVentaRow').addEventListener('click', async () => {
-    const { error: e2 } = await sb.from('fz_ventas').insert({ business_id: b.id, fecha: todayStr() });
-    if (e2) { toast('Error: ' + e2.message, 'error'); return; }
-    renderVentas();
+  document.getElementById('addVentaRow').addEventListener('click', () => {
+    openVentaDiaModal(b.id, renderVentas);
   });
   document.getElementById('openConceptosBtn').addEventListener('click', () => openConceptosModal(b.id));
   document.getElementById('openVentaConceptosBtn').addEventListener('click', () => openVentaConceptosModal(b.id));
@@ -1330,6 +1335,72 @@ function openImportExcelModal(tipo, businessId, onDone, extra) {
   input.click();
 }
 
+async function openVentaDiaModal(businessId, onDone) {
+  const [conceptosVenta, conceptos] = await Promise.all([loadConceptosVenta(businessId), loadConceptos(businessId)]);
+  const porCat = {
+    efectivo: conceptos.filter(c => c.categoria === 'efectivo'),
+    tarjetas: conceptos.filter(c => c.categoria === 'tarjetas'),
+    bancos: conceptos.filter(c => c.categoria === 'bancos'),
+    cxc: conceptos.filter(c => c.categoria === 'cxc'),
+    propinas: conceptos.filter(c => c.categoria === 'propinas'),
+  };
+  const form = document.getElementById('ventaDiaForm');
+  form.innerHTML = `
+    <div class="field"><label>Fecha</label><input type="date" id="vdFecha" value="${todayStr()}"></div>
+    ${conceptosVenta.length ? `
+      <h4 style="margin:16px 0 8px;color:var(--navy-1);font-family:'Cormorant Garamond',serif;font-size:18px;">Lo vendido</h4>
+      <div class="grid-2">
+        ${conceptosVenta.map(c => `<div class="field" style="margin-bottom:8px;"><label>${c.nombre}${c.tipo==='resta'?' (descuento)':''}</label><input type="number" step="0.01" class="vd-venta" data-id="${c.id}" value="0"></div>`).join('')}
+      </div>` : `<div class="empty" style="margin:12px 0;">Este negocio no tiene categorías de venta configuradas.</div>`}
+
+    <h4 style="margin:16px 0 8px;color:var(--navy-1);font-family:'Cormorant Garamond',serif;font-size:18px;">Sistema</h4>
+    <div class="grid-2">
+      <div class="field"><label>Efectivo (sistema)</label><input type="number" step="0.01" id="vdEfectivoSistema" value="0"></div>
+      <div class="field"><label>Tarjetas (sistema)</label><input type="number" step="0.01" id="vdTarjetasSistema" value="0"></div>
+      <div class="field"><label>CxC (sistema)</label><input type="number" step="0.01" id="vdCxc" value="0"></div>
+      <div class="field"><label>Gastos del día</label><input type="number" step="0.01" id="vdGastos" value="0"></div>
+    </div>
+
+    ${['efectivo','tarjetas','bancos','cxc','propinas'].filter(cat => porCat[cat].length).map(cat => `
+      <h4 style="margin:16px 0 8px;color:var(--navy-1);font-family:'Cormorant Garamond',serif;font-size:18px;">${CAT_LABEL[cat]} recibido</h4>
+      <div class="grid-2">
+        ${porCat[cat].map(c => `
+          <div class="field" style="margin-bottom:8px;">
+            <label>${c.nombre}${c.es_moneda?' (+ TC)':''}</label>
+            <input type="number" step="0.01" class="vd-recon" data-id="${c.id}" value="0">
+            ${c.es_moneda ? `<input type="number" step="0.0001" class="vd-recon-tc" data-id="${c.id}" placeholder="Tipo de cambio" style="margin-top:5px;">` : ''}
+          </div>`).join('')}
+      </div>`).join('')}
+  `;
+
+  document.getElementById('modalVentaDia').classList.add('show');
+  document.getElementById('closeVentaDia').onclick = () => document.getElementById('modalVentaDia').classList.remove('show');
+  document.getElementById('saveVentaDia').onclick = async () => {
+    const fecha = document.getElementById('vdFecha').value || todayStr();
+    const venta_data = {};
+    form.querySelectorAll('.vd-venta').forEach(inp => { venta_data[inp.dataset.id] = Number(inp.value) || 0; });
+    const recon_data = {};
+    form.querySelectorAll('.vd-recon').forEach(inp => {
+      const monto = Number(inp.value) || 0;
+      const tcInput = form.querySelector(`.vd-recon-tc[data-id="${inp.dataset.id}"]`);
+      recon_data[inp.dataset.id] = tcInput ? { monto, tc: Number(tcInput.value) || 0 } : { monto };
+    });
+    const payload = {
+      business_id: businessId, fecha, venta_data,
+      efectivo_sistema: Number(document.getElementById('vdEfectivoSistema').value) || 0,
+      tarjetas_sistema: Number(document.getElementById('vdTarjetasSistema').value) || 0,
+      cxc: Number(document.getElementById('vdCxc').value) || 0,
+      gastos: Number(document.getElementById('vdGastos').value) || 0,
+      recon_data,
+    };
+    const { error } = await sb.from('fz_ventas').insert(payload);
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    document.getElementById('modalVentaDia').classList.remove('show');
+    toast('Día de ventas agregado.');
+    if (onDone) onDone();
+  };
+}
+
 function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) {
   (async () => {
     const { data: row } = await sb.from(table).select('*').eq('id', rowId).single();
@@ -1426,10 +1497,13 @@ async function openMovimientoModal(contexto) {
         </label>`).join('')}
     </div>`).join('') || `<div class="empty" style="padding:8px;">No hay facturas pendientes.</div>`;
 
-  document.getElementById('movTipoSalida').onchange = (e) => {
-    document.getElementById('movSubcuentaWrap').style.display = e.target.value === 'gasto' ? 'block' : 'none';
-    document.getElementById('movFacturasWrap').style.display = e.target.value === 'proveedor' ? 'block' : 'none';
+  const actualizarVisibilidadDetalle = () => {
+    const val = document.getElementById('movTipoSalida').value;
+    document.getElementById('movSubcuentaWrap').style.display = val === 'gasto' ? 'block' : 'none';
+    document.getElementById('movFacturasWrap').style.display = val === 'proveedor' ? 'block' : 'none';
   };
+  document.getElementById('movTipoSalida').onchange = actualizarVisibilidadDetalle;
+  document.getElementById('movTipoSalida').oninput = actualizarVisibilidadDetalle;
 
   modal.classList.add('show');
   document.getElementById('closeMovimiento').onclick = () => modal.classList.remove('show');
@@ -1629,7 +1703,7 @@ function wireSalidaCellHandlers(container, table, onChange, traspasoCtx, factura
    ============================================================ */
 let STATE_monedaAbierta = null;
 
-async function getMonedaLedgerRows(businessId, moneda, conceptosEfectivo) {
+async function getMonedaLedgerRows(businessId, moneda, conceptosEfectivo, mesFiltro) {
   const concepts = conceptosParaMoneda(moneda, conceptosEfectivo);
   const autoRows = [];
   if (concepts.length) {
@@ -1649,7 +1723,14 @@ async function getMonedaLedgerRows(businessId, moneda, conceptosEfectivo) {
   });
   const { data: movs } = await sb.from('fz_efectivo_mov').select('*').eq('moneda_id', moneda.id).order('fecha');
   const manualRows = (movs || []).map(m => ({ ...m, auto: false }));
-  return [...autoRows, ...manualRows].sort((a, b) => a.fecha.localeCompare(b.fecha));
+  const todas = [...autoRows, ...manualRows].sort((a, b) => a.fecha.localeCompare(b.fecha));
+  if (!mesFiltro) return todas;
+  const mesStart = mesFiltro + '-01';
+  const mesEnd = mesFiltro + '-31';
+  const antes = todas.filter(r => r.fecha < mesStart);
+  const delMes = todas.filter(r => r.fecha >= mesStart && r.fecha <= mesEnd);
+  const saldoApertura = (Number(moneda.saldo_inicial) || 0) + antes.reduce((s,r)=>s+(Number(r.depositos)||0)-(Number(r.cargos)||0),0);
+  return { saldoApertura, rows: delMes };
 }
 
 async function renderEfectivo() {
@@ -1753,16 +1834,17 @@ async function renderEfectivo() {
 
 async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
   const box = document.getElementById('monedaLedger');
-  const [ledger, subcuentas, mayores, facturasPend, cuentasBancoQ, monedasEfectivoQ] = await Promise.all([
-    getMonedaLedgerRows(businessId, moneda, conceptosEfectivo),
+  const [ledgerRes, subcuentas, mayores, facturasPend, cuentasBancoQ, monedasEfectivoQ] = await Promise.all([
+    getMonedaLedgerRows(businessId, moneda, conceptosEfectivo, STATE.currentMonth),
     loadSubcuentas(businessId),
     loadCuentasMayor(businessId),
     sb.from('fz_proveedores').select('id,proveedor,factura,importe,estatus,fecha').eq('business_id', businessId).order('proveedor').order('fecha').then(r => r.data || []),
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
   ]);
+  const { saldoApertura, rows: ledger } = ledgerRes;
   const traspasoCtx = { cuentasBanco: cuentasBancoQ.data || [], monedasEfectivo: monedasEfectivoQ.data || [], origenTipo: 'efectivo', origenId: moneda.id, origenNombre: 'la caja ' + moneda.nombre, origenCorto: 'Caja — ' + moneda.nombre };
-  let saldo = Number(moneda.saldo_inicial) || 0;
+  let saldo = saldoApertura;
   const rowsHtml = ledger.map(r => {
     saldo += (Number(r.depositos) || 0) - (Number(r.cargos) || 0);
     if (r.auto) {
@@ -1790,7 +1872,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
 
   box.innerHTML = `
     <div class="card-head" style="margin-top:14px;">
-      <span class="hint">Saldo inicial: ${fmtNum(moneda.saldo_inicial || 0)} ${moneda.nombre}</span>
+      <span class="hint">Saldo al inicio de ${STATE.currentMonth}: ${fmtNum(saldoApertura)} ${moneda.nombre}</span>
       <button class="btn btn-ghost btn-sm" id="addMovBtnEfvo">+ Agregar movimiento (pago en efectivo)</button>
     </div>
     <div class="table-wrap">
@@ -1896,16 +1978,17 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     const { data } = await sb.from('fz_conceptos').select('*').eq('business_id', businessId).in('categoria', ['tarjetas','bancos']);
     conceptosTarjetas = data || [];
   }
-  const [ledger, subcuentas, mayores, facturasPend, cuentasBancoQ, monedasEfectivoQ] = await Promise.all([
-    getBancoLedgerRows(businessId, cuentaArr, conceptosTarjetas),
+  const [ledgerRes, subcuentas, mayores, facturasPend, cuentasBancoQ, monedasEfectivoQ] = await Promise.all([
+    getBancoLedgerRows(businessId, cuentaArr, conceptosTarjetas, STATE.currentMonth),
     loadSubcuentas(businessId),
     loadCuentasMayor(businessId),
     sb.from('fz_proveedores').select('id,proveedor,factura,importe,estatus,fecha').eq('business_id', businessId).order('proveedor').order('fecha').then(r => r.data || []),
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
   ]);
+  const { saldoApertura, rows: ledger } = ledgerRes;
   const traspasoCtx = { cuentasBanco: cuentasBancoQ.data || [], monedasEfectivo: monedasEfectivoQ.data || [], origenTipo: 'banco', origenId: cuentaId, origenNombre: 'el banco ' + (cuentaArr?.nombre || ''), origenCorto: 'Banco — ' + (cuentaArr?.nombre || '') };
-  let saldo = Number(cuentaArr?.saldo_inicial) || 0;
+  let saldo = saldoApertura;
   const rowsHtml = ledger.map(m => {
     saldo += (Number(m.depositos)||0) - (Number(m.cargos)||0);
     if (m.auto) {
@@ -1935,7 +2018,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
 
   box.innerHTML = `
     <div class="card-head" style="margin-top:14px;">
-      <span class="hint">Saldo inicial: ${fmt(cuentaArr?.saldo_inicial || 0)}</span>
+      <span class="hint">Saldo al inicio de ${STATE.currentMonth}: ${fmt(saldoApertura)}</span>
       <div style="display:flex;gap:8px;">
         <button class="btn btn-ghost btn-sm" id="importMovBtn">📥 Importar movimientos (Excel)</button>
         <button class="btn btn-ghost btn-sm" id="addMovBtnBanco">+ Agregar movimiento</button>
@@ -1974,6 +2057,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
    PROVEEDORES
    ============================================================ */
 let STATE_provFiltro = 'Todos';
+let STATE_provExpandido = null;
 
 async function renderProveedores() {
   const el = document.getElementById('sec-proveedores');
@@ -1995,11 +2079,45 @@ async function renderProveedores() {
   const pagado = all.filter(p => p.estatus === 'Pagado').reduce((s,p)=>s+(Number(p.importe)||0),0);
   const rows = STATE_provFiltro === 'Todos' ? all : all.filter(p => p.estatus === STATE_provFiltro);
 
+  const pendientesTodas = all.filter(p => p.estatus === 'Pendiente');
+  const porProveedorMap = {};
+  pendientesTodas.forEach(p => {
+    const key = p.proveedor || '(sin proveedor)';
+    (porProveedorMap[key] = porProveedorMap[key] || []).push(p);
+  });
+  const resumenProveedores = Object.keys(porProveedorMap).map(nombre => ({
+    nombre, facturas: porProveedorMap[nombre].sort((a,c)=>a.fecha.localeCompare(c.fecha)),
+    total: porProveedorMap[nombre].reduce((s,f)=>s+(Number(f.importe)||0),0),
+  })).sort((a,b) => b.total - a.total);
+
   el.innerHTML = `
     <div class="kpi-grid">
       <div class="kpi"><div class="label">Total pendiente</div><div class="value num red">${fmt(pendiente)}</div></div>
       <div class="kpi"><div class="label">Total pagado (histórico)</div><div class="value num green">${fmt(pagado)}</div></div>
       <div class="kpi"><div class="label">Facturas registradas</div><div class="value">${all.length}</div></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>Adeudo por proveedor</h3><span class="hint">Clic en un proveedor para ver sus facturas pendientes</span></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Proveedor</th><th>Facturas pendientes</th><th>Total adeudado</th></tr></thead>
+          <tbody>
+            ${resumenProveedores.length ? resumenProveedores.map(p => `
+              <tr class="prov-resumen-row" data-prov="${p.nombre}" style="cursor:pointer;">
+                <td>${STATE_provExpandido===p.nombre?'▾':'▸'} ${p.nombre}</td>
+                <td>${p.facturas.length}</td>
+                <td class="num" style="font-weight:700;color:var(--red);">${fmt(p.total)}</td>
+              </tr>
+              ${STATE_provExpandido===p.nombre ? `<tr><td colspan="3" style="padding:0 0 10px 0;background:#f7f9fc;">
+                <table style="width:100%;">
+                  <thead><tr><th style="padding-left:24px;">Fecha</th><th>Factura</th><th>Importe</th></tr></thead>
+                  <tbody>${p.facturas.map(f => `<tr><td style="padding-left:24px;">${f.fecha}</td><td>${f.factura||'s/f'}</td><td class="num">${fmt(f.importe)}</td></tr>`).join('')}</tbody>
+                </table>
+              </td></tr>` : ''}
+            `).join('') : `<tr><td colspan="3" class="empty">No hay adeudos pendientes.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
     </div>
     <div class="card">
       <div class="card-head">
@@ -2034,6 +2152,10 @@ async function renderProveedores() {
   document.getElementById('openCuentasBtnProv').addEventListener('click', () => openCuentasModal(b.id, renderProveedores));
   document.getElementById('importFacturasBtn').addEventListener('click', () => openImportExcelModal('facturas', b.id, renderProveedores));
   el.querySelectorAll('.prov-tab').forEach(t => t.addEventListener('click', () => { STATE_provFiltro = t.dataset.f; renderProveedores(); }));
+  el.querySelectorAll('.prov-resumen-row').forEach(tr => tr.addEventListener('click', () => {
+    STATE_provExpandido = STATE_provExpandido === tr.dataset.prov ? null : tr.dataset.prov;
+    renderProveedores();
+  }));
   el.querySelectorAll('.prov-cell').forEach(inp => {
     inp.addEventListener('change', async () => {
       const field = inp.dataset.field;
