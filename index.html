@@ -629,6 +629,22 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <input type="number" step="0.01" id="movDepositos" value="0">
       </div>
     </div>
+    <div class="field">
+      <label>Tipo de salida</label>
+      <select id="movTipoSalida">
+        <option value="otro">Sin clasificar</option>
+        <option value="gasto">Gasto</option>
+        <option value="proveedor">Pago a proveedor</option>
+      </select>
+    </div>
+    <div class="field" id="movSubcuentaWrap" style="display:none;">
+      <label>Subcuenta</label>
+      <select id="movSubcuenta"></select>
+    </div>
+    <div class="field" id="movFacturasWrap" style="display:none;">
+      <label>Facturas a pagar</label>
+      <div id="movFacturasList" style="max-height:200px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:8px;"></div>
+    </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="closeMovimiento">Cancelar</button>
       <button class="btn btn-gold" id="saveMovimiento">Guardar</button>
