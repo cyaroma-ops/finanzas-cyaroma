@@ -332,7 +332,9 @@ async function computeMonedaSaldo(businessId, moneda, conceptosEfectivo) {
   }
   const { data: movs } = await sb.from('fz_efectivo_mov').select('depositos,cargos').eq('moneda_id', moneda.id);
   const manualNet = (movs || []).reduce((s, m) => s + (Number(m.depositos) || 0) - (Number(m.cargos) || 0), 0);
-  return (Number(moneda.saldo_inicial) || 0) + autoDepositos + manualNet;
+  const polizaLineas = await getPolizaLineasParaCuenta(businessId, 'efectivo', moneda.id);
+  const polizaNet = polizaLineas.reduce((s, l) => s + (Number(l.cargo) || 0) - (Number(l.abono) || 0), 0);
+  return (Number(moneda.saldo_inicial) || 0) + autoDepositos + manualNet + polizaNet;
 }
 
 /* ---------- Vinculación Tarjetas (Ventas) → Cuenta bancaria ---------- */
@@ -353,7 +355,9 @@ async function computeBancoSaldo(businessId, cuenta, conceptosTarjetas) {
   }
   const { data: movs } = await sb.from('fz_bancos_mov').select('depositos,cargos').eq('cuenta_id', cuenta.id);
   const manualNet = (movs || []).reduce((s, m) => s + (Number(m.depositos) || 0) - (Number(m.cargos) || 0), 0);
-  return (Number(cuenta.saldo_inicial) || 0) + autoDepositos + manualNet;
+  const polizaLineas = await getPolizaLineasParaCuenta(businessId, 'banco', cuenta.id);
+  const polizaNet = polizaLineas.reduce((s, l) => s + (Number(l.cargo) || 0) - (Number(l.abono) || 0), 0);
+  return (Number(cuenta.saldo_inicial) || 0) + autoDepositos + manualNet + polizaNet;
 }
 async function getBancoLedgerRows(businessId, cuenta, conceptosTarjetas) {
   const concepts = conceptosParaBanco(cuenta, conceptosTarjetas);
@@ -369,6 +373,10 @@ async function getBancoLedgerRows(businessId, cuenta, conceptosTarjetas) {
       });
     });
   }
+  const polizaLineas = await getPolizaLineasParaCuenta(businessId, 'banco', cuenta.id);
+  polizaLineas.forEach(l => {
+    autoRows.push({ id: 'poliza-' + l.id, fecha: l.poliza.fecha, descripcion: `Póliza #${l.poliza.numero ?? ''} — ${l.descripcion || l.poliza.concepto || ''}`, concepto: 'Póliza de diario', cargos: Number(l.abono) || 0, depositos: Number(l.cargo) || 0, auto: true });
+  });
   const { data: movs } = await sb.from('fz_bancos_mov').select('*').eq('cuenta_id', cuenta.id).order('fecha');
   const manualRows = (movs || []).map(m => ({ ...m, auto: false }));
   return [...autoRows, ...manualRows].sort((a, b) => a.fecha.localeCompare(b.fecha));
@@ -1100,10 +1108,10 @@ async function populateTraspasoSelects(businessId, keepOrigen, keepDestino) {
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
   ]);
   const options = [
-    ...(cuentas.data||[]).map(c => `<option value="banco:${c.id}">Banco — ${c.nombre}</option>`),
-    ...(monedas.data||[]).map(m => `<option value="efectivo:${m.id}">Caja — ${m.nombre}</option>`),
-    `<option value="nuevo:banco">+ Nueva cuenta bancaria…</option>`,
-    `<option value="nuevo:efectivo">+ Nueva caja de efectivo…</option>`,
+    ...(cuentas.data||[]).map(c => `<option value="banco:${c.id}" data-tc="1">Banco — ${c.nombre}</option>`),
+    ...(monedas.data||[]).map(m => `<option value="efectivo:${m.id}" data-tc="${m.tc_reporte||1}">Caja — ${m.nombre}</option>`),
+    `<option value="nuevo:banco" data-tc="1">+ Nueva cuenta bancaria…</option>`,
+    `<option value="nuevo:efectivo" data-tc="1">+ Nueva caja de efectivo…</option>`,
   ].join('');
   const oSel = document.getElementById('traspasoOrigen');
   const dSel = document.getElementById('traspasoDestino');
@@ -1322,21 +1330,82 @@ function openImportExcelModal(tipo, businessId, onDone, extra) {
   input.click();
 }
 
+function openMovimientoModal(contexto) {
+  const modal = document.getElementById('modalMovimiento');
+  document.getElementById('movFecha').value = todayStr();
+  document.getElementById('movCampo1').value = '';
+  document.getElementById('movConcepto').value = '';
+  document.getElementById('movReferencia').value = '';
+  document.getElementById('movDescripcion').value = '';
+  document.getElementById('movCargos').value = 0;
+  document.getElementById('movDepositos').value = 0;
+
+  if (contexto.tipo === 'efectivo') {
+    document.getElementById('movLabel1').textContent = 'Proveedor / Concepto';
+    document.getElementById('movCampo1').placeholder = 'Ej. Distribuidora de Bebidas';
+    document.getElementById('movConceptoWrap').style.display = 'none';
+    document.getElementById('movReferenciaWrap').style.display = 'none';
+  } else {
+    document.getElementById('movLabel1').textContent = 'Concepto';
+    document.getElementById('movCampo1').placeholder = 'Ej. Pago de servicio';
+    document.getElementById('movConceptoWrap').style.display = 'none';
+    document.getElementById('movReferenciaWrap').style.display = 'block';
+  }
+
+  modal.classList.add('show');
+  document.getElementById('closeMovimiento').onclick = () => modal.classList.remove('show');
+  document.getElementById('saveMovimiento').onclick = async () => {
+    const fecha = document.getElementById('movFecha').value || todayStr();
+    const cargos = Number(document.getElementById('movCargos').value) || 0;
+    const depositos = Number(document.getElementById('movDepositos').value) || 0;
+    const descripcion = document.getElementById('movDescripcion').value || null;
+    if (!cargos && !depositos) { toast('Escribe un monto en Cargos o Depósitos.', 'error'); return; }
+    let payload, table;
+    if (contexto.tipo === 'efectivo') {
+      table = 'fz_efectivo_mov';
+      payload = { business_id: contexto.businessId, moneda_id: contexto.refId, fecha, proveedor: document.getElementById('movCampo1').value || null, descripcion, cargos, depositos, tipo_salida: 'otro' };
+    } else {
+      table = 'fz_bancos_mov';
+      payload = { business_id: contexto.businessId, cuenta_id: contexto.refId, fecha, concepto: document.getElementById('movCampo1').value || null, referencia: document.getElementById('movReferencia').value || null, descripcion, cargos, depositos, tipo_salida: 'otro' };
+    }
+    const { error } = await sb.from(table).insert(payload);
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    modal.classList.remove('show');
+    toast('Movimiento agregado.');
+    if (contexto.onDone) contexto.onDone();
+  };
+}
+
 async function openTraspasoModal(businessId, onDone) {
   await populateTraspasoSelects(businessId);
   document.getElementById('traspasoFecha').value = todayStr();
   document.getElementById('traspasoMonto').value = '';
+  document.getElementById('traspasoMontoDestino').value = '';
   document.getElementById('traspasoDescripcion').value = '';
   document.getElementById('modalTraspaso').classList.add('show');
 
+  let destinoTocadoManualmente = false;
+  const sugerirMontoDestino = () => {
+    if (destinoTocadoManualmente) return;
+    const oSel = document.getElementById('traspasoOrigen');
+    const dSel = document.getElementById('traspasoDestino');
+    const tcOrigen = Number(oSel.selectedOptions[0]?.dataset.tc) || 1;
+    const tcDestino = Number(dSel.selectedOptions[0]?.dataset.tc) || 1;
+    const montoOrigen = Number(document.getElementById('traspasoMonto').value) || 0;
+    document.getElementById('traspasoMontoDestino').value = montoOrigen ? (montoOrigen * (tcOrigen / tcDestino)).toFixed(2) : '';
+  };
+  document.getElementById('traspasoMontoDestino').oninput = () => { destinoTocadoManualmente = true; };
+  document.getElementById('traspasoMonto').oninput = sugerirMontoDestino;
+
   const handleNuevo = async (selectEl) => {
-    if (!selectEl.value.startsWith('nuevo:')) return;
+    if (!selectEl.value.startsWith('nuevo:')) { sugerirMontoDestino(); return; }
     const tipo = selectEl.value.split(':')[1];
     const otherSel = selectEl.id === 'traspasoOrigen' ? document.getElementById('traspasoDestino') : document.getElementById('traspasoOrigen');
     const otherVal = otherSel.value;
     const nuevoValor = await crearCuentaOCajaRapida(businessId, tipo);
     await populateTraspasoSelects(businessId, selectEl.id === 'traspasoOrigen' ? nuevoValor : otherVal, selectEl.id === 'traspasoDestino' ? nuevoValor : otherVal);
     if (nuevoValor) toast('Cuenta/caja creada. Ya puedes usarla en el traspaso.');
+    sugerirMontoDestino();
   };
   document.getElementById('traspasoOrigen').onchange = (e) => handleNuevo(e.target);
   document.getElementById('traspasoDestino').onchange = (e) => handleNuevo(e.target);
@@ -1346,15 +1415,17 @@ async function openTraspasoModal(businessId, onDone) {
     const origen = document.getElementById('traspasoOrigen').value;
     const destino = document.getElementById('traspasoDestino').value;
     const fecha = document.getElementById('traspasoFecha').value;
-    const monto = Number(document.getElementById('traspasoMonto').value) || 0;
+    const montoOrigen = Number(document.getElementById('traspasoMonto').value) || 0;
+    const montoDestino = Number(document.getElementById('traspasoMontoDestino').value) || montoOrigen;
     const descripcion = document.getElementById('traspasoDescripcion').value || 'Traspaso entre cuentas';
     if (origen.startsWith('nuevo:') || destino.startsWith('nuevo:')) { toast('Termina de crear la cuenta/caja nueva antes de guardar.', 'error'); return; }
     if (origen === destino) { toast('Elige cuentas distintas.', 'error'); return; }
-    if (!monto) { toast('Escribe un monto.', 'error'); return; }
+    if (!montoOrigen) { toast('Escribe un monto.', 'error'); return; }
     const traspasoId = uid();
     const [oTipo, oId] = origen.split(':');
     const [dTipo, dId] = destino.split(':');
     const insertLeg = (tipo, id, esOrigen) => {
+      const monto = esOrigen ? montoOrigen : montoDestino;
       const payload = {
         business_id: businessId, fecha, tipo_salida: 'traspaso', traspaso_id: traspasoId,
         cargos: esOrigen ? monto : 0, depositos: esOrigen ? 0 : monto,
@@ -1390,7 +1461,8 @@ function salidaCellsHtml(r, subcuentas, mayores, facturasPend, prefix, traspasoC
       ${subcuentas.map(s => { const m = mayores.find(x=>x.id===s.cuenta_mayor_id); return `<option value="${s.id}" ${r.subcuenta_id===s.id?'selected':''}>${m?m.nombre+' › ':''}${s.nombre}</option>`; }).join('')}
     </select>`;
   } else if (tipo === 'proveedor') {
-    const opcionesFactura = facturasPend.filter(f => f.estatus !== 'Pagado' || f.id === r.proveedor_factura_id);
+    const idsVinculados = facturaIdsDe(r);
+    const opcionesFactura = facturasPend.filter(f => f.estatus !== 'Pagado' || idsVinculados.includes(f.id));
     const porProveedor = {};
     opcionesFactura.forEach(f => {
       const key = f.proveedor || '(sin proveedor)';
@@ -1398,12 +1470,11 @@ function salidaCellsHtml(r, subcuentas, mayores, facturasPend, prefix, traspasoC
     });
     const gruposHtml = Object.keys(porProveedor).sort((a,b)=>a.localeCompare(b)).map(nombreProv => `
       <optgroup label="${nombreProv}">
-        ${porProveedor[nombreProv].map(f => `<option value="${f.id}" ${r.proveedor_factura_id===f.id?'selected':''}>${f.fecha} · ${f.factura||'s/f'} · ${fmt(f.importe)}${f.estatus==='Pagado'?' (ya pagada)':''}</option>`).join('')}
+        ${porProveedor[nombreProv].map(f => `<option value="${f.id}" ${idsVinculados.includes(f.id)?'selected':''}>${f.fecha} · ${f.factura||'s/f'} · ${fmt(f.importe)}${f.estatus==='Pagado'?' (ya pagada)':''}</option>`).join('')}
       </optgroup>`).join('');
-    detalle = `<select class="cell salida-detalle" data-id="${r.id}" data-field="proveedor_factura_id">
-      <option value="">— elegir factura —</option>
+    detalle = `<select class="cell salida-detalle-multi" data-id="${r.id}" multiple size="4" style="min-width:220px;">
       ${gruposHtml}
-    </select>`;
+    </select><div style="font-size:10.5px;color:var(--muted);margin-top:2px;">Ctrl/Cmd+clic para elegir varias</div>`;
   } else if (tipo === 'traspaso_banco' && traspasoCtx) {
     const opciones = (traspasoCtx.cuentasBanco || []).filter(c => !(traspasoCtx.origenTipo === 'banco' && c.id === traspasoCtx.origenId));
     detalle = `<select class="cell salida-traspaso-destino" data-id="${r.id}" data-tipo="banco">
@@ -1419,22 +1490,35 @@ function salidaCellsHtml(r, subcuentas, mayores, facturasPend, prefix, traspasoC
   }
   return `<td>${tipoSelect}</td><td>${detalle}</td>`;
 }
+function facturaIdsDe(r) {
+  if (Array.isArray(r.proveedor_factura_ids) && r.proveedor_factura_ids.length) return r.proveedor_factura_ids;
+  if (r.proveedor_factura_id) return [r.proveedor_factura_id];
+  return [];
+}
+
 function wireSalidaCellHandlers(container, table, onChange, traspasoCtx) {
   container.querySelectorAll('.salida-tipo').forEach(sel => sel.addEventListener('change', async () => {
-    await sb.from(table).update({ tipo_salida: sel.value, subcuenta_id: null, proveedor_factura_id: null }).eq('id', sel.dataset.id);
+    await sb.from(table).update({ tipo_salida: sel.value, subcuenta_id: null, proveedor_factura_id: null, proveedor_factura_ids: [] }).eq('id', sel.dataset.id);
     onChange();
   }));
   container.querySelectorAll('.salida-detalle').forEach(sel => sel.addEventListener('change', async () => {
     const field = sel.dataset.field;
     await sb.from(table).update({ [field]: sel.value || null }).eq('id', sel.dataset.id);
-    if (field === 'proveedor_factura_id' && sel.value) {
+    onChange();
+  }));
+  container.querySelectorAll('.salida-detalle-multi').forEach(sel => sel.addEventListener('change', async () => {
+    const idsSeleccionados = Array.from(sel.selectedOptions).map(o => o.value);
+    await sb.from(table).update({ proveedor_factura_ids: idsSeleccionados, proveedor_factura_id: idsSeleccionados[0] || null }).eq('id', sel.dataset.id);
+    if (idsSeleccionados.length) {
       const { data: movRow } = await sb.from(table).select('fecha').eq('id', sel.dataset.id).single();
       await sb.from('fz_proveedores').update({
         estatus: 'Pagado',
         fecha_pago: movRow?.fecha || todayStr(),
         pagado_desde: traspasoCtx?.origenCorto || null,
-      }).eq('id', sel.value);
-      toast('Factura marcada como pagada.');
+        pagado_desde_tipo: traspasoCtx?.origenTipo || null,
+        pagado_desde_cuenta_id: traspasoCtx?.origenId || null,
+      }).in('id', idsSeleccionados);
+      toast(`${idsSeleccionados.length} factura(s) marcada(s) como pagada(s).`);
     }
     onChange();
   }));
@@ -1492,6 +1576,10 @@ async function getMonedaLedgerRows(businessId, moneda, conceptosEfectivo) {
       });
     });
   }
+  const polizaLineas = await getPolizaLineasParaCuenta(businessId, 'efectivo', moneda.id);
+  polizaLineas.forEach(l => {
+    autoRows.push({ id: 'poliza-' + l.id, fecha: l.poliza.fecha, proveedor: 'Póliza de diario', descripcion: `Póliza #${l.poliza.numero ?? ''} — ${l.descripcion || l.poliza.concepto || ''}`, factura: '', cargos: Number(l.abono) || 0, depositos: Number(l.cargo) || 0, auto: true });
+  });
   const { data: movs } = await sb.from('fz_efectivo_mov').select('*').eq('moneda_id', moneda.id).order('fecha');
   const manualRows = (movs || []).map(m => ({ ...m, auto: false }));
   return [...autoRows, ...manualRows].sort((a, b) => a.fecha.localeCompare(b.fecha));
@@ -1646,10 +1734,8 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
     </div>
   `;
 
-  document.getElementById('addMovBtn').addEventListener('click', async () => {
-    await sb.from('fz_efectivo_mov').insert({ business_id: businessId, moneda_id: moneda.id, fecha: todayStr(), proveedor: '', cargos: 0, depositos: 0, tipo_salida: 'otro' });
-    const m2 = { ...moneda };
-    renderMonedaLedger(m2, businessId, conceptosEfectivo);
+  document.getElementById('addMovBtn').addEventListener('click', () => {
+    openMovimientoModal({ tipo: 'efectivo', refId: moneda.id, businessId, onDone: () => renderMonedaLedger({ ...moneda }, businessId, conceptosEfectivo) });
   });
   wireSalidaCellHandlers(box, 'fz_efectivo_mov', () => renderMonedaLedger(moneda, businessId, conceptosEfectivo), traspasoCtx);
   box.querySelectorAll('.mov-cell').forEach(inp => {
@@ -1797,9 +1883,8 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
   `;
 
   document.getElementById('importMovBtn').addEventListener('click', () => openImportExcelModal('bancos_mov', businessId, () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas), cuentaId));
-  document.getElementById('addMovBtn').addEventListener('click', async () => {
-    await sb.from('fz_bancos_mov').insert({ cuenta_id: cuentaId, business_id: businessId, fecha: todayStr(), tipo_salida: 'otro' });
-    renderBancoLedger(cuentaId, businessId, conceptosTarjetas);
+  document.getElementById('addMovBtn').addEventListener('click', () => {
+    openMovimientoModal({ tipo: 'banco', refId: cuentaId, businessId, onDone: () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas) });
   });
   wireSalidaCellHandlers(box, 'fz_bancos_mov', () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas), traspasoCtx);
   box.querySelectorAll('.mov-cell').forEach(inp => {
@@ -1836,8 +1921,8 @@ async function renderProveedores() {
   if (provQ.error) { el.innerHTML = `<div class="empty">Error: ${provQ.error.message}</div>`; return; }
   const all = provQ.data || [];
   const opcionesPagoDesde = [
-    ...(cuentasBancoQ.data || []).map(c => 'Banco — ' + c.nombre),
-    ...(monedasQ.data || []).map(m => 'Caja — ' + m.nombre),
+    ...(cuentasBancoQ.data || []).map(c => ({ value: 'banco:' + c.id, label: 'Banco — ' + c.nombre })),
+    ...(monedasQ.data || []).map(m => ({ value: 'efectivo:' + m.id, label: 'Caja — ' + m.nombre })),
   ];
   const pendiente = all.filter(p => p.estatus === 'Pendiente').reduce((s,p)=>s+(Number(p.importe)||0),0);
   const pagado = all.filter(p => p.estatus === 'Pagado').reduce((s,p)=>s+(Number(p.importe)||0),0);
@@ -1859,6 +1944,7 @@ async function renderProveedores() {
           <button class="btn btn-gold btn-sm" id="addProvBtn">+ Agregar factura</button>
         </div>
       </div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Al marcar "Pagado" y elegir de dónde, se crea/actualiza automáticamente el movimiento real en esa cuenta (y se descuenta su saldo).</p>
       <div class="tag-row">
         ${['Todos','Pendiente','Pagado'].map(f => `<div class="tag prov-tab ${STATE_provFiltro===f?'active':''}" data-f="${f}">${f}</div>`).join('')}
       </div>
@@ -1892,6 +1978,20 @@ async function renderProveedores() {
         payload.proveedor = c ? c.nombre : '';
       }
       await sb.from('fz_proveedores').update(payload).eq('id', inp.dataset.id);
+      if (field === 'estatus') await syncPagoProveedor(b.id, inp.dataset.id);
+      renderProveedores();
+    });
+  });
+  el.querySelectorAll('.prov-pagodesde').forEach(sel => {
+    sel.addEventListener('change', async () => {
+      const [tipo, cuentaId] = sel.value ? sel.value.split(':') : [null, null];
+      const opt = opcionesPagoDesde.find(o => o.value === sel.value);
+      await sb.from('fz_proveedores').update({
+        pagado_desde: opt ? opt.label : null,
+        pagado_desde_tipo: tipo,
+        pagado_desde_cuenta_id: cuentaId || null,
+      }).eq('id', sel.dataset.id);
+      await syncPagoProveedor(b.id, sel.dataset.id);
       renderProveedores();
     });
   });
@@ -1900,6 +2000,41 @@ async function renderProveedores() {
     renderProveedores();
   }));
   el.querySelectorAll('.prov-desglosar').forEach(btn => btn.addEventListener('click', () => openDesgloseModal(b.id, btn.dataset.id, renderProveedores)));
+}
+
+async function syncPagoProveedor(businessId, facturaId) {
+  const { data: factura } = await sb.from('fz_proveedores').select('*').eq('id', facturaId).single();
+  if (!factura) return;
+  const [bmQ, emQ] = await Promise.all([
+    sb.from('fz_bancos_mov').select('*').eq('business_id', businessId).eq('tipo_salida', 'proveedor'),
+    sb.from('fz_efectivo_mov').select('*').eq('business_id', businessId).eq('tipo_salida', 'proveedor'),
+  ]);
+  const movesUnicos = [
+    ...(bmQ.data || []).filter(m => facturaIdsDe(m).length === 1 && facturaIdsDe(m)[0] === facturaId).map(m => ({ ...m, _t: 'fz_bancos_mov' })),
+    ...(emQ.data || []).filter(m => facturaIdsDe(m).length === 1 && facturaIdsDe(m)[0] === facturaId).map(m => ({ ...m, _t: 'fz_efectivo_mov' })),
+  ];
+
+  if (factura.estatus !== 'Pagado' || !factura.pagado_desde_tipo || !factura.pagado_desde_cuenta_id) {
+    for (const m of movesUnicos) await sb.from(m._t).delete().eq('id', m.id);
+    return;
+  }
+
+  const yaCorrecta = movesUnicos.find(m => factura.pagado_desde_tipo === 'banco'
+    ? (m._t === 'fz_bancos_mov' && m.cuenta_id === factura.pagado_desde_cuenta_id)
+    : (m._t === 'fz_efectivo_mov' && m.moneda_id === factura.pagado_desde_cuenta_id));
+  for (const m of movesUnicos) { if (m.id !== yaCorrecta?.id) await sb.from(m._t).delete().eq('id', m.id); }
+
+  if (yaCorrecta) {
+    await sb.from(yaCorrecta._t).update({ cargos: factura.importe, fecha: factura.fecha_pago || todayStr() }).eq('id', yaCorrecta.id);
+  } else {
+    const payload = {
+      business_id: businessId, fecha: factura.fecha_pago || todayStr(), cargos: factura.importe, depositos: 0,
+      tipo_salida: 'proveedor', proveedor_factura_id: facturaId, proveedor_factura_ids: [facturaId],
+      descripcion: `Pago factura ${factura.factura || 's/f'} — ${factura.proveedor}`,
+    };
+    if (factura.pagado_desde_tipo === 'banco') await sb.from('fz_bancos_mov').insert({ ...payload, cuenta_id: factura.pagado_desde_cuenta_id, concepto: 'Pago a proveedor' });
+    else await sb.from('fz_efectivo_mov').insert({ ...payload, moneda_id: factura.pagado_desde_cuenta_id, proveedor: factura.proveedor });
+  }
 }
 
 function provRowHtml(p, catalogo, opcionesPagoDesde) {
@@ -1919,9 +2054,9 @@ function provRowHtml(p, catalogo, opcionesPagoDesde) {
       <option ${p.estatus==='Pagado'?'selected':''}>Pagado</option>
     </select></td>
     <td><input class="cell prov-cell" type="date" value="${p.fecha_pago||''}" data-id="${p.id}" data-field="fecha_pago"></td>
-    <td><select class="cell prov-cell" data-id="${p.id}" data-field="pagado_desde" style="min-width:150px;">
+    <td><select class="cell prov-pagodesde" data-id="${p.id}" style="min-width:150px;">
       <option value="">— sin especificar —</option>
-      ${opcionesPagoDesde.map(o => `<option ${p.pagado_desde===o?'selected':''}>${o}</option>`).join('')}
+      ${opcionesPagoDesde.map(o => `<option value="${o.value}" ${(p.pagado_desde_tipo && (p.pagado_desde_tipo+':'+p.pagado_desde_cuenta_id)===o.value)?'selected':''}>${o.label}</option>`).join('')}
     </select></td>
     <td><button class="row-del prov-del" data-id="${p.id}">✕</button></td>
   </tr>`;
@@ -1948,6 +2083,15 @@ async function getPolizasLineasPeriodo(businessId, periodo) {
   if (!ids.length) return [];
   const { data: lineas } = await sb.from('fz_polizas_lineas').select('cargo,abono,subcuenta_id').in('poliza_id', ids);
   return lineas || [];
+}
+
+async function getPolizaLineasParaCuenta(businessId, tipo, refId) {
+  const { data: lineas } = await sb.from('fz_polizas_lineas').select('*').eq('business_id', businessId).eq('cuenta_tipo', tipo).eq('cuenta_ref_id', refId);
+  if (!lineas || !lineas.length) return [];
+  const polizaIds = [...new Set(lineas.map(l => l.poliza_id))];
+  const { data: polizas } = await sb.from('fz_polizas').select('id,fecha,concepto,numero').in('id', polizaIds);
+  const polizaMap = Object.fromEntries((polizas || []).map(p => [p.id, p]));
+  return lineas.map(l => ({ ...l, poliza: polizaMap[l.poliza_id] })).filter(l => l.poliza);
 }
 
 async function computeGastosClasificados(businessId, periodo, subcuentas, mayores) {
@@ -2304,14 +2448,13 @@ async function renderPolizas() {
   const b = biz();
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
 
-  const [polizas, lineas, subcuentas, mayores] = await Promise.all([
+  const [polizas, lineas, subcuentas, mayores, cuentasBancoQ, monedasQ] = await Promise.all([
     loadPolizas(b.id), loadTodasLasLineas(b.id), loadSubcuentas(b.id), loadCuentasMayor(b.id),
+    sb.from('fz_bancos_cuentas').select('*').eq('business_id', b.id).eq('activo', true),
+    sb.from('fz_efectivo_monedas').select('*').eq('business_id', b.id).eq('activo', true),
   ]);
-
-  const subcuentaOptions = subcuentas.map(s => {
-    const m = mayores.find(x => x.id === s.cuenta_mayor_id);
-    return `<option value="${s.id}">${m ? m.nombre + ' › ' : ''}${s.nombre}${m ? ' (' + (TIPO_CUENTA_LABEL[m.tipo]||m.tipo) + ')' : ''}</option>`;
-  }).join('');
+  const cuentasBanco = cuentasBancoQ.data || [];
+  const monedasEfectivo = monedasQ.data || [];
 
   const totalCuadradas = polizas.filter(p => {
     const ls = lineas.filter(l => l.poliza_id === p.id);
@@ -2334,10 +2477,10 @@ async function renderPolizas() {
           <button class="btn btn-gold btn-sm" id="addPolizaBtn">+ Nueva póliza</button>
         </div>
       </div>
-      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">El Excel de pólizas debe tener columnas: Fecha, Concepto, Subcuenta, Descripción, Cargo, Abono — las filas con la misma Fecha y Concepto se agrupan en una sola póliza.</p>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Cada línea puede afectar una cuenta contable (Catálogo de cuentas) o directamente una cuenta bancaria / caja de efectivo real — en ese caso el cargo/abono también se refleja en el saldo de Bancos o Efectivo. El Excel de pólizas debe tener columnas: Fecha, Concepto, Subcuenta, Descripción, Cargo, Abono — las filas con la misma Fecha y Concepto se agrupan en una sola póliza.</p>
       ${subcuentas.length === 0 ? `<div class="empty">Aún no tienes cuentas en el catálogo. Crea al menos una (de cualquier tipo) para poder registrar pólizas.</div>` : ''}
       <div id="polizasList">
-        ${polizas.length === 0 ? `<div class="empty">Sin pólizas todavía.</div>` : polizas.map(p => polizaCardHtml(p, lineas.filter(l=>l.poliza_id===p.id), subcuentaOptions, subcuentas, mayores)).join('')}
+        ${polizas.length === 0 ? `<div class="empty">Sin pólizas todavía.</div>` : polizas.map(p => polizaCardHtml(p, lineas.filter(l=>l.poliza_id===p.id), subcuentas, mayores, cuentasBanco, monedasEfectivo)).join('')}
       </div>
     </div>
   `;
@@ -2357,11 +2500,37 @@ async function renderPolizas() {
   wirePolizaHandlers(el, b.id);
 }
 
-function polizaCardHtml(p, lineasPoliza, subcuentaOptions, subcuentas, mayores) {
+function polizaCardHtml(p, lineasPoliza, subcuentas, mayores, cuentasBanco, monedasEfectivo) {
   const totalCargo = lineasPoliza.reduce((s,l)=>s+(Number(l.cargo)||0),0);
   const totalAbono = lineasPoliza.reduce((s,l)=>s+(Number(l.abono)||0),0);
   const diff = totalCargo - totalAbono;
   const cuadrada = Math.abs(diff) < 0.01;
+  const cuentaCellsHtml = (l) => {
+    const tipo = l.cuenta_tipo || 'subcuenta';
+    const tipoSelect = `<select class="cell linea-tipo" data-id="${l.id}">
+      <option value="subcuenta" ${tipo==='subcuenta'?'selected':''}>Cuenta contable</option>
+      <option value="banco" ${tipo==='banco'?'selected':''}>Banco</option>
+      <option value="efectivo" ${tipo==='efectivo'?'selected':''}>Efectivo</option>
+    </select>`;
+    let cuentaSelect;
+    if (tipo === 'banco') {
+      cuentaSelect = `<select class="cell linea-cuenta" data-id="${l.id}" data-tipo="banco">
+        <option value="">— elegir cuenta bancaria —</option>
+        ${cuentasBanco.map(c => `<option value="${c.id}" ${l.cuenta_ref_id===c.id?'selected':''}>${c.nombre}</option>`).join('')}
+      </select>`;
+    } else if (tipo === 'efectivo') {
+      cuentaSelect = `<select class="cell linea-cuenta" data-id="${l.id}" data-tipo="efectivo">
+        <option value="">— elegir caja —</option>
+        ${monedasEfectivo.map(m => `<option value="${m.id}" ${l.cuenta_ref_id===m.id?'selected':''}>${m.nombre}</option>`).join('')}
+      </select>`;
+    } else {
+      cuentaSelect = `<select class="cell linea-cuenta" data-id="${l.id}" data-tipo="subcuenta">
+        <option value="">— elegir subcuenta —</option>
+        ${subcuentas.map(s => { const m = mayores.find(x=>x.id===s.cuenta_mayor_id); return `<option value="${s.id}" ${l.subcuenta_id===s.id?'selected':''}>${m?m.nombre+' › ':''}${s.nombre}</option>`; }).join('')}
+      </select>`;
+    }
+    return `<td>${tipoSelect}</td><td>${cuentaSelect}</td>`;
+  };
   return `
     <div class="card" style="background:#fbfcfe;border:1.5px solid var(--line);margin-bottom:16px;">
       <div class="card-head" style="margin-bottom:10px;">
@@ -2377,17 +2546,17 @@ function polizaCardHtml(p, lineasPoliza, subcuentaOptions, subcuentas, mayores) 
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Subcuenta</th><th>Descripción</th><th>Cargo</th><th>Abono</th><th></th></tr></thead>
+          <thead><tr><th>Tipo</th><th>Cuenta</th><th>Descripción</th><th>Cargo</th><th>Abono</th><th></th></tr></thead>
           <tbody>
             ${lineasPoliza.map(l => `<tr>
-              <td><select class="cell linea-cell" data-id="${l.id}" data-field="subcuenta_id"><option value="">— elegir —</option>${subcuentaOptions.replace(`value="${l.subcuenta_id}"`, `value="${l.subcuenta_id}" selected`)}</select></td>
+              ${cuentaCellsHtml(l)}
               <td><input class="cell linea-cell" type="text" value="${l.descripcion||''}" data-id="${l.id}" data-field="descripcion"></td>
               <td><input class="cell linea-cell num" type="number" step="0.01" value="${l.cargo ?? 0}" data-id="${l.id}" data-field="cargo"></td>
               <td><input class="cell linea-cell num" type="number" step="0.01" value="${l.abono ?? 0}" data-id="${l.id}" data-field="abono"></td>
               <td><button class="row-del linea-del" data-id="${l.id}">✕</button></td>
             </tr>`).join('')}
             <tr class="total-row">
-              <td colspan="2">Totales</td>
+              <td colspan="3">Totales</td>
               <td class="num">${fmt(totalCargo)}</td>
               <td class="num">${fmt(totalAbono)}</td>
               <td></td>
@@ -2408,9 +2577,19 @@ function wirePolizaHandlers(el, businessId) {
     await sb.from('fz_polizas').delete().eq('id', btn.dataset.id);
     renderPolizas();
   }));
+  el.querySelectorAll('.linea-tipo').forEach(sel => sel.addEventListener('change', async () => {
+    await sb.from('fz_polizas_lineas').update({ cuenta_tipo: sel.value, subcuenta_id: null, cuenta_ref_id: null }).eq('id', sel.dataset.id);
+    renderPolizas();
+  }));
+  el.querySelectorAll('.linea-cuenta').forEach(sel => sel.addEventListener('change', async () => {
+    const tipo = sel.dataset.tipo;
+    const payload = tipo === 'subcuenta' ? { subcuenta_id: sel.value || null, cuenta_ref_id: null } : { cuenta_ref_id: sel.value || null, subcuenta_id: null };
+    await sb.from('fz_polizas_lineas').update(payload).eq('id', sel.dataset.id);
+    renderPolizas();
+  }));
   el.querySelectorAll('.linea-cell').forEach(inp => inp.addEventListener('change', async () => {
     const field = inp.dataset.field;
-    const val = (field === 'descripcion' || field === 'subcuenta_id') ? (inp.value || null) : (Number(inp.value) || 0);
+    const val = field === 'descripcion' ? (inp.value || null) : (Number(inp.value) || 0);
     await sb.from('fz_polizas_lineas').update({ [field]: val }).eq('id', inp.dataset.id);
     renderPolizas();
   }));
