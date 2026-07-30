@@ -19,6 +19,7 @@ const fmt = (n) => {
   return n.toLocaleString('es-MX', { style: 'currency', currency: 'MXN', minimumFractionDigits: 2 });
 };
 const fmtNum = (n) => (Number(n) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fechaCorta = (iso) => { if (!iso) return ''; const [y,m,d] = iso.split('-'); return d && m && y ? `${d}/${m}/${y}` : iso; };
 const monthBounds = (ym) => {
   const [y, m] = ym.split('-').map(Number);
   const start = `${ym}-01`;
@@ -1849,10 +1850,10 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
     saldo += (Number(r.depositos) || 0) - (Number(r.cargos) || 0);
     if (r.auto) {
       return `<tr style="background:#f7f9fc;">
-        <td>${r.fecha}</td>
+        <td>${fechaCorta(r.fecha)}</td>
         <td><em>${r.proveedor}</em> <span style="color:var(--muted);font-size:11px;">· auto</span></td>
         <td>${r.descripcion}</td>
-        <td class="num">—</td>
+        <td class="num">${fmtNum(r.cargos)}</td>
         <td class="num">${fmtNum(r.depositos)}</td>
         <td class="num" style="font-weight:700;">${fmtNum(saldo)}</td>
         <td>—</td><td></td>
@@ -1993,12 +1994,12 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     saldo += (Number(m.depositos)||0) - (Number(m.cargos)||0);
     if (m.auto) {
       return `<tr style="background:#f7f9fc;">
-        <td>${m.fecha}</td>
+        <td>${fechaCorta(m.fecha)}</td>
         <td><em>${m.descripcion}</em> <span style="color:var(--muted);font-size:11px;">· auto</span></td>
         <td>${m.concepto}</td>
         <td>—</td>
         <td class="num">${fmtNum(m.depositos)}</td>
-        <td class="num">—</td>
+        <td class="num">${fmtNum(m.cargos)}</td>
         <td class="num" style="font-weight:700;">${fmt(saldo)}</td>
         <td>—</td><td>—</td><td></td>
       </tr>`;
