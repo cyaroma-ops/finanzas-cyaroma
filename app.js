@@ -553,7 +553,18 @@ const conceptoValor = (concepto, entry) => {
 };
 
 // Diferencia = (Sistema + Propinas del medio) − Recibido. Gastos solo afectan la de Efectivo.
-function computeRowDiffs(r, conceptosVenta, porCat) {
+function sumSistemaCategoria(r, conceptosSistema, categoria) {
+  const conceptosCat = (conceptosSistema || []).filter(c => c.categoria === categoria);
+  const sd = r.sistema_data || {};
+  const tieneDatos = conceptosCat.some(c => sd[c.id] !== undefined);
+  if (tieneDatos) return conceptosCat.reduce((s,c) => s + (Number(sd[c.id]) || 0), 0);
+  if (categoria === 'efectivo') return Number(r.efectivo_sistema) || 0;
+  if (categoria === 'tarjetas') return Number(r.tarjetas_sistema) || 0;
+  if (categoria === 'cxc') return Number(r.cxc) || 0;
+  return 0;
+}
+
+function computeRowDiffs(r, conceptosVenta, porCat, conceptosSistema) {
   const rd = r.recon_data || {};
   const totalVenta = totalVentaDinamico(r, conceptosVenta);
   const totalEfvo = porCat.efectivo.reduce((s,c)=>s+conceptoValor(c, rd[c.id]),0);
@@ -564,11 +575,20 @@ function computeRowDiffs(r, conceptosVenta, porCat) {
   const propEfvo = porCat.propinas.filter(c=>(c.medio||'efectivo')==='efectivo').reduce((s,c)=>s+conceptoValor(c, rd[c.id]),0);
   const propTarj = porCat.propinas.filter(c=>c.medio==='tarjetas').reduce((s,c)=>s+conceptoValor(c, rd[c.id]),0);
   const gastos = Number(r.gastos)||0;
-  const difEfvo = ((Number(r.efectivo_sistema)||0) + propEfvo) - totalEfvo - gastos;
-  const difTarj = ((Number(r.tarjetas_sistema)||0) + propTarj) - (totalTarj + totalBancos);
-  const difCxc = (Number(r.cxc)||0) - totalCxc;
+  const sistemaEfvo = sumSistemaCategoria(r, conceptosSistema, 'efectivo');
+  const sistemaTarj = sumSistemaCategoria(r, conceptosSistema, 'tarjetas');
+  const sistemaCxc = sumSistemaCategoria(r, conceptosSistema, 'cxc');
+  const difEfvo = (sistemaEfvo + propEfvo) - totalEfvo - gastos;
+  const difTarj = (sistemaTarj + propTarj) - (totalTarj + totalBancos);
+  const difCxc = sistemaCxc - totalCxc;
   const difTotal = difEfvo + difTarj + difCxc;
-  return { totalVenta, totalEfvo, totalTarj, totalBancos, totalCxc, totalProp, propEfvo, propTarj, difEfvo, difTarj, difCxc, difTotal };
+  return { totalVenta, totalEfvo, totalTarj, totalBancos, totalCxc, totalProp, propEfvo, propTarj, sistemaEfvo, sistemaTarj, sistemaCxc, difEfvo, difTarj, difCxc, difTotal };
+}
+
+async function loadConceptosSistema(businessId) {
+  const { data, error } = await sb.from('fz_conceptos_sistema').select('*').eq('business_id', businessId).order('orden');
+  if (error) { toast('Error: ' + error.message, 'error'); return []; }
+  return data || [];
 }
 
 async function loadConceptosVenta(businessId) {
@@ -587,16 +607,18 @@ async function renderVentas() {
   const b = biz();
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
   const { start, end } = monthBounds(STATE.currentMonth);
-  const [ventasQ, conceptosVenta, conceptos] = await Promise.all([
+  const [ventasQ, conceptosVenta, conceptos, conceptosSistema] = await Promise.all([
     sb.from('fz_ventas').select('*').eq('business_id', b.id).gte('fecha', start).lte('fecha', end).order('fecha'),
     loadConceptosVenta(b.id),
     loadConceptos(b.id),
+    loadConceptosSistema(b.id),
   ]);
   if (ventasQ.error) { el.innerHTML = `<div class="empty">Error: ${ventasQ.error.message}</div>`; return; }
   const rows = ventasQ.data || [];
 
   const porCat = { efectivo: conceptos.filter(c=>c.categoria==='efectivo'), tarjetas: conceptos.filter(c=>c.categoria==='tarjetas'), bancos: conceptos.filter(c=>c.categoria==='bancos'), cxc: conceptos.filter(c=>c.categoria==='cxc'), propinas: conceptos.filter(c=>c.categoria==='propinas') };
   const recibidoCats = ['efectivo','tarjetas','bancos','cxc','propinas'].filter(cat => porCat[cat].length);
+  const sistemaCats = ['efectivo','tarjetas','cxc'].filter(cat => conceptosSistema.some(c=>c.categoria===cat));
 
   const totalGeneral = rows.reduce((s, r) => s + totalVentaDinamico(r, conceptosVenta), 0);
   const gastosMes = rows.reduce((s, r) => s + (Number(r.gastos)||0), 0);
@@ -604,7 +626,7 @@ async function renderVentas() {
   let mesProp=0, mesDifTotal=0;
   let sumEfvo=0, sumTarj=0, sumBancos=0, sumCxc=0, sumDifEfvo=0, sumDifTarj=0;
   rows.forEach(r => {
-    const d = computeRowDiffs(r, conceptosVenta, porCat);
+    const d = computeRowDiffs(r, conceptosVenta, porCat, conceptosSistema);
     mesProp += d.totalProp;
     mesDifTotal += d.difTotal;
     sumEfvo += d.totalEfvo; sumTarj += d.totalTarj; sumBancos += d.totalBancos; sumCxc += d.totalCxc;
@@ -614,7 +636,11 @@ async function renderVentas() {
   const totVentaCols = {};
   conceptosVenta.forEach(c => totVentaCols[c.id] = rows.reduce((s,r) => s + (Number((r.venta_data||{})[c.id]) || 0), 0));
   const totSistemaCols = {};
-  SISTEMA_COLS.forEach(([k]) => totSistemaCols[k] = rows.reduce((s,r) => s + (Number(r[k]) || 0), 0));
+  if (conceptosSistema.length) {
+    conceptosSistema.forEach(c => totSistemaCols[c.id] = rows.reduce((s,r) => s + (Number((r.sistema_data||{})[c.id]) || 0), 0));
+  } else {
+    SISTEMA_COLS.forEach(([k]) => totSistemaCols[k] = rows.reduce((s,r) => s + (Number(r[k]) || 0), 0));
+  }
   const totReconCols = {};
   recibidoCats.flatMap(cat => porCat[cat]).forEach(c => {
     totReconCols[c.id] = rows.reduce((s,r) => s + conceptoValor(c, (r.recon_data||{})[c.id]), 0);
@@ -644,6 +670,7 @@ async function renderVentas() {
         <h3>Ventas y conciliación — ${STATE.currentMonth}</h3>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           <button class="btn btn-ghost btn-sm" id="openVentaConceptosBtn">⚙ Categorías de venta</button>
+          <button class="btn btn-ghost btn-sm" id="openSistemaConceptosBtn">⚙ Categorías de sistema</button>
           <button class="btn btn-ghost btn-sm" id="openConceptosBtn">⚙ Conceptos de recibido</button>
           <button class="btn btn-ghost btn-sm" id="descargarPlantillaBtn">📄 Descargar plantilla</button>
           <button class="btn btn-ghost btn-sm" id="importVentasBtn">📥 Importar ventas (Excel)</button>
@@ -657,7 +684,7 @@ async function renderVentas() {
               <th rowspan="2">Fecha</th>
               <th colspan="${conceptosVenta.length}" style="text-align:center;">Lo vendido</th>
               <th rowspan="2">Total venta</th>
-              ${SISTEMA_COLS.map(([k,l])=>`<th rowspan="2">${l}</th>`).join('')}
+              ${conceptosSistema.length ? conceptosSistema.map(c=>`<th rowspan="2">${c.nombre} (sistema)</th>`).join('') : SISTEMA_COLS.map(([k,l])=>`<th rowspan="2">${l}</th>`).join('')}
               ${recibidoCats.map(cat => `<th colspan="${porCat[cat].length}" style="text-align:center;">${CAT_LABEL[cat]} recibido</th>`).join('')}
               <th rowspan="2">Total Efvo.</th><th rowspan="2">Total Tarj.</th><th rowspan="2">Total Bancos</th><th rowspan="2">Total CxC</th><th rowspan="2">Total Prop.</th>
               <th rowspan="2">Dif. Efvo.</th><th rowspan="2">Dif. Tarj.</th><th rowspan="2">Dif. Total</th>
@@ -673,7 +700,7 @@ async function renderVentas() {
               <td>TOTAL MES</td>
               ${conceptosVenta.map(c => `<td class="num">${fmt(totVentaCols[c.id])}</td>`).join('')}
               <td class="num">${fmt(totalGeneral)}</td>
-              ${SISTEMA_COLS.map(([k]) => `<td class="num">${fmt(totSistemaCols[k])}</td>`).join('')}
+              ${conceptosSistema.length ? conceptosSistema.map(c=>`<td class="num">${fmt(totSistemaCols[c.id])}</td>`).join('') : SISTEMA_COLS.map(([k]) => `<td class="num">${fmt(totSistemaCols[k])}</td>`).join('')}
               ${recibidoCats.flatMap(cat => porCat[cat].map(c => `<td class="num">${fmt(totReconCols[c.id])}</td>`)).join('')}
               <td class="num">${fmt(sumEfvo)}</td>
               <td class="num">${fmt(sumTarj)}</td>
@@ -687,7 +714,7 @@ async function renderVentas() {
             </tr>
           </tfoot>
           <tbody id="ventasBody">
-            ${rows.map(r => ventasRowHtml(r, conceptosVenta, porCat, recibidoCats)).join('') || `<tr><td class="empty">Sin días capturados este mes.</td></tr>`}
+            ${rows.map(r => ventasRowHtml(r, conceptosVenta, porCat, recibidoCats, conceptosSistema)).join('') || `<tr><td class="empty">Sin días capturados este mes.</td></tr>`}
           </tbody>
         </table>
       </div>
@@ -699,6 +726,7 @@ async function renderVentas() {
   });
   document.getElementById('openConceptosBtn').addEventListener('click', () => openConceptosModal(b.id));
   document.getElementById('openVentaConceptosBtn').addEventListener('click', () => openVentaConceptosModal(b.id));
+  document.getElementById('openSistemaConceptosBtn').addEventListener('click', () => openSistemaConceptosModal(b.id));
   document.getElementById('descargarPlantillaBtn').addEventListener('click', () => descargarPlantillaVentas(b.id));
   document.getElementById('importVentasBtn').addEventListener('click', () => openImportExcelModal('ventas', b.id, renderVentas));
 
@@ -724,6 +752,17 @@ async function renderVentas() {
       const vd = { ...(row.venta_data || {}) };
       vd[conceptoId] = Number(inp.value) || 0;
       const { error } = await sb.from('fz_ventas').update({ venta_data: vd }).eq('id', ventaId);
+      if (error) { toast('Error guardando: ' + error.message, 'error'); return; }
+      renderVentas();
+    });
+  });
+  el.querySelectorAll('.sistema-cell').forEach(inp => {
+    inp.addEventListener('change', async () => {
+      const ventaId = inp.dataset.ventaId, conceptoId = inp.dataset.concepto;
+      const row = rows.find(r => r.id === ventaId);
+      const sd = { ...(row.sistema_data || {}) };
+      sd[conceptoId] = Number(inp.value) || 0;
+      const { error } = await sb.from('fz_ventas').update({ sistema_data: sd }).eq('id', ventaId);
       if (error) { toast('Error guardando: ' + error.message, 'error'); return; }
       renderVentas();
     });
@@ -771,11 +810,13 @@ async function provisionarPropina(businessId, ventaId, concepto, monto, fecha) {
   }
 }
 
-function ventasRowHtml(r, conceptosVenta, porCat, recibidoCats) {
+function ventasRowHtml(r, conceptosVenta, porCat, recibidoCats, conceptosSistema) {
   const vd = r.venta_data || {};
   const rd = r.recon_data || {};
+  const sd = r.sistema_data || {};
   const total = totalVentaDinamico(r, conceptosVenta);
   const cellForVenta = (c) => `<td><input class="cell vd-cell num" type="number" step="0.01" value="${vd[c.id] ?? 0}" data-venta-id="${r.id}" data-concepto="${c.id}"></td>`;
+  const cellForSistema = (c) => `<td><input class="cell sistema-cell num" type="number" step="0.01" value="${sd[c.id] ?? 0}" data-venta-id="${r.id}" data-concepto="${c.id}"></td>`;
   const cellForRecon = (c) => {
     const entry = rd[c.id] || {};
     if (c.es_moneda) {
@@ -786,13 +827,13 @@ function ventasRowHtml(r, conceptosVenta, porCat, recibidoCats) {
     }
     return `<td><input class="cell recon-cell num" type="number" step="0.01" value="${entry.monto ?? 0}" data-venta-id="${r.id}" data-concepto="${c.id}" data-field="monto"></td>`;
   };
-  const { totalEfvo, totalTarj, totalBancos, totalCxc, totalProp, difEfvo, difTarj, difTotal } = computeRowDiffs(r, conceptosVenta, porCat);
+  const { totalEfvo, totalTarj, totalBancos, totalCxc, totalProp, difEfvo, difTarj, difTotal } = computeRowDiffs(r, conceptosVenta, porCat, conceptosSistema);
   const colorDif = (v) => Math.abs(v) < 1 ? 'inherit' : 'var(--red)';
   return `<tr>
     <td><input class="cell ventas-cell" type="date" value="${r.fecha}" data-id="${r.id}" data-field="fecha"></td>
     ${conceptosVenta.map(cellForVenta).join('')}
     <td class="num" style="font-weight:700;">${fmt(total)}</td>
-    ${SISTEMA_COLS.map(([k]) => `<td><input class="cell ventas-cell num" type="number" step="0.01" value="${r[k] ?? 0}" data-id="${r.id}" data-field="${k}"></td>`).join('')}
+    ${conceptosSistema.length ? conceptosSistema.map(cellForSistema).join('') : SISTEMA_COLS.map(([k]) => `<td><input class="cell ventas-cell num" type="number" step="0.01" value="${r[k] ?? 0}" data-id="${r.id}" data-field="${k}"></td>`).join('')}
     ${recibidoCats.flatMap(cat => porCat[cat].map(cellForRecon)).join('')}
     <td class="num" style="font-weight:700;">${fmt(totalEfvo)}</td>
     <td class="num" style="font-weight:700;">${fmt(totalTarj)}</td>
@@ -923,6 +964,47 @@ async function renderVentaConceptosList(businessId) {
     btn.addEventListener('click', async () => {
       await sb.from('fz_conceptos_venta').delete().eq('id', btn.dataset.id);
       renderVentaConceptosList(businessId);
+    });
+  });
+}
+
+/* ============================================================
+   MODAL: categorías de sistema (Efectivo/Tarjetas/CxC configurables)
+   ============================================================ */
+async function openSistemaConceptosModal(businessId) {
+  await renderSistemaConceptosList(businessId);
+  document.getElementById('modalConceptosSistema').classList.add('show');
+  document.getElementById('closeConceptosSistema').onclick = () => {
+    document.getElementById('modalConceptosSistema').classList.remove('show');
+    renderVentas();
+  };
+  document.getElementById('saveConceptoSistema').onclick = async () => {
+    const nombre = document.getElementById('newConceptoSistemaNombre').value.trim();
+    const categoria = document.getElementById('newConceptoSistemaCategoria').value;
+    if (!nombre) { toast('Escribe un nombre para la categoría.', 'error'); return; }
+    const { error } = await sb.from('fz_conceptos_sistema').insert({ business_id: businessId, nombre, categoria, orden: 99 });
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    document.getElementById('newConceptoSistemaNombre').value = '';
+    renderSistemaConceptosList(businessId);
+  };
+}
+const SISTEMA_CAT_LABEL = { efectivo: 'Efectivo', tarjetas: 'Tarjetas', cxc: 'CxC' };
+async function renderSistemaConceptosList(businessId) {
+  const conceptos = await loadConceptosSistema(businessId);
+  const box = document.getElementById('conceptosSistemaList');
+  if (!conceptos.length) {
+    box.innerHTML = `<div class="empty" style="padding:16px;">Aún no has configurado esto — por ahora se usan las 3 columnas clásicas (Efectivo, Tarjetas, CxC). Agrega aquí las que necesites y reemplazarán a las de siempre.</div>`;
+  } else {
+    box.innerHTML = conceptos.map(c => `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 4px;border-bottom:1px solid var(--line);">
+        <div><strong>${c.nombre}</strong> <span style="color:var(--muted);font-size:12px;">— se compara contra "${SISTEMA_CAT_LABEL[c.categoria]} recibido"</span></div>
+        <button class="row-del conceptosistema-del" data-id="${c.id}" style="font-size:16px;">✕</button>
+      </div>`).join('');
+  }
+  box.querySelectorAll('.conceptosistema-del').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await sb.from('fz_conceptos_sistema').delete().eq('id', btn.dataset.id);
+      renderSistemaConceptosList(businessId);
     });
   });
 }
@@ -1175,9 +1257,10 @@ function parseFechaExcel(val) {
 }
 
 async function descargarPlantillaVentas(businessId) {
-  const [conceptosVenta, conceptos] = await Promise.all([loadConceptosVenta(businessId), loadConceptos(businessId)]);
+  const [conceptosVenta, conceptos, conceptosSistema] = await Promise.all([loadConceptosVenta(businessId), loadConceptos(businessId), loadConceptosSistema(businessId)]);
   if (!conceptosVenta.length) { toast('Primero configura las categorías de venta de este negocio.', 'error'); return; }
-  const headers = ['Fecha', ...conceptosVenta.map(c => c.nombre), 'Efectivo Sistema', 'Tarjetas Sistema', 'CxC Sistema', 'Gastos del día'];
+  const headersSistema = conceptosSistema.length ? conceptosSistema.map(c => c.nombre) : ['Efectivo Sistema', 'Tarjetas Sistema', 'CxC Sistema'];
+  const headers = ['Fecha', ...conceptosVenta.map(c => c.nombre), ...headersSistema, 'Gastos del día'];
   conceptos.forEach(c => {
     headers.push(c.nombre);
     if (c.es_moneda) headers.push(c.nombre + ' TC');
@@ -1256,12 +1339,14 @@ function openImportExcelModal(tipo, businessId, onDone, extra) {
         toast(`${payload.length} movimientos importados.`);
 
       } else if (tipo === 'ventas') {
-        const [conceptosVentaQ, conceptosQ] = await Promise.all([
+        const [conceptosVentaQ, conceptosQ, conceptosSistemaQ] = await Promise.all([
           sb.from('fz_conceptos_venta').select('*').eq('business_id', businessId),
           sb.from('fz_conceptos').select('*').eq('business_id', businessId),
+          sb.from('fz_conceptos_sistema').select('*').eq('business_id', businessId),
         ]);
         const cVenta = conceptosVentaQ.data || [];
         const cRecon = conceptosQ.data || [];
+        const cSistema = conceptosSistemaQ.data || [];
         const payload = rows.map(r => {
           const fecha = parseFechaExcel(buscarColumna(r, ['fecha']));
           const venta_data = {};
@@ -1269,9 +1354,6 @@ function openImportExcelModal(tipo, businessId, onDone, extra) {
             const val = buscarColumna(r, [normalizarEncabezado(c.nombre)]);
             if (val !== null && val !== '') venta_data[c.id] = Number(val) || 0;
           });
-          const efectivo_sistema = Number(buscarColumna(r, ['efectivo sistema', 'efectivo'])) || 0;
-          const tarjetas_sistema = Number(buscarColumna(r, ['tarjetas sistema', 'tarjetas'])) || 0;
-          const cxc = Number(buscarColumna(r, ['cxc sistema', 'cxc'])) || 0;
           const gastos = Number(buscarColumna(r, ['gastos del dia', 'gastos del día', 'gastos'])) || 0;
           const recon_data = {};
           cRecon.forEach(c => {
@@ -1284,7 +1366,20 @@ function openImportExcelModal(tipo, businessId, onDone, extra) {
               recon_data[c.id] = { monto: Number(val) || 0 };
             }
           });
-          return { business_id: businessId, fecha, venta_data, efectivo_sistema, tarjetas_sistema, cxc, gastos, recon_data };
+          const base = { business_id: businessId, fecha, venta_data, gastos, recon_data };
+          if (cSistema.length) {
+            const sistema_data = {};
+            cSistema.forEach(c => {
+              const val = buscarColumna(r, [normalizarEncabezado(c.nombre)]);
+              if (val !== null && val !== '') sistema_data[c.id] = Number(val) || 0;
+            });
+            base.sistema_data = sistema_data;
+          } else {
+            base.efectivo_sistema = Number(buscarColumna(r, ['efectivo sistema', 'efectivo'])) || 0;
+            base.tarjetas_sistema = Number(buscarColumna(r, ['tarjetas sistema', 'tarjetas'])) || 0;
+            base.cxc = Number(buscarColumna(r, ['cxc sistema', 'cxc'])) || 0;
+          }
+          return base;
         });
         if (!payload.length) { toast('El archivo no tiene filas.', 'error'); return; }
         const { error } = await sb.from('fz_ventas').insert(payload);
@@ -1337,7 +1432,7 @@ function openImportExcelModal(tipo, businessId, onDone, extra) {
 }
 
 async function openVentaDiaModal(businessId, onDone) {
-  const [conceptosVenta, conceptos] = await Promise.all([loadConceptosVenta(businessId), loadConceptos(businessId)]);
+  const [conceptosVenta, conceptos, conceptosSistema] = await Promise.all([loadConceptosVenta(businessId), loadConceptos(businessId), loadConceptosSistema(businessId)]);
   const porCat = {
     efectivo: conceptos.filter(c => c.categoria === 'efectivo'),
     tarjetas: conceptos.filter(c => c.categoria === 'tarjetas'),
@@ -1356,9 +1451,11 @@ async function openVentaDiaModal(businessId, onDone) {
 
     <h4 style="margin:16px 0 8px;color:var(--navy-1);font-family:'Cormorant Garamond',serif;font-size:18px;">Sistema</h4>
     <div class="grid-2">
-      <div class="field"><label>Efectivo (sistema)</label><input type="number" step="0.01" id="vdEfectivoSistema" value="0"></div>
-      <div class="field"><label>Tarjetas (sistema)</label><input type="number" step="0.01" id="vdTarjetasSistema" value="0"></div>
-      <div class="field"><label>CxC (sistema)</label><input type="number" step="0.01" id="vdCxc" value="0"></div>
+      ${conceptosSistema.length ? conceptosSistema.map(c => `<div class="field"><label>${c.nombre} (sistema)</label><input type="number" step="0.01" class="vd-sistema" data-id="${c.id}" value="0"></div>`).join('') : `
+        <div class="field"><label>Efectivo (sistema)</label><input type="number" step="0.01" id="vdEfectivoSistema" value="0"></div>
+        <div class="field"><label>Tarjetas (sistema)</label><input type="number" step="0.01" id="vdTarjetasSistema" value="0"></div>
+        <div class="field"><label>CxC (sistema)</label><input type="number" step="0.01" id="vdCxc" value="0"></div>
+      `}
       <div class="field"><label>Gastos del día</label><input type="number" step="0.01" id="vdGastos" value="0"></div>
     </div>
 
@@ -1388,12 +1485,18 @@ async function openVentaDiaModal(businessId, onDone) {
     });
     const payload = {
       business_id: businessId, fecha, venta_data,
-      efectivo_sistema: Number(document.getElementById('vdEfectivoSistema').value) || 0,
-      tarjetas_sistema: Number(document.getElementById('vdTarjetasSistema').value) || 0,
-      cxc: Number(document.getElementById('vdCxc').value) || 0,
       gastos: Number(document.getElementById('vdGastos').value) || 0,
       recon_data,
     };
+    if (conceptosSistema.length) {
+      const sistema_data = {};
+      form.querySelectorAll('.vd-sistema').forEach(inp => { sistema_data[inp.dataset.id] = Number(inp.value) || 0; });
+      payload.sistema_data = sistema_data;
+    } else {
+      payload.efectivo_sistema = Number(document.getElementById('vdEfectivoSistema').value) || 0;
+      payload.tarjetas_sistema = Number(document.getElementById('vdTarjetasSistema').value) || 0;
+      payload.cxc = Number(document.getElementById('vdCxc').value) || 0;
+    }
     const { error } = await sb.from('fz_ventas').insert(payload);
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     document.getElementById('modalVentaDia').classList.remove('show');
@@ -2381,8 +2484,8 @@ async function renderPLAnual(el, b) {
   wirePLTags(el);
 
   const year = STATE.currentMonth.slice(0, 4);
-  const [conceptosVenta, conceptos, subcuentas, mayores] = await Promise.all([
-    loadConceptosVenta(b.id), loadConceptos(b.id), loadSubcuentas(b.id), loadCuentasMayor(b.id),
+  const [conceptosVenta, conceptos, subcuentas, mayores, conceptosSistema] = await Promise.all([
+    loadConceptosVenta(b.id), loadConceptos(b.id), loadSubcuentas(b.id), loadCuentasMayor(b.id), loadConceptosSistema(b.id),
   ]);
   const porCatPL = { efectivo: conceptos.filter(c=>c.categoria==='efectivo'), tarjetas: conceptos.filter(c=>c.categoria==='tarjetas'), bancos: conceptos.filter(c=>c.categoria==='bancos'), cxc: conceptos.filter(c=>c.categoria==='cxc'), propinas: conceptos.filter(c=>c.categoria==='propinas') };
   const mayoresGasto = mayores.filter(m => m.tipo === 'gasto');
@@ -2398,7 +2501,7 @@ async function renderPLAnual(el, b) {
     const totalIngresosVentas = conceptosVenta.reduce((s,c,idx)=>s+(c.tipo==='resta'?-ingresosPorConcepto[idx]:ingresosPorConcepto[idx]),0);
     const gastosOperativos = ventas.reduce((s,r)=>s+(Number(r.gastos)||0),0);
     let diffPeriodo = 0;
-    ventas.forEach(r => { diffPeriodo += computeRowDiffs(r, conceptosVenta, porCatPL).difTotal; });
+    ventas.forEach(r => { diffPeriodo += computeRowDiffs(r, conceptosVenta, porCatPL, conceptosSistema).difTotal; });
     const faltanteCaja = diffPeriodo>0?diffPeriodo:0;
     const sobranteCaja = diffPeriodo<0?-diffPeriodo:0;
     const gClas = await computeGastosClasificados(b.id, periodo, subcuentas, mayores);
@@ -2469,12 +2572,13 @@ async function renderPL() {
   if (STATE_plVista === 'anual') { await renderPLAnual(el, b); return; }
   const periodo = periodoPL(STATE.currentMonth, STATE_plVista);
 
-  const [ventasQ, conceptosVenta, conceptos, subcuentas, mayores] = await Promise.all([
+  const [ventasQ, conceptosVenta, conceptos, subcuentas, mayores, conceptosSistema] = await Promise.all([
     sb.from('fz_ventas').select('*').eq('business_id', b.id).gte('fecha', periodo.start).lte('fecha', periodo.end),
     loadConceptosVenta(b.id),
     loadConceptos(b.id),
     loadSubcuentas(b.id),
     loadCuentasMayor(b.id),
+    loadConceptosSistema(b.id),
   ]);
   const v = ventasQ.data || [];
   const ingresosPorConcepto = conceptosVenta.map(c => ({
@@ -2487,7 +2591,7 @@ async function renderPL() {
   // Faltantes / sobrantes de caja detectados en la conciliación de Ventas
   const porCatPL = { efectivo: conceptos.filter(c=>c.categoria==='efectivo'), tarjetas: conceptos.filter(c=>c.categoria==='tarjetas'), bancos: conceptos.filter(c=>c.categoria==='bancos'), cxc: conceptos.filter(c=>c.categoria==='cxc'), propinas: conceptos.filter(c=>c.categoria==='propinas') };
   let diffPeriodo = 0;
-  v.forEach(r => { diffPeriodo += computeRowDiffs(r, conceptosVenta, porCatPL).difTotal; });
+  v.forEach(r => { diffPeriodo += computeRowDiffs(r, conceptosVenta, porCatPL, conceptosSistema).difTotal; });
   const faltanteCaja = diffPeriodo > 0 ? diffPeriodo : 0;
   const sobranteCaja = diffPeriodo < 0 ? -diffPeriodo : 0;
 
