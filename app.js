@@ -1548,6 +1548,7 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
   (async () => {
     const { data: row } = await sb.from(table).select('*').eq('id', rowId).single();
     const idsActuales = new Set(facturaIdsDe(row || {}));
+    const montoMovimiento = Number(row?.cargos) > 0 ? Number(row.cargos) : Number(row?.depositos) || 0;
     const opciones = facturasPend.filter(f => f.estatus !== 'Pagado' || idsActuales.has(f.id));
     const porProveedor = {};
     opciones.forEach(f => {
@@ -1560,10 +1561,24 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
         <div style="font-weight:700;font-size:12.5px;color:var(--navy-1);margin-bottom:4px;">${prov}</div>
         ${porProveedor[prov].map(f => `
           <label style="display:flex;align-items:center;gap:8px;padding:5px 4px;border-bottom:1px solid var(--line);font-size:13px;cursor:pointer;">
-            <input type="checkbox" class="factura-check" value="${f.id}" ${idsActuales.has(f.id)?'checked':''}>
+            <input type="checkbox" class="factura-check" value="${f.id}" data-importe="${f.importe||0}" ${idsActuales.has(f.id)?'checked':''}>
             <span>${f.fecha} · ${f.factura||'s/f'} · ${fmt(f.importe)}${f.estatus==='Pagado'?' (ya pagada)':''}</span>
           </label>`).join('')}
       </div>`).join('') || `<div class="empty">No hay facturas disponibles.</div>`;
+
+    const actualizarResumen = () => {
+      const marcadas = Array.from(box.querySelectorAll('.factura-check:checked'));
+      const totalSeleccionado = marcadas.reduce((s,c) => s + (Number(c.dataset.importe) || 0), 0);
+      const diferencia = montoMovimiento - totalSeleccionado;
+      const cuadra = Math.abs(diferencia) < 0.01;
+      document.getElementById('facturasPagoResumen').innerHTML = `
+        <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Monto del movimiento</span><strong>${fmt(montoMovimiento)}</strong></div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Total seleccionado (${marcadas.length})</span><strong>${fmt(totalSeleccionado)}</strong></div>
+        <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--red)'};font-weight:700;"><span>${cuadra?'✓ Cuadra exacto':'Diferencia'}</span><span>${cuadra?'':fmt(diferencia)}</span></div>
+      `;
+    };
+    box.querySelectorAll('.factura-check').forEach(chk => chk.addEventListener('change', actualizarResumen));
+    actualizarResumen();
 
     document.getElementById('modalFacturasPago').classList.add('show');
     document.getElementById('closeFacturasPago').onclick = () => document.getElementById('modalFacturasPago').classList.remove('show');
@@ -1635,10 +1650,26 @@ async function openMovimientoModal(contexto) {
       <div style="font-weight:700;font-size:12px;color:var(--navy-1);">${prov}</div>
       ${porProveedor[prov].map(f => `
         <label style="display:flex;align-items:center;gap:8px;padding:4px 2px;font-size:12.5px;cursor:pointer;">
-          <input type="checkbox" class="mov-factura-check" value="${f.id}">
+          <input type="checkbox" class="mov-factura-check" value="${f.id}" data-importe="${f.importe||0}">
           <span>${f.fecha} · ${f.factura||'s/f'} · ${fmt(f.importe)}</span>
         </label>`).join('')}
     </div>`).join('') || `<div class="empty" style="padding:8px;">No hay facturas pendientes.</div>`;
+
+  const actualizarResumenMovFacturas = () => {
+    const marcadas = Array.from(document.querySelectorAll('.mov-factura-check:checked'));
+    const totalSeleccionado = marcadas.reduce((s,c)=>s+(Number(c.dataset.importe)||0),0);
+    const montoMovimiento = Number(document.getElementById('movCargos').value) || 0;
+    const diferencia = montoMovimiento - totalSeleccionado;
+    const cuadra = Math.abs(diferencia) < 0.01;
+    document.getElementById('movFacturasResumen').innerHTML = `
+      <div style="display:flex;justify-content:space-between;margin-bottom:2px;"><span>Cargo capturado</span><strong>${fmt(montoMovimiento)}</strong></div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:2px;"><span>Total seleccionado (${marcadas.length})</span><strong>${fmt(totalSeleccionado)}</strong></div>
+      <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--red)'};font-weight:700;"><span>${cuadra?'✓ Cuadra exacto':'Diferencia'}</span><span>${cuadra?'':fmt(diferencia)}</span></div>
+    `;
+  };
+  document.querySelectorAll('.mov-factura-check').forEach(chk => chk.addEventListener('change', actualizarResumenMovFacturas));
+  document.getElementById('movCargos').oninput = actualizarResumenMovFacturas;
+  actualizarResumenMovFacturas();
 
   const actualizarVisibilidadDetalle = () => {
     const val = document.getElementById('movTipoSalida').value;
