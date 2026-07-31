@@ -1544,6 +1544,54 @@ async function openVentaDiaModal(businessId, onDone) {
   };
 }
 
+/* ---------- Aplicación inteligente de pagos: FIFO + crédito a favor ---------- */
+async function aplicarPagoFacturas(idsSeleccionados, montoDisponibleInicial, fechaMov, businessId, origenInfo) {
+  if (!idsSeleccionados.length) return { idsAfectados: [], creadoCredito: false, sobrante: 0 };
+  const { data: facturas } = await sb.from('fz_proveedores').select('*').in('id', idsSeleccionados);
+  if (!facturas || !facturas.length) return { idsAfectados: [], creadoCredito: false, sobrante: 0 };
+
+  const creditos = facturas.filter(f => Number(f.importe) < 0).sort((a,b)=>a.fecha.localeCompare(b.fecha));
+  const reales = facturas.filter(f => Number(f.importe) >= 0).sort((a,b)=>a.fecha.localeCompare(b.fecha));
+
+  let disponible = montoDisponibleInicial + creditos.reduce((s,c)=>s+Math.abs(Number(c.importe)),0);
+  const idsAfectados = [];
+
+  for (const c of creditos) {
+    await sb.from('fz_proveedores').update({ estatus: 'Pagado', fecha_pago: fechaMov }).eq('id', c.id);
+    idsAfectados.push(c.id);
+  }
+
+  for (const f of reales) {
+    if (disponible <= 0.009) break;
+    const saldoPendiente = Number(f.importe) - Number(f.importe_pagado || 0);
+    if (saldoPendiente <= 0.009) continue;
+    const aplicar = Math.min(disponible, saldoPendiente);
+    const nuevoPagado = Number(f.importe_pagado || 0) + aplicar;
+    const nuevoEstatus = nuevoPagado >= Number(f.importe) - 0.01 ? 'Pagado' : 'Parcial';
+    await sb.from('fz_proveedores').update({
+      importe_pagado: nuevoPagado, estatus: nuevoEstatus, fecha_pago: fechaMov,
+      pagado_desde: origenInfo.pagado_desde, pagado_desde_tipo: origenInfo.pagado_desde_tipo, pagado_desde_cuenta_id: origenInfo.pagado_desde_cuenta_id,
+    }).eq('id', f.id);
+    idsAfectados.push(f.id);
+    disponible -= aplicar;
+  }
+
+  let creadoCredito = false;
+  if (disponible > 0.01 && reales.length) {
+    const proveedoresUnicos = [...new Set(reales.map(f => f.proveedor))];
+    if (proveedoresUnicos.length === 1) {
+      const base = reales[0];
+      await sb.from('fz_proveedores').insert({
+        business_id: businessId, proveedor_id: base.proveedor_id, proveedor: base.proveedor,
+        fecha: fechaMov, factura: `Crédito a favor (pago del ${fechaMov})`,
+        importe: -disponible, estatus: 'Pendiente',
+      });
+      creadoCredito = true;
+    }
+  }
+  return { idsAfectados, creadoCredito, sobrante: disponible };
+}
+
 function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) {
   (async () => {
     const { data: row } = await sb.from(table).select('*').eq('id', rowId).single();
@@ -1559,11 +1607,15 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
     box.innerHTML = Object.keys(porProveedor).sort((a,b)=>a.localeCompare(b)).map(prov => `
       <div style="margin-bottom:10px;">
         <div style="font-weight:700;font-size:12.5px;color:var(--navy-1);margin-bottom:4px;">${prov}</div>
-        ${porProveedor[prov].map(f => `
+        ${porProveedor[prov].map(f => {
+          const saldo = Number(f.importe) - Number(f.importe_pagado||0);
+          const esCredito = Number(f.importe) < 0;
+          return `
           <label style="display:flex;align-items:center;gap:8px;padding:5px 4px;border-bottom:1px solid var(--line);font-size:13px;cursor:pointer;">
-            <input type="checkbox" class="factura-check" value="${f.id}" data-importe="${f.importe||0}" ${idsActuales.has(f.id)?'checked':''}>
-            <span>${f.fecha} · ${f.factura||'s/f'} · ${fmt(f.importe)}${f.estatus==='Pagado'?' (ya pagada)':''}</span>
-          </label>`).join('')}
+            <input type="checkbox" class="factura-check" value="${f.id}" data-importe="${saldo}" ${idsActuales.has(f.id)?'checked':''}>
+            <span>${f.fecha} · ${f.factura||'s/f'} · ${esCredito?`<span style="color:var(--green);">crédito ${fmt(saldo)}</span>`:fmt(saldo)}${f.estatus==='Parcial'?' (parcial, de '+fmt(f.importe)+')':''}${f.estatus==='Pagado'?' (ya pagada)':''}</span>
+          </label>`;
+        }).join('')}
       </div>`).join('') || `<div class="empty">No hay facturas disponibles.</div>`;
 
     const actualizarResumen = () => {
@@ -1574,7 +1626,7 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
       document.getElementById('facturasPagoResumen').innerHTML = `
         <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Monto del movimiento</span><strong>${fmt(montoMovimiento)}</strong></div>
         <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Total seleccionado (${marcadas.length})</span><strong>${fmt(totalSeleccionado)}</strong></div>
-        <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--red)'};font-weight:700;"><span>${cuadra?'✓ Cuadra exacto':'Diferencia'}</span><span>${cuadra?'':fmt(diferencia)}</span></div>
+        <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--muted)'};font-weight:700;"><span>${cuadra?'✓ Cuadra exacto':(diferencia>0?'Si aplicas, quedará pendiente/parcial':'Si aplicas, sobrará como crédito a favor')}</span><span>${cuadra?'':fmt(Math.abs(diferencia))}</span></div>
       `;
     };
     box.querySelectorAll('.factura-check').forEach(chk => chk.addEventListener('change', actualizarResumen));
@@ -1584,19 +1636,14 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
     document.getElementById('closeFacturasPago').onclick = () => document.getElementById('modalFacturasPago').classList.remove('show');
     document.getElementById('applyFacturasPago').onclick = async () => {
       const idsSeleccionados = Array.from(box.querySelectorAll('.factura-check:checked')).map(c => c.value);
-      const { error: e1 } = await sb.from(table).update({ proveedor_factura_ids: idsSeleccionados, proveedor_factura_id: idsSeleccionados[0] || null }).eq('id', rowId);
+      const { idsAfectados, creadoCredito } = await aplicarPagoFacturas(idsSeleccionados, montoMovimiento, row?.fecha || todayStr(), row.business_id, {
+        pagado_desde: traspasoCtx?.origenCorto || null,
+        pagado_desde_tipo: traspasoCtx?.origenTipo || null,
+        pagado_desde_cuenta_id: traspasoCtx?.origenId || null,
+      });
+      const { error: e1 } = await sb.from(table).update({ proveedor_factura_ids: idsAfectados, proveedor_factura_id: idsAfectados[0] || null }).eq('id', rowId);
       if (e1) { toast('Error al guardar: ' + e1.message, 'error'); return; }
-      if (idsSeleccionados.length) {
-        const { error: e2 } = await sb.from('fz_proveedores').update({
-          estatus: 'Pagado',
-          fecha_pago: row?.fecha || todayStr(),
-          pagado_desde: traspasoCtx?.origenCorto || null,
-          pagado_desde_tipo: traspasoCtx?.origenTipo || null,
-          pagado_desde_cuenta_id: traspasoCtx?.origenId || null,
-        }).in('id', idsSeleccionados);
-        if (e2) { toast('Error al marcar como pagadas: ' + e2.message, 'error'); return; }
-        toast(`${idsSeleccionados.length} factura(s) marcada(s) como pagada(s).`);
-      }
+      if (idsAfectados.length) toast(`${idsAfectados.length} registro(s) actualizado(s)${creadoCredito ? ' · se generó un crédito a favor' : ''}.`);
       document.getElementById('modalFacturasPago').classList.remove('show');
       onDone();
     };
@@ -1632,7 +1679,7 @@ async function openMovimientoModal(contexto) {
   const [subcuentas, mayores, facturasPend, cuentaInfo] = await Promise.all([
     loadSubcuentas(contexto.businessId),
     loadCuentasMayor(contexto.businessId),
-    sb.from('fz_proveedores').select('id,proveedor,fecha,factura,importe,estatus').eq('business_id', contexto.businessId).then(r => r.data || []),
+    sb.from('fz_proveedores').select('id,proveedor,fecha,factura,importe,importe_pagado,estatus').eq('business_id', contexto.businessId).then(r => r.data || []),
     contexto.tipo === 'efectivo'
       ? sb.from('fz_efectivo_monedas').select('nombre').eq('id', contexto.refId).single().then(r => r.data)
       : sb.from('fz_bancos_cuentas').select('nombre').eq('id', contexto.refId).single().then(r => r.data),
@@ -1648,11 +1695,15 @@ async function openMovimientoModal(contexto) {
   document.getElementById('movFacturasList').innerHTML = Object.keys(porProveedor).sort((a,b)=>a.localeCompare(b)).map(prov => `
     <div style="margin-bottom:8px;">
       <div style="font-weight:700;font-size:12px;color:var(--navy-1);">${prov}</div>
-      ${porProveedor[prov].map(f => `
+      ${porProveedor[prov].map(f => {
+        const saldo = Number(f.importe) - Number(f.importe_pagado||0);
+        const esCredito = Number(f.importe) < 0;
+        return `
         <label style="display:flex;align-items:center;gap:8px;padding:4px 2px;font-size:12.5px;cursor:pointer;">
-          <input type="checkbox" class="mov-factura-check" value="${f.id}" data-importe="${f.importe||0}">
-          <span>${f.fecha} · ${f.factura||'s/f'} · ${fmt(f.importe)}</span>
-        </label>`).join('')}
+          <input type="checkbox" class="mov-factura-check" value="${f.id}" data-importe="${saldo}">
+          <span>${f.fecha} · ${f.factura||'s/f'} · ${esCredito?`<span style="color:var(--green);">crédito ${fmt(saldo)}</span>`:fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}</span>
+        </label>`;
+      }).join('')}
     </div>`).join('') || `<div class="empty" style="padding:8px;">No hay facturas pendientes.</div>`;
 
   const actualizarResumenMovFacturas = () => {
@@ -1664,7 +1715,7 @@ async function openMovimientoModal(contexto) {
     document.getElementById('movFacturasResumen').innerHTML = `
       <div style="display:flex;justify-content:space-between;margin-bottom:2px;"><span>Cargo capturado</span><strong>${fmt(montoMovimiento)}</strong></div>
       <div style="display:flex;justify-content:space-between;margin-bottom:2px;"><span>Total seleccionado (${marcadas.length})</span><strong>${fmt(totalSeleccionado)}</strong></div>
-      <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--red)'};font-weight:700;"><span>${cuadra?'✓ Cuadra exacto':'Diferencia'}</span><span>${cuadra?'':fmt(diferencia)}</span></div>
+      <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--muted)'};font-weight:700;"><span>${cuadra?'✓ Cuadra exacto':(diferencia>0?'Quedará pendiente/parcial':'Sobrará como crédito a favor')}</span><span>${cuadra?'':fmt(Math.abs(diferencia))}</span></div>
     `;
   };
   document.querySelectorAll('.mov-factura-check').forEach(chk => chk.addEventListener('change', actualizarResumenMovFacturas));
@@ -1698,17 +1749,20 @@ async function openMovimientoModal(contexto) {
       payload = { business_id: contexto.businessId, cuenta_id: contexto.refId, fecha, concepto: document.getElementById('movCampo1').value || null, referencia: document.getElementById('movReferencia').value || null, descripcion, cargos, depositos, tipo_salida: tipoSalida };
     }
     if (tipoSalida === 'gasto') payload.subcuenta_id = document.getElementById('movSubcuenta').value || null;
-    if (tipoSalida === 'proveedor') { payload.proveedor_factura_ids = idsFacturas; payload.proveedor_factura_id = idsFacturas[0] || null; }
+    if (tipoSalida === 'proveedor') payload.proveedor_factura_ids = [];
 
-    const { error } = await sb.from(table).insert(payload);
+    const { data: nuevoMov, error } = await sb.from(table).insert(payload).select().single();
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     if (tipoSalida === 'proveedor' && idsFacturas.length) {
-      const { error: e2 } = await sb.from('fz_proveedores').update({
-        estatus: 'Pagado', fecha_pago: fecha, pagado_desde: origenCorto,
+      const montoDisponible = cargos > 0 ? cargos : depositos;
+      const { idsAfectados, creadoCredito } = await aplicarPagoFacturas(idsFacturas, montoDisponible, fecha, contexto.businessId, {
+        pagado_desde: origenCorto,
         pagado_desde_tipo: contexto.tipo === 'efectivo' ? 'efectivo' : 'banco',
         pagado_desde_cuenta_id: contexto.refId,
-      }).in('id', idsFacturas);
-      if (e2) toast('El movimiento se guardó, pero hubo un error marcando las facturas: ' + e2.message, 'error');
+      });
+      const { error: e3 } = await sb.from(table).update({ proveedor_factura_ids: idsAfectados, proveedor_factura_id: idsAfectados[0] || null }).eq('id', nuevoMov.id);
+      if (e3) toast('El movimiento se guardó, pero hubo un error vinculando las facturas: ' + e3.message, 'error');
+      else if (creadoCredito) toast('Se generó un crédito a favor con el sobrante.');
     }
     modal.classList.remove('show');
     toast('Movimiento agregado.');
@@ -2258,11 +2312,12 @@ async function renderProveedores() {
     ...(cuentasBancoQ.data || []).map(c => ({ value: 'banco:' + c.id, label: 'Banco — ' + c.nombre })),
     ...(monedasQ.data || []).map(m => ({ value: 'efectivo:' + m.id, label: 'Caja — ' + m.nombre })),
   ];
-  const pendiente = all.filter(p => p.estatus === 'Pendiente').reduce((s,p)=>s+(Number(p.importe)||0),0);
+  const saldoPend = (p) => Number(p.importe) - Number(p.importe_pagado || 0);
+  const pendiente = all.filter(p => p.estatus === 'Pendiente' || p.estatus === 'Parcial').reduce((s,p)=>s+saldoPend(p),0);
   const pagado = all.filter(p => p.estatus === 'Pagado').reduce((s,p)=>s+(Number(p.importe)||0),0);
   const rows = STATE_provFiltro === 'Todos' ? all : all.filter(p => p.estatus === STATE_provFiltro);
 
-  const pendientesTodas = all.filter(p => p.estatus === 'Pendiente');
+  const pendientesTodas = all.filter(p => p.estatus === 'Pendiente' || p.estatus === 'Parcial');
   const porProveedorMap = {};
   pendientesTodas.forEach(p => {
     const key = p.proveedor || '(sin proveedor)';
@@ -2270,7 +2325,7 @@ async function renderProveedores() {
   });
   const resumenProveedores = Object.keys(porProveedorMap).map(nombre => ({
     nombre, facturas: porProveedorMap[nombre].sort((a,c)=>a.fecha.localeCompare(c.fecha)),
-    total: porProveedorMap[nombre].reduce((s,f)=>s+(Number(f.importe)||0),0),
+    total: porProveedorMap[nombre].reduce((s,f)=>s+saldoPend(f),0),
   })).sort((a,b) => b.total - a.total);
 
   el.innerHTML = `
@@ -2280,7 +2335,7 @@ async function renderProveedores() {
       <div class="kpi"><div class="label">Facturas registradas</div><div class="value">${all.length}</div></div>
     </div>
     <div class="card">
-      <div class="card-head"><h3>Adeudo por proveedor</h3><span class="hint">Clic en un proveedor para ver sus facturas pendientes</span></div>
+      <div class="card-head"><h3>Adeudo por proveedor</h3><span class="hint">Clic en un proveedor para ver sus facturas pendientes (incluye créditos a favor, en verde)</span></div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Proveedor</th><th>Facturas pendientes</th><th>Total adeudado</th></tr></thead>
@@ -2289,12 +2344,12 @@ async function renderProveedores() {
               <tr class="prov-resumen-row" data-prov="${p.nombre}" style="cursor:pointer;">
                 <td>${STATE_provExpandido===p.nombre?'▾':'▸'} ${p.nombre}</td>
                 <td>${p.facturas.length}</td>
-                <td class="num" style="font-weight:700;color:var(--red);">${fmt(p.total)}</td>
+                <td class="num" style="font-weight:700;color:${p.total<0?'var(--green)':'var(--red)'};">${fmt(p.total)}</td>
               </tr>
               ${STATE_provExpandido===p.nombre ? `<tr><td colspan="3" style="padding:0 0 10px 0;background:#f7f9fc;">
                 <table style="width:100%;">
-                  <thead><tr><th style="padding-left:24px;">Fecha</th><th>Factura</th><th>Importe</th></tr></thead>
-                  <tbody>${p.facturas.map(f => `<tr><td style="padding-left:24px;">${f.fecha}</td><td>${f.factura||'s/f'}</td><td class="num">${fmt(f.importe)}</td></tr>`).join('')}</tbody>
+                  <thead><tr><th style="padding-left:24px;">Fecha</th><th>Factura</th><th>Saldo</th></tr></thead>
+                  <tbody>${p.facturas.map(f => `<tr><td style="padding-left:24px;">${f.fecha}</td><td>${f.factura||'s/f'}${f.estatus==='Parcial'?' (parcial)':''}</td><td class="num" style="color:${saldoPend(f)<0?'var(--green)':'inherit'};">${fmt(saldoPend(f))}</td></tr>`).join('')}</tbody>
                 </table>
               </td></tr>` : ''}
             `).join('') : `<tr><td colspan="3" class="empty">No hay adeudos pendientes.</td></tr>`}
@@ -2419,17 +2474,23 @@ async function syncPagoProveedor(businessId, facturaId) {
 function provRowHtml(p, catalogo, opcionesPagoDesde) {
   const desgloseTotal = desgloseLineas(p.desglose).reduce((s,l)=>s+(Number(l.monto)||0),0);
   const desgloseOk = Math.abs(desgloseTotal - (Number(p.importe)||0)) < 1 && desgloseTotal > 0;
-  return `<tr>
+  const esCredito = Number(p.importe) < 0;
+  const saldoPendiente = Number(p.importe) - Number(p.importe_pagado || 0);
+  return `<tr style="${esCredito?'background:#f2fbf5;':''}">
     <td><input class="cell prov-cell" type="date" value="${p.fecha}" data-id="${p.id}" data-field="fecha"></td>
     <td><select class="cell prov-cell" data-id="${p.id}" data-field="proveedor_id" style="min-width:220px;">
       <option value="">${p.proveedor || '— elegir —'}</option>
       ${catalogo.map(c => `<option value="${c.id}" ${p.proveedor_id===c.id?'selected':''}>${c.razon_social ? c.razon_social + ' — ' : ''}${c.nombre_comercial || c.nombre}</option>`).join('')}
     </select></td>
     <td><input class="cell prov-cell" type="text" value="${p.factura||''}" data-id="${p.id}" data-field="factura"></td>
-    <td><input class="cell prov-cell num" type="number" step="0.01" value="${p.importe ?? 0}" data-id="${p.id}" data-field="importe"></td>
+    <td>
+      <input class="cell prov-cell num" type="number" step="0.01" value="${p.importe ?? 0}" data-id="${p.id}" data-field="importe">
+      ${esCredito ? `<div style="font-size:10.5px;color:var(--green);margin-top:2px;">crédito a favor</div>` : (Number(p.importe_pagado)>0 && p.estatus!=='Pagado' ? `<div style="font-size:10.5px;color:var(--muted);margin-top:2px;">pagado ${fmt(p.importe_pagado)} · pendiente ${fmt(saldoPendiente)}</div>` : '')}
+    </td>
     <td><button class="btn btn-ghost btn-sm prov-desglosar" data-id="${p.id}" style="color:${desgloseOk?'var(--green)':(desgloseTotal>0?'var(--red)':'var(--muted)')};">${desgloseTotal>0?fmt(desgloseTotal):'Desglosar'}</button></td>
     <td><select class="cell prov-cell" data-id="${p.id}" data-field="estatus">
       <option ${p.estatus==='Pendiente'?'selected':''}>Pendiente</option>
+      <option ${p.estatus==='Parcial'?'selected':''}>Parcial</option>
       <option ${p.estatus==='Pagado'?'selected':''}>Pagado</option>
     </select></td>
     <td><input class="cell prov-cell" type="date" value="${p.fecha_pago||''}" data-id="${p.id}" data-field="fecha_pago"></td>
