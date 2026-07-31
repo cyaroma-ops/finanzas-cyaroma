@@ -1680,7 +1680,7 @@ async function openMovimientoModal(contexto) {
   const [subcuentas, mayores, facturasPend, cuentaInfo] = await Promise.all([
     loadSubcuentas(contexto.businessId),
     loadCuentasMayor(contexto.businessId),
-    sb.from('fz_proveedores').select('id,proveedor,fecha,factura,importe,importe_pagado,estatus').eq('business_id', contexto.businessId).then(r => r.data || []),
+    sb.from('fz_proveedores').select('id,proveedor,fecha,factura,importe,importe_pagado,estatus').eq('business_id', contexto.businessId).order('fecha', { ascending: false }).limit(5000).then(r => r.data || []),
     contexto.tipo === 'efectivo'
       ? sb.from('fz_efectivo_monedas').select('nombre').eq('id', contexto.refId).single().then(r => r.data)
       : sb.from('fz_bancos_cuentas').select('nombre').eq('id', contexto.refId).single().then(r => r.data),
@@ -2074,7 +2074,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
     getMonedaLedgerRows(businessId, moneda, conceptosEfectivo, STATE.currentMonth),
     loadSubcuentas(businessId),
     loadCuentasMayor(businessId),
-    sb.from('fz_proveedores').select('id,proveedor,factura,importe,estatus,fecha').eq('business_id', businessId).order('proveedor').order('fecha').then(r => r.data || []),
+    sb.from('fz_proveedores').select('id,proveedor,factura,importe,importe_pagado,estatus,fecha').eq('business_id', businessId).order('proveedor').order('fecha').limit(5000).then(r => r.data || []),
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
   ]);
@@ -2222,7 +2222,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     getBancoLedgerRows(businessId, cuentaArr, conceptosTarjetas, STATE.currentMonth),
     loadSubcuentas(businessId),
     loadCuentasMayor(businessId),
-    sb.from('fz_proveedores').select('id,proveedor,factura,importe,estatus,fecha').eq('business_id', businessId).order('proveedor').order('fecha').then(r => r.data || []),
+    sb.from('fz_proveedores').select('id,proveedor,factura,importe,importe_pagado,estatus,fecha').eq('business_id', businessId).order('proveedor').order('fecha').limit(5000).then(r => r.data || []),
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
   ]);
