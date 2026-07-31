@@ -1871,6 +1871,9 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
     </tr>`;
   }).join('');
 
+  const totalCargosMes = ledger.reduce((s,r)=>s+(Number(r.cargos)||0),0);
+  const totalDepositosMes = ledger.reduce((s,r)=>s+(Number(r.depositos)||0),0);
+
   box.innerHTML = `
     <div class="card-head" style="margin-top:14px;">
       <span class="hint">Saldo al inicio de ${STATE.currentMonth}: ${fmtNum(saldoApertura)} ${moneda.nombre}</span>
@@ -1880,6 +1883,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
       <table>
         <thead><tr><th>Fecha</th><th>Proveedor / Concepto</th><th>Descripción</th><th>Cargos</th><th>Depósitos</th><th>Saldo</th><th>Tipo de salida</th><th>Detalle</th><th></th></tr></thead>
         <tbody>${rowsHtml || `<tr><td colspan="9" class="empty">Sin movimientos todavía.</td></tr>`}</tbody>
+        <tfoot><tr class="total-row"><td colspan="3">Total ${STATE.currentMonth}</td><td class="num">${fmtNum(totalCargosMes)}</td><td class="num">${fmtNum(totalDepositosMes)}</td><td colspan="4"></td></tr></tfoot>
       </table>
     </div>
   `;
@@ -2017,6 +2021,9 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     </tr>`;
   }).join('');
 
+  const totalDepositosMes = ledger.reduce((s,m)=>s+(Number(m.depositos)||0),0);
+  const totalCargosMes = ledger.reduce((s,m)=>s+(Number(m.cargos)||0),0);
+
   box.innerHTML = `
     <div class="card-head" style="margin-top:14px;">
       <span class="hint">Saldo al inicio de ${STATE.currentMonth}: ${fmt(saldoApertura)}</span>
@@ -2029,6 +2036,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
       <table>
         <thead><tr><th>Fecha</th><th>Descripción</th><th>Concepto</th><th>Referencia</th><th>Depósitos</th><th>Cargos</th><th>Saldo</th><th>Tipo de salida</th><th>Detalle</th><th></th></tr></thead>
         <tbody>${rowsHtml || `<tr><td colspan="10" class="empty">Sin movimientos.</td></tr>`}</tbody>
+        <tfoot><tr class="total-row"><td colspan="4">Total ${STATE.currentMonth}</td><td class="num">${fmtNum(totalDepositosMes)}</td><td class="num">${fmtNum(totalCargosMes)}</td><td colspan="4"></td></tr></tfoot>
       </table>
     </div>
   `;
