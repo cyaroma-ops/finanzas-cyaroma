@@ -194,7 +194,10 @@ async function loadBusinesses() {
   if (error) { toast('Error cargando negocios: ' + error.message, 'error'); return; }
   STATE.businesses = data || [];
   if (!STATE.businesses.length) return;
-  if (!STATE.currentBusinessId || !STATE.businesses.find(b => b.id === STATE.currentBusinessId)) {
+  const guardado = localStorage.getItem('finanzas_ultimo_negocio');
+  if (guardado && STATE.businesses.find(b => b.id === guardado)) {
+    STATE.currentBusinessId = guardado;
+  } else if (!STATE.currentBusinessId || !STATE.businesses.find(b => b.id === STATE.currentBusinessId)) {
     STATE.currentBusinessId = STATE.businesses.filter(b => b.active !== false)[0]?.id || STATE.businesses[0].id;
   }
   renderBizSelect();
@@ -211,6 +214,7 @@ function renderBizSelect() {
 function setupBizControls() {
   document.getElementById('bizSelect').addEventListener('change', (e) => {
     STATE.currentBusinessId = e.target.value;
+    localStorage.setItem('finanzas_ultimo_negocio', e.target.value);
     renderCurrentSection();
   });
   document.getElementById('addBizBtn').addEventListener('click', () => {
@@ -228,6 +232,7 @@ function setupBizControls() {
     document.getElementById('modalBiz').classList.remove('show');
     await loadBusinesses();
     STATE.currentBusinessId = data.id;
+    localStorage.setItem('finanzas_ultimo_negocio', data.id);
     renderBizSelect();
     document.getElementById('bizSelect').value = data.id;
     renderCurrentSection();
@@ -808,6 +813,25 @@ async function provisionarPropina(businessId, ventaId, concepto, monto, fecha) {
       origen_venta_id: ventaId, origen_concepto_id: concepto.id,
     });
   }
+}
+
+async function provisionarPropinasHistoricas(businessId, onDone) {
+  if (!confirm('Esto revisará todos los días de Ventas capturados en este negocio y creará/actualizará la cuenta por pagar de propinas donde falte. No duplica las que ya existen. ¿Continuar?')) return;
+  const [ventasQ, conceptos] = await Promise.all([
+    sb.from('fz_ventas').select('id,fecha,recon_data').eq('business_id', businessId),
+    loadConceptos(businessId),
+  ]);
+  const conceptosPropinas = conceptos.filter(c => c.categoria === 'propinas');
+  if (!conceptosPropinas.length) { toast('Este negocio no tiene conceptos de propinas configurados.', 'error'); return; }
+  let count = 0;
+  for (const v of (ventasQ.data || [])) {
+    for (const c of conceptosPropinas) {
+      const monto = Number((v.recon_data || {})[c.id]?.monto) || 0;
+      if (monto) { await provisionarPropina(businessId, v.id, c, monto, v.fecha); count++; }
+    }
+  }
+  toast(`Listo — ${count} registro(s) de propinas revisados/creados.`);
+  if (onDone) onDone();
 }
 
 function ventasRowHtml(r, conceptosVenta, porCat, recibidoCats, conceptosSistema) {
@@ -2251,6 +2275,7 @@ async function renderProveedores() {
           <button class="btn btn-ghost btn-sm" id="openProveedoresCatBtn">⚙ Catálogo de proveedores</button>
           <button class="btn btn-ghost btn-sm" id="openCuentasBtnProv">⚙ Catálogo de cuentas</button>
           <button class="btn btn-ghost btn-sm" id="importFacturasBtn">📥 Importar facturas (Excel)</button>
+          <button class="btn btn-ghost btn-sm" id="provisionarPropinasBtn">🔄 Poner al día propinas</button>
           <button class="btn btn-gold btn-sm" id="addProvBtn">+ Agregar factura</button>
         </div>
       </div>
@@ -2276,6 +2301,7 @@ async function renderProveedores() {
   document.getElementById('openProveedoresCatBtn').addEventListener('click', () => openProveedoresCatModal(b.id, renderProveedores));
   document.getElementById('openCuentasBtnProv').addEventListener('click', () => openCuentasModal(b.id, renderProveedores));
   document.getElementById('importFacturasBtn').addEventListener('click', () => openImportExcelModal('facturas', b.id, renderProveedores));
+  document.getElementById('provisionarPropinasBtn').addEventListener('click', () => provisionarPropinasHistoricas(b.id, renderProveedores));
   el.querySelectorAll('.prov-tab').forEach(t => t.addEventListener('click', () => { STATE_provFiltro = t.dataset.f; renderProveedores(); }));
   el.querySelectorAll('.prov-resumen-row').forEach(tr => tr.addEventListener('click', () => {
     STATE_provExpandido = STATE_provExpandido === tr.dataset.prov ? null : tr.dataset.prov;
