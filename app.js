@@ -1382,8 +1382,17 @@ function openImportExcelModal(tipo, businessId, onDone, extra) {
           return base;
         });
         if (!payload.length) { toast('El archivo no tiene filas.', 'error'); return; }
-        const { error } = await sb.from('fz_ventas').insert(payload);
+        const { data: nuevasVentas, error } = await sb.from('fz_ventas').insert(payload).select();
         if (error) { toast('Error al importar: ' + error.message, 'error'); return; }
+        const conceptosPropinas = cRecon.filter(c => c.categoria === 'propinas');
+        if (conceptosPropinas.length) {
+          for (const v of (nuevasVentas || [])) {
+            for (const c of conceptosPropinas) {
+              const monto = Number((v.recon_data || {})[c.id]?.monto) || 0;
+              if (monto) await provisionarPropina(businessId, v.id, c, monto, v.fecha);
+            }
+          }
+        }
         toast(`${payload.length} días de ventas importados.`);
 
       } else if (tipo === 'polizas') {
@@ -1497,8 +1506,12 @@ async function openVentaDiaModal(businessId, onDone) {
       payload.tarjetas_sistema = Number(document.getElementById('vdTarjetasSistema').value) || 0;
       payload.cxc = Number(document.getElementById('vdCxc').value) || 0;
     }
-    const { error } = await sb.from('fz_ventas').insert(payload);
+    const { data: nuevaVenta, error } = await sb.from('fz_ventas').insert(payload).select().single();
     if (error) { toast('Error: ' + error.message, 'error'); return; }
+    for (const c of porCat.propinas) {
+      const monto = Number(recon_data[c.id]?.monto) || 0;
+      if (monto) await provisionarPropina(businessId, nuevaVenta.id, c, monto, fecha);
+    }
     document.getElementById('modalVentaDia').classList.remove('show');
     toast('Día de ventas agregado.');
     if (onDone) onDone();
