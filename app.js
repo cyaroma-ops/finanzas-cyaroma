@@ -2414,6 +2414,23 @@ async function renderProveedores() {
         const c = catalogo.find(x => x.id === val);
         payload.proveedor = c ? c.nombre : '';
       }
+      if (field === 'estatus') {
+        const factura = all.find(x => x.id === inp.dataset.id);
+        const importe = Number(factura?.importe) || 0;
+        if (val === 'Pagado') {
+          payload.importe_pagado = importe;
+          if (!factura?.fecha_pago) payload.fecha_pago = todayStr();
+        } else if (val === 'Pendiente') {
+          payload.importe_pagado = 0;
+        } else if (val === 'Parcial') {
+          const actual = Number(factura?.importe_pagado) || 0;
+          const respuesta = prompt(`¿Cuánto se ha pagado de esta factura (de ${fmt(importe)})?`, actual || '');
+          if (respuesta === null) { renderProveedores(); return; }
+          const monto = Math.max(0, Math.min(importe, Number(respuesta) || 0));
+          payload.importe_pagado = monto;
+          if (!factura?.fecha_pago) payload.fecha_pago = todayStr();
+        }
+      }
       await sb.from('fz_proveedores').update(payload).eq('id', inp.dataset.id);
       if (field === 'estatus') await syncPagoProveedor(b.id, inp.dataset.id);
       renderProveedores();
