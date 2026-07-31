@@ -1626,7 +1626,7 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
       document.getElementById('facturasPagoResumen').innerHTML = `
         <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Monto del movimiento</span><strong>${fmt(montoMovimiento)}</strong></div>
         <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Total seleccionado (${marcadas.length})</span><strong>${fmt(totalSeleccionado)}</strong></div>
-        <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--muted)'};font-weight:700;"><span>${cuadra?'✓ Cuadra exacto':(diferencia>0?'Si aplicas, quedará pendiente/parcial':'Si aplicas, sobrará como crédito a favor')}</span><span>${cuadra?'':fmt(Math.abs(diferencia))}</span></div>
+        <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--muted)'};font-weight:700;"><span>${cuadra?'✓ Cuadra exacto':(diferencia>0?'Si aplicas, sobrará como crédito a favor':'Si aplicas, quedará pendiente/parcial')}</span><span>${cuadra?'':fmt(Math.abs(diferencia))}</span></div>
       `;
     };
     box.querySelectorAll('.factura-check').forEach(chk => chk.addEventListener('change', actualizarResumen));
@@ -1715,7 +1715,7 @@ async function openMovimientoModal(contexto) {
     document.getElementById('movFacturasResumen').innerHTML = `
       <div style="display:flex;justify-content:space-between;margin-bottom:2px;"><span>Cargo capturado</span><strong>${fmt(montoMovimiento)}</strong></div>
       <div style="display:flex;justify-content:space-between;margin-bottom:2px;"><span>Total seleccionado (${marcadas.length})</span><strong>${fmt(totalSeleccionado)}</strong></div>
-      <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--muted)'};font-weight:700;"><span>${cuadra?'✓ Cuadra exacto':(diferencia>0?'Quedará pendiente/parcial':'Sobrará como crédito a favor')}</span><span>${cuadra?'':fmt(Math.abs(diferencia))}</span></div>
+      <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--muted)'};font-weight:700;"><span>${cuadra?'✓ Cuadra exacto':(diferencia>0?'Sobrará como crédito a favor':'Quedará pendiente/parcial')}</span><span>${cuadra?'':fmt(Math.abs(diferencia))}</span></div>
     `;
   };
   document.querySelectorAll('.mov-factura-check').forEach(chk => chk.addEventListener('change', actualizarResumenMovFacturas));
