@@ -1545,6 +1545,51 @@ async function openVentaDiaModal(businessId, onDone) {
 }
 
 /* ---------- Aplicación inteligente de pagos: FIFO + crédito a favor ---------- */
+/* ---------- Revertir un pago (al eliminar el movimiento que lo aplicó) ---------- */
+async function revertirPagoAFacturas(idsAfectados, montoMovimiento) {
+  if (!idsAfectados || !idsAfectados.length) return;
+  const { data: facturas } = await sb.from('fz_proveedores').select('*').in('id', idsAfectados);
+  if (!facturas || !facturas.length) return;
+  const reales = facturas.filter(f => Number(f.importe) >= 0).sort((a,b)=>a.fecha.localeCompare(b.fecha));
+  const creditos = facturas.filter(f => Number(f.importe) < 0);
+
+  let porRevertir = montoMovimiento;
+  for (const f of reales) {
+    if (porRevertir <= 0.009) break;
+    const actual = Number(f.importe_pagado) || 0;
+    if (actual <= 0.009) continue;
+    const revertir = Math.min(porRevertir, actual);
+    const nuevoPagado = actual - revertir;
+    const quedaLimpio = nuevoPagado <= 0.009;
+    await sb.from('fz_proveedores').update({
+      importe_pagado: quedaLimpio ? 0 : nuevoPagado,
+      estatus: quedaLimpio ? 'Pendiente' : 'Parcial',
+      pagado_desde: quedaLimpio ? null : f.pagado_desde,
+      pagado_desde_tipo: quedaLimpio ? null : f.pagado_desde_tipo,
+      pagado_desde_cuenta_id: quedaLimpio ? null : f.pagado_desde_cuenta_id,
+      fecha_pago: quedaLimpio ? null : f.fecha_pago,
+    }).eq('id', f.id);
+    porRevertir -= revertir;
+  }
+  for (const c of creditos) {
+    if (c.estatus === 'Pagado') {
+      await sb.from('fz_proveedores').update({ estatus: 'Pendiente', fecha_pago: null }).eq('id', c.id);
+    }
+  }
+}
+
+async function confirmarYEliminarMovimiento(table, row, onDone) {
+  const idsAfectados = facturaIdsDe(row);
+  if (row.tipo_salida === 'proveedor' && idsAfectados.length) {
+    const ok = confirm(`Este movimiento tiene un pago aplicado a ${idsAfectados.length} factura(s) de Proveedores. Al eliminarlo, se revertirá ese pago (regresarán a Pendiente/Parcial según corresponda). ¿Continuar?`);
+    if (!ok) return;
+    const montoMovimiento = Number(row.cargos) > 0 ? Number(row.cargos) : Number(row.depositos) || 0;
+    await revertirPagoAFacturas(idsAfectados, montoMovimiento);
+  }
+  await sb.from(table).delete().eq('id', row.id);
+  onDone();
+}
+
 async function aplicarPagoFacturas(idsSeleccionados, montoDisponibleInicial, fechaMov, businessId, origenInfo) {
   if (!idsSeleccionados.length) return { idsAfectados: [], creadoCredito: false, sobrante: 0 };
   const { data: facturas } = await sb.from('fz_proveedores').select('*').in('id', idsSeleccionados);
@@ -2137,8 +2182,8 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
   });
   box.querySelectorAll('.mov-del').forEach(btn => {
     btn.addEventListener('click', async () => {
-      await sb.from('fz_efectivo_mov').delete().eq('id', btn.dataset.id);
-      renderMonedaLedger(moneda, businessId, conceptosEfectivo);
+      const row = ledger.find(r => r.id === btn.dataset.id) || {};
+      await confirmarYEliminarMovimiento('fz_efectivo_mov', { ...row, id: btn.dataset.id }, () => renderMonedaLedger(moneda, businessId, conceptosEfectivo));
     });
   });
 }
@@ -2291,8 +2336,8 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
   });
   box.querySelectorAll('.mov-del').forEach(btn => {
     btn.addEventListener('click', async () => {
-      await sb.from('fz_bancos_mov').delete().eq('id', btn.dataset.id);
-      renderBancoLedger(cuentaId, businessId, conceptosTarjetas);
+      const row = ledger.find(r => r.id === btn.dataset.id) || {};
+      await confirmarYEliminarMovimiento('fz_bancos_mov', { ...row, id: btn.dataset.id }, () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas));
     });
   });
 }
