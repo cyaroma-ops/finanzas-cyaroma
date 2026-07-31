@@ -611,6 +611,7 @@ async function renderVentas() {
   const el = document.getElementById('sec-ventas');
   const b = biz();
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
+  const scrollY = window.scrollY;
   const { start, end } = monthBounds(STATE.currentMonth);
   const [ventasQ, conceptosVenta, conceptos, conceptosSistema] = await Promise.all([
     sb.from('fz_ventas').select('*').eq('business_id', b.id).gte('fecha', start).lte('fecha', end).order('fecha'),
@@ -789,6 +790,7 @@ async function renderVentas() {
       renderVentas();
     });
   });
+  window.scrollTo(0, scrollY);
 }
 
 /* ---------- Provisión automática de propinas como cuenta por pagar ---------- */
@@ -2212,6 +2214,7 @@ async function renderProveedores() {
   const el = document.getElementById('sec-proveedores');
   const b = biz();
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
+  const scrollY = window.scrollY;
   const [provQ, catalogo, cuentasBancoQ, monedasQ] = await Promise.all([
     sb.from('fz_proveedores').select('*').eq('business_id', b.id).order('fecha', { ascending: false }),
     loadProveedoresCatalogo(b.id),
@@ -2340,6 +2343,7 @@ async function renderProveedores() {
     renderProveedores();
   }));
   el.querySelectorAll('.prov-desglosar').forEach(btn => btn.addEventListener('click', () => openDesgloseModal(b.id, btn.dataset.id, renderProveedores)));
+  window.scrollTo(0, scrollY);
 }
 
 async function syncPagoProveedor(businessId, facturaId) {
@@ -2792,6 +2796,7 @@ async function renderPolizas() {
   const el = document.getElementById('sec-polizas');
   const b = biz();
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
+  const scrollY = window.scrollY;
 
   const [polizas, lineas, subcuentas, mayores, cuentasBancoQ, monedasQ] = await Promise.all([
     loadPolizas(b.id), loadTodasLasLineas(b.id), loadSubcuentas(b.id), loadCuentasMayor(b.id),
@@ -2843,6 +2848,7 @@ async function renderPolizas() {
     renderPolizas();
   });
   wirePolizaHandlers(el, b.id);
+  window.scrollTo(0, scrollY);
 }
 
 function polizaCardHtml(p, lineasPoliza, subcuentas, mayores, cuentasBanco, monedasEfectivo) {
