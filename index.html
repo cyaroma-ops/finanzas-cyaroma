@@ -458,6 +458,33 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   </div>
 </div>
 
+<!-- Modal: categorías de sistema (Efectivo/Tarjetas/CxC configurables) -->
+<div class="modal-bg" id="modalConceptosSistema">
+  <div class="modal" style="width:min(480px,92vw);">
+    <h3>Categorías de sistema</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px;">Es lo que tu POS/sistema dice que se cobró en el día. Por default son Efectivo, Tarjetas y CxC — pero si tu negocio no usa exactamente esas, agrégalas aquí como necesites; cada una se compara contra lo "recibido" de su misma categoría.</p>
+    <div id="conceptosSistemaList" style="max-height:260px;overflow-y:auto;margin-bottom:16px;"></div>
+    <div class="grid-2" style="align-items:end;">
+      <div class="field" style="margin-bottom:0;">
+        <label>Nombre</label>
+        <input type="text" id="newConceptoSistemaNombre" placeholder="Ej. Efectivo">
+      </div>
+      <div class="field" style="margin-bottom:0;">
+        <label>Se compara contra</label>
+        <select id="newConceptoSistemaCategoria">
+          <option value="efectivo" selected>Efectivo recibido</option>
+          <option value="tarjetas">Tarjetas / Bancos recibido</option>
+          <option value="cxc">CxC recibido</option>
+        </select>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="closeConceptosSistema">Cerrar</button>
+      <button class="btn btn-gold" id="saveConceptoSistema">+ Agregar categoría</button>
+    </div>
+  </div>
+</div>
+
 <!-- Modal: catálogo de cuentas (cuenta mayor + subcuentas) -->
 <div class="modal-bg" id="modalCuentas">
   <div class="modal" style="width:min(560px,92vw);">
