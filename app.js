@@ -2454,6 +2454,7 @@ async function renderProveedores() {
       const field = inp.dataset.field;
       let val = inp.value;
       if (field === 'importe') val = Number(val) || 0;
+      if ((field === 'fecha' || field === 'fecha_pago') && val === '') val = null;
       const payload = { [field]: val };
       if (field === 'proveedor_id') {
         const c = catalogo.find(x => x.id === val);
@@ -2467,6 +2468,10 @@ async function renderProveedores() {
           if (!factura?.fecha_pago) payload.fecha_pago = todayStr();
         } else if (val === 'Pendiente') {
           payload.importe_pagado = 0;
+          payload.fecha_pago = null;
+          payload.pagado_desde = null;
+          payload.pagado_desde_tipo = null;
+          payload.pagado_desde_cuenta_id = null;
         } else if (val === 'Parcial') {
           const actual = Number(factura?.importe_pagado) || 0;
           const respuesta = prompt(`¿Cuánto se ha pagado de esta factura (de ${fmt(importe)})?`, actual || '');
@@ -2476,7 +2481,8 @@ async function renderProveedores() {
           if (!factura?.fecha_pago) payload.fecha_pago = todayStr();
         }
       }
-      await sb.from('fz_proveedores').update(payload).eq('id', inp.dataset.id);
+      const { error } = await sb.from('fz_proveedores').update(payload).eq('id', inp.dataset.id);
+      if (error) { toast('Error guardando: ' + error.message, 'error'); return; }
       if (field === 'estatus') await syncPagoProveedor(b.id, inp.dataset.id);
       renderProveedores();
     });
@@ -2495,7 +2501,9 @@ async function renderProveedores() {
     });
   });
   el.querySelectorAll('.prov-del').forEach(btn => btn.addEventListener('click', async () => {
-    await sb.from('fz_proveedores').delete().eq('id', btn.dataset.id);
+    if (!confirm('¿Eliminar este registro? Esta acción no se puede deshacer.')) return;
+    const { error } = await sb.from('fz_proveedores').delete().eq('id', btn.dataset.id);
+    if (error) { toast('No se pudo eliminar: ' + error.message, 'error'); return; }
     renderProveedores();
   }));
   el.querySelectorAll('.prov-desglosar').forEach(btn => btn.addEventListener('click', () => openDesgloseModal(b.id, btn.dataset.id, renderProveedores)));
