@@ -1603,6 +1603,7 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
       const key = f.proveedor || '(sin proveedor)';
       (porProveedor[key] = porProveedor[key] || []).push(f);
     });
+    Object.values(porProveedor).forEach(lista => lista.sort((a,b) => a.fecha.localeCompare(b.fecha)));
     const box = document.getElementById('facturasPagoList');
     box.innerHTML = Object.keys(porProveedor).sort((a,b)=>a.localeCompare(b)).map(prov => `
       <div style="margin-bottom:10px;">
@@ -1692,6 +1693,7 @@ async function openMovimientoModal(contexto) {
   const pendientes = facturasPend.filter(f => f.estatus !== 'Pagado');
   const porProveedor = {};
   pendientes.forEach(f => { const key = f.proveedor || '(sin proveedor)'; (porProveedor[key] = porProveedor[key] || []).push(f); });
+  Object.values(porProveedor).forEach(lista => lista.sort((a,b) => a.fecha.localeCompare(b.fecha)));
   document.getElementById('movFacturasList').innerHTML = Object.keys(porProveedor).sort((a,b)=>a.localeCompare(b)).map(prov => `
     <div style="margin-bottom:8px;">
       <div style="font-weight:700;font-size:12px;color:var(--navy-1);">${prov}</div>
@@ -1749,20 +1751,26 @@ async function openMovimientoModal(contexto) {
       payload = { business_id: contexto.businessId, cuenta_id: contexto.refId, fecha, concepto: document.getElementById('movCampo1').value || null, referencia: document.getElementById('movReferencia').value || null, descripcion, cargos, depositos, tipo_salida: tipoSalida };
     }
     if (tipoSalida === 'gasto') payload.subcuenta_id = document.getElementById('movSubcuenta').value || null;
-    if (tipoSalida === 'proveedor') payload.proveedor_factura_ids = [];
 
-    const { data: nuevoMov, error } = await sb.from(table).insert(payload).select().single();
-    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    let creadoCredito = false;
     if (tipoSalida === 'proveedor' && idsFacturas.length) {
       const montoDisponible = cargos > 0 ? cargos : depositos;
-      const { idsAfectados, creadoCredito } = await aplicarPagoFacturas(idsFacturas, montoDisponible, fecha, contexto.businessId, {
+      const resultado = await aplicarPagoFacturas(idsFacturas, montoDisponible, fecha, contexto.businessId, {
         pagado_desde: origenCorto,
         pagado_desde_tipo: contexto.tipo === 'efectivo' ? 'efectivo' : 'banco',
         pagado_desde_cuenta_id: contexto.refId,
       });
-      const { error: e3 } = await sb.from(table).update({ proveedor_factura_ids: idsAfectados, proveedor_factura_id: idsAfectados[0] || null }).eq('id', nuevoMov.id);
-      if (e3) toast('El movimiento se guardó, pero hubo un error vinculando las facturas: ' + e3.message, 'error');
-      else if (creadoCredito) toast('Se generó un crédito a favor con el sobrante.');
+      payload.proveedor_factura_ids = resultado.idsAfectados;
+      payload.proveedor_factura_id = resultado.idsAfectados[0] || null;
+      creadoCredito = resultado.creadoCredito;
+    } else if (tipoSalida === 'proveedor') {
+      payload.proveedor_factura_ids = [];
+    }
+
+    const { error } = await sb.from(table).insert(payload);
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    if (tipoSalida === 'proveedor' && idsFacturas.length) {
+      toast(`${idsFacturas.length} factura(s) procesada(s)${creadoCredito ? ' · se generó un crédito a favor' : ''}.`);
     }
     modal.classList.remove('show');
     toast('Movimiento agregado.');
