@@ -2958,7 +2958,7 @@ async function loadPolizas(businessId) {
   return data || [];
 }
 async function loadTodasLasLineas(businessId) {
-  const { data } = await sb.from('fz_polizas_lineas').select('*').eq('business_id', businessId);
+  const { data } = await sb.from('fz_polizas_lineas').select('*').eq('business_id', businessId).order('created_at');
   return data || [];
 }
 
