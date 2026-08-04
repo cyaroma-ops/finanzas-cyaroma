@@ -11,6 +11,8 @@ const STATE = {
   currentBusinessId: null,
   currentSection: 'dashboard',
   currentMonth: new Date().toISOString().slice(0, 7), // YYYY-MM
+  esPropietario: false,
+  negociosPermitidos: null, // null = sin restricción (propietario); array de ids = restringido
 };
 
 /* ---------- Utilidades ---------- */
@@ -103,14 +105,22 @@ document.getElementById('deniedLogoutBtn').addEventListener('click', async () =>
 /* ---------- CONTROL DE ACCESO ---------- */
 async function checkAcceso(email) {
   const { data, error } = await sb.from('fz_usuarios_autorizados').select('*').ilike('email', email).limit(1);
-  if (error) { toast('Error verificando acceso: ' + error.message, 'error'); return false; }
+  if (error) { toast('Error verificando acceso: ' + error.message, 'error'); return { autorizado: false }; }
   const row = data?.[0];
-  return !!(row && row.activo !== false);
+  if (!row || row.activo === false) return { autorizado: false };
+  STATE.esPropietario = !!row.es_propietario;
+  if (!STATE.esPropietario) {
+    const { data: permisos } = await sb.from('fz_usuario_negocios').select('business_id').ilike('email', email);
+    STATE.negociosPermitidos = (permisos || []).map(p => p.business_id);
+  } else {
+    STATE.negociosPermitidos = null; // null = sin restricción
+  }
+  return { autorizado: true };
 }
 
 /* ---------- BOOT ---------- */
 async function boot() {
-  const autorizado = await checkAcceso(STATE.user.email);
+  const { autorizado } = await checkAcceso(STATE.user.email);
   if (!autorizado) {
     document.getElementById('loginScreen').style.display = 'none';
     document.getElementById('deniedEmail').textContent = STATE.user.email;
@@ -127,6 +137,10 @@ async function boot() {
   setupNav();
   setupBizControls();
   setupUsuariosControls();
+  if (!STATE.esPropietario) {
+    document.getElementById('openUsuariosBtn').style.display = 'none';
+    document.getElementById('addBizBtn').style.display = 'none';
+  }
 
   document.getElementById('monthPicker').addEventListener('change', (e) => {
     STATE.currentMonth = e.target.value;
@@ -145,6 +159,14 @@ async function loadUsuariosAutorizados() {
   if (error) { toast('Error: ' + error.message, 'error'); return []; }
   return data || [];
 }
+async function loadTodosNegociosSinFiltro() {
+  const { data } = await sb.from('businesses').select('*').order('name');
+  return data || [];
+}
+async function loadUsuarioNegocios(email) {
+  const { data } = await sb.from('fz_usuario_negocios').select('business_id').ilike('email', email);
+  return (data || []).map(r => r.business_id);
+}
 async function openUsuariosModal() {
   await renderUsuariosList();
   document.getElementById('modalUsuarios').classList.add('show');
@@ -152,34 +174,69 @@ async function openUsuariosModal() {
   document.getElementById('saveUsuario').onclick = async () => {
     const email = document.getElementById('newUsuarioEmail').value.trim().toLowerCase();
     const nombre = document.getElementById('newUsuarioNombre').value.trim();
+    const esPropietario = document.getElementById('newUsuarioPropietario').checked;
     if (!email) { toast('Escribe un correo.', 'error'); return; }
-    const { error } = await sb.from('fz_usuarios_autorizados').insert({ email, nombre: nombre || null });
+    const { error } = await sb.from('fz_usuarios_autorizados').insert({ email, nombre: nombre || null, es_propietario: esPropietario });
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     document.getElementById('newUsuarioEmail').value = '';
     document.getElementById('newUsuarioNombre').value = '';
+    document.getElementById('newUsuarioPropietario').checked = false;
     renderUsuariosList();
   };
 }
 async function renderUsuariosList() {
-  const usuarios = await loadUsuariosAutorizados();
+  const [usuarios, todosNegocios] = await Promise.all([loadUsuariosAutorizados(), loadTodosNegociosSinFiltro()]);
   const box = document.getElementById('usuariosList');
   if (!usuarios.length) { box.innerHTML = `<div class="empty" style="padding:16px;">Sin usuarios autorizados todavía.</div>`; return; }
-  box.innerHTML = usuarios.map(u => `
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 4px;border-bottom:1px solid var(--line);gap:10px;">
-      <div style="min-width:0;">
-        <strong>${u.email}</strong>${u.email.toLowerCase()===STATE.user.email.toLowerCase()?' <span style="color:var(--muted);font-size:11px;">(tú)</span>':''}
-        ${u.nombre ? `<div style="color:var(--muted);font-size:12px;">${u.nombre}</div>` : ''}
+
+  const bloques = await Promise.all(usuarios.map(async u => {
+    const negociosDe = u.es_propietario ? [] : await loadUsuarioNegocios(u.email);
+    return `
+    <div style="padding:10px 4px;border-bottom:1px solid var(--line);">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+        <div style="min-width:0;">
+          <strong>${u.email}</strong>${u.email.toLowerCase()===STATE.user.email.toLowerCase()?' <span style="color:var(--muted);font-size:11px;">(tú)</span>':''}
+          ${u.nombre ? `<div style="color:var(--muted);font-size:12px;">${u.nombre}</div>` : ''}
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;flex-shrink:0;">
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer;">
+            <input type="checkbox" class="usuario-propietario" data-id="${u.id}" ${u.es_propietario?'checked':''}> Propietario
+          </label>
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer;">
+            <input type="checkbox" class="usuario-activo" data-id="${u.id}" ${u.activo!==false?'checked':''}> Activo
+          </label>
+          <button class="row-del usuario-del" data-id="${u.id}" style="font-size:15px;">✕</button>
+        </div>
       </div>
-      <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
-        <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer;">
-          <input type="checkbox" class="usuario-activo" data-id="${u.id}" ${u.activo!==false?'checked':''}> Activo
-        </label>
-        <button class="row-del usuario-del" data-id="${u.id}" style="font-size:15px;">✕</button>
-      </div>
-    </div>`).join('');
+      ${!u.es_propietario ? `
+        <div style="margin-top:8px;padding:8px 10px;background:#f7f9fc;border-radius:8px;">
+          <div style="font-size:11.5px;color:var(--muted);margin-bottom:6px;">Negocios que puede ver:</div>
+          <div style="display:flex;flex-wrap:wrap;gap:10px;">
+            ${todosNegocios.map(n => `
+              <label style="display:flex;align-items:center;gap:5px;font-size:12.5px;cursor:pointer;">
+                <input type="checkbox" class="usuario-negocio" data-email="${u.email}" data-negocio="${n.id}" ${negociosDe.includes(n.id)?'checked':''}> ${n.name}
+              </label>`).join('') || '<span style="font-size:12px;color:var(--muted);">Aún no hay negocios creados.</span>'}
+          </div>
+        </div>` : `<div style="margin-top:6px;font-size:11.5px;color:var(--green);">Ve todos los negocios y el dashboard consolidado.</div>`}
+    </div>`;
+  }));
+  box.innerHTML = bloques.join('');
+
+  box.querySelectorAll('.usuario-propietario').forEach(chk => chk.addEventListener('change', async () => {
+    await sb.from('fz_usuarios_autorizados').update({ es_propietario: chk.checked }).eq('id', chk.dataset.id);
+    renderUsuariosList();
+  }));
   box.querySelectorAll('.usuario-activo').forEach(chk => chk.addEventListener('change', async () => {
     await sb.from('fz_usuarios_autorizados').update({ activo: chk.checked }).eq('id', chk.dataset.id);
     renderUsuariosList();
+  }));
+  box.querySelectorAll('.usuario-negocio').forEach(chk => chk.addEventListener('change', async () => {
+    const email = chk.dataset.email, negocioId = chk.dataset.negocio;
+    if (chk.checked) {
+      await sb.from('fz_usuario_negocios').insert({ email, business_id: negocioId });
+    } else {
+      await sb.from('fz_usuario_negocios').delete().ilike('email', email).eq('business_id', negocioId);
+    }
   }));
   box.querySelectorAll('.usuario-del').forEach(btn => btn.addEventListener('click', async () => {
     if (usuarios.length <= 1) { toast('Debe quedar al menos un usuario autorizado.', 'error'); return; }
@@ -192,8 +249,15 @@ async function renderUsuariosList() {
 async function loadBusinesses() {
   const { data, error } = await sb.from('businesses').select('*').order('name');
   if (error) { toast('Error cargando negocios: ' + error.message, 'error'); return; }
-  STATE.businesses = data || [];
-  if (!STATE.businesses.length) return;
+  let todos = data || [];
+  if (!STATE.esPropietario && Array.isArray(STATE.negociosPermitidos)) {
+    todos = todos.filter(b => STATE.negociosPermitidos.includes(b.id));
+  }
+  STATE.businesses = todos;
+  if (!STATE.businesses.length) {
+    document.getElementById('bizSelect').innerHTML = '';
+    return;
+  }
   const guardado = localStorage.getItem('finanzas_ultimo_negocio');
   if (guardado && STATE.businesses.find(b => b.id === guardado)) {
     STATE.currentBusinessId = guardado;
@@ -274,7 +338,9 @@ function updateTopbar() {
   const b = biz();
   const titulo = meta.title + (meta.needsBiz && b ? ' — ' + b.name : '');
   document.getElementById('pageTitle').textContent = titulo;
-  document.getElementById('pageSub').textContent = meta.sub;
+  document.getElementById('pageSub').textContent = STATE.currentSection === 'dashboard'
+    ? (STATE.esPropietario ? 'Vista consolidada de todos los negocios' : (STATE.businesses.length > 1 ? 'Vista consolidada de tus negocios' : 'Tu negocio'))
+    : meta.sub;
   document.getElementById('monthPicker').style.display = meta.showMonth ? 'block' : 'none';
 
   const printBtn = document.getElementById('printBtn');
@@ -2584,6 +2650,7 @@ function provRowHtml(p, catalogo, opcionesPagoDesde) {
    P&L — ESTADO DE RESULTADOS
    ============================================================ */
 let STATE_plVista = 'mensual'; // 'mensual' | 'acumulado' | 'anual'
+let STATE_plDetalleAbierto = null; // subcuenta id cuyo detalle está desplegado
 
 function periodoPL(ym, vista) {
   const { start, end } = monthBounds(ym);
@@ -2650,7 +2717,7 @@ async function computeGastosClasificados(businessId, periodo, subcuentas, mayore
 
   const porMayor = mayores.filter(m=>m.tipo==='gasto').map(m => {
     const subs = subcuentas.filter(s => s.cuenta_mayor_id === m.id)
-      .map(s => ({ nombre: s.nombre, monto: porSubcuenta[s.id] || 0 }))
+      .map(s => ({ id: s.id, nombre: s.nombre, monto: porSubcuenta[s.id] || 0 }))
       .filter(s => s.monto);
     return { nombre: m.nombre, subs, subtotal: subs.reduce((s,x)=>s+x.monto,0) };
   }).filter(m => m.subtotal);
@@ -2672,11 +2739,85 @@ async function computeIngresosPoliza(businessId, periodo, subcuentas, mayores) {
   });
   const porMayor = mayores.filter(m=>m.tipo==='ingreso').map(m => {
     const subs = subcuentas.filter(s => s.cuenta_mayor_id === m.id)
-      .map(s => ({ nombre: s.nombre, monto: porSubcuenta[s.id] || 0 }))
+      .map(s => ({ id: s.id, nombre: s.nombre, monto: porSubcuenta[s.id] || 0 }))
       .filter(s => s.monto);
     return { nombre: m.nombre, subs, subtotal: subs.reduce((s,x)=>s+x.monto,0) };
   }).filter(m => m.subtotal);
   return { porMayor, total: porMayor.reduce((s,m)=>s+m.subtotal,0) };
+}
+
+/* ---------- Detalle de transacciones que forman el total de una subcuenta (clic para auditar) ---------- */
+async function getDetalleGastoSubcuenta(businessId, periodo, subcuentaId) {
+  const { start, end, mesStart, mesEnd } = periodo;
+  const filas = [];
+
+  const [facturasQ, bmQ, emQ, plGastosQ, lineasPolizaQ] = await Promise.all([
+    sb.from('fz_proveedores').select('*').eq('business_id', businessId).gte('fecha', start).lte('fecha', end),
+    sb.from('fz_bancos_mov').select('*').eq('business_id', businessId).eq('tipo_salida', 'gasto').eq('subcuenta_id', subcuentaId).gte('fecha', start).lte('fecha', end),
+    sb.from('fz_efectivo_mov').select('*').eq('business_id', businessId).eq('tipo_salida', 'gasto').eq('subcuenta_id', subcuentaId).gte('fecha', start).lte('fecha', end),
+    sb.from('fz_pl_gastos').select('*').eq('business_id', businessId).eq('subcuenta_id', subcuentaId).gte('mes', mesStart).lte('mes', mesEnd),
+    sb.from('fz_polizas_lineas').select('*').eq('business_id', businessId).eq('subcuenta_id', subcuentaId).eq('cuenta_tipo', 'subcuenta'),
+  ]);
+
+  (facturasQ.data || []).forEach(f => {
+    desgloseLineas(f.desglose).forEach(linea => {
+      if (linea.subcuenta_id === subcuentaId && Number(linea.monto)) {
+        const pago = f.estatus === 'Pagado' ? (f.pagado_desde || 'Pagado') : (f.estatus === 'Parcial' ? `Parcial · ${f.pagado_desde || 'sin especificar'}` : 'Pendiente de pago');
+        filas.push({ fecha: f.fecha, proveedor: f.proveedor || '(sin proveedor)', concepto: linea.descripcion || f.factura || '(factura)', importe: Number(linea.monto), pago });
+      }
+    });
+  });
+  (bmQ.data || []).forEach(m => filas.push({ fecha: m.fecha, proveedor: m.descripcion || '(movimiento bancario)', concepto: m.concepto || '—', importe: Number(m.cargos) || 0, pago: 'Banco' }));
+  (emQ.data || []).forEach(m => filas.push({ fecha: m.fecha, proveedor: m.proveedor || '(movimiento efectivo)', concepto: m.descripcion || '—', importe: Number(m.cargos) || 0, pago: 'Efectivo' }));
+  (plGastosQ.data || []).forEach(g => filas.push({ fecha: g.mes + '-01', proveedor: 'Ajuste manual', concepto: g.descripcion || '—', importe: Number(g.monto) || 0, pago: 'Ajuste manual' }));
+
+  const lineasPoliza = lineasPolizaQ.data || [];
+  if (lineasPoliza.length) {
+    const polizaIds = [...new Set(lineasPoliza.map(l => l.poliza_id))];
+    const { data: polizasInfo } = await sb.from('fz_polizas').select('id,fecha,numero,concepto').in('id', polizaIds).gte('fecha', start).lte('fecha', end);
+    const polizaMap = Object.fromEntries((polizasInfo || []).map(p => [p.id, p]));
+    lineasPoliza.forEach(l => {
+      const p = polizaMap[l.poliza_id];
+      if (!p) return;
+      const monto = (Number(l.cargo) || 0) - (Number(l.abono) || 0);
+      if (monto) filas.push({ fecha: p.fecha, proveedor: `Póliza #${p.numero ?? ''}`, concepto: l.descripcion || p.concepto || '—', importe: monto, pago: 'Póliza de diario' });
+    });
+  }
+
+  return filas.sort((a,b) => a.fecha.localeCompare(b.fecha));
+}
+
+async function getDetalleIngresoSubcuenta(businessId, periodo, subcuentaId) {
+  const { start, end } = periodo;
+  const { data: lineasPoliza } = await sb.from('fz_polizas_lineas').select('*').eq('business_id', businessId).eq('subcuenta_id', subcuentaId).eq('cuenta_tipo', 'subcuenta');
+  if (!lineasPoliza || !lineasPoliza.length) return [];
+  const polizaIds = [...new Set(lineasPoliza.map(l => l.poliza_id))];
+  const { data: polizasInfo } = await sb.from('fz_polizas').select('id,fecha,numero,concepto').in('id', polizaIds).gte('fecha', start).lte('fecha', end);
+  const polizaMap = Object.fromEntries((polizasInfo || []).map(p => [p.id, p]));
+  const filas = [];
+  lineasPoliza.forEach(l => {
+    const p = polizaMap[l.poliza_id];
+    if (!p) return;
+    const monto = (Number(l.abono) || 0) - (Number(l.cargo) || 0);
+    if (monto) filas.push({ fecha: p.fecha, proveedor: `Póliza #${p.numero ?? ''}`, concepto: l.descripcion || p.concepto || '—', importe: monto, pago: 'Póliza de diario' });
+  });
+  return filas.sort((a,b) => a.fecha.localeCompare(b.fecha));
+}
+
+function detalleSubcuentaHtml(filas, colspan) {
+  if (!filas.length) return `<tr><td colspan="${colspan}" style="padding-left:34px;color:var(--muted);font-size:12px;">Sin movimientos detallados para este período.</td></tr>`;
+  return `<tr><td colspan="${colspan}" style="padding:0 0 8px 34px;">
+    <table style="width:100%;">
+      <thead><tr><th>Fecha</th><th>Proveedor</th><th>Concepto</th><th>Importe</th><th>Cómo se pagó</th></tr></thead>
+      <tbody>${filas.map(f => `<tr>
+        <td>${fechaCorta(f.fecha)}</td>
+        <td>${f.proveedor}</td>
+        <td>${f.concepto}</td>
+        <td class="num">${fmt(f.importe)}</td>
+        <td>${f.pago}</td>
+      </tr>`).join('')}</tbody>
+    </table>
+  </td></tr>`;
 }
 
 function plTagsHtml() {
@@ -2783,6 +2924,7 @@ async function renderPL() {
   const b = biz();
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
   if (STATE_plVista === 'anual') { await renderPLAnual(el, b); return; }
+  const scrollY = window.scrollY;
   const periodo = periodoPL(STATE.currentMonth, STATE_plVista);
 
   const [ventasQ, conceptosVenta, conceptos, subcuentas, mayores, conceptosSistema] = await Promise.all([
@@ -2818,6 +2960,14 @@ async function renderPL() {
   const margen = totalIngresosFinal ? (utilidad/totalIngresosFinal*100) : 0;
   const periodoLabel = STATE_plVista === 'acumulado' ? `Acumulado ${STATE.currentMonth.slice(0,4)} (ene—${STATE.currentMonth.slice(5,7)})` : STATE.currentMonth;
 
+  let detalleGastoHtml = '', detalleIngresoHtml = '';
+  if (STATE_plDetalleAbierto) {
+    const esGasto = gClas.porMayor.some(m => m.subs.some(s => s.id === STATE_plDetalleAbierto));
+    const esIngreso = iPoliza.porMayor.some(m => m.subs.some(s => s.id === STATE_plDetalleAbierto));
+    if (esGasto) detalleGastoHtml = detalleSubcuentaHtml(await getDetalleGastoSubcuenta(b.id, periodo, STATE_plDetalleAbierto), 3);
+    else if (esIngreso) detalleIngresoHtml = detalleSubcuentaHtml(await getDetalleIngresoSubcuenta(b.id, periodo, STATE_plDetalleAbierto), 2);
+  }
+
   el.innerHTML = `
     ${plTagsHtml()}
     <div class="kpi-grid">
@@ -2835,7 +2985,7 @@ async function renderPL() {
           ${sobranteCaja ? `<tr><td>Sobrante de caja (conciliación de Ventas)</td><td class="num" style="color:var(--green);">${fmt(sobranteCaja)}</td></tr>` : ''}
           ${iPoliza.porMayor.map(m => `
             <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">${m.nombre} (póliza)</td></tr>
-            ${m.subs.map(s => `<tr><td style="padding-left:22px;">${s.nombre}</td><td class="num">${fmt(s.monto)}</td></tr>`).join('')}
+            ${m.subs.map(s => `<tr class="pl-subcuenta-row" data-subcuenta="${s.id}" style="cursor:pointer;"><td style="padding-left:22px;">${STATE_plDetalleAbierto===s.id?'▾':'▸'} ${s.nombre}</td><td class="num">${fmt(s.monto)}</td></tr>${STATE_plDetalleAbierto===s.id?detalleIngresoHtml:''}`).join('')}
           `).join('')}
           <tr class="total-row"><td>Total ingresos</td><td class="num">${fmt(totalIngresosFinal)}</td></tr>
         </tbody>
@@ -2856,7 +3006,7 @@ async function renderPL() {
           ${faltanteCaja ? `<tr><td>Faltante de caja (conciliación de Ventas)</td><td class="num" style="color:var(--red);">${fmt(faltanteCaja)}</td><td></td></tr>` : ''}
           ${gClas.porMayor.map(m => `
             <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">${m.nombre}</td><td></td></tr>
-            ${m.subs.map(s => `<tr><td style="padding-left:22px;">${s.nombre}</td><td class="num">${fmt(s.monto)}</td><td></td></tr>`).join('')}
+            ${m.subs.map(s => `<tr class="pl-subcuenta-row" data-subcuenta="${s.id}" style="cursor:pointer;"><td style="padding-left:22px;">${STATE_plDetalleAbierto===s.id?'▾':'▸'} ${s.nombre}</td><td class="num">${fmt(s.monto)}</td><td></td></tr>${STATE_plDetalleAbierto===s.id?detalleGastoHtml:''}`).join('')}
             <tr><td style="padding-left:22px;font-style:italic;color:var(--muted);">Subtotal ${m.nombre}</td><td class="num" style="font-weight:600;">${fmt(m.subtotal)}</td><td></td></tr>
           `).join('')}
           ${gClas.sinClasificar ? `<tr><td>Otros gastos sin subcuenta asignada</td><td class="num">${fmt(gClas.sinClasificar)}</td><td></td></tr>` : ''}
@@ -2897,6 +3047,10 @@ async function renderPL() {
   `;
 
   wirePLTags(el);
+  el.querySelectorAll('.pl-subcuenta-row').forEach(tr => tr.addEventListener('click', () => {
+    STATE_plDetalleAbierto = STATE_plDetalleAbierto === tr.dataset.subcuenta ? null : tr.dataset.subcuenta;
+    renderPL();
+  }));
   document.getElementById('openCuentasBtnPL').addEventListener('click', () => openCuentasModal(b.id, renderPL));
   document.getElementById('addGastoBtn').addEventListener('click', async () => {
     await sb.from('fz_pl_gastos').insert({ business_id: b.id, mes: STATE.currentMonth, monto: 0 });
@@ -2914,6 +3068,7 @@ async function renderPL() {
     await sb.from('fz_pl_gastos').delete().eq('id', btn.dataset.id);
     renderPL();
   }));
+  window.scrollTo(0, scrollY);
 }
 
 /* ============================================================
