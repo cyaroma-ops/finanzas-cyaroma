@@ -708,10 +708,10 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 
 <!-- Modal: usuarios autorizados -->
 <div class="modal-bg" id="modalUsuarios">
-  <div class="modal">
+  <div class="modal" style="width:min(560px,94vw);">
     <h3>Usuarios autorizados</h3>
-    <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px;">Solo estos correos pueden entrar a Finanzas (aunque tengan cuenta compartida con tus otras apps). Escribe el correo exacto con el que inician sesión.</p>
-    <div id="usuariosList" style="max-height:280px;overflow-y:auto;margin-bottom:16px;"></div>
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px;">Solo estos correos pueden entrar a Finanzas. Un <strong>propietario</strong> ve todos los negocios y el dashboard consolidado; un usuario normal solo ve los negocios que le asignes (y su dashboard se limita a esos).</p>
+    <div id="usuariosList" style="max-height:340px;overflow-y:auto;margin-bottom:16px;"></div>
     <div class="grid-2">
       <div class="field" style="margin-bottom:0;">
         <label>Correo</label>
@@ -722,6 +722,9 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <input type="text" id="newUsuarioNombre" placeholder="Ej. Rodolfo Arcos">
       </div>
     </div>
+    <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);cursor:pointer;margin:10px 0;">
+      <input type="checkbox" id="newUsuarioPropietario"> Es propietario (ve todos los negocios)
+    </label>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="closeUsuarios">Cerrar</button>
       <button class="btn btn-gold" id="saveUsuario">+ Agregar usuario</button>
