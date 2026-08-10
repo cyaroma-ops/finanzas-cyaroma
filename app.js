@@ -1716,8 +1716,9 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
     });
     Object.values(porProveedor).forEach(lista => lista.sort((a,b) => a.fecha.localeCompare(b.fecha)));
     const box = document.getElementById('facturasPagoList');
-    box.innerHTML = Object.keys(porProveedor).sort((a,b)=>a.localeCompare(b)).map(prov => `
-      <div style="margin-bottom:10px;">
+    const nombresProveedor = Object.keys(porProveedor).sort((a,b)=>a.localeCompare(b));
+    box.innerHTML = nombresProveedor.map(prov => `
+      <div class="factura-provgroup" data-prov="${prov.toLowerCase()}" style="margin-bottom:10px;">
         <div style="font-weight:700;font-size:12.5px;color:var(--navy-1);margin-bottom:4px;">${prov}</div>
         ${porProveedor[prov].map(f => {
           const saldo = Number(f.importe) - Number(f.importe_pagado||0);
@@ -1729,6 +1730,23 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
           </label>`;
         }).join('')}
       </div>`).join('') || `<div class="empty">No hay facturas disponibles.</div>`;
+
+    const selectProv = document.getElementById('facturasPagoSelectProv');
+    const buscarProv = document.getElementById('facturasPagoBuscarProv');
+    selectProv.innerHTML = `<option value="">— todos los proveedores —</option>` + nombresProveedor.map(p => `<option value="${p.toLowerCase()}">${p}</option>`).join('');
+    buscarProv.value = '';
+    const aplicarFiltroProveedor = () => {
+      const porTexto = buscarProv.value.trim().toLowerCase();
+      const porSelect = selectProv.value;
+      box.querySelectorAll('.factura-provgroup').forEach(grp => {
+        const nombre = grp.dataset.prov;
+        const pasaTexto = !porTexto || nombre.includes(porTexto);
+        const pasaSelect = !porSelect || nombre === porSelect;
+        grp.style.display = (pasaTexto && pasaSelect) ? '' : 'none';
+      });
+    };
+    buscarProv.oninput = () => { selectProv.value = ''; aplicarFiltroProveedor(); };
+    selectProv.onchange = () => { buscarProv.value = ''; aplicarFiltroProveedor(); };
 
     const actualizarResumen = () => {
       const marcadas = Array.from(box.querySelectorAll('.factura-check:checked'));
@@ -1805,8 +1823,10 @@ async function openMovimientoModal(contexto) {
   const porProveedor = {};
   pendientes.forEach(f => { const key = f.proveedor || '(sin proveedor)'; (porProveedor[key] = porProveedor[key] || []).push(f); });
   Object.values(porProveedor).forEach(lista => lista.sort((a,b) => a.fecha.localeCompare(b.fecha)));
-  document.getElementById('movFacturasList').innerHTML = Object.keys(porProveedor).sort((a,b)=>a.localeCompare(b)).map(prov => `
-    <div style="margin-bottom:8px;">
+  const nombresProveedorMov = Object.keys(porProveedor).sort((a,b)=>a.localeCompare(b));
+  const movFacturasBox = document.getElementById('movFacturasList');
+  movFacturasBox.innerHTML = nombresProveedorMov.map(prov => `
+    <div class="factura-provgroup" data-prov="${prov.toLowerCase()}" style="margin-bottom:8px;">
       <div style="font-weight:700;font-size:12px;color:var(--navy-1);">${prov}</div>
       ${porProveedor[prov].map(f => {
         const saldo = Number(f.importe) - Number(f.importe_pagado||0);
@@ -1818,6 +1838,23 @@ async function openMovimientoModal(contexto) {
         </label>`;
       }).join('')}
     </div>`).join('') || `<div class="empty" style="padding:8px;">No hay facturas pendientes.</div>`;
+
+  const movSelectProv = document.getElementById('movFacturasSelectProv');
+  const movBuscarProv = document.getElementById('movFacturasBuscarProv');
+  movSelectProv.innerHTML = `<option value="">— todos los proveedores —</option>` + nombresProveedorMov.map(p => `<option value="${p.toLowerCase()}">${p}</option>`).join('');
+  movBuscarProv.value = '';
+  const aplicarFiltroProveedorMov = () => {
+    const porTexto = movBuscarProv.value.trim().toLowerCase();
+    const porSelect = movSelectProv.value;
+    movFacturasBox.querySelectorAll('.factura-provgroup').forEach(grp => {
+      const nombre = grp.dataset.prov;
+      const pasaTexto = !porTexto || nombre.includes(porTexto);
+      const pasaSelect = !porSelect || nombre === porSelect;
+      grp.style.display = (pasaTexto && pasaSelect) ? '' : 'none';
+    });
+  };
+  movBuscarProv.oninput = () => { movSelectProv.value = ''; aplicarFiltroProveedorMov(); };
+  movSelectProv.onchange = () => { movBuscarProv.value = ''; aplicarFiltroProveedorMov(); };
 
   const actualizarResumenMovFacturas = () => {
     const marcadas = Array.from(document.querySelectorAll('.mov-factura-check:checked'));
