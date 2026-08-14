@@ -4,6 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Finanzas | Control Financiero Multi-Negocio</title>
+<link rel="icon" type="image/x-icon" href="favicon.ico">
+<link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="favicon-192x192.png">
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -217,11 +222,14 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   .content{padding:18px;}
   .topbar{padding:14px 18px;}
   .grid-2,.grid-3{grid-template-columns:1fr;}
+  #menuToggleBtn{display:block !important;color:var(--navy-1);}
 }
+#sidebarOverlay{display:none;position:fixed;inset:0;background:rgba(10,20,40,.5);z-index:99;}
+#sidebarOverlay.show{display:block;}
 
 .print-header{display:none;}
 @media print{
-  .sidebar, .topbar-actions, .btn, .modal-bg, .tag-row, .card-head button, #topbarActions, .row-del{display:none !important;}
+  .sidebar, .topbar-actions, .btn, .modal-bg, .tag-row, .card-head button, #topbarActions, .row-del, #menuToggleBtn, #sidebarOverlay{display:none !important;}
   input.cell, select.cell{border:none !important;background:transparent !important;color:inherit !important;-webkit-appearance:none;appearance:none;}
   .card{box-shadow:none;border:1px solid #ccc;break-inside:avoid;}
   .content{padding:0 !important;}
@@ -335,12 +343,18 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         </div>
       </div>
     </aside>
+    <div id="sidebarOverlay"></div>
 
     <main class="main">
       <div class="topbar">
-        <div>
-          <h2 id="pageTitle">Dashboard</h2>
-          <div class="sub" id="pageSub">Vista consolidada de todos los negocios</div>
+        <div style="display:flex;align-items:center;gap:12px;">
+          <button id="menuToggleBtn" aria-label="Abrir menú" style="display:none;background:none;border:none;cursor:pointer;padding:4px;flex-shrink:0;">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+          </button>
+          <div>
+            <h2 id="pageTitle">Dashboard</h2>
+            <div class="sub" id="pageSub">Vista consolidada de todos los negocios</div>
+          </div>
         </div>
         <div class="topbar-actions" id="topbarActions">
           <button class="btn btn-ghost btn-sm" id="printBtn" style="display:none;">🖨 Imprimir</button>

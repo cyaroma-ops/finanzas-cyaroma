@@ -280,6 +280,7 @@ function setupBizControls() {
     STATE.currentBusinessId = e.target.value;
     localStorage.setItem('finanzas_ultimo_negocio', e.target.value);
     renderCurrentSection();
+    cerrarMenuMovil();
   });
   document.getElementById('addBizBtn').addEventListener('click', () => {
     document.getElementById('newBizName').value = '';
@@ -316,6 +317,10 @@ const SECTION_META = {
   polizas: { title: 'Pólizas de Diario', sub: '', showMonth: false, needsBiz: true },
 };
 
+function cerrarMenuMovil() {
+  document.querySelector('.sidebar').classList.remove('open');
+  document.getElementById('sidebarOverlay').classList.remove('show');
+}
 function setupNav() {
   document.querySelectorAll('.nav-item').forEach(item => {
     item.addEventListener('click', () => {
@@ -326,9 +331,16 @@ function setupNav() {
       document.getElementById('sec-' + STATE.currentSection).classList.add('active');
       updateTopbar();
       renderCurrentSection();
+      cerrarMenuMovil();
     });
   });
   document.querySelector('.nav-item[data-section="dashboard"]').classList.add('active');
+
+  document.getElementById('menuToggleBtn').addEventListener('click', () => {
+    document.querySelector('.sidebar').classList.add('open');
+    document.getElementById('sidebarOverlay').classList.add('show');
+  });
+  document.getElementById('sidebarOverlay').addEventListener('click', cerrarMenuMovil);
 }
 
 const SECCIONES_IMPRIMIBLES = ['efectivo', 'bancos', 'pl', 'flujo'];
