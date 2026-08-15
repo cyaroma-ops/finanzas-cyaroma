@@ -558,7 +558,7 @@ async function renderDashboard() {
         <h3>Ventas del mes por negocio</h3>
         <span class="hint">${STATE.currentMonth}</span>
       </div>
-      <canvas id="chartVentasNegocio" height="90"></canvas>
+      <div style="height:280px;"><canvas id="chartVentasNegocio"></canvas></div>
     </div>
 
     <div class="card">
@@ -566,7 +566,7 @@ async function renderDashboard() {
         <h3>Composición de liquidez</h3>
         <span class="hint">Efectivo vs. Bancos vs. Pendiente a proveedores</span>
       </div>
-      <div style="max-width:340px;margin:0 auto;"><canvas id="chartComposicion"></canvas></div>
+      <div style="max-width:340px;height:260px;margin:0 auto;"><canvas id="chartComposicion"></canvas></div>
     </div>
 
     <div class="card">
@@ -607,9 +607,17 @@ async function renderDashboard() {
     type: 'bar',
     data: {
       labels: rows.map(r => r.biz.name),
-      datasets: [{ label: 'Ventas', data: rows.map(r => r.ventasMes), backgroundColor: '#123a70', borderRadius: 6 }]
+      datasets: [{ label: 'Ventas', data: rows.map(r => r.ventasMes), backgroundColor: '#123a70', borderRadius: 6, maxBarThickness: 56 }]
     },
-    options: { plugins: { legend: { display: false } }, scales: { y: { ticks: { callback: v => fmt(v) } } } }
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        y: { beginAtZero: true, grid: { color: '#eef1f6' }, ticks: { callback: v => fmt(v) } },
+        x: { grid: { display: false } },
+      },
+    }
   });
 
   dashChart2 = new Chart(document.getElementById('chartComposicion'), {
@@ -618,7 +626,7 @@ async function renderDashboard() {
       labels: ['Efectivo', 'Bancos', 'Prov. pendientes'],
       datasets: [{ data: [totEfectivo, totBancos, totProv], backgroundColor: ['#1f9d6b', '#123a70', '#c94a4a'] }]
     },
-    options: { plugins: { legend: { position: 'bottom' } } }
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } }
   });
 }
 
