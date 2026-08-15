@@ -553,20 +553,22 @@ async function renderDashboard() {
       <div class="kpi"><div class="label">Posición neta consolidada</div><div class="value num ${totNeta >= 0 ? 'green' : 'red'}">${fmt(totNeta)}</div></div>
     </div>
 
-    <div class="card">
-      <div class="card-head">
-        <h3>Ventas del mes por negocio</h3>
-        <span class="hint">${STATE.currentMonth}</span>
+    <div class="grid-2" style="align-items:stretch;">
+      <div class="card">
+        <div class="card-head">
+          <h3>Ventas del mes por negocio</h3>
+          <span class="hint">${STATE.currentMonth}</span>
+        </div>
+        <div style="height:240px;"><canvas id="chartVentasNegocio"></canvas></div>
       </div>
-      <div style="height:280px;"><canvas id="chartVentasNegocio"></canvas></div>
-    </div>
 
-    <div class="card">
-      <div class="card-head">
-        <h3>Composición de liquidez</h3>
-        <span class="hint">Efectivo vs. Bancos vs. Pendiente a proveedores</span>
+      <div class="card">
+        <div class="card-head">
+          <h3>Composición de liquidez</h3>
+          <span class="hint">Efvo. vs. Bancos vs. Prov.</span>
+        </div>
+        <div style="max-width:220px;height:200px;margin:0 auto;"><canvas id="chartComposicion"></canvas></div>
       </div>
-      <div style="max-width:340px;height:260px;margin:0 auto;"><canvas id="chartComposicion"></canvas></div>
     </div>
 
     <div class="card">
