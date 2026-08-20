@@ -22,6 +22,20 @@ const fmt = (n) => {
 };
 const fmtNum = (n) => (Number(n) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fechaCorta = (iso) => { if (!iso) return ''; const [y,m,d] = iso.split('-'); return d && m && y ? `${d}/${m}/${y}` : iso; };
+const fmtInputVal = (n) => (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const leerMonto = (v) => Number(String(v).replace(/,/g, '')) || 0;
+function wireInputsMoneda(container) {
+  container.querySelectorAll('.num-fmt').forEach(el => {
+    el.addEventListener('focus', function () {
+      const v = leerMonto(this.value);
+      this.value = v === 0 ? '' : v;
+      this.select();
+    });
+    el.addEventListener('blur', function () {
+      this.value = fmtInputVal(leerMonto(this.value));
+    });
+  });
+}
 const monthBounds = (ym) => {
   const [y, m] = ym.split('-').map(Number);
   const start = `${ym}-01`;
@@ -1701,10 +1715,11 @@ async function aplicarPagoFacturas(idsSeleccionados, montoDisponibleInicial, fec
     const aplicar = Math.min(disponible, saldoPendiente);
     const nuevoPagado = Number(f.importe_pagado || 0) + aplicar;
     const nuevoEstatus = nuevoPagado >= Number(f.importe) - 0.01 ? 'Pagado' : 'Parcial';
-    await sb.from('fz_proveedores').update({
+    const { error: errAplicar } = await sb.from('fz_proveedores').update({
       importe_pagado: nuevoPagado, estatus: nuevoEstatus, fecha_pago: fechaMov,
       pagado_desde: origenInfo.pagado_desde, pagado_desde_tipo: origenInfo.pagado_desde_tipo, pagado_desde_cuenta_id: origenInfo.pagado_desde_cuenta_id,
     }).eq('id', f.id);
+    if (errAplicar) toast('Error aplicando pago a "' + (f.factura || f.proveedor) + '": ' + errAplicar.message, 'error');
     idsAfectados.push(f.id);
     disponible -= aplicar;
   }
@@ -2268,8 +2283,8 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
       <td><input class="cell mov-cell" type="date" value="${r.fecha}" data-id="${r.id}" data-field="fecha"></td>
       <td><input class="cell mov-cell" type="text" value="${r.proveedor||''}" data-id="${r.id}" data-field="proveedor"></td>
       <td><input class="cell mov-cell" type="text" value="${r.descripcion||''}" data-id="${r.id}" data-field="descripcion"></td>
-      <td><input class="cell mov-cell num" type="number" step="0.01" value="${r.cargos ?? 0}" data-id="${r.id}" data-field="cargos"></td>
-      <td><input class="cell mov-cell num" type="number" step="0.01" value="${r.depositos ?? 0}" data-id="${r.id}" data-field="depositos"></td>
+      <td><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(r.cargos)}" data-id="${r.id}" data-field="cargos"></td>
+      <td><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(r.depositos)}" data-id="${r.id}" data-field="depositos"></td>
       <td class="num" style="font-weight:700;">${fmtNum(saldo)}</td>
       ${salidaCellsHtml(r, subcuentas, mayores, facturasPend, 'mov', traspasoCtx)}
       <td><button class="row-del mov-del" data-id="${r.id}">✕</button></td>
@@ -2297,10 +2312,11 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
     openMovimientoModal({ tipo: 'efectivo', refId: moneda.id, businessId, onDone: () => renderMonedaLedger({ ...moneda }, businessId, conceptosEfectivo) });
   });
   wireSalidaCellHandlers(box, 'fz_efectivo_mov', () => renderMonedaLedger(moneda, businessId, conceptosEfectivo), traspasoCtx, facturasPend);
+  wireInputsMoneda(box);
   box.querySelectorAll('.mov-cell').forEach(inp => {
     inp.addEventListener('change', async () => {
       const field = inp.dataset.field;
-      const val = (field === 'fecha' || field === 'proveedor' || field === 'descripcion' || field === 'factura') ? inp.value : Number(inp.value) || 0;
+      const val = (field === 'fecha' || field === 'proveedor' || field === 'descripcion' || field === 'factura') ? inp.value : leerMonto(inp.value);
       await sb.from('fz_efectivo_mov').update({ [field]: val }).eq('id', inp.dataset.id);
       renderMonedaLedger(moneda, businessId, conceptosEfectivo);
     });
@@ -2418,8 +2434,8 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
       <td><input class="cell mov-cell" type="text" value="${m.descripcion||''}" data-id="${m.id}" data-field="descripcion"></td>
       <td><input class="cell mov-cell" type="text" value="${m.concepto||''}" data-id="${m.id}" data-field="concepto"></td>
       <td><input class="cell mov-cell" type="text" value="${m.referencia||''}" data-id="${m.id}" data-field="referencia"></td>
-      <td><input class="cell mov-cell num" type="number" step="0.01" value="${m.depositos ?? 0}" data-id="${m.id}" data-field="depositos"></td>
-      <td><input class="cell mov-cell num" type="number" step="0.01" value="${m.cargos ?? 0}" data-id="${m.id}" data-field="cargos"></td>
+      <td><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(m.depositos)}" data-id="${m.id}" data-field="depositos"></td>
+      <td><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(m.cargos)}" data-id="${m.id}" data-field="cargos"></td>
       <td class="num" style="font-weight:700;">${fmt(saldo)}</td>
       ${salidaCellsHtml(m, subcuentas, mayores, facturasPend, 'mov', traspasoCtx)}
       <td><button class="row-del mov-del" data-id="${m.id}">✕</button></td>
@@ -2451,10 +2467,11 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     openMovimientoModal({ tipo: 'banco', refId: cuentaId, businessId, onDone: () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas) });
   });
   wireSalidaCellHandlers(box, 'fz_bancos_mov', () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas), traspasoCtx, facturasPend);
+  wireInputsMoneda(box);
   box.querySelectorAll('.mov-cell').forEach(inp => {
     inp.addEventListener('change', async () => {
       const field = inp.dataset.field;
-      const val = (field === 'fecha' || field === 'descripcion' || field === 'concepto' || field === 'referencia') ? inp.value : Number(inp.value) || 0;
+      const val = (field === 'fecha' || field === 'descripcion' || field === 'concepto' || field === 'referencia') ? inp.value : leerMonto(inp.value);
       await sb.from('fz_bancos_mov').update({ [field]: val }).eq('id', inp.dataset.id);
       renderBancoLedger(cuentaId, businessId, conceptosTarjetas);
     });
@@ -2574,11 +2591,12 @@ async function renderProveedores() {
     STATE_provExpandido = STATE_provExpandido === tr.dataset.prov ? null : tr.dataset.prov;
     renderProveedores();
   }));
+  wireInputsMoneda(el);
   el.querySelectorAll('.prov-cell').forEach(inp => {
     inp.addEventListener('change', async () => {
       const field = inp.dataset.field;
       let val = inp.value;
-      if (field === 'importe') val = Number(val) || 0;
+      if (field === 'importe') val = leerMonto(val);
       if ((field === 'fecha' || field === 'fecha_pago') && val === '') val = null;
       const payload = { [field]: val };
       if (field === 'proveedor_id') {
@@ -2687,7 +2705,7 @@ function provRowHtml(p, catalogo, opcionesPagoDesde) {
     </select></td>
     <td><input class="cell prov-cell" type="text" value="${p.factura||''}" data-id="${p.id}" data-field="factura"></td>
     <td>
-      <input class="cell prov-cell num" type="number" step="0.01" value="${p.importe ?? 0}" data-id="${p.id}" data-field="importe">
+      <input class="cell prov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(p.importe)}" data-id="${p.id}" data-field="importe">
       ${esCredito ? `<div style="font-size:10.5px;color:var(--green);margin-top:2px;">crédito a favor</div>` : (Number(p.importe_pagado)>0 && p.estatus!=='Pagado' ? `<div style="font-size:10.5px;color:var(--muted);margin-top:2px;">pagado ${fmt(p.importe_pagado)} · pendiente ${fmt(saldoPendiente)}</div>` : '')}
     </td>
     <td><button class="btn btn-ghost btn-sm prov-desglosar" data-id="${p.id}" style="color:${desgloseOk?'var(--green)':(desgloseTotal>0?'var(--red)':'var(--muted)')};">${desgloseTotal>0?fmt(desgloseTotal):'Desglosar'}</button></td>
