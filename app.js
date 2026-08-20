@@ -3162,6 +3162,7 @@ async function renderFlujo() {
   `;
 }
 
+document.getElementById('copyrightYear').textContent = new Date().getFullYear();
 checkSession();
 
 /* ============================================================
