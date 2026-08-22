@@ -1149,6 +1149,46 @@ async function loadSubcuentas(businessId) {
   return data || [];
 }
 
+/* ---------- Jerarquía de cuentas: Mayor > Subcuenta > Sub-subcuenta ---------- */
+function subcuentasRaiz(mayorId, subcuentas) {
+  return subcuentas.filter(s => s.cuenta_mayor_id === mayorId && !s.subcuenta_padre_id);
+}
+function subcuentasHijas(subcuentaId, subcuentas) {
+  return subcuentas.filter(s => s.subcuenta_padre_id === subcuentaId);
+}
+function subcuentaIdsDescendientes(subcuentaId, subcuentas) {
+  const hijas = subcuentasHijas(subcuentaId, subcuentas);
+  return hijas.flatMap(h => [h.id, ...subcuentaIdsDescendientes(h.id, subcuentas)]);
+}
+function rutaSubcuenta(subcuenta, subcuentas, mayores) {
+  const partes = [subcuenta.nombre];
+  let actual = subcuenta;
+  while (actual.subcuenta_padre_id) {
+    const padre = subcuentas.find(s => s.id === actual.subcuenta_padre_id);
+    if (!padre) break;
+    partes.unshift(padre.nombre);
+    actual = padre;
+  }
+  const mayor = mayores.find(m => m.id === subcuenta.cuenta_mayor_id);
+  if (mayor) partes.unshift(mayor.nombre);
+  return partes.join(' › ');
+}
+function opcionesSubcuentaHtml(subcuentas, mayores, selectedId) {
+  // construye <option> indentados por nivel, agrupados por cuenta mayor, en orden jerárquico
+  const porMayor = mayores.map(m => {
+    const construirNivel = (padreId, nivel) => {
+      return subcuentas.filter(s => s.cuenta_mayor_id === m.id && (s.subcuenta_padre_id || null) === padreId)
+        .flatMap(s => [
+          `<option value="${s.id}" ${selectedId===s.id?'selected':''}>${'—'.repeat(nivel)} ${s.nombre}</option>`,
+          ...construirNivel(s.id, nivel + 1),
+        ]);
+    };
+    const opts = construirNivel(null, 0);
+    return opts.length ? `<optgroup label="${m.nombre}">${opts.join('')}</optgroup>` : '';
+  }).join('');
+  return porMayor;
+}
+
 async function openCuentasModal(businessId, onClose) {
   await renderCuentasList(businessId);
   document.getElementById('modalCuentas').classList.add('show');
@@ -1162,16 +1202,26 @@ async function openCuentasModal(businessId, onClose) {
     document.getElementById('newCuentaMayorNombre').value = '';
     renderCuentasList(businessId);
   };
+  document.getElementById('newSubcuentaMayor').addEventListener('change', () => actualizarSelectSubcuentaPadre(businessId));
   document.getElementById('saveSubcuenta').onclick = async () => {
     const cuenta_mayor_id = document.getElementById('newSubcuentaMayor').value;
+    const subcuenta_padre_id = document.getElementById('newSubcuentaPadre').value || null;
     const nombre = document.getElementById('newSubcuentaNombre').value.trim();
     if (!cuenta_mayor_id) { toast('Primero crea una cuenta mayor.', 'error'); return; }
     if (!nombre) { toast('Escribe un nombre.', 'error'); return; }
-    const { error } = await sb.from('fz_subcuentas').insert({ business_id: businessId, cuenta_mayor_id, nombre, orden: 99 });
+    const { error } = await sb.from('fz_subcuentas').insert({ business_id: businessId, cuenta_mayor_id, subcuenta_padre_id, nombre, orden: 99 });
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     document.getElementById('newSubcuentaNombre').value = '';
     renderCuentasList(businessId);
   };
+}
+async function actualizarSelectSubcuentaPadre(businessId) {
+  const mayorId = document.getElementById('newSubcuentaMayor').value;
+  const subcuentas = await loadSubcuentas(businessId);
+  const sel = document.getElementById('newSubcuentaPadre');
+  const construirNivel = (padreId, nivel) => subcuentas.filter(s => s.cuenta_mayor_id === mayorId && (s.subcuenta_padre_id || null) === padreId)
+    .flatMap(s => [`<option value="${s.id}">${'—'.repeat(nivel)} ${s.nombre}</option>`, ...construirNivel(s.id, nivel + 1)]);
+  sel.innerHTML = `<option value="">— nivel superior —</option>` + construirNivel(null, 0).join('');
 }
 const TIPO_CUENTA_LABEL = { activo: 'Activo', pasivo: 'Pasivo', capital: 'Capital', ingreso: 'Ingreso', gasto: 'Gasto' };
 async function renderCuentasList(businessId) {
@@ -1179,8 +1229,15 @@ async function renderCuentasList(businessId) {
   const box = document.getElementById('cuentasMayorList');
   const sel = document.getElementById('newSubcuentaMayor');
   sel.innerHTML = mayores.map(m => `<option value="${m.id}">${m.nombre} (${TIPO_CUENTA_LABEL[m.tipo]||m.tipo})</option>`).join('') || `<option value="">— crea una cuenta mayor primero —</option>`;
+  await actualizarSelectSubcuentaPadre(businessId);
 
   if (!mayores.length) { box.innerHTML = `<div class="empty" style="padding:16px;">Aún no hay cuentas mayor. Crea la primera abajo.</div>`; return; }
+  const filaSubHtml = (s, nivel) => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:5px 4px 5px ${16 + nivel*18}px;border-bottom:1px solid var(--line);font-size:13px;">
+      <span>${nivel>0?'— ':''}${s.nombre}</span>
+      <button class="row-del sub-del" data-id="${s.id}" style="font-size:14px;">✕</button>
+    </div>
+    ${subcuentasHijas(s.id, subcuentas).map(h => filaSubHtml(h, nivel+1)).join('')}`;
   box.innerHTML = mayores.map(m => `
     <div style="margin-bottom:10px;">
       <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 4px;background:#f7f9fc;border-radius:7px;">
@@ -1190,11 +1247,7 @@ async function renderCuentasList(businessId) {
           <button class="row-del mayor-del" data-id="${m.id}" style="font-size:15px;">✕</button>
         </span>
       </div>
-      ${subcuentas.filter(s=>s.cuenta_mayor_id===m.id).map(s => `
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:5px 4px 5px 16px;border-bottom:1px solid var(--line);font-size:13px;">
-          <span>${s.nombre}</span>
-          <button class="row-del sub-del" data-id="${s.id}" style="font-size:14px;">✕</button>
-        </div>`).join('') || `<div style="padding:5px 4px 5px 16px;color:var(--muted);font-size:12px;">Sin subcuentas todavía.</div>`}
+      ${subcuentasRaiz(m.id, subcuentas).map(s => filaSubHtml(s, 0)).join('') || `<div style="padding:5px 4px 5px 16px;color:var(--muted);font-size:12px;">Sin subcuentas todavía.</div>`}
     </div>`).join('');
   box.querySelectorAll('.mayor-del').forEach(btn => btn.addEventListener('click', async () => {
     if (!confirm('¿Eliminar esta cuenta mayor y todas sus subcuentas?')) return;
@@ -1206,7 +1259,7 @@ async function renderCuentasList(businessId) {
     renderCuentasList(businessId);
   }));
   box.querySelectorAll('.sub-del').forEach(btn => btn.addEventListener('click', async () => {
-    if (!confirm('¿Eliminar esta subcuenta?')) return;
+    if (!confirm('¿Eliminar esta subcuenta? (si tiene sub-subcuentas anidadas, también se eliminan)')) return;
     const { error } = await sb.from('fz_subcuentas').delete().eq('id', btn.dataset.id);
     if (error) {
       toast('No se puede eliminar: ya tiene movimientos, facturas o pólizas registradas. Si ya no la usas, simplemente deja de seleccionarla en capturas nuevas — el historial se conserva.', 'error');
@@ -1268,10 +1321,7 @@ async function openDesgloseModal(businessId, facturaId, onClose) {
   const subcuentas = await loadSubcuentas(businessId);
   const mayores = await loadCuentasMayor(businessId);
   const sel = document.getElementById('newDesgloseSubcuenta');
-  sel.innerHTML = subcuentas.map(s => {
-    const mayor = mayores.find(m => m.id === s.cuenta_mayor_id);
-    return `<option value="${s.id}">${mayor ? mayor.nombre + ' › ' : ''}${s.nombre}</option>`;
-  }).join('') || `<option value="">— crea subcuentas primero en el P&L —</option>`;
+  sel.innerHTML = opcionesSubcuentaHtml(subcuentas, mayores, null) || `<option value="">— crea subcuentas primero en el P&L —</option>`;
 
   await renderDesgloseList(businessId, facturaId, subcuentas, mayores);
   document.getElementById('modalDesglose').classList.add('show');
@@ -1298,10 +1348,9 @@ async function renderDesgloseList(businessId, facturaId, subcuentas, mayores) {
   document.getElementById('desgloseTotales').innerHTML = `Factura: ${fmt(fRow?.importe||0)} &nbsp;|&nbsp; Asignado: <span style="color:${Math.abs(totalAsignado-(fRow?.importe||0))<1?'var(--green)':'var(--red)'}">${fmt(totalAsignado)}</span>`;
   box.innerHTML = lineas.map((linea, idx) => {
     const sub = subcuentas.find(s=>s.id===linea.subcuenta_id);
-    const mayor = mayores.find(m=>m.id===sub?.cuenta_mayor_id);
     return `<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 4px;border-bottom:1px solid var(--line);font-size:13px;gap:8px;">
       <div style="min-width:0;">
-        <div>${mayor ? mayor.nombre+' › ' : ''}${sub ? sub.nombre : '(subcuenta eliminada)'}</div>
+        <div>${sub ? rutaSubcuenta(sub, subcuentas, mayores) : '(subcuenta eliminada)'}</div>
         ${linea.descripcion ? `<div style="color:var(--muted);font-size:11.5px;">${linea.descripcion}</div>` : ''}
       </div>
       <span style="display:flex;align-items:center;gap:10px;flex-shrink:0;"><strong>${fmt(linea.monto)}</strong><button class="row-del desglose-del" data-idx="${idx}" style="font-size:14px;">✕</button></span>
@@ -1854,7 +1903,7 @@ async function openMovimientoModal(contexto) {
   const origenCorto = contexto.tipo === 'efectivo' ? 'Caja — ' + (cuentaInfo?.nombre || '') : 'Banco — ' + (cuentaInfo?.nombre || '');
 
   document.getElementById('movSubcuenta').innerHTML = `<option value="">— elegir subcuenta —</option>` +
-    subcuentas.map(s => { const m = mayores.find(x => x.id === s.cuenta_mayor_id); return `<option value="${s.id}">${m ? m.nombre + ' › ' : ''}${s.nombre}</option>`; }).join('');
+    opcionesSubcuentaHtml(subcuentas, mayores, null);
 
   const pendientes = facturasPend.filter(f => f.estatus !== 'Pagado');
   const porProveedor = {};
@@ -2045,7 +2094,7 @@ function salidaCellsHtml(r, subcuentas, mayores, facturasPend, prefix, traspasoC
   if (tipo === 'gasto') {
     detalle = `<select class="cell salida-detalle" data-id="${r.id}" data-field="subcuenta_id">
       <option value="">— elegir subcuenta —</option>
-      ${subcuentas.map(s => { const m = mayores.find(x=>x.id===s.cuenta_mayor_id); return `<option value="${s.id}" ${r.subcuenta_id===s.id?'selected':''}>${m?m.nombre+' › ':''}${s.nombre}</option>`; }).join('')}
+      ${opcionesSubcuentaHtml(subcuentas, mayores, r.subcuenta_id)}
     </select>`;
   } else if (tipo === 'proveedor') {
     const idsVinculados = facturaIdsDe(r);
@@ -2756,6 +2805,17 @@ async function getPolizaLineasParaCuenta(businessId, tipo, refId) {
   return lineas.map(l => ({ ...l, poliza: polizaMap[l.poliza_id] })).filter(l => l.poliza);
 }
 
+function construirArbolSubcuenta(subcuentaId, subcuentas, porSubcuenta) {
+  const sub = subcuentas.find(s => s.id === subcuentaId);
+  const hijos = subcuentasHijas(subcuentaId, subcuentas).map(h => construirArbolSubcuenta(h.id, subcuentas, porSubcuenta));
+  const propio = porSubcuenta[subcuentaId] || 0;
+  const total = propio + hijos.reduce((s,h)=>s+h.total,0);
+  return { id: subcuentaId, nombre: sub ? sub.nombre : '(eliminada)', propio, hijos, total };
+}
+function aplanarArbol(nodo) {
+  return [nodo, ...nodo.hijos.flatMap(aplanarArbol)];
+}
+
 async function computeGastosClasificados(businessId, periodo, subcuentas, mayores) {
   const { start, end, mesStart, mesEnd } = periodo;
   const porSubcuenta = {}; // subcuenta_id -> monto
@@ -2793,10 +2853,10 @@ async function computeGastosClasificados(businessId, periodo, subcuentas, mayore
   });
 
   const porMayor = mayores.filter(m=>m.tipo==='gasto').map(m => {
-    const subs = subcuentas.filter(s => s.cuenta_mayor_id === m.id)
-      .map(s => ({ id: s.id, nombre: s.nombre, monto: porSubcuenta[s.id] || 0 }))
-      .filter(s => s.monto);
-    return { nombre: m.nombre, subs, subtotal: subs.reduce((s,x)=>s+x.monto,0) };
+    const subs = subcuentasRaiz(m.id, subcuentas)
+      .map(s => construirArbolSubcuenta(s.id, subcuentas, porSubcuenta))
+      .filter(s => s.total);
+    return { nombre: m.nombre, subs, subtotal: subs.reduce((s,x)=>s+x.total,0) };
   }).filter(m => m.subtotal);
 
   const totalClasificado = porMayor.reduce((s,m)=>s+m.subtotal,0);
@@ -2815,10 +2875,10 @@ async function computeIngresosPoliza(businessId, periodo, subcuentas, mayores) {
     }
   });
   const porMayor = mayores.filter(m=>m.tipo==='ingreso').map(m => {
-    const subs = subcuentas.filter(s => s.cuenta_mayor_id === m.id)
-      .map(s => ({ id: s.id, nombre: s.nombre, monto: porSubcuenta[s.id] || 0 }))
-      .filter(s => s.monto);
-    return { nombre: m.nombre, subs, subtotal: subs.reduce((s,x)=>s+x.monto,0) };
+    const subs = subcuentasRaiz(m.id, subcuentas)
+      .map(s => construirArbolSubcuenta(s.id, subcuentas, porSubcuenta))
+      .filter(s => s.total);
+    return { nombre: m.nombre, subs, subtotal: subs.reduce((s,x)=>s+x.total,0) };
   }).filter(m => m.subtotal);
   return { porMayor, total: porMayor.reduce((s,m)=>s+m.subtotal,0) };
 }
@@ -2940,28 +3000,52 @@ async function renderPLAnual(el, b) {
     const totalIngresosFinal = totalIngresosVentas + sobranteCaja + iPoliza.total;
     const gastosTotales = gastosOperativos + gClas.totalClasificado + gClas.sinClasificar + faltanteCaja;
     const utilidad = totalIngresosFinal - gastosTotales;
-    datos.push({ ym, ingresosPorConcepto, sobranteCaja, iPolizaTotal: iPoliza.total, totalIngresosFinal, gastosOperativos, faltanteCaja, gClas, gastosTotales, utilidad });
+    datos.push({ ym, ingresosPorConcepto, sobranteCaja, iPoliza, iPolizaTotal: iPoliza.total, totalIngresosFinal, gastosOperativos, faltanteCaja, gClas, gastosTotales, utilidad });
   }
 
   const sum = arr => arr.reduce((s,x)=>s+x,0);
-  const filaHtml = (label, valores, opts={}) => `<tr class="${opts.total?'total-row':''}" style="${opts.bg?'background:#f7f9fc;':''}${opts.indent?'':''}">
-    <td style="${opts.indent?'padding-left:22px;':''}${opts.italic?'font-style:italic;color:var(--muted);':''}${opts.bold?'font-weight:700;':''}">${label}</td>
+  const filaHtml = (label, valores, opts={}) => `<tr class="${opts.total?'total-row':''}" style="${opts.bg?'background:#f7f9fc;':''}">
+    <td style="${opts.indentPx?`padding-left:${opts.indentPx}px;`:(opts.indent?'padding-left:22px;':'')}${opts.italic?'font-style:italic;color:var(--muted);':''}${opts.bold?'font-weight:700;':''}">${label}</td>
     ${valores.map(v => `<td class="num" style="${opts.color?`color:${opts.color};`:''}">${fmt(v)}</td>`).join('')}
     <td class="num" style="font-weight:700;${opts.color?`color:${opts.color};`:''}">${fmt(sum(valores))}</td>
   </tr>`;
+
+  // Desglose por subcuenta (y sub-subcuenta, con sangría) de un mayor específico, mes a mes
+  function filasSubcuentasPorMayor(m, datosPorMayorFn) {
+    const render = (sub, nivel) => {
+      const valores = datos.map(d => {
+        const mayorData = datosPorMayorFn(d);
+        if (!mayorData) return 0;
+        const nodo = mayorData.subs.flatMap(aplanarArbol).find(n => n.id === sub.id);
+        return nodo ? nodo.total : 0;
+      });
+      const hijosHtml = subcuentasHijas(sub.id, subcuentas).map(h => render(h, nivel + 1)).join('');
+      if (!valores.some(v => Math.abs(v) > 0.004) && !hijosHtml) return '';
+      return filaHtml(sub.nombre, valores, { indentPx: 22 + nivel * 18, italic: true }) + hijosHtml;
+    };
+    return subcuentasRaiz(m.id, subcuentas).map(s => render(s, 0)).join('');
+  }
 
   const filasIngreso = conceptosVenta.map((c, idx) => filaHtml(
     c.nombre + (c.tipo==='resta'?' (descuento)':''),
     datos.map(d => d.ingresosPorConcepto[idx]),
     { color: c.tipo==='resta' ? 'var(--red)' : null }
   )).join('');
+  const mayoresIngreso = mayores.filter(m => m.tipo === 'ingreso');
   const filaSobrante = datos.some(d=>d.sobranteCaja) ? filaHtml('Sobrante de caja (conciliación)', datos.map(d=>d.sobranteCaja), { color:'var(--green)' }) : '';
-  const filaPoliza = datos.some(d=>d.iPolizaTotal) ? filaHtml('Ingresos por póliza', datos.map(d=>d.iPolizaTotal)) : '';
+  const filaPoliza = mayoresIngreso.map(m => {
+    const totalPorMes = datos.map(d => d.iPoliza.porMayor.find(pm=>pm.nombre===m.nombre)?.subtotal || 0);
+    if (!totalPorMes.some(v => Math.abs(v) > 0.004)) return '';
+    return filaHtml(m.nombre + ' (póliza)', totalPorMes, { bold:true, bg:true }) + filasSubcuentasPorMayor(m, d => d.iPoliza.porMayor.find(pm=>pm.nombre===m.nombre));
+  }).join('');
   const filaTotalIngresos = filaHtml('Total ingresos', datos.map(d=>d.totalIngresosFinal), { total:true });
 
   const filaGastosOp = filaHtml('Gastos operativos (sin clasificar, Ventas)', datos.map(d=>d.gastosOperativos));
   const filaFaltante = datos.some(d=>d.faltanteCaja) ? filaHtml('Faltante de caja (conciliación)', datos.map(d=>d.faltanteCaja), { color:'var(--red)' }) : '';
-  const filasMayor = mayoresGasto.map(m => filaHtml(m.nombre, datos.map(d => d.gClas.porMayor.find(pm=>pm.nombre===m.nombre)?.subtotal || 0), { bold:true, bg:true })).join('');
+  const filasMayor = mayoresGasto.map(m => {
+    const totalPorMes = datos.map(d => d.gClas.porMayor.find(pm=>pm.nombre===m.nombre)?.subtotal || 0);
+    return filaHtml(m.nombre, totalPorMes, { bold:true, bg:true }) + filasSubcuentasPorMayor(m, d => d.gClas.porMayor.find(pm=>pm.nombre===m.nombre));
+  }).join('');
   const filaSinClasificar = datos.some(d=>d.gClas.sinClasificar) ? filaHtml('Otros gastos sin subcuenta', datos.map(d=>d.gClas.sinClasificar)) : '';
   const filaTotalGastos = filaHtml('Total gastos', datos.map(d=>d.gastosTotales), { total:true });
 
@@ -2994,6 +3078,18 @@ async function renderPLAnual(el, b) {
     </div>
   `;
   document.getElementById('openCuentasBtnPLAnual').addEventListener('click', () => openCuentasModal(b.id, () => renderPLAnual(el, b)));
+}
+
+function filaArbolSubcuentaHtml(nodo, conTerceraColumna, nivel, detalleHtmlSiAbierto) {
+  const indent = 22 + nivel * 18;
+  const abierto = STATE_plDetalleAbierto === nodo.id;
+  let html = `<tr class="pl-subcuenta-row" data-subcuenta="${nodo.id}" style="cursor:pointer;">
+    <td style="padding-left:${indent}px;${nivel>0?'color:var(--muted);font-size:12.5px;':''}">${abierto?'▾':'▸'} ${nodo.nombre}</td>
+    <td class="num">${fmt(nodo.total)}</td>${conTerceraColumna?'<td></td>':''}
+  </tr>`;
+  if (abierto) html += detalleHtmlSiAbierto;
+  nodo.hijos.forEach(h => { html += filaArbolSubcuentaHtml(h, conTerceraColumna, nivel + 1, detalleHtmlSiAbierto); });
+  return html;
 }
 
 async function renderPL() {
@@ -3039,8 +3135,8 @@ async function renderPL() {
 
   let detalleGastoHtml = '', detalleIngresoHtml = '';
   if (STATE_plDetalleAbierto) {
-    const esGasto = gClas.porMayor.some(m => m.subs.some(s => s.id === STATE_plDetalleAbierto));
-    const esIngreso = iPoliza.porMayor.some(m => m.subs.some(s => s.id === STATE_plDetalleAbierto));
+    const esGasto = gClas.porMayor.some(m => m.subs.some(s => aplanarArbol(s).some(n => n.id === STATE_plDetalleAbierto)));
+    const esIngreso = iPoliza.porMayor.some(m => m.subs.some(s => aplanarArbol(s).some(n => n.id === STATE_plDetalleAbierto)));
     if (esGasto) detalleGastoHtml = detalleSubcuentaHtml(await getDetalleGastoSubcuenta(b.id, periodo, STATE_plDetalleAbierto), 3);
     else if (esIngreso) detalleIngresoHtml = detalleSubcuentaHtml(await getDetalleIngresoSubcuenta(b.id, periodo, STATE_plDetalleAbierto), 2);
   }
@@ -3062,7 +3158,7 @@ async function renderPL() {
           ${sobranteCaja ? `<tr><td>Sobrante de caja (conciliación de Ventas)</td><td class="num" style="color:var(--green);">${fmt(sobranteCaja)}</td></tr>` : ''}
           ${iPoliza.porMayor.map(m => `
             <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">${m.nombre} (póliza)</td></tr>
-            ${m.subs.map(s => `<tr class="pl-subcuenta-row" data-subcuenta="${s.id}" style="cursor:pointer;"><td style="padding-left:22px;">${STATE_plDetalleAbierto===s.id?'▾':'▸'} ${s.nombre}</td><td class="num">${fmt(s.monto)}</td></tr>${STATE_plDetalleAbierto===s.id?detalleIngresoHtml:''}`).join('')}
+            ${m.subs.map(s => filaArbolSubcuentaHtml(s, false, 0, detalleIngresoHtml)).join('')}
           `).join('')}
           <tr class="total-row"><td>Total ingresos</td><td class="num">${fmt(totalIngresosFinal)}</td></tr>
         </tbody>
@@ -3083,7 +3179,7 @@ async function renderPL() {
           ${faltanteCaja ? `<tr><td>Faltante de caja (conciliación de Ventas)</td><td class="num" style="color:var(--red);">${fmt(faltanteCaja)}</td><td></td></tr>` : ''}
           ${gClas.porMayor.map(m => `
             <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">${m.nombre}</td><td></td></tr>
-            ${m.subs.map(s => `<tr class="pl-subcuenta-row" data-subcuenta="${s.id}" style="cursor:pointer;"><td style="padding-left:22px;">${STATE_plDetalleAbierto===s.id?'▾':'▸'} ${s.nombre}</td><td class="num">${fmt(s.monto)}</td><td></td></tr>${STATE_plDetalleAbierto===s.id?detalleGastoHtml:''}`).join('')}
+            ${m.subs.map(s => filaArbolSubcuentaHtml(s, true, 0, detalleGastoHtml)).join('')}
             <tr><td style="padding-left:22px;font-style:italic;color:var(--muted);">Subtotal ${m.nombre}</td><td class="num" style="font-weight:600;">${fmt(m.subtotal)}</td><td></td></tr>
           `).join('')}
           ${gClas.sinClasificar ? `<tr><td>Otros gastos sin subcuenta asignada</td><td class="num">${fmt(gClas.sinClasificar)}</td><td></td></tr>` : ''}
@@ -3100,7 +3196,7 @@ async function renderPL() {
               <td>${g.mes}</td>
               <td><select class="cell gasto-cell" data-id="${g.id}" data-field="subcuenta_id">
                 <option value="">— sin subcuenta —</option>
-                ${subcuentas.map(s => { const mm = mayores.find(x=>x.id===s.cuenta_mayor_id); return `<option value="${s.id}" ${g.subcuenta_id===s.id?'selected':''}>${mm?mm.nombre+' › ':''}${s.nombre}</option>`; }).join('')}
+                ${opcionesSubcuentaHtml(subcuentas, mayores, g.subcuenta_id)}
               </select></td>
               <td><input class="cell gasto-cell" type="text" placeholder="Ej. Cloro, Servilletas" value="${g.descripcion||''}" data-id="${g.id}" data-field="descripcion"></td>
               <td><input class="cell gasto-cell num" type="number" step="0.01" value="${g.monto ?? 0}" data-id="${g.id}" data-field="monto"></td>
@@ -3280,7 +3376,7 @@ function polizaCardHtml(p, lineasPoliza, subcuentas, mayores, cuentasBanco, mone
     } else {
       cuentaSelect = `<select class="cell linea-cuenta" data-id="${l.id}" data-tipo="subcuenta">
         <option value="">— elegir subcuenta —</option>
-        ${subcuentas.map(s => { const m = mayores.find(x=>x.id===s.cuenta_mayor_id); return `<option value="${s.id}" ${l.subcuenta_id===s.id?'selected':''}>${m?m.nombre+' › ':''}${s.nombre}</option>`; }).join('')}
+        ${opcionesSubcuentaHtml(subcuentas, mayores, l.subcuenta_id)}
       </select>`;
     }
     return `<td>${tipoSelect}</td><td>${cuentaSelect}</td>`;

@@ -533,13 +533,21 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <select id="newSubcuentaMayor"></select>
       </div>
       <div class="field" style="margin-bottom:0;">
+        <label>Anidar bajo (opcional)</label>
+        <select id="newSubcuentaPadre"><option value="">— nivel superior —</option></select>
+      </div>
+      <div class="field" style="margin-bottom:0;">
         <label>Nueva subcuenta</label>
         <input type="text" id="newSubcuentaNombre" placeholder="Ej. Internet">
       </div>
-      <div class="field" style="margin-bottom:0;display:flex;align-items:flex-end;">
+    </div>
+    <div class="grid-3">
+      <div></div><div></div>
+      <div class="field" style="margin-bottom:0;">
         <button class="btn btn-ghost" id="saveSubcuenta" style="width:100%;">+ Agregar</button>
       </div>
     </div>
+    <p style="font-size:11.5px;color:var(--muted);margin:-6px 0 12px;">Ejemplo: Mayor "Gastos de Operación" › Subcuenta "Mantenimiento y conservación" › (anidada) "Reparación de freidoras".</p>
     <div class="modal-actions">
       <button class="btn btn-gold" id="closeCuentas" style="width:100%;">Cerrar</button>
     </div>
