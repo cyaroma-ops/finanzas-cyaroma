@@ -3811,8 +3811,6 @@ async function renderPolizas() {
       ${subcuentas.length === 0 ? `<div class="empty">Aún no tienes cuentas en el catálogo. Crea al menos una (de cualquier tipo) para poder registrar pólizas.</div>` : ''}
       <div id="polizasList">
         ${polizas.length === 0 ? `<div class="empty">${todasPolizas.length ? 'Ninguna póliza coincide con la búsqueda.' : 'Sin pólizas todavía.'}</div>` : polizas.map(p => {
-          const abierta = STATE_polizaAbiertaId === p.id;
-          if (abierta) return `<div id="polizaAbiertaWrap">${polizaCardHtml(p, lineas.filter(l=>l.poliza_id===p.id), subcuentas, mayores, cuentasBanco, monedasEfectivo)}</div>`;
           const t = totalesPoliza(p);
           const cuadrada = Math.abs(t.cargo-t.abono)<0.01 && t.count>0;
           return `<div class="card poliza-resumen-row" data-poliza="${p.id}" style="cursor:pointer;background:#fbfcfe;border:1.5px solid var(--line);margin-bottom:10px;padding:12px 16px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
@@ -3841,8 +3839,7 @@ async function renderPolizas() {
       { business_id: b.id, poliza_id: data.id, cargo: 0, abono: 0 },
       { business_id: b.id, poliza_id: data.id, cargo: 0, abono: 0 },
     ]);
-    STATE_polizaAbiertaId = data.id;
-    renderPolizas();
+    openPolizaModal(data.id, b.id);
   });
   document.getElementById('polizaBuscarTexto').addEventListener('input', (e) => { STATE_polizaFiltroTexto = e.target.value; renderPolizas(); });
   document.getElementById('polizaFiltroDesde').addEventListener('change', (e) => { STATE_polizaFiltroDesde = e.target.value; renderPolizas(); });
@@ -3850,10 +3847,8 @@ async function renderPolizas() {
   const limpiarBtn = document.getElementById('polizaLimpiarFiltro');
   if (limpiarBtn) limpiarBtn.addEventListener('click', () => { STATE_polizaFiltroTexto=''; STATE_polizaFiltroDesde=''; STATE_polizaFiltroHasta=''; renderPolizas(); });
   el.querySelectorAll('.poliza-resumen-row').forEach(row => row.addEventListener('click', () => {
-    STATE_polizaAbiertaId = row.dataset.poliza;
-    renderPolizas();
+    openPolizaModal(row.dataset.poliza, b.id);
   }));
-  wirePolizaHandlers(el, b.id);
   window.scrollTo(0, scrollY);
 }
 
@@ -3898,7 +3893,7 @@ function polizaCardHtml(p, lineasPoliza, subcuentas, mayores, cuentasBanco, mone
         </div>
         <div style="display:flex;align-items:center;gap:10px;">
           <span class="badge ${cuadrada?'pag':'pend'}">${cuadrada ? 'Cuadrada' : 'Diferencia ' + fmt(diff)}</span>
-          <button class="btn btn-ghost btn-sm poliza-cerrar" data-id="${p.id}">▲ Cerrar</button>
+          <button class="btn btn-ghost btn-sm poliza-cerrar" data-id="${p.id}">✕ Cerrar ventana</button>
           <button class="row-del poliza-del" data-id="${p.id}" style="font-size:16px;">✕</button>
         </div>
       </div>
@@ -3928,15 +3923,18 @@ function polizaCardHtml(p, lineasPoliza, subcuentas, mayores, cuentasBanco, mone
 
 function wirePolizaHandlers(el, businessId) {
   el.querySelectorAll('.poliza-cerrar').forEach(btn => btn.addEventListener('click', () => {
+    document.getElementById('modalPoliza').classList.remove('show');
     STATE_polizaAbiertaId = null;
     renderPolizas();
   }));
   el.querySelectorAll('.poliza-cell').forEach(inp => inp.addEventListener('change', async () => {
     await sb.from('fz_polizas').update({ [inp.dataset.field]: inp.value }).eq('id', inp.dataset.id);
-    renderPolizas();
+    refrescarPolizaAbierta(businessId);
   }));
   el.querySelectorAll('.poliza-del').forEach(btn => btn.addEventListener('click', async () => {
+    if (!confirm('¿Eliminar esta póliza completa?')) return;
     await sb.from('fz_polizas').delete().eq('id', btn.dataset.id);
+    document.getElementById('modalPoliza').classList.remove('show');
     if (STATE_polizaAbiertaId === btn.dataset.id) STATE_polizaAbiertaId = null;
     renderPolizas();
   }));
@@ -3968,8 +3966,14 @@ function wirePolizaHandlers(el, businessId) {
   }));
 }
 
+async function openPolizaModal(polizaId, businessId) {
+  STATE_polizaAbiertaId = polizaId;
+  document.getElementById('modalPoliza').classList.add('show');
+  await refrescarPolizaAbierta(businessId);
+}
+
 async function refrescarPolizaAbierta(businessId) {
-  const wrap = document.getElementById('polizaAbiertaWrap');
+  const wrap = document.getElementById('modalPolizaBody');
   if (!wrap || !STATE_polizaAbiertaId) { renderPolizas(); return; }
 
   // Recordar qué campo tenía el foco (y en qué línea) para no perder el lugar al redibujar
@@ -3991,7 +3995,7 @@ async function refrescarPolizaAbierta(businessId) {
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
   ]);
-  if (!p) { renderPolizas(); return; }
+  if (!p) { document.getElementById('modalPoliza').classList.remove('show'); renderPolizas(); return; }
   wrap.innerHTML = polizaCardHtml(p, lineasQ.data || [], subcuentas, mayores, cuentasBancoQ.data || [], monedasQ.data || []);
   wirePolizaHandlers(wrap, businessId);
 
