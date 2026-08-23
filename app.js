@@ -1413,6 +1413,14 @@ async function renderCatalogoCuentas() {
         <div style="display:flex;align-items:center;gap:8px;padding:6px 4px;background:#f7f9fc;border-radius:7px;">
           ${editando ? `
             <input class="cell cc-mayor-nombre" type="text" value="${m.nombre}" data-id="${m.id}" style="flex:1;min-width:0;font-weight:700;">
+            <select class="cell cc-mayor-tipo" data-id="${m.id}" style="width:auto;">
+              <option value="activo" ${m.tipo==='activo'?'selected':''}>Activo</option>
+              <option value="pasivo" ${m.tipo==='pasivo'?'selected':''}>Pasivo</option>
+              <option value="capital" ${m.tipo==='capital'?'selected':''}>Capital</option>
+              <option value="ingreso" ${m.tipo==='ingreso'?'selected':''}>Ingreso</option>
+              <option value="costo" ${m.tipo==='costo'?'selected':''}>Costo de Ventas</option>
+              <option value="gasto" ${m.tipo==='gasto'?'selected':''}>Gasto</option>
+            </select>
             <button class="btn btn-ghost btn-sm cc-mayor-save" data-id="${m.id}">Guardar</button>
           ` : `
             <strong style="flex:1;min-width:0;">${m.nombre}</strong>
@@ -1467,9 +1475,13 @@ async function renderCatalogoCuentas() {
   }));
   el.querySelectorAll('.cc-mayor-save').forEach(btn => btn.addEventListener('click', async () => {
     const inp = el.querySelector(`.cc-mayor-nombre[data-id="${btn.dataset.id}"]`);
-    const { error } = await sb.from('fz_cuentas_mayor').update({ nombre: inp.value.trim() }).eq('id', btn.dataset.id);
+    const selTipo = el.querySelector(`.cc-mayor-tipo[data-id="${btn.dataset.id}"]`);
+    const payload = { nombre: inp.value.trim() };
+    if (selTipo) payload.tipo = selTipo.value;
+    const { error } = await sb.from('fz_cuentas_mayor').update(payload).eq('id', btn.dataset.id);
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     STATE_ccEditando.delete(btn.dataset.id);
+    registrarAuditoria(biz()?.id, 'editar', 'Catálogo de Cuentas', `Cuenta "${payload.nombre}" → tipo ${TIPO_CUENTA_LABEL[payload.tipo]||payload.tipo}`);
     toast('Guardado.');
     renderCatalogoCuentas();
   }));
