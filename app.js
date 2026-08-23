@@ -329,6 +329,8 @@ const SECTION_META = {
   pl: { title: 'P&L', sub: '', showMonth: true, needsBiz: true },
   flujo: { title: 'Flujo de Efectivo', sub: '', showMonth: false, needsBiz: true },
   polizas: { title: 'Pólizas de Diario', sub: '', showMonth: false, needsBiz: true },
+  balance: { title: 'Balance General', sub: 'Al día de hoy', showMonth: false, needsBiz: true },
+  catalogo: { title: 'Catálogo de Cuentas', sub: 'Estructura contable: cuenta mayor › subcuenta › sub-subcuenta', showMonth: false, needsBiz: true },
 };
 
 function cerrarMenuMovil() {
@@ -357,7 +359,7 @@ function setupNav() {
   document.getElementById('sidebarOverlay').addEventListener('click', cerrarMenuMovil);
 }
 
-const SECCIONES_IMPRIMIBLES = ['efectivo', 'bancos', 'pl', 'flujo'];
+const SECCIONES_IMPRIMIBLES = ['efectivo', 'bancos', 'pl', 'flujo', 'balance'];
 
 function updateTopbar() {
   const meta = SECTION_META[STATE.currentSection];
@@ -393,6 +395,8 @@ function renderCurrentSection() {
   if (s === 'pl') renderPL();
   if (s === 'flujo') renderFlujo();
   if (s === 'polizas') renderPolizas();
+  if (s === 'balance') renderBalanceGeneral();
+  if (s === 'catalogo') renderCatalogoCuentas();
 }
 
 /* ============================================================
@@ -1187,6 +1191,134 @@ function opcionesSubcuentaHtml(subcuentas, mayores, selectedId) {
     return opts.length ? `<optgroup label="${m.nombre}">${opts.join('')}</optgroup>` : '';
   }).join('');
   return porMayor;
+}
+
+/* ============================================================
+   CATÁLOGO DE CUENTAS — página completa (menú)
+   ============================================================ */
+async function renderCatalogoCuentas() {
+  const el = document.getElementById('sec-catalogo');
+  const b = biz();
+  if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
+  const scrollY = window.scrollY;
+  const [mayores, subcuentas] = await Promise.all([loadCuentasMayor(b.id), loadSubcuentas(b.id)]);
+
+  el.innerHTML = `
+    <div class="card">
+      <div class="card-head"><h3>Nueva cuenta mayor</h3></div>
+      <div class="grid-3">
+        <div class="field" style="margin-bottom:0;">
+          <label>Nombre</label>
+          <input type="text" id="ccNuevaMayorNombre" placeholder="Ej. Bancos, Proveedores, Activos Fijos">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Tipo</label>
+          <select id="ccNuevaMayorTipo">
+            <option value="activo">Activo</option>
+            <option value="pasivo">Pasivo</option>
+            <option value="capital">Capital</option>
+            <option value="ingreso">Ingreso</option>
+            <option value="gasto">Gasto</option>
+          </select>
+        </div>
+        <div class="field" style="margin-bottom:0;display:flex;align-items:flex-end;">
+          <button class="btn btn-gold" id="ccSaveMayor" style="width:100%;">+ Agregar cuenta mayor</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h3>Nueva subcuenta</h3></div>
+      <div class="grid-3">
+        <div class="field" style="margin-bottom:0;">
+          <label>Cuenta mayor</label>
+          <select id="ccNuevaSubMayor"></select>
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Anidar bajo (opcional)</label>
+          <select id="ccNuevaSubPadre"><option value="">— nivel superior —</option></select>
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Nombre</label>
+          <input type="text" id="ccNuevaSubNombre" placeholder="Ej. Mantenimiento y conservación">
+        </div>
+      </div>
+      <button class="btn btn-gold btn-sm" id="ccSaveSub">+ Agregar subcuenta</button>
+      <p style="font-size:11.5px;color:var(--muted);margin-top:10px;">Ejemplo de 3 niveles: Gastos de Operación › Mantenimiento y conservación › Reparación de freidoras.</p>
+    </div>
+
+    ${['activo','pasivo','capital','ingreso','gasto'].map(tipo => {
+      const mayoresTipo = mayores.filter(m => m.tipo === tipo);
+      if (!mayoresTipo.length) return '';
+      return `<div class="card">
+        <div class="card-head"><h3>${TIPO_CUENTA_LABEL[tipo]}</h3></div>
+        <div id="ccList-${tipo}"></div>
+      </div>`;
+    }).join('')}
+  `;
+
+  const filaSubHtml = (s, nivel) => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 4px 6px ${16 + nivel*18}px;border-bottom:1px solid var(--line);font-size:13px;">
+      <span>${nivel>0?'— ':''}${s.nombre}</span>
+      <button class="row-del cc-sub-del" data-id="${s.id}" style="font-size:14px;">✕</button>
+    </div>
+    ${subcuentasHijas(s.id, subcuentas).map(h => filaSubHtml(h, nivel+1)).join('')}`;
+
+  ['activo','pasivo','capital','ingreso','gasto'].forEach(tipo => {
+    const box = document.getElementById('ccList-' + tipo);
+    if (!box) return;
+    box.innerHTML = mayores.filter(m => m.tipo === tipo).map(m => `
+      <div style="margin-bottom:10px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 4px;background:#f7f9fc;border-radius:7px;">
+          <strong>${m.nombre}</strong>
+          <button class="row-del cc-mayor-del" data-id="${m.id}" style="font-size:15px;">✕</button>
+        </div>
+        ${subcuentasRaiz(m.id, subcuentas).map(s => filaSubHtml(s, 0)).join('') || `<div style="padding:6px 4px 6px 16px;color:var(--muted);font-size:12px;">Sin subcuentas todavía.</div>`}
+      </div>`).join('');
+  });
+
+  const actualizarSubPadre = () => {
+    const mayorId = document.getElementById('ccNuevaSubMayor').value;
+    const sel = document.getElementById('ccNuevaSubPadre');
+    const construirNivel = (padreId, nivel) => subcuentas.filter(s => s.cuenta_mayor_id === mayorId && (s.subcuenta_padre_id || null) === padreId)
+      .flatMap(s => [`<option value="${s.id}">${'—'.repeat(nivel)} ${s.nombre}</option>`, ...construirNivel(s.id, nivel + 1)]);
+    sel.innerHTML = `<option value="">— nivel superior —</option>` + construirNivel(null, 0).join('');
+  };
+  document.getElementById('ccNuevaSubMayor').innerHTML = mayores.map(m => `<option value="${m.id}">${m.nombre} (${TIPO_CUENTA_LABEL[m.tipo]})</option>`).join('') || `<option value="">— crea una cuenta mayor primero —</option>`;
+  actualizarSubPadre();
+  document.getElementById('ccNuevaSubMayor').addEventListener('change', actualizarSubPadre);
+
+  document.getElementById('ccSaveMayor').addEventListener('click', async () => {
+    const nombre = document.getElementById('ccNuevaMayorNombre').value.trim();
+    const tipo = document.getElementById('ccNuevaMayorTipo').value;
+    if (!nombre) { toast('Escribe un nombre.', 'error'); return; }
+    const { error } = await sb.from('fz_cuentas_mayor').insert({ business_id: b.id, nombre, tipo, orden: 99 });
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    renderCatalogoCuentas();
+  });
+  document.getElementById('ccSaveSub').addEventListener('click', async () => {
+    const cuenta_mayor_id = document.getElementById('ccNuevaSubMayor').value;
+    const subcuenta_padre_id = document.getElementById('ccNuevaSubPadre').value || null;
+    const nombre = document.getElementById('ccNuevaSubNombre').value.trim();
+    if (!cuenta_mayor_id) { toast('Primero crea una cuenta mayor.', 'error'); return; }
+    if (!nombre) { toast('Escribe un nombre.', 'error'); return; }
+    const { error } = await sb.from('fz_subcuentas').insert({ business_id: b.id, cuenta_mayor_id, subcuenta_padre_id, nombre, orden: 99 });
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    renderCatalogoCuentas();
+  });
+  el.querySelectorAll('.cc-mayor-del').forEach(btn => btn.addEventListener('click', async () => {
+    if (!confirm('¿Eliminar esta cuenta mayor y todas sus subcuentas?')) return;
+    const { error } = await sb.from('fz_cuentas_mayor').delete().eq('id', btn.dataset.id);
+    if (error) { toast('No se puede eliminar: ya tiene movimientos registrados con alguna de sus subcuentas.', 'error'); return; }
+    renderCatalogoCuentas();
+  }));
+  el.querySelectorAll('.cc-sub-del').forEach(btn => btn.addEventListener('click', async () => {
+    if (!confirm('¿Eliminar esta subcuenta? (si tiene sub-subcuentas anidadas, también se eliminan)')) return;
+    const { error } = await sb.from('fz_subcuentas').delete().eq('id', btn.dataset.id);
+    if (error) { toast('No se puede eliminar: ya tiene movimientos registrados.', 'error'); return; }
+    renderCatalogoCuentas();
+  }));
+  window.scrollTo(0, scrollY);
 }
 
 async function openCuentasModal(businessId, onClose) {
@@ -2814,6 +2946,170 @@ function construirArbolSubcuenta(subcuentaId, subcuentas, porSubcuenta) {
 }
 function aplanarArbol(nodo) {
   return [nodo, ...nodo.hijos.flatMap(aplanarArbol)];
+}
+
+/* ============================================================
+   BALANCE GENERAL — Activo = Pasivo + Capital
+   ============================================================ */
+async function computeSaldoCuentaMayorPolizas(businessId, cuentaMayorId, subcuentas, signoNormal) {
+  // signoNormal 'debe' (Activo): Cargo aumenta, Abono disminuye.
+  // signoNormal 'haber' (Pasivo/Capital): Abono aumenta, Cargo disminuye.
+  const subs = subcuentas.filter(s => s.cuenta_mayor_id === cuentaMayorId);
+  if (!subs.length) return { subs: [], total: 0 };
+  const { data: lineas } = await sb.from('fz_polizas_lineas').select('cargo,abono,subcuenta_id').eq('business_id', businessId).eq('cuenta_tipo', 'subcuenta').in('subcuenta_id', subs.map(s => s.id));
+  const porSub = {};
+  (lineas || []).forEach(l => {
+    const neto = signoNormal === 'debe' ? (Number(l.cargo) || 0) - (Number(l.abono) || 0) : (Number(l.abono) || 0) - (Number(l.cargo) || 0);
+    porSub[l.subcuenta_id] = (porSub[l.subcuenta_id] || 0) + neto;
+  });
+  const raices = subcuentasRaiz(cuentaMayorId, subcuentas).map(s => construirArbolSubcuenta(s.id, subcuentas, porSub)).filter(s => Math.abs(s.total) > 0.004);
+  return { subs: raices, total: raices.reduce((s,x)=>s+x.total,0) };
+}
+
+async function computeUtilidadAcumulada(businessId, hastaYm) {
+  const year = hastaYm.slice(0,4);
+  const periodo = { start: `${year}-01-01`, end: monthBounds(hastaYm).end, mesStart: `${year}-01`, mesEnd: hastaYm };
+  const [conceptosVenta, conceptos, subcuentas, mayores, conceptosSistema, ventasQ] = await Promise.all([
+    loadConceptosVenta(businessId), loadConceptos(businessId), loadSubcuentas(businessId), loadCuentasMayor(businessId), loadConceptosSistema(businessId),
+    sb.from('fz_ventas').select('*').eq('business_id', businessId).gte('fecha', periodo.start).lte('fecha', periodo.end),
+  ]);
+  const v = ventasQ.data || [];
+  const totalIngresosVentas = conceptosVenta.reduce((s,c) => {
+    const monto = v.reduce((ss,r)=>ss+(Number((r.venta_data||{})[c.id])||0),0);
+    return s + (c.tipo==='resta'?-monto:monto);
+  }, 0);
+  const gastosOperativos = v.reduce((s,r)=>s+(Number(r.gastos)||0),0);
+  const porCatPL = { efectivo: conceptos.filter(c=>c.categoria==='efectivo'), tarjetas: conceptos.filter(c=>c.categoria==='tarjetas'), bancos: conceptos.filter(c=>c.categoria==='bancos'), cxc: conceptos.filter(c=>c.categoria==='cxc'), propinas: conceptos.filter(c=>c.categoria==='propinas') };
+  let diffPeriodo = 0;
+  v.forEach(r => { diffPeriodo += computeRowDiffs(r, conceptosVenta, porCatPL, conceptosSistema).difTotal; });
+  const faltanteCaja = diffPeriodo>0?diffPeriodo:0;
+  const sobranteCaja = diffPeriodo<0?-diffPeriodo:0;
+  const gClas = await computeGastosClasificados(businessId, periodo, subcuentas, mayores);
+  const iPoliza = await computeIngresosPoliza(businessId, periodo, subcuentas, mayores);
+  const totalIngresosFinal = totalIngresosVentas + sobranteCaja + iPoliza.total;
+  const gastosTotales = gastosOperativos + gClas.totalClasificado + gClas.sinClasificar + faltanteCaja;
+  return totalIngresosFinal - gastosTotales;
+}
+
+function filaArbolBalanceHtml(nodo, nivel) {
+  const indent = 40 + (nivel - 1) * 18;
+  let html = `<tr><td style="padding-left:${indent}px;color:var(--muted);font-size:12.5px;">${nodo.nombre}</td><td class="num">${fmt(nodo.total)}</td></tr>`;
+  nodo.hijos.forEach(h => { html += filaArbolBalanceHtml(h, nivel + 1); });
+  return html;
+}
+
+async function renderBalanceGeneral() {
+  const el = document.getElementById('sec-balance');
+  const b = biz();
+  if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
+  const scrollY = window.scrollY;
+
+  const [subcuentas, mayores, monedasQ, cuentasQ, provQ, conceptosEfvoQ, conceptosTarjQ] = await Promise.all([
+    loadSubcuentas(b.id), loadCuentasMayor(b.id),
+    sb.from('fz_efectivo_monedas').select('*').eq('business_id', b.id).eq('activo', true),
+    sb.from('fz_bancos_cuentas').select('*').eq('business_id', b.id).eq('activo', true),
+    sb.from('fz_proveedores').select('importe,importe_pagado,estatus').eq('business_id', b.id),
+    sb.from('fz_conceptos').select('*').eq('business_id', b.id).eq('categoria', 'efectivo'),
+    sb.from('fz_conceptos').select('*').eq('business_id', b.id).in('categoria', ['tarjetas','bancos']),
+  ]);
+  const monedas = monedasQ.data || [];
+  const cuentasBanco = cuentasQ.data || [];
+  const conceptosEfectivo = conceptosEfvoQ.data || [];
+  const conceptosTarjetas = conceptosTarjQ.data || [];
+
+  let totalEfectivo = 0;
+  const detalleEfectivo = [];
+  for (const m of monedas) {
+    const saldo = await computeMonedaSaldo(b.id, m, conceptosEfectivo);
+    const pesoEquiv = saldo * (Number(m.tc_reporte) || 1);
+    totalEfectivo += pesoEquiv;
+    if (Math.abs(pesoEquiv) > 0.004) detalleEfectivo.push({ nombre: m.nombre, monto: pesoEquiv });
+  }
+  let totalBancos = 0;
+  const detalleBancos = [];
+  for (const c of cuentasBanco) {
+    const saldo = await computeBancoSaldo(b.id, c, conceptosTarjetas);
+    totalBancos += saldo;
+    if (Math.abs(saldo) > 0.004) detalleBancos.push({ nombre: c.nombre, monto: saldo });
+  }
+
+  const otrosActivos = [];
+  for (const m of mayores.filter(m => m.tipo === 'activo')) {
+    const r = await computeSaldoCuentaMayorPolizas(b.id, m.id, subcuentas, 'debe');
+    if (Math.abs(r.total) > 0.004) otrosActivos.push({ nombre: m.nombre, subs: r.subs, total: r.total });
+  }
+  const totalOtrosActivos = otrosActivos.reduce((s,x)=>s+x.total,0);
+  const totalActivo = totalEfectivo + totalBancos + totalOtrosActivos;
+
+  const prov = provQ.data || [];
+  const proveedoresPendiente = prov.filter(p => p.estatus === 'Pendiente' || p.estatus === 'Parcial').reduce((s,p)=>s+(Number(p.importe)-Number(p.importe_pagado||0)),0);
+
+  const otrosPasivos = [];
+  for (const m of mayores.filter(m => m.tipo === 'pasivo')) {
+    const r = await computeSaldoCuentaMayorPolizas(b.id, m.id, subcuentas, 'haber');
+    if (Math.abs(r.total) > 0.004) otrosPasivos.push({ nombre: m.nombre, subs: r.subs, total: r.total });
+  }
+  const totalOtrosPasivos = otrosPasivos.reduce((s,x)=>s+x.total,0);
+  const totalPasivo = proveedoresPendiente + totalOtrosPasivos;
+
+  const cuentasCapital = [];
+  for (const m of mayores.filter(m => m.tipo === 'capital')) {
+    const r = await computeSaldoCuentaMayorPolizas(b.id, m.id, subcuentas, 'haber');
+    if (Math.abs(r.total) > 0.004) cuentasCapital.push({ nombre: m.nombre, subs: r.subs, total: r.total });
+  }
+  const totalCapitalCuentas = cuentasCapital.reduce((s,x)=>s+x.total,0);
+  const utilidadAcumulada = await computeUtilidadAcumulada(b.id, STATE.currentMonth);
+  const totalCapital = totalCapitalCuentas + utilidadAcumulada;
+
+  const totalPasivoCapital = totalPasivo + totalCapital;
+  const diferenciaCuadre = totalActivo - totalPasivoCapital;
+  const cuadra = Math.abs(diferenciaCuadre) < 1;
+
+  el.innerHTML = `
+    <div class="kpi-grid">
+      <div class="kpi"><div class="label">Total Activo</div><div class="value num">${fmt(totalActivo)}</div></div>
+      <div class="kpi"><div class="label">Total Pasivo</div><div class="value num red">${fmt(totalPasivo)}</div></div>
+      <div class="kpi"><div class="label">Total Capital</div><div class="value num green">${fmt(totalCapital)}</div></div>
+      <div class="kpi"><div class="label">¿Cuadra?</div><div class="value num ${cuadra?'green':'red'}">${cuadra ? '✓ Sí' : fmt(diferenciaCuadre)}</div></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>Balance General — ${b.name}</h3><span class="hint">Al día de hoy · ${todayStr()}</span></div>
+      <table>
+        <tbody>
+          <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">ACTIVO</td></tr>
+          <tr><td style="padding-left:22px;font-weight:600;">Efectivo y equivalentes</td><td class="num" style="font-weight:600;">${fmt(totalEfectivo)}</td></tr>
+          ${detalleEfectivo.map(d => `<tr><td style="padding-left:40px;color:var(--muted);font-size:12.5px;">${d.nombre}</td><td class="num">${fmt(d.monto)}</td></tr>`).join('')}
+          <tr><td style="padding-left:22px;font-weight:600;">Bancos</td><td class="num" style="font-weight:600;">${fmt(totalBancos)}</td></tr>
+          ${detalleBancos.map(d => `<tr><td style="padding-left:40px;color:var(--muted);font-size:12.5px;">${d.nombre}</td><td class="num">${fmt(d.monto)}</td></tr>`).join('')}
+          ${otrosActivos.map(m => `
+            <tr><td style="padding-left:22px;font-weight:600;">${m.nombre}</td><td class="num" style="font-weight:600;">${fmt(m.total)}</td></tr>
+            ${m.subs.map(s => filaArbolBalanceHtml(s, 1)).join('')}
+          `).join('')}
+          <tr class="total-row"><td>Total Activo</td><td class="num">${fmt(totalActivo)}</td></tr>
+
+          <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">PASIVO</td></tr>
+          <tr><td style="padding-left:22px;font-weight:600;">Proveedores por pagar</td><td class="num" style="font-weight:600;">${fmt(proveedoresPendiente)}</td></tr>
+          ${otrosPasivos.map(m => `
+            <tr><td style="padding-left:22px;font-weight:600;">${m.nombre}</td><td class="num" style="font-weight:600;">${fmt(m.total)}</td></tr>
+            ${m.subs.map(s => filaArbolBalanceHtml(s, 1)).join('')}
+          `).join('')}
+          <tr class="total-row"><td>Total Pasivo</td><td class="num">${fmt(totalPasivo)}</td></tr>
+
+          <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">CAPITAL</td></tr>
+          ${cuentasCapital.map(m => `
+            <tr><td style="padding-left:22px;font-weight:600;">${m.nombre}</td><td class="num" style="font-weight:600;">${fmt(m.total)}</td></tr>
+            ${m.subs.map(s => filaArbolBalanceHtml(s, 1)).join('')}
+          `).join('')}
+          <tr><td style="padding-left:22px;">Utilidad acumulada del ejercicio ${STATE.currentMonth.slice(0,4)}</td><td class="num">${fmt(utilidadAcumulada)}</td></tr>
+          <tr class="total-row"><td>Total Capital</td><td class="num">${fmt(totalCapital)}</td></tr>
+
+          <tr class="total-row" style="border-top:2px solid var(--navy-1);"><td>Total Pasivo + Capital</td><td class="num">${fmt(totalPasivoCapital)}</td></tr>
+        </tbody>
+      </table>
+      <p style="font-size:11.5px;color:var(--muted);margin-top:12px;">Efectivo, Bancos y Proveedores se calculan en automático desde sus módulos. Las demás cuentas (Activos fijos, Acreedores, Capital, etc.) se alimentan desde Pólizas de Diario — usa el Catálogo de Cuentas para crearlas.</p>
+    </div>
+  `;
+  window.scrollTo(0, scrollY);
 }
 
 async function computeGastosClasificados(businessId, periodo, subcuentas, mayores) {
