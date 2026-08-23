@@ -353,6 +353,7 @@ function setupNav() {
   document.querySelectorAll('.nav-item').forEach(item => {
     item.addEventListener('click', () => {
       STATE.currentSection = item.dataset.section;
+      localStorage.setItem('finanzas_ultima_seccion', item.dataset.section);
       document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
       item.classList.add('active');
       document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
@@ -362,7 +363,15 @@ function setupNav() {
       cerrarMenuMovil();
     });
   });
-  document.querySelector('.nav-item[data-section="dashboard"]').classList.add('active');
+  // Al entrar no cargamos el Dashboard consolidado automáticamente (es lo más lento,
+  // calcula todos los negocios) — abrimos la última sección que usaste, o Ventas por default.
+  const guardada = localStorage.getItem('finanzas_ultima_seccion');
+  const seccionInicial = (guardada && SECTION_META[guardada]) ? guardada : 'ventas';
+  STATE.currentSection = seccionInicial;
+  document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+  document.querySelector(`.nav-item[data-section="${seccionInicial}"]`).classList.add('active');
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.getElementById('sec-' + seccionInicial).classList.add('active');
 
   document.getElementById('menuToggleBtn').addEventListener('click', () => {
     document.querySelector('.sidebar').classList.add('open');
@@ -435,19 +444,19 @@ function conceptosParaMoneda(moneda, conceptosEfectivo) {
 
 async function computeMonedaSaldo(businessId, moneda, conceptosEfectivo) {
   const concepts = conceptosParaMoneda(moneda, conceptosEfectivo);
+  const [ventasQ, movsQ, polizaLineas] = await Promise.all([
+    concepts.length ? sb.from('fz_ventas').select('recon_data').eq('business_id', businessId) : Promise.resolve({ data: [] }),
+    sb.from('fz_efectivo_mov').select('depositos,cargos').eq('moneda_id', moneda.id),
+    getPolizaLineasParaCuenta(businessId, 'efectivo', moneda.id),
+  ]);
   let autoDepositos = 0;
-  if (concepts.length) {
-    const { data: allVentas } = await sb.from('fz_ventas').select('recon_data').eq('business_id', businessId);
-    (allVentas || []).forEach(v => {
-      concepts.forEach(concepto => {
-        const entry = (v.recon_data || {})[concepto.id];
-        if (entry) autoDepositos += Number(entry.monto) || 0; // valor en la moneda tal cual, sin convertir
-      });
+  (ventasQ.data || []).forEach(v => {
+    concepts.forEach(concepto => {
+      const entry = (v.recon_data || {})[concepto.id];
+      if (entry) autoDepositos += Number(entry.monto) || 0; // valor en la moneda tal cual, sin convertir
     });
-  }
-  const { data: movs } = await sb.from('fz_efectivo_mov').select('depositos,cargos').eq('moneda_id', moneda.id);
-  const manualNet = (movs || []).reduce((s, m) => s + (Number(m.depositos) || 0) - (Number(m.cargos) || 0), 0);
-  const polizaLineas = await getPolizaLineasParaCuenta(businessId, 'efectivo', moneda.id);
+  });
+  const manualNet = (movsQ.data || []).reduce((s, m) => s + (Number(m.depositos) || 0) - (Number(m.cargos) || 0), 0);
   const polizaNet = polizaLineas.reduce((s, l) => s + (Number(l.cargo) || 0) - (Number(l.abono) || 0), 0);
   return (Number(moneda.saldo_inicial) || 0) + autoDepositos + manualNet + polizaNet;
 }
@@ -458,19 +467,19 @@ function conceptosParaBanco(cuenta, conceptosTarjetas) {
 }
 async function computeBancoSaldo(businessId, cuenta, conceptosTarjetas) {
   const concepts = conceptosParaBanco(cuenta, conceptosTarjetas);
+  const [ventasQ, movsQ, polizaLineas] = await Promise.all([
+    concepts.length ? sb.from('fz_ventas').select('recon_data').eq('business_id', businessId) : Promise.resolve({ data: [] }),
+    sb.from('fz_bancos_mov').select('depositos,cargos').eq('cuenta_id', cuenta.id),
+    getPolizaLineasParaCuenta(businessId, 'banco', cuenta.id),
+  ]);
   let autoDepositos = 0;
-  if (concepts.length) {
-    const { data: allVentas } = await sb.from('fz_ventas').select('recon_data').eq('business_id', businessId);
-    (allVentas || []).forEach(v => {
-      concepts.forEach(concepto => {
-        const entry = (v.recon_data || {})[concepto.id];
-        if (entry) autoDepositos += Number(entry.monto) || 0;
-      });
+  (ventasQ.data || []).forEach(v => {
+    concepts.forEach(concepto => {
+      const entry = (v.recon_data || {})[concepto.id];
+      if (entry) autoDepositos += Number(entry.monto) || 0;
     });
-  }
-  const { data: movs } = await sb.from('fz_bancos_mov').select('depositos,cargos').eq('cuenta_id', cuenta.id);
-  const manualNet = (movs || []).reduce((s, m) => s + (Number(m.depositos) || 0) - (Number(m.cargos) || 0), 0);
-  const polizaLineas = await getPolizaLineasParaCuenta(businessId, 'banco', cuenta.id);
+  });
+  const manualNet = (movsQ.data || []).reduce((s, m) => s + (Number(m.depositos) || 0) - (Number(m.cargos) || 0), 0);
   const polizaNet = polizaLineas.reduce((s, l) => s + (Number(l.cargo) || 0) - (Number(l.abono) || 0), 0);
   return (Number(cuenta.saldo_inicial) || 0) + autoDepositos + manualNet + polizaNet;
 }
@@ -527,34 +536,28 @@ async function computeBusinessSummary(businessId, ym) {
   const gastosOperativosMes = ventasMesRows.reduce((s, v) => s + (Number(v.gastos) || 0), 0);
 
   const monedas = (monedasQ.data || []).filter(m => m.activo !== false);
-  let efectivoTotal = 0;
-  const efectivoDetalle = [];
-  for (const m of monedas) {
+  const efectivoDetalle = await Promise.all(monedas.map(async m => {
     const saldo = await computeMonedaSaldo(businessId, m, conceptosEfectivo);
-    const pesoEquiv = saldo * (Number(m.tc_reporte) || 1);
-    efectivoTotal += pesoEquiv;
-    efectivoDetalle.push({ nombre: m.nombre, saldo, tc: m.tc_reporte, pesoEquiv });
-  }
+    return { nombre: m.nombre, saldo, tc: m.tc_reporte, pesoEquiv: saldo * (Number(m.tc_reporte) || 1) };
+  }));
+  const efectivoTotal = efectivoDetalle.reduce((s,d)=>s+d.pesoEquiv,0);
 
   const cuentas = cuentasQ.data || [];
-  let bancosTotal = 0;
-  const bancosDetalle = [];
-  for (const c of cuentas) {
+  const bancosDetalle = await Promise.all(cuentas.map(async c => {
     const saldo = await computeBancoSaldo(businessId, c, conceptosTarjetas);
-    if (c.activo !== false) bancosTotal += saldo;
-    bancosDetalle.push({ nombre: c.nombre, saldo, activo: c.activo !== false });
-  }
+    return { nombre: c.nombre, saldo, activo: c.activo !== false };
+  }));
+  const bancosTotal = bancosDetalle.filter(d=>d.activo).reduce((s,d)=>s+d.saldo,0);
 
   const prov = provQ.data || [];
   const proveedoresPendientes = prov.filter(p => p.estatus === 'Pendiente' || p.estatus === 'Parcial').reduce((s, p) => s + (Number(p.importe) - Number(p.importe_pagado || 0)), 0);
 
-  const subcuentas = await loadSubcuentas(businessId);
-  const mayores = await loadCuentasMayor(businessId);
-  const otrosPasivosDetalle = [];
-  for (const m of mayores.filter(m => m.tipo === 'pasivo')) {
+  const [subcuentas, mayores] = await Promise.all([loadSubcuentas(businessId), loadCuentasMayor(businessId)]);
+  const otrosPasivosCalc = await Promise.all(mayores.filter(m => m.tipo === 'pasivo').map(async m => {
     const r = await computeSaldoCuentaMayorPolizas(businessId, m.id, subcuentas, 'haber');
-    if (Math.abs(r.total) > 0.004) otrosPasivosDetalle.push({ nombre: m.nombre, monto: r.total });
-  }
+    return { nombre: m.nombre, monto: r.total };
+  }));
+  const otrosPasivosDetalle = otrosPasivosCalc.filter(d => Math.abs(d.monto) > 0.004);
   const otrosPasivosTotal = otrosPasivosDetalle.reduce((s,x)=>s+x.monto,0);
 
   const posicionNeta = efectivoTotal + bancosTotal - proveedoresPendientes - otrosPasivosTotal;
@@ -572,11 +575,10 @@ async function renderDashboard() {
   el.innerHTML = `<div class="empty">Calculando resumen de todos los negocios…</div>`;
 
   const activos = STATE.businesses.filter(b => b.active !== false);
-  const rows = [];
-  for (const b of activos) {
+  const rows = await Promise.all(activos.map(async b => {
     const s = await computeBusinessSummary(b.id, STATE.currentMonth);
-    rows.push({ biz: b, ...s });
-  }
+    return { biz: b, ...s };
+  }));
 
   const totVentas = rows.reduce((s, r) => s + r.ventasMes, 0);
   const totEfectivo = rows.reduce((s, r) => s + r.efectivoTotal, 0);
