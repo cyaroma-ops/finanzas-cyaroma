@@ -533,11 +533,20 @@ async function computeBusinessSummary(businessId, ym) {
   }
 
   const prov = provQ.data || [];
-  const proveedoresPendientes = prov.filter(p => p.estatus === 'Pendiente').reduce((s, p) => s + (Number(p.importe) || 0), 0);
+  const proveedoresPendientes = prov.filter(p => p.estatus === 'Pendiente' || p.estatus === 'Parcial').reduce((s, p) => s + (Number(p.importe) - Number(p.importe_pagado || 0)), 0);
 
-  const posicionNeta = efectivoTotal + bancosTotal - proveedoresPendientes;
+  const subcuentas = await loadSubcuentas(businessId);
+  const mayores = await loadCuentasMayor(businessId);
+  const otrosPasivosDetalle = [];
+  for (const m of mayores.filter(m => m.tipo === 'pasivo')) {
+    const r = await computeSaldoCuentaMayorPolizas(businessId, m.id, subcuentas, 'haber');
+    if (Math.abs(r.total) > 0.004) otrosPasivosDetalle.push({ nombre: m.nombre, monto: r.total });
+  }
+  const otrosPasivosTotal = otrosPasivosDetalle.reduce((s,x)=>s+x.monto,0);
 
-  return { ventasMes, gastosOperativosMes, efectivoTotal, efectivoDetalle, bancosTotal, bancosDetalle, proveedoresPendientes, posicionNeta };
+  const posicionNeta = efectivoTotal + bancosTotal - proveedoresPendientes - otrosPasivosTotal;
+
+  return { ventasMes, gastosOperativosMes, efectivoTotal, efectivoDetalle, bancosTotal, bancosDetalle, proveedoresPendientes, otrosPasivosDetalle, otrosPasivosTotal, posicionNeta };
 }
 
 /* ============================================================
@@ -1201,7 +1210,13 @@ async function renderCatalogoCuentas() {
   const b = biz();
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
   const scrollY = window.scrollY;
-  const [mayores, subcuentas] = await Promise.all([loadCuentasMayor(b.id), loadSubcuentas(b.id)]);
+  const [mayores, subcuentas, cuentasBancoQ, monedasQ] = await Promise.all([
+    loadCuentasMayor(b.id), loadSubcuentas(b.id),
+    sb.from('fz_bancos_cuentas').select('*').eq('business_id', b.id).order('nombre'),
+    sb.from('fz_efectivo_monedas').select('*').eq('business_id', b.id).order('orden'),
+  ]);
+  const cuentasBanco = cuentasBancoQ.data || [];
+  const monedasEfectivo = monedasQ.data || [];
 
   el.innerHTML = `
     <div class="card">
@@ -1209,7 +1224,7 @@ async function renderCatalogoCuentas() {
       <div class="grid-3">
         <div class="field" style="margin-bottom:0;">
           <label>Nombre</label>
-          <input type="text" id="ccNuevaMayorNombre" placeholder="Ej. Bancos, Proveedores, Activos Fijos">
+          <input type="text" id="ccNuevaMayorNombre" placeholder="Ej. Acreedores, Activos Fijos">
         </div>
         <div class="field" style="margin-bottom:0;">
           <label>Tipo</label>
@@ -1225,6 +1240,7 @@ async function renderCatalogoCuentas() {
           <button class="btn btn-gold" id="ccSaveMayor" style="width:100%;">+ Agregar cuenta mayor</button>
         </div>
       </div>
+      <p style="font-size:11.5px;color:var(--muted);margin-top:-4px;">Al crearla se agrega automáticamente una subcuenta con el mismo nombre, lista para usarse en Pólizas de Diario. Puedes agregarle más subcuentas abajo si necesitas desglosarla.</p>
     </div>
 
     <div class="card">
@@ -1247,6 +1263,21 @@ async function renderCatalogoCuentas() {
       <p style="font-size:11.5px;color:var(--muted);margin-top:10px;">Ejemplo de 3 niveles: Gastos de Operación › Mantenimiento y conservación › Reparación de freidoras.</p>
     </div>
 
+    <div class="card">
+      <div class="card-head"><h3>Bancos y Efectivo</h3><span class="hint">Se administran en sus propios módulos</span></div>
+      <div class="grid-2">
+        <div>
+          <div style="font-weight:700;font-size:12.5px;color:var(--navy-1);margin-bottom:6px;">🏦 Cuentas bancarias</div>
+          ${cuentasBanco.map(c => `<div style="display:flex;justify-content:space-between;padding:5px 4px;border-bottom:1px solid var(--line);font-size:13px;"><span>${c.nombre}${c.activo===false?' (inactiva)':''}</span></div>`).join('') || `<div class="empty" style="padding:8px;">Aún no hay cuentas bancarias.</div>`}
+        </div>
+        <div>
+          <div style="font-weight:700;font-size:12.5px;color:var(--navy-1);margin-bottom:6px;">💵 Cajas de efectivo</div>
+          ${monedasEfectivo.map(m => `<div style="display:flex;justify-content:space-between;padding:5px 4px;border-bottom:1px solid var(--line);font-size:13px;"><span>${m.nombre}${m.activo===false?' (inactiva)':''}</span></div>`).join('') || `<div class="empty" style="padding:8px;">Aún no hay cajas de efectivo.</div>`}
+        </div>
+      </div>
+      <p style="font-size:11.5px;color:var(--muted);margin-top:10px;">Para agregar o editar cuentas bancarias ve a "Bancos"; para cajas de efectivo ve a "Efectivo & Divisas".</p>
+    </div>
+
     ${['activo','pasivo','capital','ingreso','gasto'].map(tipo => {
       const mayoresTipo = mayores.filter(m => m.tipo === tipo);
       if (!mayoresTipo.length) return '';
@@ -1254,13 +1285,15 @@ async function renderCatalogoCuentas() {
         <div class="card-head"><h3>${TIPO_CUENTA_LABEL[tipo]}</h3></div>
         <div id="ccList-${tipo}"></div>
       </div>`;
-    }).join('')}
+    }).join('') || `<div class="empty">Aún no has creado cuentas mayor de Activo, Pasivo, Capital, Ingreso o Gasto. Usa el formulario de arriba.</div>`}
   `;
 
   const filaSubHtml = (s, nivel) => `
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 4px 6px ${16 + nivel*18}px;border-bottom:1px solid var(--line);font-size:13px;">
-      <span>${nivel>0?'— ':''}${s.nombre}</span>
-      <button class="row-del cc-sub-del" data-id="${s.id}" style="font-size:14px;">✕</button>
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 4px 6px ${16 + nivel*18}px;border-bottom:1px solid var(--line);font-size:13px;">
+      ${nivel>0?'<span style="color:var(--muted);">—</span>':''}
+      <input class="cell cc-sub-nombre" type="text" value="${s.nombre}" data-id="${s.id}" style="flex:1;min-width:0;">
+      <button class="btn btn-ghost btn-sm cc-sub-save" data-id="${s.id}">Guardar</button>
+      <button class="row-del cc-sub-del" data-id="${s.id}" style="font-size:14px;">Eliminar</button>
     </div>
     ${subcuentasHijas(s.id, subcuentas).map(h => filaSubHtml(h, nivel+1)).join('')}`;
 
@@ -1269,9 +1302,10 @@ async function renderCatalogoCuentas() {
     if (!box) return;
     box.innerHTML = mayores.filter(m => m.tipo === tipo).map(m => `
       <div style="margin-bottom:10px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 4px;background:#f7f9fc;border-radius:7px;">
-          <strong>${m.nombre}</strong>
-          <button class="row-del cc-mayor-del" data-id="${m.id}" style="font-size:15px;">✕</button>
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 4px;background:#f7f9fc;border-radius:7px;">
+          <input class="cell cc-mayor-nombre" type="text" value="${m.nombre}" data-id="${m.id}" style="flex:1;min-width:0;font-weight:700;">
+          <button class="btn btn-ghost btn-sm cc-mayor-save" data-id="${m.id}">Guardar</button>
+          <button class="row-del cc-mayor-del" data-id="${m.id}" style="font-size:15px;">Eliminar</button>
         </div>
         ${subcuentasRaiz(m.id, subcuentas).map(s => filaSubHtml(s, 0)).join('') || `<div style="padding:6px 4px 6px 16px;color:var(--muted);font-size:12px;">Sin subcuentas todavía.</div>`}
       </div>`).join('');
@@ -1292,8 +1326,11 @@ async function renderCatalogoCuentas() {
     const nombre = document.getElementById('ccNuevaMayorNombre').value.trim();
     const tipo = document.getElementById('ccNuevaMayorTipo').value;
     if (!nombre) { toast('Escribe un nombre.', 'error'); return; }
-    const { error } = await sb.from('fz_cuentas_mayor').insert({ business_id: b.id, nombre, tipo, orden: 99 });
+    const { data: nuevaMayor, error } = await sb.from('fz_cuentas_mayor').insert({ business_id: b.id, nombre, tipo, orden: 99 }).select().single();
     if (error) { toast('Error: ' + error.message, 'error'); return; }
+    const { error: e2 } = await sb.from('fz_subcuentas').insert({ business_id: b.id, cuenta_mayor_id: nuevaMayor.id, nombre, orden: 0 });
+    if (e2) toast('La cuenta mayor se creó, pero hubo un error creando su subcuenta por default: ' + e2.message, 'error');
+    else toast('Cuenta mayor creada, ya lista para usarse en Pólizas de Diario.');
     renderCatalogoCuentas();
   });
   document.getElementById('ccSaveSub').addEventListener('click', async () => {
@@ -1306,6 +1343,20 @@ async function renderCatalogoCuentas() {
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     renderCatalogoCuentas();
   });
+  el.querySelectorAll('.cc-mayor-save').forEach(btn => btn.addEventListener('click', async () => {
+    const inp = el.querySelector(`.cc-mayor-nombre[data-id="${btn.dataset.id}"]`);
+    const { error } = await sb.from('fz_cuentas_mayor').update({ nombre: inp.value.trim() }).eq('id', btn.dataset.id);
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    toast('Guardado.');
+    renderCatalogoCuentas();
+  }));
+  el.querySelectorAll('.cc-sub-save').forEach(btn => btn.addEventListener('click', async () => {
+    const inp = el.querySelector(`.cc-sub-nombre[data-id="${btn.dataset.id}"]`);
+    const { error } = await sb.from('fz_subcuentas').update({ nombre: inp.value.trim() }).eq('id', btn.dataset.id);
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    toast('Guardado.');
+    renderCatalogoCuentas();
+  }));
   el.querySelectorAll('.cc-mayor-del').forEach(btn => btn.addEventListener('click', async () => {
     if (!confirm('¿Eliminar esta cuenta mayor y todas sus subcuentas?')) return;
     const { error } = await sb.from('fz_cuentas_mayor').delete().eq('id', btn.dataset.id);
@@ -1329,8 +1380,9 @@ async function openCuentasModal(businessId, onClose) {
     const nombre = document.getElementById('newCuentaMayorNombre').value.trim();
     const tipo = document.getElementById('newCuentaMayorTipo').value;
     if (!nombre) { toast('Escribe un nombre.', 'error'); return; }
-    const { error } = await sb.from('fz_cuentas_mayor').insert({ business_id: businessId, nombre, tipo, orden: 99 });
+    const { data: nuevaMayor, error } = await sb.from('fz_cuentas_mayor').insert({ business_id: businessId, nombre, tipo, orden: 99 }).select().single();
     if (error) { toast('Error: ' + error.message, 'error'); return; }
+    await sb.from('fz_subcuentas').insert({ business_id: businessId, cuenta_mayor_id: nuevaMayor.id, nombre, orden: 0 });
     document.getElementById('newCuentaMayorNombre').value = '';
     renderCuentasList(businessId);
   };
@@ -3558,6 +3610,7 @@ async function renderFlujo() {
           ${s.bancosDetalle.map(d => `<tr><td>Banco — ${d.nombre}${d.activo?'':' (inactiva)'}</td><td class="num">${fmt(d.saldo)}</td></tr>`).join('')}
           <tr class="total-row"><td>Total disponible (caja + bancos)</td><td class="num">${fmt(s.efectivoTotal + s.bancosTotal)}</td></tr>
           <tr><td>Menos: proveedores pendientes de pago</td><td class="num" style="color:var(--red);">-${fmt(s.proveedoresPendientes)}</td></tr>
+          ${s.otrosPasivosDetalle.map(p => `<tr><td>Menos: ${p.nombre}</td><td class="num" style="color:var(--red);">-${fmt(p.monto)}</td></tr>`).join('')}
           <tr class="total-row"><td>Posición neta de efectivo</td><td class="num" style="color:${s.posicionNeta>=0?'var(--green)':'var(--red)'};font-size:16px;">${fmt(s.posicionNeta)}</td></tr>
         </tbody>
       </table>
@@ -3587,13 +3640,18 @@ async function loadTodasLasLineas(businessId) {
   return data || [];
 }
 
+let STATE_polizaFiltroTexto = '';
+let STATE_polizaFiltroDesde = '';
+let STATE_polizaFiltroHasta = '';
+let STATE_polizaAbiertaId = null;
+
 async function renderPolizas() {
   const el = document.getElementById('sec-polizas');
   const b = biz();
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
   const scrollY = window.scrollY;
 
-  const [polizas, lineas, subcuentas, mayores, cuentasBancoQ, monedasQ] = await Promise.all([
+  const [todasPolizas, lineas, subcuentas, mayores, cuentasBancoQ, monedasQ] = await Promise.all([
     loadPolizas(b.id), loadTodasLasLineas(b.id), loadSubcuentas(b.id), loadCuentasMayor(b.id),
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', b.id).eq('activo', true),
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', b.id).eq('activo', true),
@@ -3601,17 +3659,30 @@ async function renderPolizas() {
   const cuentasBanco = cuentasBancoQ.data || [];
   const monedasEfectivo = monedasQ.data || [];
 
-  const totalCuadradas = polizas.filter(p => {
+  const totalesPoliza = (p) => {
     const ls = lineas.filter(l => l.poliza_id === p.id);
-    const c = ls.reduce((s,l)=>s+(Number(l.cargo)||0),0), a = ls.reduce((s,l)=>s+(Number(l.abono)||0),0);
-    return Math.abs(c - a) < 0.01 && ls.length > 0;
-  }).length;
+    return { cargo: ls.reduce((s,l)=>s+(Number(l.cargo)||0),0), abono: ls.reduce((s,l)=>s+(Number(l.abono)||0),0), count: ls.length };
+  };
+  const totalCuadradas = todasPolizas.filter(p => { const t = totalesPoliza(p); return Math.abs(t.cargo-t.abono)<0.01 && t.count>0; }).length;
+
+  const texto = STATE_polizaFiltroTexto.trim().toLowerCase();
+  const polizas = todasPolizas.filter(p => {
+    if (texto) {
+      const t = totalesPoliza(p);
+      const enConcepto = (p.concepto||'').toLowerCase().includes(texto) || String(p.numero||'').includes(texto);
+      const enImporte = String(t.cargo).includes(texto) || fmtNum(t.cargo).includes(texto);
+      if (!enConcepto && !enImporte) return false;
+    }
+    if (STATE_polizaFiltroDesde && p.fecha < STATE_polizaFiltroDesde) return false;
+    if (STATE_polizaFiltroHasta && p.fecha > STATE_polizaFiltroHasta) return false;
+    return true;
+  });
 
   el.innerHTML = `
     <div class="kpi-grid">
-      <div class="kpi"><div class="label">Pólizas registradas</div><div class="value">${polizas.length}</div></div>
+      <div class="kpi"><div class="label">Pólizas registradas</div><div class="value">${todasPolizas.length}</div></div>
       <div class="kpi"><div class="label">Cuadradas</div><div class="value num green">${totalCuadradas}</div></div>
-      <div class="kpi"><div class="label">Descuadradas</div><div class="value num ${polizas.length-totalCuadradas>0?'red':''}">${polizas.length - totalCuadradas}</div></div>
+      <div class="kpi"><div class="label">Descuadradas</div><div class="value num ${todasPolizas.length-totalCuadradas>0?'red':''}">${todasPolizas.length - totalCuadradas}</div></div>
     </div>
     <div class="card">
       <div class="card-head">
@@ -3623,9 +3694,40 @@ async function renderPolizas() {
         </div>
       </div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Cada línea puede afectar una cuenta contable (Catálogo de cuentas) o directamente una cuenta bancaria / caja de efectivo real — en ese caso el cargo/abono también se refleja en el saldo de Bancos o Efectivo. El Excel de pólizas debe tener columnas: Fecha, Concepto, Subcuenta, Descripción, Cargo, Abono — las filas con la misma Fecha y Concepto se agrupan en una sola póliza.</p>
+      <div class="grid-3" style="margin-bottom:12px;">
+        <div class="field" style="margin-bottom:0;">
+          <label>Buscar (concepto, número o importe)</label>
+          <input type="text" id="polizaBuscarTexto" placeholder="🔎 Ej. renta, 1500, #12" value="${STATE_polizaFiltroTexto}">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Desde</label>
+          <input type="date" id="polizaFiltroDesde" value="${STATE_polizaFiltroDesde}">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Hasta</label>
+          <input type="date" id="polizaFiltroHasta" value="${STATE_polizaFiltroHasta}">
+        </div>
+      </div>
+      ${(STATE_polizaFiltroTexto||STATE_polizaFiltroDesde||STATE_polizaFiltroHasta) ? `<button class="btn btn-ghost btn-sm" id="polizaLimpiarFiltro" style="margin-bottom:12px;">✕ Limpiar filtros</button>` : ''}
       ${subcuentas.length === 0 ? `<div class="empty">Aún no tienes cuentas en el catálogo. Crea al menos una (de cualquier tipo) para poder registrar pólizas.</div>` : ''}
       <div id="polizasList">
-        ${polizas.length === 0 ? `<div class="empty">Sin pólizas todavía.</div>` : polizas.map(p => polizaCardHtml(p, lineas.filter(l=>l.poliza_id===p.id), subcuentas, mayores, cuentasBanco, monedasEfectivo)).join('')}
+        ${polizas.length === 0 ? `<div class="empty">${todasPolizas.length ? 'Ninguna póliza coincide con la búsqueda.' : 'Sin pólizas todavía.'}</div>` : polizas.map(p => {
+          const abierta = STATE_polizaAbiertaId === p.id;
+          if (abierta) return polizaCardHtml(p, lineas.filter(l=>l.poliza_id===p.id), subcuentas, mayores, cuentasBanco, monedasEfectivo);
+          const t = totalesPoliza(p);
+          const cuadrada = Math.abs(t.cargo-t.abono)<0.01 && t.count>0;
+          return `<div class="card poliza-resumen-row" data-poliza="${p.id}" style="cursor:pointer;background:#fbfcfe;border:1.5px solid var(--line);margin-bottom:10px;padding:12px 16px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+            <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+              <strong style="color:var(--navy-1);">Póliza #${p.numero ?? '—'}</strong>
+              <span style="color:var(--muted);font-size:13px;">${fechaCorta(p.fecha)}</span>
+              <span style="font-size:13.5px;">${p.concepto || '(sin concepto)'}</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:14px;">
+              <span class="num" style="font-weight:700;">${fmt(t.cargo)}</span>
+              <span class="badge ${cuadrada?'pag':'pend'}">${cuadrada ? 'Cuadrada' : 'Diferencia ' + fmt(t.cargo-t.abono)}</span>
+            </div>
+          </div>`;
+        }).join('')}
       </div>
     </div>
   `;
@@ -3633,15 +3735,25 @@ async function renderPolizas() {
   document.getElementById('openCuentasBtnPolizas').addEventListener('click', () => openCuentasModal(b.id, renderPolizas));
   document.getElementById('importPolizasBtn').addEventListener('click', () => openImportExcelModal('polizas', b.id, renderPolizas));
   document.getElementById('addPolizaBtn').addEventListener('click', async () => {
-    const maxNum = polizas.reduce((mx,p)=>Math.max(mx, p.numero||0), 0);
+    const maxNum = todasPolizas.reduce((mx,p)=>Math.max(mx, p.numero||0), 0);
     const { data, error } = await sb.from('fz_polizas').insert({ business_id: b.id, numero: maxNum+1, fecha: todayStr(), concepto: '' }).select().single();
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     await sb.from('fz_polizas_lineas').insert([
       { business_id: b.id, poliza_id: data.id, cargo: 0, abono: 0 },
       { business_id: b.id, poliza_id: data.id, cargo: 0, abono: 0 },
     ]);
+    STATE_polizaAbiertaId = data.id;
     renderPolizas();
   });
+  document.getElementById('polizaBuscarTexto').addEventListener('input', (e) => { STATE_polizaFiltroTexto = e.target.value; renderPolizas(); });
+  document.getElementById('polizaFiltroDesde').addEventListener('change', (e) => { STATE_polizaFiltroDesde = e.target.value; renderPolizas(); });
+  document.getElementById('polizaFiltroHasta').addEventListener('change', (e) => { STATE_polizaFiltroHasta = e.target.value; renderPolizas(); });
+  const limpiarBtn = document.getElementById('polizaLimpiarFiltro');
+  if (limpiarBtn) limpiarBtn.addEventListener('click', () => { STATE_polizaFiltroTexto=''; STATE_polizaFiltroDesde=''; STATE_polizaFiltroHasta=''; renderPolizas(); });
+  el.querySelectorAll('.poliza-resumen-row').forEach(row => row.addEventListener('click', () => {
+    STATE_polizaAbiertaId = row.dataset.poliza;
+    renderPolizas();
+  }));
   wirePolizaHandlers(el, b.id);
   window.scrollTo(0, scrollY);
 }
@@ -3687,6 +3799,7 @@ function polizaCardHtml(p, lineasPoliza, subcuentas, mayores, cuentasBanco, mone
         </div>
         <div style="display:flex;align-items:center;gap:10px;">
           <span class="badge ${cuadrada?'pag':'pend'}">${cuadrada ? 'Cuadrada' : 'Diferencia ' + fmt(diff)}</span>
+          <button class="btn btn-ghost btn-sm poliza-cerrar" data-id="${p.id}">▲ Cerrar</button>
           <button class="row-del poliza-del" data-id="${p.id}" style="font-size:16px;">✕</button>
         </div>
       </div>
@@ -3715,12 +3828,17 @@ function polizaCardHtml(p, lineasPoliza, subcuentas, mayores, cuentasBanco, mone
 }
 
 function wirePolizaHandlers(el, businessId) {
+  el.querySelectorAll('.poliza-cerrar').forEach(btn => btn.addEventListener('click', () => {
+    STATE_polizaAbiertaId = null;
+    renderPolizas();
+  }));
   el.querySelectorAll('.poliza-cell').forEach(inp => inp.addEventListener('change', async () => {
     await sb.from('fz_polizas').update({ [inp.dataset.field]: inp.value }).eq('id', inp.dataset.id);
     renderPolizas();
   }));
   el.querySelectorAll('.poliza-del').forEach(btn => btn.addEventListener('click', async () => {
     await sb.from('fz_polizas').delete().eq('id', btn.dataset.id);
+    if (STATE_polizaAbiertaId === btn.dataset.id) STATE_polizaAbiertaId = null;
     renderPolizas();
   }));
   el.querySelectorAll('.linea-tipo').forEach(sel => sel.addEventListener('change', async () => {
