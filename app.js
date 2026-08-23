@@ -3971,6 +3971,19 @@ function wirePolizaHandlers(el, businessId) {
 async function refrescarPolizaAbierta(businessId) {
   const wrap = document.getElementById('polizaAbiertaWrap');
   if (!wrap || !STATE_polizaAbiertaId) { renderPolizas(); return; }
+
+  // Recordar qué campo tenía el foco (y en qué línea) para no perder el lugar al redibujar
+  const activo = document.activeElement;
+  let foco = null;
+  if (activo && wrap.contains(activo)) {
+    foco = {
+      clases: Array.from(activo.classList),
+      id: activo.dataset.id || null,
+      selStart: typeof activo.selectionStart === 'number' ? activo.selectionStart : null,
+      selEnd: typeof activo.selectionEnd === 'number' ? activo.selectionEnd : null,
+    };
+  }
+
   const [{ data: p }, lineasQ, subcuentas, mayores, cuentasBancoQ, monedasQ] = await Promise.all([
     sb.from('fz_polizas').select('*').eq('id', STATE_polizaAbiertaId).single(),
     sb.from('fz_polizas_lineas').select('*').eq('poliza_id', STATE_polizaAbiertaId).order('created_at'),
@@ -3981,4 +3994,15 @@ async function refrescarPolizaAbierta(businessId) {
   if (!p) { renderPolizas(); return; }
   wrap.innerHTML = polizaCardHtml(p, lineasQ.data || [], subcuentas, mayores, cuentasBancoQ.data || [], monedasQ.data || []);
   wirePolizaHandlers(wrap, businessId);
+
+  if (foco && foco.id) {
+    const candidatos = Array.from(wrap.querySelectorAll(`[data-id="${foco.id}"]`));
+    const elegido = candidatos.find(c => foco.clases.every(cl => c.classList.contains(cl))) || candidatos[0];
+    if (elegido) {
+      elegido.focus();
+      if (foco.selStart !== null && elegido.setSelectionRange) {
+        try { elegido.setSelectionRange(foco.selStart, foco.selEnd); } catch (e) {}
+      }
+    }
+  }
 }
