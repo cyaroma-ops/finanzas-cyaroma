@@ -158,6 +158,7 @@ async function boot() {
 
   document.getElementById('monthPicker').addEventListener('change', (e) => {
     STATE.currentMonth = e.target.value;
+    STATE_plRangoDesde = ''; STATE_plRangoHasta = '';
     renderCurrentSection();
   });
 
@@ -1205,6 +1206,7 @@ function opcionesSubcuentaHtml(subcuentas, mayores, selectedId) {
 /* ============================================================
    CATÁLOGO DE CUENTAS — página completa (menú)
    ============================================================ */
+let STATE_ccEditando = new Set();
 async function renderCatalogoCuentas() {
   const el = document.getElementById('sec-catalogo');
   const b = biz();
@@ -1233,6 +1235,7 @@ async function renderCatalogoCuentas() {
             <option value="pasivo">Pasivo</option>
             <option value="capital">Capital</option>
             <option value="ingreso">Ingreso</option>
+            <option value="costo">Costo de Ventas</option>
             <option value="gasto">Gasto</option>
           </select>
         </div>
@@ -1278,7 +1281,7 @@ async function renderCatalogoCuentas() {
       <p style="font-size:11.5px;color:var(--muted);margin-top:10px;">Para agregar o editar cuentas bancarias ve a "Bancos"; para cajas de efectivo ve a "Efectivo & Divisas".</p>
     </div>
 
-    ${['activo','pasivo','capital','ingreso','gasto'].map(tipo => {
+    ${['activo','pasivo','capital','ingreso','costo','gasto'].map(tipo => {
       const mayoresTipo = mayores.filter(m => m.tipo === tipo);
       if (!mayoresTipo.length) return '';
       return `<div class="card">
@@ -1288,27 +1291,43 @@ async function renderCatalogoCuentas() {
     }).join('') || `<div class="empty">Aún no has creado cuentas mayor de Activo, Pasivo, Capital, Ingreso o Gasto. Usa el formulario de arriba.</div>`}
   `;
 
-  const filaSubHtml = (s, nivel) => `
+  const filaSubHtml = (s, nivel) => {
+    const editando = STATE_ccEditando.has(s.id);
+    return `
     <div style="display:flex;align-items:center;gap:8px;padding:6px 4px 6px ${16 + nivel*18}px;border-bottom:1px solid var(--line);font-size:13px;">
       ${nivel>0?'<span style="color:var(--muted);">—</span>':''}
-      <input class="cell cc-sub-nombre" type="text" value="${s.nombre}" data-id="${s.id}" style="flex:1;min-width:0;">
-      <button class="btn btn-ghost btn-sm cc-sub-save" data-id="${s.id}">Guardar</button>
+      ${editando ? `
+        <input class="cell cc-sub-nombre" type="text" value="${s.nombre}" data-id="${s.id}" style="flex:1;min-width:0;">
+        <button class="btn btn-ghost btn-sm cc-sub-save" data-id="${s.id}">Guardar</button>
+      ` : `
+        <span style="flex:1;min-width:0;">${s.nombre}</span>
+        <button class="btn btn-ghost btn-sm cc-sub-editar" data-id="${s.id}">✏️ Editar</button>
+      `}
       <button class="row-del cc-sub-del" data-id="${s.id}" style="font-size:14px;">Eliminar</button>
     </div>
     ${subcuentasHijas(s.id, subcuentas).map(h => filaSubHtml(h, nivel+1)).join('')}`;
+  };
 
-  ['activo','pasivo','capital','ingreso','gasto'].forEach(tipo => {
+  ['activo','pasivo','capital','ingreso','costo','gasto'].forEach(tipo => {
     const box = document.getElementById('ccList-' + tipo);
     if (!box) return;
-    box.innerHTML = mayores.filter(m => m.tipo === tipo).map(m => `
+    box.innerHTML = mayores.filter(m => m.tipo === tipo).map(m => {
+      const editando = STATE_ccEditando.has(m.id);
+      return `
       <div style="margin-bottom:10px;">
         <div style="display:flex;align-items:center;gap:8px;padding:6px 4px;background:#f7f9fc;border-radius:7px;">
-          <input class="cell cc-mayor-nombre" type="text" value="${m.nombre}" data-id="${m.id}" style="flex:1;min-width:0;font-weight:700;">
-          <button class="btn btn-ghost btn-sm cc-mayor-save" data-id="${m.id}">Guardar</button>
+          ${editando ? `
+            <input class="cell cc-mayor-nombre" type="text" value="${m.nombre}" data-id="${m.id}" style="flex:1;min-width:0;font-weight:700;">
+            <button class="btn btn-ghost btn-sm cc-mayor-save" data-id="${m.id}">Guardar</button>
+          ` : `
+            <strong style="flex:1;min-width:0;">${m.nombre}</strong>
+            <button class="btn btn-ghost btn-sm cc-mayor-editar" data-id="${m.id}">✏️ Editar</button>
+          `}
           <button class="row-del cc-mayor-del" data-id="${m.id}" style="font-size:15px;">Eliminar</button>
         </div>
         ${subcuentasRaiz(m.id, subcuentas).map(s => filaSubHtml(s, 0)).join('') || `<div style="padding:6px 4px 6px 16px;color:var(--muted);font-size:12px;">Sin subcuentas todavía.</div>`}
-      </div>`).join('');
+      </div>`;
+    }).join('');
   });
 
   const actualizarSubPadre = () => {
@@ -1343,10 +1362,19 @@ async function renderCatalogoCuentas() {
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     renderCatalogoCuentas();
   });
+  el.querySelectorAll('.cc-mayor-editar').forEach(btn => btn.addEventListener('click', () => {
+    STATE_ccEditando.add(btn.dataset.id);
+    renderCatalogoCuentas();
+  }));
+  el.querySelectorAll('.cc-sub-editar').forEach(btn => btn.addEventListener('click', () => {
+    STATE_ccEditando.add(btn.dataset.id);
+    renderCatalogoCuentas();
+  }));
   el.querySelectorAll('.cc-mayor-save').forEach(btn => btn.addEventListener('click', async () => {
     const inp = el.querySelector(`.cc-mayor-nombre[data-id="${btn.dataset.id}"]`);
     const { error } = await sb.from('fz_cuentas_mayor').update({ nombre: inp.value.trim() }).eq('id', btn.dataset.id);
     if (error) { toast('Error: ' + error.message, 'error'); return; }
+    STATE_ccEditando.delete(btn.dataset.id);
     toast('Guardado.');
     renderCatalogoCuentas();
   }));
@@ -1354,6 +1382,7 @@ async function renderCatalogoCuentas() {
     const inp = el.querySelector(`.cc-sub-nombre[data-id="${btn.dataset.id}"]`);
     const { error } = await sb.from('fz_subcuentas').update({ nombre: inp.value.trim() }).eq('id', btn.dataset.id);
     if (error) { toast('Error: ' + error.message, 'error'); return; }
+    STATE_ccEditando.delete(btn.dataset.id);
     toast('Guardado.');
     renderCatalogoCuentas();
   }));
@@ -1361,12 +1390,14 @@ async function renderCatalogoCuentas() {
     if (!confirm('¿Eliminar esta cuenta mayor y todas sus subcuentas?')) return;
     const { error } = await sb.from('fz_cuentas_mayor').delete().eq('id', btn.dataset.id);
     if (error) { toast('No se puede eliminar: ya tiene movimientos registrados con alguna de sus subcuentas.', 'error'); return; }
+    STATE_ccEditando.delete(btn.dataset.id);
     renderCatalogoCuentas();
   }));
   el.querySelectorAll('.cc-sub-del').forEach(btn => btn.addEventListener('click', async () => {
     if (!confirm('¿Eliminar esta subcuenta? (si tiene sub-subcuentas anidadas, también se eliminan)')) return;
     const { error } = await sb.from('fz_subcuentas').delete().eq('id', btn.dataset.id);
     if (error) { toast('No se puede eliminar: ya tiene movimientos registrados.', 'error'); return; }
+    STATE_ccEditando.delete(btn.dataset.id);
     renderCatalogoCuentas();
   }));
   window.scrollTo(0, scrollY);
@@ -1407,7 +1438,7 @@ async function actualizarSelectSubcuentaPadre(businessId) {
     .flatMap(s => [`<option value="${s.id}">${'—'.repeat(nivel)} ${s.nombre}</option>`, ...construirNivel(s.id, nivel + 1)]);
   sel.innerHTML = `<option value="">— nivel superior —</option>` + construirNivel(null, 0).join('');
 }
-const TIPO_CUENTA_LABEL = { activo: 'Activo', pasivo: 'Pasivo', capital: 'Capital', ingreso: 'Ingreso', gasto: 'Gasto' };
+const TIPO_CUENTA_LABEL = { activo: 'Activo', pasivo: 'Pasivo', capital: 'Capital', ingreso: 'Ingreso', costo: 'Costo de Ventas', gasto: 'Gasto' };
 async function renderCuentasList(businessId) {
   const [mayores, subcuentas] = await Promise.all([loadCuentasMayor(businessId), loadSubcuentas(businessId)]);
   const box = document.getElementById('cuentasMayorList');
@@ -2960,6 +2991,8 @@ function provRowHtml(p, catalogo, opcionesPagoDesde) {
    P&L — ESTADO DE RESULTADOS
    ============================================================ */
 let STATE_plVista = 'mensual'; // 'mensual' | 'acumulado' | 'anual'
+let STATE_plRangoDesde = '';
+let STATE_plRangoHasta = '';
 let STATE_plDetalleAbierto = null; // subcuenta id cuyo detalle está desplegado
 
 function periodoPL(ym, vista) {
@@ -3037,9 +3070,10 @@ async function computeUtilidadAcumulada(businessId, hastaYm) {
   const faltanteCaja = diffPeriodo>0?diffPeriodo:0;
   const sobranteCaja = diffPeriodo<0?-diffPeriodo:0;
   const gClas = await computeGastosClasificados(businessId, periodo, subcuentas, mayores);
+  const gCostos = await computeGastosClasificados(businessId, periodo, subcuentas, mayores, 'costo');
   const iPoliza = await computeIngresosPoliza(businessId, periodo, subcuentas, mayores);
   const totalIngresosFinal = totalIngresosVentas + sobranteCaja + iPoliza.total;
-  const gastosTotales = gastosOperativos + gClas.totalClasificado + gClas.sinClasificar + faltanteCaja;
+  const gastosTotales = gastosOperativos + gClas.totalClasificado + gClas.sinClasificar + gCostos.totalClasificado + faltanteCaja;
   return totalIngresosFinal - gastosTotales;
 }
 
@@ -3164,7 +3198,7 @@ async function renderBalanceGeneral() {
   window.scrollTo(0, scrollY);
 }
 
-async function computeGastosClasificados(businessId, periodo, subcuentas, mayores) {
+async function computeGastosClasificados(businessId, periodo, subcuentas, mayores, tipoFiltro = 'gasto') {
   const { start, end, mesStart, mesEnd } = periodo;
   const porSubcuenta = {}; // subcuenta_id -> monto
   let sinClasificar = 0;
@@ -3184,23 +3218,23 @@ async function computeGastosClasificados(businessId, periodo, subcuentas, mayore
   });
   [...(bancosMovQ.data || []), ...(efvoMovQ.data || [])].forEach(m => {
     if (m.subcuenta_id) porSubcuenta[m.subcuenta_id] = (porSubcuenta[m.subcuenta_id] || 0) + (Number(m.cargos) || 0);
-    else sinClasificar += Number(m.cargos) || 0;
+    else if (tipoFiltro === 'gasto') sinClasificar += Number(m.cargos) || 0;
   });
   const gastosManuales = plGastosQ.data || [];
   gastosManuales.forEach(g => {
     if (g.subcuenta_id) porSubcuenta[g.subcuenta_id] = (porSubcuenta[g.subcuenta_id] || 0) + (Number(g.monto) || 0);
-    else sinClasificar += Number(g.monto) || 0;
+    else if (tipoFiltro === 'gasto') sinClasificar += Number(g.monto) || 0;
   });
   lineasPoliza.forEach(l => {
     if (!l.subcuenta_id) return;
     const sub = subcuentas.find(s => s.id === l.subcuenta_id);
     const mayor = sub && mayores.find(m => m.id === sub.cuenta_mayor_id);
-    if (mayor && mayor.tipo === 'gasto') {
+    if (mayor && (mayor.tipo === 'gasto' || mayor.tipo === 'costo')) {
       porSubcuenta[l.subcuenta_id] = (porSubcuenta[l.subcuenta_id] || 0) + ((Number(l.cargo)||0) - (Number(l.abono)||0));
     }
   });
 
-  const porMayor = mayores.filter(m=>m.tipo==='gasto').map(m => {
+  const porMayor = mayores.filter(m=>m.tipo===tipoFiltro).map(m => {
     const subs = subcuentasRaiz(m.id, subcuentas)
       .map(s => construirArbolSubcuenta(s.id, subcuentas, porSubcuenta))
       .filter(s => s.total);
@@ -3208,7 +3242,7 @@ async function computeGastosClasificados(businessId, periodo, subcuentas, mayore
   }).filter(m => m.subtotal);
 
   const totalClasificado = porMayor.reduce((s,m)=>s+m.subtotal,0);
-  return { porMayor, sinClasificar, totalClasificado, gastosManuales };
+  return { porMayor, sinClasificar: tipoFiltro==='gasto' ? sinClasificar : 0, totalClasificado, gastosManuales: tipoFiltro==='gasto' ? gastosManuales : [] };
 }
 
 async function computeIngresosPoliza(businessId, periodo, subcuentas, mayores) {
@@ -3306,16 +3340,37 @@ function detalleSubcuentaHtml(filas, colspan) {
 }
 
 function plTagsHtml() {
+  const { start, end } = monthBounds(STATE.currentMonth);
   return `<div class="tag-row">
     <div class="tag ${STATE_plVista==='mensual'?'active':''}" id="plTabMensual">Mensual</div>
     <div class="tag ${STATE_plVista==='acumulado'?'active':''}" id="plTabAcumulado">Acumulado</div>
     <div class="tag ${STATE_plVista==='anual'?'active':''}" id="plTabAnual">Todos los meses</div>
-  </div>`;
+  </div>
+  ${STATE_plVista==='mensual' ? `
+    <div class="grid-3" style="margin:10px 0 4px;max-width:560px;">
+      <div class="field" style="margin-bottom:0;">
+        <label>Del día</label>
+        <input type="date" id="plRangoDesde" min="${start}" max="${end}" value="${STATE_plRangoDesde || start}">
+      </div>
+      <div class="field" style="margin-bottom:0;">
+        <label>Al día</label>
+        <input type="date" id="plRangoHasta" min="${start}" max="${end}" value="${STATE_plRangoHasta || end}">
+      </div>
+      <div class="field" style="margin-bottom:0;display:flex;align-items:flex-end;">
+        ${(STATE_plRangoDesde||STATE_plRangoHasta) ? `<button class="btn btn-ghost btn-sm" id="plRangoLimpiar">✕ Ver mes completo</button>` : ''}
+      </div>
+    </div>` : ''}`;
 }
 function wirePLTags(el) {
   el.querySelector('#plTabMensual').addEventListener('click', () => { STATE_plVista = 'mensual'; renderPL(); });
-  el.querySelector('#plTabAcumulado').addEventListener('click', () => { STATE_plVista = 'acumulado'; renderPL(); });
-  el.querySelector('#plTabAnual').addEventListener('click', () => { STATE_plVista = 'anual'; renderPL(); });
+  el.querySelector('#plTabAcumulado').addEventListener('click', () => { STATE_plVista = 'acumulado'; STATE_plRangoDesde=''; STATE_plRangoHasta=''; renderPL(); });
+  el.querySelector('#plTabAnual').addEventListener('click', () => { STATE_plVista = 'anual'; STATE_plRangoDesde=''; STATE_plRangoHasta=''; renderPL(); });
+  const rd = el.querySelector('#plRangoDesde');
+  const rh = el.querySelector('#plRangoHasta');
+  if (rd) rd.addEventListener('change', () => { STATE_plRangoDesde = rd.value; STATE_plRangoHasta = STATE_plRangoHasta || rh.value; renderPL(); });
+  if (rh) rh.addEventListener('change', () => { STATE_plRangoHasta = rh.value; STATE_plRangoDesde = STATE_plRangoDesde || rd.value; renderPL(); });
+  const limpiar = el.querySelector('#plRangoLimpiar');
+  if (limpiar) limpiar.addEventListener('click', () => { STATE_plRangoDesde=''; STATE_plRangoHasta=''; renderPL(); });
 }
 
 async function renderPLAnual(el, b) {
@@ -3328,6 +3383,7 @@ async function renderPLAnual(el, b) {
   ]);
   const porCatPL = { efectivo: conceptos.filter(c=>c.categoria==='efectivo'), tarjetas: conceptos.filter(c=>c.categoria==='tarjetas'), bancos: conceptos.filter(c=>c.categoria==='bancos'), cxc: conceptos.filter(c=>c.categoria==='cxc'), propinas: conceptos.filter(c=>c.categoria==='propinas') };
   const mayoresGasto = mayores.filter(m => m.tipo === 'gasto');
+  const mayoresCosto = mayores.filter(m => m.tipo === 'costo');
   const mesesYm = Array.from({ length: 12 }, (_, i) => `${year}-${String(i + 1).padStart(2, '0')}`);
   const mesesLabel = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
 
@@ -3344,11 +3400,13 @@ async function renderPLAnual(el, b) {
     const faltanteCaja = diffPeriodo>0?diffPeriodo:0;
     const sobranteCaja = diffPeriodo<0?-diffPeriodo:0;
     const gClas = await computeGastosClasificados(b.id, periodo, subcuentas, mayores);
+    const gCostos = await computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'costo');
     const iPoliza = await computeIngresosPoliza(b.id, periodo, subcuentas, mayores);
     const totalIngresosFinal = totalIngresosVentas + sobranteCaja + iPoliza.total;
+    const utilidadBruta = totalIngresosFinal - gCostos.totalClasificado;
     const gastosTotales = gastosOperativos + gClas.totalClasificado + gClas.sinClasificar + faltanteCaja;
-    const utilidad = totalIngresosFinal - gastosTotales;
-    datos.push({ ym, ingresosPorConcepto, sobranteCaja, iPoliza, iPolizaTotal: iPoliza.total, totalIngresosFinal, gastosOperativos, faltanteCaja, gClas, gastosTotales, utilidad });
+    const utilidad = utilidadBruta - gastosTotales;
+    datos.push({ ym, ingresosPorConcepto, sobranteCaja, iPoliza, iPolizaTotal: iPoliza.total, totalIngresosFinal, gastosOperativos, faltanteCaja, gClas, gCostos, utilidadBruta, gastosTotales, utilidad });
   }
 
   const sum = arr => arr.reduce((s,x)=>s+x,0);
@@ -3388,6 +3446,15 @@ async function renderPLAnual(el, b) {
   }).join('');
   const filaTotalIngresos = filaHtml('Total ingresos', datos.map(d=>d.totalIngresosFinal), { total:true });
 
+  const hayMayoresCosto = mayoresCosto.length && datos.some(d => d.gCostos.totalClasificado);
+  const filasCosto = mayoresCosto.map(m => {
+    const totalPorMes = datos.map(d => d.gCostos.porMayor.find(pm=>pm.nombre===m.nombre)?.subtotal || 0);
+    if (!totalPorMes.some(v=>Math.abs(v)>0.004)) return '';
+    return filaHtml(m.nombre, totalPorMes, { bold:true, bg:true }) + filasSubcuentasPorMayor(m, d => d.gCostos.porMayor.find(pm=>pm.nombre===m.nombre));
+  }).join('');
+  const filaTotalCosto = filaHtml('Total Costo de Ventas', datos.map(d=>d.gCostos.totalClasificado), { total:true });
+  const filaUtilidadBruta = filaHtml('Utilidad Bruta', datos.map(d=>d.utilidadBruta), { total:true, color: sum(datos.map(d=>d.utilidadBruta))>=0?'var(--green)':'var(--red)' });
+
   const filaGastosOp = filaHtml('Gastos operativos (sin clasificar, Ventas)', datos.map(d=>d.gastosOperativos));
   const filaFaltante = datos.some(d=>d.faltanteCaja) ? filaHtml('Faltante de caja (conciliación)', datos.map(d=>d.faltanteCaja), { color:'var(--red)' }) : '';
   const filasMayor = mayoresGasto.map(m => {
@@ -3412,6 +3479,11 @@ async function renderPLAnual(el, b) {
             ${filaSobrante}
             ${filaPoliza}
             ${filaTotalIngresos}
+            ${hayMayoresCosto ? `
+            <tr style="background:#f7f9fc;"><td colspan="14" style="font-weight:700;">Costo de Ventas</td></tr>
+            ${filasCosto}
+            ${filaTotalCosto}
+            ${filaUtilidadBruta}` : ''}
             <tr style="background:#f7f9fc;"><td colspan="14" style="font-weight:700;">Gastos</td></tr>
             ${filaGastosOp}
             ${filaFaltante}
@@ -3446,7 +3518,10 @@ async function renderPL() {
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
   if (STATE_plVista === 'anual') { await renderPLAnual(el, b); return; }
   const scrollY = window.scrollY;
-  const periodo = periodoPL(STATE.currentMonth, STATE_plVista);
+  let periodo = periodoPL(STATE.currentMonth, STATE_plVista);
+  if (STATE_plVista === 'mensual' && STATE_plRangoDesde && STATE_plRangoHasta) {
+    periodo = { ...periodo, start: STATE_plRangoDesde, end: STATE_plRangoHasta };
+  }
 
   const [ventasQ, conceptosVenta, conceptos, subcuentas, mayores, conceptosSistema] = await Promise.all([
     sb.from('fz_ventas').select('*').eq('business_id', b.id).gte('fecha', periodo.start).lte('fecha', periodo.end),
@@ -3474,18 +3549,22 @@ async function renderPL() {
   const totalIngresos = totalIngresosVentas + sobranteCaja;
 
   const gClas = await computeGastosClasificados(b.id, periodo, subcuentas, mayores);
+  const gCostos = await computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'costo');
   const iPoliza = await computeIngresosPoliza(b.id, periodo, subcuentas, mayores);
   const totalIngresosFinal = totalIngresos + iPoliza.total;
+  const utilidadBruta = totalIngresosFinal - gCostos.totalClasificado;
   const gastosTotales = gastosOperativos + gClas.totalClasificado + gClas.sinClasificar + faltanteCaja;
-  const utilidad = totalIngresosFinal - gastosTotales;
+  const utilidad = utilidadBruta - gastosTotales;
   const margen = totalIngresosFinal ? (utilidad/totalIngresosFinal*100) : 0;
-  const periodoLabel = STATE_plVista === 'acumulado' ? `Acumulado ${STATE.currentMonth.slice(0,4)} (ene—${STATE.currentMonth.slice(5,7)})` : STATE.currentMonth;
+  const periodoLabel = STATE_plVista === 'acumulado' ? `Acumulado ${STATE.currentMonth.slice(0,4)} (ene—${STATE.currentMonth.slice(5,7)})` : (STATE_plRangoDesde && STATE_plRangoHasta ? `${fechaCorta(periodo.start)} — ${fechaCorta(periodo.end)}` : STATE.currentMonth);
 
-  let detalleGastoHtml = '', detalleIngresoHtml = '';
+  let detalleGastoHtml = '', detalleIngresoHtml = '', detalleCostoHtml = '';
   if (STATE_plDetalleAbierto) {
     const esGasto = gClas.porMayor.some(m => m.subs.some(s => aplanarArbol(s).some(n => n.id === STATE_plDetalleAbierto)));
+    const esCosto = gCostos.porMayor.some(m => m.subs.some(s => aplanarArbol(s).some(n => n.id === STATE_plDetalleAbierto)));
     const esIngreso = iPoliza.porMayor.some(m => m.subs.some(s => aplanarArbol(s).some(n => n.id === STATE_plDetalleAbierto)));
     if (esGasto) detalleGastoHtml = detalleSubcuentaHtml(await getDetalleGastoSubcuenta(b.id, periodo, STATE_plDetalleAbierto), 3);
+    else if (esCosto) detalleCostoHtml = detalleSubcuentaHtml(await getDetalleGastoSubcuenta(b.id, periodo, STATE_plDetalleAbierto), 2);
     else if (esIngreso) detalleIngresoHtml = detalleSubcuentaHtml(await getDetalleIngresoSubcuenta(b.id, periodo, STATE_plDetalleAbierto), 2);
   }
 
@@ -3493,6 +3572,7 @@ async function renderPL() {
     ${plTagsHtml()}
     <div class="kpi-grid">
       <div class="kpi"><div class="label">Total ingresos</div><div class="value num">${fmt(totalIngresosFinal)}</div></div>
+      ${gCostos.totalClasificado ? `<div class="kpi"><div class="label">Utilidad bruta</div><div class="value num ${utilidadBruta>=0?'green':'red'}">${fmt(utilidadBruta)}</div></div>` : ''}
       <div class="kpi"><div class="label">Total gastos</div><div class="value num red">${fmt(gastosTotales)}</div></div>
       <div class="kpi"><div class="label">Utilidad / Pérdida</div><div class="value num ${utilidad>=0?'green':'red'}">${fmt(utilidad)}</div></div>
       <div class="kpi"><div class="label">Margen</div><div class="value">${margen.toFixed(1)}%</div></div>
@@ -3512,6 +3592,22 @@ async function renderPL() {
         </tbody>
       </table>
     </div>
+
+    ${gCostos.porMayor.length ? `
+    <div class="card">
+      <div class="card-head"><h3>Costo de Ventas — ${periodoLabel}</h3></div>
+      <table>
+        <tbody>
+          ${gCostos.porMayor.map(m => `
+            <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">${m.nombre}</td></tr>
+            ${m.subs.map(s => filaArbolSubcuentaHtml(s, false, 0, detalleCostoHtml)).join('')}
+            <tr><td style="padding-left:22px;font-style:italic;color:var(--muted);">Subtotal ${m.nombre}</td><td class="num" style="font-weight:600;">${fmt(m.subtotal)}</td></tr>
+          `).join('')}
+          <tr class="total-row"><td>Total Costo de Ventas</td><td class="num">${fmt(gCostos.totalClasificado)}</td></tr>
+          <tr class="total-row" style="border-top:2px solid var(--navy-1);"><td>Utilidad Bruta</td><td class="num" style="color:${utilidadBruta>=0?'var(--green)':'var(--red)'};">${fmt(utilidadBruta)}</td></tr>
+        </tbody>
+      </table>
+    </div>` : ''}
 
     <div class="card">
       <div class="card-head">
@@ -3560,6 +3656,9 @@ async function renderPL() {
       <table>
         <tbody>
           <tr><td>Total ingresos</td><td class="num">${fmt(totalIngresosFinal)}</td></tr>
+          ${gCostos.totalClasificado ? `
+          <tr><td>Costo de Ventas</td><td class="num" style="color:var(--red);">-${fmt(gCostos.totalClasificado)}</td></tr>
+          <tr class="total-row"><td>Utilidad Bruta</td><td class="num" style="color:${utilidadBruta>=0?'var(--green)':'var(--red)'};">${fmt(utilidadBruta)}</td></tr>` : ''}
           <tr><td>Total gastos</td><td class="num" style="color:var(--red);">-${fmt(gastosTotales)}</td></tr>
           <tr class="total-row"><td>Utilidad / Pérdida neta</td><td class="num ${utilidad>=0?'':'red'}" style="color:${utilidad>=0?'var(--green)':'var(--red)'};">${fmt(utilidad)}</td></tr>
         </tbody>
@@ -3713,7 +3812,7 @@ async function renderPolizas() {
       <div id="polizasList">
         ${polizas.length === 0 ? `<div class="empty">${todasPolizas.length ? 'Ninguna póliza coincide con la búsqueda.' : 'Sin pólizas todavía.'}</div>` : polizas.map(p => {
           const abierta = STATE_polizaAbiertaId === p.id;
-          if (abierta) return polizaCardHtml(p, lineas.filter(l=>l.poliza_id===p.id), subcuentas, mayores, cuentasBanco, monedasEfectivo);
+          if (abierta) return `<div id="polizaAbiertaWrap">${polizaCardHtml(p, lineas.filter(l=>l.poliza_id===p.id), subcuentas, mayores, cuentasBanco, monedasEfectivo)}</div>`;
           const t = totalesPoliza(p);
           const cuadrada = Math.abs(t.cargo-t.abono)<0.01 && t.count>0;
           return `<div class="card poliza-resumen-row" data-poliza="${p.id}" style="cursor:pointer;background:#fbfcfe;border:1.5px solid var(--line);margin-bottom:10px;padding:12px 16px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
@@ -3844,27 +3943,42 @@ function wirePolizaHandlers(el, businessId) {
   el.querySelectorAll('.linea-tipo').forEach(sel => sel.addEventListener('change', async () => {
     const { error } = await sb.from('fz_polizas_lineas').update({ cuenta_tipo: sel.value, subcuenta_id: null, cuenta_ref_id: null }).eq('id', sel.dataset.id);
     if (error) { toast('Error: ' + error.message, 'error'); return; }
-    renderPolizas();
+    refrescarPolizaAbierta(businessId);
   }));
   el.querySelectorAll('.linea-cuenta').forEach(sel => sel.addEventListener('change', async () => {
     const tipo = sel.dataset.tipo;
     const payload = tipo === 'subcuenta' ? { subcuenta_id: sel.value || null, cuenta_ref_id: null } : { cuenta_ref_id: sel.value || null, subcuenta_id: null };
     const { error } = await sb.from('fz_polizas_lineas').update(payload).eq('id', sel.dataset.id);
     if (error) { toast('Error: ' + error.message, 'error'); return; }
-    renderPolizas();
+    refrescarPolizaAbierta(businessId);
   }));
   el.querySelectorAll('.linea-cell').forEach(inp => inp.addEventListener('change', async () => {
     const field = inp.dataset.field;
-    const val = field === 'descripcion' ? (inp.value || null) : (Number(inp.value) || 0);
+    const val = field === 'descripcion' ? (inp.value || null) : leerMonto(inp.value);
     await sb.from('fz_polizas_lineas').update({ [field]: val }).eq('id', inp.dataset.id);
-    renderPolizas();
+    refrescarPolizaAbierta(businessId);
   }));
   el.querySelectorAll('.linea-del').forEach(btn => btn.addEventListener('click', async () => {
     await sb.from('fz_polizas_lineas').delete().eq('id', btn.dataset.id);
-    renderPolizas();
+    refrescarPolizaAbierta(businessId);
   }));
   el.querySelectorAll('.addLineaBtn').forEach(btn => btn.addEventListener('click', async () => {
     await sb.from('fz_polizas_lineas').insert({ business_id: businessId, poliza_id: btn.dataset.poliza, cargo: 0, abono: 0 });
-    renderPolizas();
+    refrescarPolizaAbierta(businessId);
   }));
+}
+
+async function refrescarPolizaAbierta(businessId) {
+  const wrap = document.getElementById('polizaAbiertaWrap');
+  if (!wrap || !STATE_polizaAbiertaId) { renderPolizas(); return; }
+  const [{ data: p }, lineasQ, subcuentas, mayores, cuentasBancoQ, monedasQ] = await Promise.all([
+    sb.from('fz_polizas').select('*').eq('id', STATE_polizaAbiertaId).single(),
+    sb.from('fz_polizas_lineas').select('*').eq('poliza_id', STATE_polizaAbiertaId).order('created_at'),
+    loadSubcuentas(businessId), loadCuentasMayor(businessId),
+    sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
+    sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
+  ]);
+  if (!p) { renderPolizas(); return; }
+  wrap.innerHTML = polizaCardHtml(p, lineasQ.data || [], subcuentas, mayores, cuentasBancoQ.data || [], monedasQ.data || []);
+  wirePolizaHandlers(wrap, businessId);
 }
