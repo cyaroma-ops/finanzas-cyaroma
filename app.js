@@ -59,6 +59,16 @@ function toast(msg, kind) {
   setTimeout(() => el.remove(), 3200);
 }
 
+/* ---------- Auditoría: registrar quién crea/edita/elimina qué ---------- */
+async function registrarAuditoria(businessId, accion, modulo, descripcion) {
+  try {
+    await sb.from('fz_auditoria').insert({
+      business_id: businessId, usuario_email: STATE.user?.email || null,
+      accion, modulo, descripcion,
+    });
+  } catch (e) { /* nunca bloquear la operación principal por un fallo de auditoría */ }
+}
+
 function biz() {
   return STATE.businesses.find(b => b.id === STATE.currentBusinessId) || null;
 }
@@ -332,6 +342,7 @@ const SECTION_META = {
   polizas: { title: 'Pólizas de Diario', sub: '', showMonth: false, needsBiz: true },
   balance: { title: 'Balance General', sub: 'Al día de hoy', showMonth: false, needsBiz: true },
   catalogo: { title: 'Catálogo de Cuentas', sub: 'Estructura contable: cuenta mayor › subcuenta › sub-subcuenta', showMonth: false, needsBiz: true },
+  auditoria: { title: 'Auditoría', sub: 'Quién creó, editó o eliminó cada registro', showMonth: false, needsBiz: true },
 };
 
 function cerrarMenuMovil() {
@@ -398,6 +409,7 @@ function renderCurrentSection() {
   if (s === 'polizas') renderPolizas();
   if (s === 'balance') renderBalanceGeneral();
   if (s === 'catalogo') renderCatalogoCuentas();
+  if (s === 'auditoria') renderAuditoria();
 }
 
 /* ============================================================
@@ -1207,6 +1219,89 @@ function opcionesSubcuentaHtml(subcuentas, mayores, selectedId) {
    CATÁLOGO DE CUENTAS — página completa (menú)
    ============================================================ */
 let STATE_ccEditando = new Set();
+/* ============================================================
+   AUDITORÍA — bitácora de quién crea/edita/elimina qué
+   ============================================================ */
+let STATE_audFiltroTexto = '';
+let STATE_audFiltroUsuario = '';
+let STATE_audFiltroAccion = '';
+
+async function renderAuditoria() {
+  const el = document.getElementById('sec-auditoria');
+  const b = biz();
+  if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
+  const scrollY = window.scrollY;
+
+  const { data, error } = await sb.from('fz_auditoria').select('*').eq('business_id', b.id).order('created_at', { ascending: false }).limit(500);
+  if (error) { el.innerHTML = `<div class="empty">Error: ${error.message}</div>`; return; }
+  const todos = data || [];
+  const usuarios = [...new Set(todos.map(a => a.usuario_email).filter(Boolean))].sort();
+
+  const texto = STATE_audFiltroTexto.trim().toLowerCase();
+  const filtrados = todos.filter(a => {
+    if (STATE_audFiltroUsuario && a.usuario_email !== STATE_audFiltroUsuario) return false;
+    if (STATE_audFiltroAccion && a.accion !== STATE_audFiltroAccion) return false;
+    if (texto && !(a.descripcion||'').toLowerCase().includes(texto) && !(a.modulo||'').toLowerCase().includes(texto)) return false;
+    return true;
+  });
+
+  const ACCION_LABEL = { crear: '🟢 Creó', editar: '🟡 Editó', eliminar: '🔴 Eliminó' };
+
+  el.innerHTML = `
+    <div class="kpi-grid">
+      <div class="kpi"><div class="label">Registros (últimos 500)</div><div class="value">${todos.length}</div></div>
+      <div class="kpi"><div class="label">Creaciones</div><div class="value num green">${todos.filter(a=>a.accion==='crear').length}</div></div>
+      <div class="kpi"><div class="label">Ediciones</div><div class="value num">${todos.filter(a=>a.accion==='editar').length}</div></div>
+      <div class="kpi"><div class="label">Eliminaciones</div><div class="value num red">${todos.filter(a=>a.accion==='eliminar').length}</div></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>Bitácora de actividad — ${b.name}</h3></div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;">Por ahora se registran acciones en Pólizas de Diario, Proveedores, y eliminaciones de movimientos en Bancos/Efectivo. Se irá ampliando a más módulos.</p>
+      <div class="grid-3" style="margin-bottom:12px;">
+        <div class="field" style="margin-bottom:0;">
+          <label>Buscar</label>
+          <input type="text" id="audBuscar" placeholder="🔎 Ej. póliza, factura..." value="${STATE_audFiltroTexto}">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Usuario</label>
+          <select id="audUsuario">
+            <option value="">— todos —</option>
+            ${usuarios.map(u => `<option value="${u}" ${STATE_audFiltroUsuario===u?'selected':''}>${u}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Acción</label>
+          <select id="audAccion">
+            <option value="">— todas —</option>
+            <option value="crear" ${STATE_audFiltroAccion==='crear'?'selected':''}>Creó</option>
+            <option value="editar" ${STATE_audFiltroAccion==='editar'?'selected':''}>Editó</option>
+            <option value="eliminar" ${STATE_audFiltroAccion==='eliminar'?'selected':''}>Eliminó</option>
+          </select>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Fecha y hora</th><th>Usuario</th><th>Acción</th><th>Módulo</th><th>Detalle</th></tr></thead>
+          <tbody>
+            ${filtrados.length ? filtrados.map(a => `<tr>
+              <td>${new Date(a.created_at).toLocaleString('es-MX', { dateStyle:'short', timeStyle:'short' })}</td>
+              <td>${a.usuario_email || '—'}</td>
+              <td>${ACCION_LABEL[a.accion] || a.accion}</td>
+              <td>${a.modulo}</td>
+              <td>${a.descripcion || ''}</td>
+            </tr>`).join('') : `<tr><td colspan="5" class="empty">Sin registros que coincidan.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('audBuscar').addEventListener('input', (e) => { STATE_audFiltroTexto = e.target.value; renderAuditoria(); });
+  document.getElementById('audUsuario').addEventListener('change', (e) => { STATE_audFiltroUsuario = e.target.value; renderAuditoria(); });
+  document.getElementById('audAccion').addEventListener('change', (e) => { STATE_audFiltroAccion = e.target.value; renderAuditoria(); });
+  window.scrollTo(0, scrollY);
+}
+
 async function renderCatalogoCuentas() {
   const el = document.getElementById('sec-catalogo');
   const b = biz();
@@ -1807,7 +1902,7 @@ function openImportExcelModal(tipo, businessId, onDone, extra) {
           maxNum++;
           const { data: nuevaPoliza, error: e1 } = await sb.from('fz_polizas').insert({ business_id: businessId, numero: maxNum, fecha, concepto }).select().single();
           if (e1 || !nuevaPoliza) continue;
-          const lineasPayload = grupos[key].map(r => {
+          const lineasPayload = grupos[key].map((r, idx) => {
             const subNombre = String(buscarColumna(r, ['subcuenta']) || '').trim();
             const sub = subcuentas.find(s => s.nombre.trim().toLowerCase() === subNombre.toLowerCase());
             return {
@@ -1816,6 +1911,7 @@ function openImportExcelModal(tipo, businessId, onDone, extra) {
               descripcion: String(buscarColumna(r, ['descripcion', 'descripción']) || '').trim() || null,
               cargo: Number(buscarColumna(r, ['cargo'])) || 0,
               abono: Number(buscarColumna(r, ['abono'])) || 0,
+              orden: idx,
             };
           });
           await sb.from('fz_polizas_lineas').insert(lineasPayload);
@@ -1953,6 +2049,9 @@ async function confirmarYEliminarMovimiento(table, row, onDone) {
     await revertirPagoAFacturas(idsAfectados, montoMovimiento);
   }
   await sb.from(table).delete().eq('id', row.id);
+  const modulo = table === 'fz_bancos_mov' ? 'Bancos' : 'Efectivo';
+  const monto = Number(row.cargos) > 0 ? Number(row.cargos) : Number(row.depositos) || 0;
+  registrarAuditoria(row.business_id, 'eliminar', modulo, `Movimiento ${row.fecha} · ${row.descripcion||row.proveedor||''} · ${fmt(monto)}${idsAfectados.length?' (revirtió '+idsAfectados.length+' factura(s))':''}`);
   onDone();
 }
 
@@ -2890,7 +2989,11 @@ async function renderProveedores() {
       }
       const { error } = await sb.from('fz_proveedores').update(payload).eq('id', inp.dataset.id);
       if (error) { toast('Error guardando: ' + error.message, 'error'); return; }
-      if (field === 'estatus') await syncPagoProveedor(b.id, inp.dataset.id);
+      if (field === 'estatus') {
+        await syncPagoProveedor(b.id, inp.dataset.id);
+        const factura = all.find(x => x.id === inp.dataset.id);
+        registrarAuditoria(b.id, 'editar', 'Proveedores', `${factura?.proveedor||'(sin proveedor)'} · factura ${factura?.factura||'s/f'} · estatus → ${val}`);
+      }
       renderProveedores();
     });
   });
@@ -2909,8 +3012,10 @@ async function renderProveedores() {
   });
   el.querySelectorAll('.prov-del').forEach(btn => btn.addEventListener('click', async () => {
     if (!confirm('¿Eliminar este registro? Esta acción no se puede deshacer.')) return;
+    const info = all.find(x => x.id === btn.dataset.id);
     const { error } = await sb.from('fz_proveedores').delete().eq('id', btn.dataset.id);
     if (error) { toast('No se pudo eliminar: ' + error.message, 'error'); return; }
+    registrarAuditoria(b.id, 'eliminar', 'Proveedores', `${info?.proveedor||'(sin proveedor)'} · factura ${info?.factura||'s/f'} · ${fmt(info?.importe||0)}`);
     renderProveedores();
   }));
   el.querySelectorAll('.prov-desglosar').forEach(btn => btn.addEventListener('click', () => openDesgloseModal(b.id, btn.dataset.id, renderProveedores)));
@@ -3735,7 +3840,7 @@ async function loadPolizas(businessId) {
   return data || [];
 }
 async function loadTodasLasLineas(businessId) {
-  const { data } = await sb.from('fz_polizas_lineas').select('*').eq('business_id', businessId).order('created_at');
+  const { data } = await sb.from('fz_polizas_lineas').select('*').eq('business_id', businessId).order('orden');
   return data || [];
 }
 
@@ -3836,9 +3941,10 @@ async function renderPolizas() {
     const { data, error } = await sb.from('fz_polizas').insert({ business_id: b.id, numero: maxNum+1, fecha: todayStr(), concepto: '' }).select().single();
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     await sb.from('fz_polizas_lineas').insert([
-      { business_id: b.id, poliza_id: data.id, cargo: 0, abono: 0 },
-      { business_id: b.id, poliza_id: data.id, cargo: 0, abono: 0 },
+      { business_id: b.id, poliza_id: data.id, cargo: 0, abono: 0, orden: 0 },
+      { business_id: b.id, poliza_id: data.id, cargo: 0, abono: 0, orden: 1 },
     ]);
+    registrarAuditoria(b.id, 'crear', 'Pólizas', `Póliza #${maxNum+1} creada`);
     openPolizaModal(data.id, b.id);
   });
   document.getElementById('polizaBuscarTexto').addEventListener('input', (e) => { STATE_polizaFiltroTexto = e.target.value; renderPolizas(); });
@@ -3893,8 +3999,8 @@ function polizaCardHtml(p, lineasPoliza, subcuentas, mayores, cuentasBanco, mone
         </div>
         <div style="display:flex;align-items:center;gap:10px;">
           <span class="badge ${cuadrada?'pag':'pend'}">${cuadrada ? 'Cuadrada' : 'Diferencia ' + fmt(diff)}</span>
-          <button class="btn btn-ghost btn-sm poliza-cerrar" data-id="${p.id}">✕ Cerrar ventana</button>
-          <button class="row-del poliza-del" data-id="${p.id}" style="font-size:16px;">✕</button>
+          <button class="btn btn-gold btn-sm poliza-cerrar" data-id="${p.id}">💾 Guardar</button>
+          <button class="btn btn-ghost btn-sm poliza-del" data-id="${p.id}" style="color:var(--red);">Eliminar póliza</button>
         </div>
       </div>
       <div class="table-wrap">
@@ -3922,7 +4028,9 @@ function polizaCardHtml(p, lineasPoliza, subcuentas, mayores, cuentasBanco, mone
 }
 
 function wirePolizaHandlers(el, businessId) {
-  el.querySelectorAll('.poliza-cerrar').forEach(btn => btn.addEventListener('click', () => {
+  el.querySelectorAll('.poliza-cerrar').forEach(btn => btn.addEventListener('click', async () => {
+    const { data: pInfo } = await sb.from('fz_polizas').select('numero,fecha,concepto').eq('id', btn.dataset.id).single();
+    registrarAuditoria(businessId, 'editar', 'Pólizas', `Póliza #${pInfo?.numero ?? '—'} (${pInfo?.fecha || ''}) — ${pInfo?.concepto || 'sin concepto'}`);
     document.getElementById('modalPoliza').classList.remove('show');
     STATE_polizaAbiertaId = null;
     renderPolizas();
@@ -3933,7 +4041,9 @@ function wirePolizaHandlers(el, businessId) {
   }));
   el.querySelectorAll('.poliza-del').forEach(btn => btn.addEventListener('click', async () => {
     if (!confirm('¿Eliminar esta póliza completa?')) return;
+    const { data: pInfo } = await sb.from('fz_polizas').select('numero,fecha,concepto').eq('id', btn.dataset.id).single();
     await sb.from('fz_polizas').delete().eq('id', btn.dataset.id);
+    registrarAuditoria(businessId, 'eliminar', 'Pólizas', `Póliza #${pInfo?.numero ?? '—'} (${pInfo?.fecha || ''}) — ${pInfo?.concepto || 'sin concepto'}`);
     document.getElementById('modalPoliza').classList.remove('show');
     if (STATE_polizaAbiertaId === btn.dataset.id) STATE_polizaAbiertaId = null;
     renderPolizas();
@@ -3961,7 +4071,9 @@ function wirePolizaHandlers(el, businessId) {
     refrescarPolizaAbierta(businessId);
   }));
   el.querySelectorAll('.addLineaBtn').forEach(btn => btn.addEventListener('click', async () => {
-    await sb.from('fz_polizas_lineas').insert({ business_id: businessId, poliza_id: btn.dataset.poliza, cargo: 0, abono: 0 });
+    const { data: existentes } = await sb.from('fz_polizas_lineas').select('orden').eq('poliza_id', btn.dataset.poliza);
+    const siguienteOrden = (existentes || []).reduce((mx,l)=>Math.max(mx, l.orden||0), -1) + 1;
+    await sb.from('fz_polizas_lineas').insert({ business_id: businessId, poliza_id: btn.dataset.poliza, cargo: 0, abono: 0, orden: siguienteOrden });
     refrescarPolizaAbierta(businessId);
   }));
 }
@@ -3990,7 +4102,7 @@ async function refrescarPolizaAbierta(businessId) {
 
   const [{ data: p }, lineasQ, subcuentas, mayores, cuentasBancoQ, monedasQ] = await Promise.all([
     sb.from('fz_polizas').select('*').eq('id', STATE_polizaAbiertaId).single(),
-    sb.from('fz_polizas_lineas').select('*').eq('poliza_id', STATE_polizaAbiertaId).order('created_at'),
+    sb.from('fz_polizas_lineas').select('*').eq('poliza_id', STATE_polizaAbiertaId).order('orden'),
     loadSubcuentas(businessId), loadCuentasMayor(businessId),
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
