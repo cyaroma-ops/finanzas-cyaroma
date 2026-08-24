@@ -69,6 +69,67 @@ async function registrarAuditoria(businessId, accion, modulo, descripcion) {
   } catch (e) { /* nunca bloquear la operación principal por un fallo de auditoría */ }
 }
 
+/* ---------- Adjuntos (PDF/imagen) en Proveedores, Bancos, Efectivo, Pólizas ---------- */
+const ADJUNTOS_BUCKET = 'adjuntos';
+const ADJUNTOS_MAX_MB = 5;
+const ADJUNTOS_EXT_PERMITIDAS = ['pdf', 'jpg', 'jpeg', 'png'];
+const TABLA_MODULO_LABEL = { fz_proveedores: 'Proveedores', fz_bancos_mov: 'Bancos', fz_efectivo_mov: 'Efectivo', fz_polizas: 'Pólizas' };
+
+async function subirAdjunto(tabla, registroId, businessId, file) {
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  if (!ADJUNTOS_EXT_PERMITIDAS.includes(ext)) { toast('Solo se permiten archivos PDF, JPG o PNG.', 'error'); return null; }
+  if (file.size > ADJUNTOS_MAX_MB * 1024 * 1024) { toast(`El archivo pesa más de ${ADJUNTOS_MAX_MB} MB. Comprímelo o usa uno más ligero.`, 'error'); return null; }
+  const nombreLimpio = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const path = `${businessId}/${tabla}/${registroId}/${Date.now()}_${nombreLimpio}`;
+  const { error } = await sb.storage.from(ADJUNTOS_BUCKET).upload(path, file, { upsert: false });
+  if (error) { toast('Error subiendo el archivo: ' + error.message, 'error'); return null; }
+  return { path, nombre: file.name };
+}
+async function verAdjunto(path) {
+  const { data, error } = await sb.storage.from(ADJUNTOS_BUCKET).createSignedUrl(path, 60);
+  if (error || !data) { toast('No se pudo abrir el archivo.', 'error'); return; }
+  window.open(data.signedUrl, '_blank');
+}
+function adjuntoCellHtml(archivoPath, archivoNombre, registroId) {
+  if (archivoPath) {
+    return `<span class="adjunto-chip" style="display:inline-flex;align-items:center;gap:6px;font-size:12px;white-space:nowrap;">
+      <a href="#" class="adjunto-ver" data-path="${archivoPath}" title="${archivoNombre||''}" style="color:var(--navy-1);text-decoration:underline;max-width:100px;overflow:hidden;text-overflow:ellipsis;">${archivoNombre||'archivo'}</a>
+      <button class="adjunto-quitar" data-id="${registroId}" data-path="${archivoPath}" style="border:none;background:none;color:var(--red);cursor:pointer;font-size:13px;padding:0;" title="Quitar adjunto">✕</button>
+    </span>`;
+  }
+  return `<label class="adjunto-subir" style="font-size:12px;color:var(--navy-3);text-decoration:underline;cursor:pointer;white-space:nowrap;">
+    Adjuntar
+    <input type="file" accept=".pdf,.jpg,.jpeg,.png" data-id="${registroId}" class="adjunto-input" style="display:none;">
+  </label>`;
+}
+function wireAdjuntosHandlers(container, tabla, businessId, onDone) {
+  container.querySelectorAll('.adjunto-input').forEach(inp => {
+    inp.addEventListener('change', async () => {
+      const file = inp.files[0];
+      if (!file) return;
+      const registroId = inp.dataset.id;
+      const subido = await subirAdjunto(tabla, registroId, businessId, file);
+      if (!subido) return;
+      const { error } = await sb.from(tabla).update({ archivo_path: subido.path, archivo_nombre: subido.nombre }).eq('id', registroId);
+      if (error) { toast('Error guardando referencia del archivo: ' + error.message, 'error'); return; }
+      registrarAuditoria(businessId, 'editar', TABLA_MODULO_LABEL[tabla] || tabla, `Adjuntó archivo "${subido.nombre}"`);
+      onDone();
+    });
+  });
+  container.querySelectorAll('.adjunto-ver').forEach(a => {
+    a.addEventListener('click', (e) => { e.preventDefault(); verAdjunto(a.dataset.path); });
+  });
+  container.querySelectorAll('.adjunto-quitar').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('¿Quitar este archivo adjunto?')) return;
+      await sb.storage.from(ADJUNTOS_BUCKET).remove([btn.dataset.path]);
+      await sb.from(tabla).update({ archivo_path: null, archivo_nombre: null }).eq('id', btn.dataset.id);
+      registrarAuditoria(businessId, 'editar', TABLA_MODULO_LABEL[tabla] || tabla, `Quitó archivo adjunto`);
+      onDone();
+    });
+  });
+}
+
 function biz() {
   return STATE.businesses.find(b => b.id === STATE.currentBusinessId) || null;
 }
@@ -2681,7 +2742,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
         <td class="num">${fmtNum(r.cargos)}</td>
         <td class="num">${fmtNum(r.depositos)}</td>
         <td class="num" style="font-weight:700;">${fmtNum(saldo)}</td>
-        <td>—</td><td></td>
+        <td>—</td><td></td><td></td>
       </tr>`;
     }
     return `<tr>
@@ -2692,6 +2753,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
       <td><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(r.depositos)}" data-id="${r.id}" data-field="depositos"></td>
       <td class="num" style="font-weight:700;">${fmtNum(saldo)}</td>
       ${salidaCellsHtml(r, subcuentas, mayores, facturasPend, 'mov', traspasoCtx)}
+      <td>${adjuntoCellHtml(r.archivo_path, r.archivo_nombre, r.id)}</td>
       <td><button class="row-del mov-del" data-id="${r.id}">✕</button></td>
     </tr>`;
   }).join('');
@@ -2706,9 +2768,9 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Fecha</th><th>Proveedor / Concepto</th><th>Descripción</th><th>Cargos</th><th>Depósitos</th><th>Saldo</th><th>Tipo de salida</th><th>Detalle</th><th></th></tr></thead>
-        <tbody>${rowsHtml || `<tr><td colspan="9" class="empty">Sin movimientos todavía.</td></tr>`}</tbody>
-        <tfoot><tr class="total-row"><td colspan="3">Total ${STATE.currentMonth}</td><td class="num">${fmtNum(totalCargosMes)}</td><td class="num">${fmtNum(totalDepositosMes)}</td><td colspan="4"></td></tr></tfoot>
+        <thead><tr><th>Fecha</th><th>Proveedor / Concepto</th><th>Descripción</th><th>Cargos</th><th>Depósitos</th><th>Saldo</th><th>Tipo de salida</th><th>Detalle</th><th>Adjunto</th><th></th></tr></thead>
+        <tbody>${rowsHtml || `<tr><td colspan="10" class="empty">Sin movimientos todavía.</td></tr>`}</tbody>
+        <tfoot><tr class="total-row"><td colspan="3">Total ${STATE.currentMonth}</td><td class="num">${fmtNum(totalCargosMes)}</td><td class="num">${fmtNum(totalDepositosMes)}</td><td colspan="5"></td></tr></tfoot>
       </table>
     </div>
   `;
@@ -2718,6 +2780,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
   });
   wireSalidaCellHandlers(box, 'fz_efectivo_mov', () => renderMonedaLedger(moneda, businessId, conceptosEfectivo), traspasoCtx, facturasPend);
   wireInputsMoneda(box);
+  wireAdjuntosHandlers(box, 'fz_efectivo_mov', businessId, () => renderMonedaLedger(moneda, businessId, conceptosEfectivo));
   box.querySelectorAll('.mov-cell').forEach(inp => {
     inp.addEventListener('change', async () => {
       const field = inp.dataset.field;
@@ -2831,7 +2894,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
         <td class="num">${fmtNum(m.depositos)}</td>
         <td class="num">${fmtNum(m.cargos)}</td>
         <td class="num" style="font-weight:700;">${fmt(saldo)}</td>
-        <td>—</td><td>—</td><td></td>
+        <td>—</td><td>—</td><td></td><td></td>
       </tr>`;
     }
     return `<tr>
@@ -2843,6 +2906,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
       <td><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(m.cargos)}" data-id="${m.id}" data-field="cargos"></td>
       <td class="num" style="font-weight:700;">${fmt(saldo)}</td>
       ${salidaCellsHtml(m, subcuentas, mayores, facturasPend, 'mov', traspasoCtx)}
+      <td>${adjuntoCellHtml(m.archivo_path, m.archivo_nombre, m.id)}</td>
       <td><button class="row-del mov-del" data-id="${m.id}">✕</button></td>
     </tr>`;
   }).join('');
@@ -2860,9 +2924,9 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Fecha</th><th>Descripción</th><th>Concepto</th><th>Referencia</th><th>Depósitos</th><th>Cargos</th><th>Saldo</th><th>Tipo de salida</th><th>Detalle</th><th></th></tr></thead>
-        <tbody>${rowsHtml || `<tr><td colspan="10" class="empty">Sin movimientos.</td></tr>`}</tbody>
-        <tfoot><tr class="total-row"><td colspan="4">Total ${STATE.currentMonth}</td><td class="num">${fmtNum(totalDepositosMes)}</td><td class="num">${fmtNum(totalCargosMes)}</td><td colspan="4"></td></tr></tfoot>
+        <thead><tr><th>Fecha</th><th>Descripción</th><th>Concepto</th><th>Referencia</th><th>Depósitos</th><th>Cargos</th><th>Saldo</th><th>Tipo de salida</th><th>Detalle</th><th>Adjunto</th><th></th></tr></thead>
+        <tbody>${rowsHtml || `<tr><td colspan="11" class="empty">Sin movimientos.</td></tr>`}</tbody>
+        <tfoot><tr class="total-row"><td colspan="4">Total ${STATE.currentMonth}</td><td class="num">${fmtNum(totalDepositosMes)}</td><td class="num">${fmtNum(totalCargosMes)}</td><td colspan="5"></td></tr></tfoot>
       </table>
     </div>
   `;
@@ -2873,6 +2937,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
   });
   wireSalidaCellHandlers(box, 'fz_bancos_mov', () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas), traspasoCtx, facturasPend);
   wireInputsMoneda(box);
+  wireAdjuntosHandlers(box, 'fz_bancos_mov', businessId, () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas));
   box.querySelectorAll('.mov-cell').forEach(inp => {
     inp.addEventListener('change', async () => {
       const field = inp.dataset.field;
@@ -2974,7 +3039,7 @@ async function renderProveedores() {
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Importe</th><th>Desglose</th><th>Estatus</th><th>Fecha pago</th><th>Pagado desde</th><th></th></tr></thead>
+          <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Importe</th><th>Desglose</th><th>Estatus</th><th>Fecha pago</th><th>Pagado desde</th><th>Adjunto</th><th></th></tr></thead>
           <tbody>
             ${rows.map(p => provRowHtml(p, catalogo, opcionesPagoDesde)).join('') || `<tr><td colspan="9" class="empty">Sin registros.</td></tr>`}
           </tbody>
@@ -3061,6 +3126,7 @@ async function renderProveedores() {
     renderProveedores();
   }));
   el.querySelectorAll('.prov-desglosar').forEach(btn => btn.addEventListener('click', () => openDesgloseModal(b.id, btn.dataset.id, renderProveedores)));
+  wireAdjuntosHandlers(el, 'fz_proveedores', b.id, renderProveedores);
   window.scrollTo(0, scrollY);
 }
 
@@ -3130,6 +3196,7 @@ function provRowHtml(p, catalogo, opcionesPagoDesde) {
       <option value="">— sin especificar —</option>
       ${opcionesPagoDesde.map(o => `<option value="${o.value}" ${(p.pagado_desde_tipo && (p.pagado_desde_tipo+':'+p.pagado_desde_cuenta_id)===o.value)?'selected':''}>${o.label}</option>`).join('')}
     </select></td>
+    <td>${adjuntoCellHtml(p.archivo_path, p.archivo_nombre, p.id)}</td>
     <td><button class="row-del prov-del" data-id="${p.id}">✕</button></td>
   </tr>`;
 }
@@ -4052,6 +4119,7 @@ function polizaCardHtml(p, lineasPoliza, subcuentas, mayores, cuentasBanco, mone
           <strong style="color:var(--navy-1);">Póliza #${p.numero ?? '—'}</strong>
           <input class="cell poliza-cell" type="date" value="${p.fecha}" data-id="${p.id}" data-field="fecha" style="width:auto;">
           <input class="cell poliza-cell" type="text" placeholder="Concepto de la póliza" value="${p.concepto||''}" data-id="${p.id}" data-field="concepto" style="min-width:220px;">
+          ${adjuntoCellHtml(p.archivo_path, p.archivo_nombre, p.id)}
         </div>
         <div style="display:flex;align-items:center;gap:10px;">
           <span class="badge ${cuadrada?'pag':'pend'}">${cuadrada ? 'Cuadrada' : 'Diferencia ' + fmt(diff)}</span>
@@ -4087,11 +4155,11 @@ function wirePolizaHandlers(el, businessId) {
   el.querySelectorAll('.poliza-cerrar').forEach(btn => btn.addEventListener('click', async () => {
     const polizaId = btn.dataset.id;
     const [pInfoQ, lineasInfoQ] = await Promise.all([
-      sb.from('fz_polizas').select('numero,fecha,concepto').eq('id', polizaId).single(),
+      sb.from('fz_polizas').select('numero,fecha,concepto,archivo_path').eq('id', polizaId).single(),
       sb.from('fz_polizas_lineas').select('cargo,abono,subcuenta_id,cuenta_ref_id,descripcion').eq('poliza_id', polizaId),
     ]);
     const pInfo = pInfoQ.data;
-    const sinUsar = !(pInfo?.concepto || '').trim() && (lineasInfoQ.data || []).every(l =>
+    const sinUsar = !(pInfo?.concepto || '').trim() && !pInfo?.archivo_path && (lineasInfoQ.data || []).every(l =>
       (Number(l.cargo) || 0) === 0 && (Number(l.abono) || 0) === 0 && !l.subcuenta_id && !l.cuenta_ref_id && !(l.descripcion || '').trim()
     );
     if (sinUsar) {
@@ -4106,10 +4174,10 @@ function wirePolizaHandlers(el, businessId) {
   el.querySelectorAll('.poliza-cerrar-x').forEach(btn => btn.addEventListener('click', async () => {
     const polizaId = btn.dataset.id;
     const [pInfoQ, lineasInfoQ] = await Promise.all([
-      sb.from('fz_polizas').select('concepto').eq('id', polizaId).single(),
+      sb.from('fz_polizas').select('concepto,archivo_path').eq('id', polizaId).single(),
       sb.from('fz_polizas_lineas').select('cargo,abono,subcuenta_id,cuenta_ref_id,descripcion').eq('poliza_id', polizaId),
     ]);
-    const sinUsar = !(pInfoQ.data?.concepto || '').trim() && (lineasInfoQ.data || []).every(l =>
+    const sinUsar = !(pInfoQ.data?.concepto || '').trim() && !pInfoQ.data?.archivo_path && (lineasInfoQ.data || []).every(l =>
       (Number(l.cargo) || 0) === 0 && (Number(l.abono) || 0) === 0 && !l.subcuenta_id && !l.cuenta_ref_id && !(l.descripcion || '').trim()
     );
     if (sinUsar) {
@@ -4160,6 +4228,7 @@ function wirePolizaHandlers(el, businessId) {
     await sb.from('fz_polizas_lineas').insert({ business_id: businessId, poliza_id: btn.dataset.poliza, cargo: 0, abono: 0, orden: siguienteOrden });
     refrescarPolizaAbierta(businessId);
   }));
+  wireAdjuntosHandlers(el, 'fz_polizas', businessId, () => refrescarPolizaAbierta(businessId));
 }
 
 async function openPolizaModal(polizaId, businessId) {
