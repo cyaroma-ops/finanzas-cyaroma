@@ -328,6 +328,30 @@ function setupBizControls() {
     renderCurrentSection();
     toast('Negocio agregado.');
   });
+  document.getElementById('editBizBtn').addEventListener('click', () => {
+    const b = biz();
+    if (!b) { toast('Selecciona un negocio primero.', 'error'); return; }
+    document.getElementById('editBizName').value = b.name || '';
+    document.getElementById('editBizRazonSocial').value = b.razon_social || '';
+    document.getElementById('modalEditBiz').classList.add('show');
+  });
+  document.getElementById('cancelEditBiz').addEventListener('click', () => {
+    document.getElementById('modalEditBiz').classList.remove('show');
+  });
+  document.getElementById('saveEditBiz').addEventListener('click', async () => {
+    const b = biz();
+    const name = document.getElementById('editBizName').value.trim();
+    const razon_social = document.getElementById('editBizRazonSocial').value.trim() || null;
+    if (!name) { toast('Escribe el nombre comercial.', 'error'); return; }
+    const { error } = await sb.from('businesses').update({ name, razon_social }).eq('id', b.id);
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    document.getElementById('modalEditBiz').classList.remove('show');
+    await loadBusinesses();
+    renderBizSelect();
+    document.getElementById('bizSelect').value = b.id;
+    updateTopbar();
+    toast('Perfil del negocio actualizado.');
+  });
 }
 
 /* ---------- NAVEGACIÓN ---------- */
@@ -396,8 +420,12 @@ function updateTopbar() {
   if (SECCIONES_IMPRIMIBLES.includes(STATE.currentSection)) {
     printBtn.style.display = 'inline-flex';
     printBtn.onclick = () => {
-      document.getElementById('printTitle').textContent = titulo;
-      document.getElementById('printSub').textContent = `${meta.showMonth ? STATE.currentMonth + ' · ' : ''}Impreso el ${new Date().toLocaleDateString('es-MX', { year:'numeric', month:'long', day:'numeric' })}`;
+      const tituloImpresion = STATE.currentSection === 'pl'
+        ? 'Estado de Resultados' + (b ? ' — ' + b.name : '')
+        : titulo;
+      const mesLegible = MESES_LARGO[Number(STATE.currentMonth.slice(5,7)) - 1] + ' ' + STATE.currentMonth.slice(0,4);
+      document.getElementById('printTitle').textContent = tituloImpresion;
+      document.getElementById('printSub').textContent = `${b?.razon_social ? b.razon_social + ' · ' : ''}${meta.showMonth ? mesLegible + ' · ' : ''}Impreso el ${new Date().toLocaleDateString('es-MX', { year:'numeric', month:'long', day:'numeric' })}`;
       window.print();
     };
   } else {

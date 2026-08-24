@@ -239,6 +239,10 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   h1,h2,h3,.serif,.print-header h2{font-family:Georgia,'Times New Roman',serif !important;}
   .card{box-shadow:none;border:1px solid #ccc;}
   .kpi{break-inside:avoid;}
+  .kpi-grid{grid-template-columns:repeat(auto-fit,minmax(130px,1fr)) !important;gap:8px !important;margin-bottom:14px !important;}
+  .kpi{padding:8px 10px !important;}
+  .kpi .label{font-size:9px !important;margin-bottom:3px !important;}
+  .kpi .value{font-size:16px !important;}
   .table-wrap, .table-wrap.scroll-sticky{overflow:visible !important;max-height:none !important;}
   table{break-inside:auto;font-size:10px;width:100%;table-layout:auto;}
   tr{break-inside:avoid;break-after:auto;}
@@ -307,6 +311,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
       <div class="biz-select-wrap">
         <label>Negocio activo</label>
         <select id="bizSelect"></select>
+        <button class="add-biz-btn" id="editBizBtn" style="margin-top:8px;">Editar perfil del negocio</button>
         <button class="add-biz-btn" id="addBizBtn">+ Agregar negocio</button>
       </div>
 
@@ -421,6 +426,25 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
     <div class="modal-actions">
       <button class="btn btn-ghost" id="cancelBiz">Cancelar</button>
       <button class="btn btn-gold" id="saveBiz">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: editar perfil del negocio (nombre comercial + razón social) -->
+<div class="modal-bg" id="modalEditBiz">
+  <div class="modal">
+    <h3>Editar perfil del negocio</h3>
+    <div class="field">
+      <label>Nombre comercial</label>
+      <input type="text" id="editBizName" placeholder="Ej. Charlies">
+    </div>
+    <div class="field">
+      <label>Razón social</label>
+      <input type="text" id="editBizRazonSocial" placeholder="Ej. Operadora Charlies S.A. de C.V.">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="cancelEditBiz">Cancelar</button>
+      <button class="btn btn-gold" id="saveEditBiz">Guardar</button>
     </div>
   </div>
 </div>
