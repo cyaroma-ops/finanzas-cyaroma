@@ -4045,7 +4045,8 @@ function polizaCardHtml(p, lineasPoliza, subcuentas, mayores, cuentasBanco, mone
     return `<td>${tipoSelect}</td><td>${cuentaSelect}</td>`;
   };
   return `
-    <div class="card" style="background:#fbfcfe;border:1.5px solid var(--line);margin-bottom:16px;">
+    <div class="card" style="background:#fbfcfe;border:1.5px solid var(--line);margin-bottom:16px;position:relative;">
+      <button class="poliza-cerrar-x" data-id="${p.id}" title="Cerrar sin guardar" style="position:absolute;top:10px;right:14px;background:none;border:none;font-size:20px;color:var(--muted);cursor:pointer;line-height:1;">✕</button>
       <div class="card-head" style="margin-bottom:10px;">
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
           <strong style="color:var(--navy-1);">Póliza #${p.numero ?? '—'}</strong>
@@ -4054,7 +4055,7 @@ function polizaCardHtml(p, lineasPoliza, subcuentas, mayores, cuentasBanco, mone
         </div>
         <div style="display:flex;align-items:center;gap:10px;">
           <span class="badge ${cuadrada?'pag':'pend'}">${cuadrada ? 'Cuadrada' : 'Diferencia ' + fmt(diff)}</span>
-          <button class="btn btn-gold btn-sm poliza-cerrar" data-id="${p.id}">Cerrar</button>
+          <button class="btn btn-gold btn-sm poliza-cerrar" data-id="${p.id}">Guardar</button>
           <button class="btn btn-ghost btn-sm poliza-del" data-id="${p.id}" style="color:var(--red);">Eliminar póliza</button>
         </div>
       </div>
@@ -4090,12 +4091,17 @@ function wirePolizaHandlers(el, businessId) {
     STATE_polizaAbiertaId = null;
     renderPolizas();
   }));
+  el.querySelectorAll('.poliza-cerrar-x').forEach(btn => btn.addEventListener('click', () => {
+    document.getElementById('modalPoliza').classList.remove('show');
+    STATE_polizaAbiertaId = null;
+    renderPolizas();
+  }));
   el.querySelectorAll('.poliza-cell').forEach(inp => inp.addEventListener('change', async () => {
     await sb.from('fz_polizas').update({ [inp.dataset.field]: inp.value }).eq('id', inp.dataset.id);
     refrescarPolizaAbierta(businessId);
   }));
   el.querySelectorAll('.poliza-del').forEach(btn => btn.addEventListener('click', async () => {
-    if (!confirm('¿Eliminar esta póliza completa?')) return;
+    if (!confirm('¿Estás seguro que deseas eliminar esta póliza? Esta acción no se puede deshacer.')) return;
     const { data: pInfo } = await sb.from('fz_polizas').select('numero,fecha,concepto').eq('id', btn.dataset.id).single();
     await sb.from('fz_polizas').delete().eq('id', btn.dataset.id);
     registrarAuditoria(businessId, 'eliminar', 'Pólizas', `Póliza #${pInfo?.numero ?? '—'} (${pInfo?.fecha || ''}) — ${pInfo?.concepto || 'sin concepto'}`);
