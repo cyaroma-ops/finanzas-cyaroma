@@ -4085,13 +4085,36 @@ function polizaCardHtml(p, lineasPoliza, subcuentas, mayores, cuentasBanco, mone
 
 function wirePolizaHandlers(el, businessId) {
   el.querySelectorAll('.poliza-cerrar').forEach(btn => btn.addEventListener('click', async () => {
-    const { data: pInfo } = await sb.from('fz_polizas').select('numero,fecha,concepto').eq('id', btn.dataset.id).single();
-    registrarAuditoria(businessId, 'editar', 'Pólizas', `Póliza #${pInfo?.numero ?? '—'} (${pInfo?.fecha || ''}) — ${pInfo?.concepto || 'sin concepto'}`);
+    const polizaId = btn.dataset.id;
+    const [pInfoQ, lineasInfoQ] = await Promise.all([
+      sb.from('fz_polizas').select('numero,fecha,concepto').eq('id', polizaId).single(),
+      sb.from('fz_polizas_lineas').select('cargo,abono,subcuenta_id,cuenta_ref_id,descripcion').eq('poliza_id', polizaId),
+    ]);
+    const pInfo = pInfoQ.data;
+    const sinUsar = !(pInfo?.concepto || '').trim() && (lineasInfoQ.data || []).every(l =>
+      (Number(l.cargo) || 0) === 0 && (Number(l.abono) || 0) === 0 && !l.subcuenta_id && !l.cuenta_ref_id && !(l.descripcion || '').trim()
+    );
+    if (sinUsar) {
+      await sb.from('fz_polizas').delete().eq('id', polizaId); // nunca se usó, no tiene caso guardarla ni auditarla
+    } else {
+      registrarAuditoria(businessId, 'editar', 'Pólizas', `Póliza #${pInfo?.numero ?? '—'} (${pInfo?.fecha || ''}) — ${pInfo?.concepto || 'sin concepto'}`);
+    }
     document.getElementById('modalPoliza').classList.remove('show');
     STATE_polizaAbiertaId = null;
     renderPolizas();
   }));
-  el.querySelectorAll('.poliza-cerrar-x').forEach(btn => btn.addEventListener('click', () => {
+  el.querySelectorAll('.poliza-cerrar-x').forEach(btn => btn.addEventListener('click', async () => {
+    const polizaId = btn.dataset.id;
+    const [pInfoQ, lineasInfoQ] = await Promise.all([
+      sb.from('fz_polizas').select('concepto').eq('id', polizaId).single(),
+      sb.from('fz_polizas_lineas').select('cargo,abono,subcuenta_id,cuenta_ref_id,descripcion').eq('poliza_id', polizaId),
+    ]);
+    const sinUsar = !(pInfoQ.data?.concepto || '').trim() && (lineasInfoQ.data || []).every(l =>
+      (Number(l.cargo) || 0) === 0 && (Number(l.abono) || 0) === 0 && !l.subcuenta_id && !l.cuenta_ref_id && !(l.descripcion || '').trim()
+    );
+    if (sinUsar) {
+      await sb.from('fz_polizas').delete().eq('id', polizaId); // se borra sola: nunca se llegó a usar
+    }
     document.getElementById('modalPoliza').classList.remove('show');
     STATE_polizaAbiertaId = null;
     renderPolizas();
