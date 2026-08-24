@@ -229,6 +229,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 
 .print-header{display:none;}
 @media print{
+  @page { size: landscape; margin: 12mm; }
   .sidebar, .topbar-actions, .btn, .modal-bg, .tag-row, .card-head button, #topbarActions, .row-del, #menuToggleBtn, #sidebarOverlay, #pageTitle, #pageSub{display:none !important;}
   input.cell, select.cell{border:none !important;background:transparent !important;color:inherit !important;-webkit-appearance:none;appearance:none;}
   /* Fuentes de sistema en impresión: las fuentes web (Google Fonts) pueden corromper
@@ -238,7 +239,8 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   h1,h2,h3,.serif,.print-header h2{font-family:Georgia,'Times New Roman',serif !important;}
   .card{box-shadow:none;border:1px solid #ccc;}
   .kpi{break-inside:avoid;}
-  table{break-inside:auto;}
+  .table-wrap, .table-wrap.scroll-sticky{overflow:visible !important;max-height:none !important;}
+  table{break-inside:auto;font-size:10px;width:100%;table-layout:auto;}
   tr{break-inside:avoid;break-after:auto;}
   thead{display:table-header-group;} /* repite el encabezado de columnas en cada página nueva */
   tfoot{display:table-row-group;}

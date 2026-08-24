@@ -808,8 +808,8 @@ async function renderVentas() {
           <button class="btn btn-ghost btn-sm" id="openVentaConceptosBtn">⚙ Categorías de venta</button>
           <button class="btn btn-ghost btn-sm" id="openSistemaConceptosBtn">⚙ Categorías de sistema</button>
           <button class="btn btn-ghost btn-sm" id="openConceptosBtn">⚙ Conceptos de recibido</button>
-          <button class="btn btn-ghost btn-sm" id="descargarPlantillaBtn">📄 Descargar plantilla</button>
-          <button class="btn btn-ghost btn-sm" id="importVentasBtn">📥 Importar ventas (Excel)</button>
+          <button class="btn btn-ghost btn-sm" id="descargarPlantillaBtn">Descargar plantilla</button>
+          <button class="btn btn-ghost btn-sm" id="importVentasBtn">Importar ventas (Excel)</button>
           <button class="btn btn-gold btn-sm" id="addVentaRow">+ Agregar día</button>
         </div>
       </div>
@@ -1247,7 +1247,7 @@ async function renderAuditoria() {
     return true;
   });
 
-  const ACCION_LABEL = { crear: '🟢 Creó', editar: '🟡 Editó', eliminar: '🔴 Eliminó' };
+  const ACCION_LABEL = { crear: 'Creó', editar: 'Editó', eliminar: 'Eliminó' };
 
   el.innerHTML = `
     <div class="kpi-grid">
@@ -1262,7 +1262,7 @@ async function renderAuditoria() {
       <div class="grid-3" style="margin-bottom:12px;">
         <div class="field" style="margin-bottom:0;">
           <label>Buscar</label>
-          <input type="text" id="audBuscar" placeholder="🔎 Ej. póliza, factura..." value="${STATE_audFiltroTexto}">
+          <input type="text" id="audBuscar" placeholder="Ej. póliza, factura..." value="${STATE_audFiltroTexto}">
         </div>
         <div class="field" style="margin-bottom:0;">
           <label>Usuario</label>
@@ -1367,11 +1367,11 @@ async function renderCatalogoCuentas() {
       <div class="card-head"><h3>Bancos y Efectivo</h3><span class="hint">Se administran en sus propios módulos</span></div>
       <div class="grid-2">
         <div>
-          <div style="font-weight:700;font-size:12.5px;color:var(--navy-1);margin-bottom:6px;">🏦 Cuentas bancarias</div>
+          <div style="font-weight:700;font-size:12.5px;color:var(--navy-1);margin-bottom:6px;">Cuentas bancarias</div>
           ${cuentasBanco.map(c => `<div style="display:flex;justify-content:space-between;padding:5px 4px;border-bottom:1px solid var(--line);font-size:13px;"><span>${c.nombre}${c.activo===false?' (inactiva)':''}</span></div>`).join('') || `<div class="empty" style="padding:8px;">Aún no hay cuentas bancarias.</div>`}
         </div>
         <div>
-          <div style="font-weight:700;font-size:12.5px;color:var(--navy-1);margin-bottom:6px;">💵 Cajas de efectivo</div>
+          <div style="font-weight:700;font-size:12.5px;color:var(--navy-1);margin-bottom:6px;">Cajas de efectivo</div>
           ${monedasEfectivo.map(m => `<div style="display:flex;justify-content:space-between;padding:5px 4px;border-bottom:1px solid var(--line);font-size:13px;"><span>${m.nombre}${m.activo===false?' (inactiva)':''}</span></div>`).join('') || `<div class="empty" style="padding:8px;">Aún no hay cajas de efectivo.</div>`}
         </div>
       </div>
@@ -1398,7 +1398,7 @@ async function renderCatalogoCuentas() {
         <button class="btn btn-ghost btn-sm cc-sub-save" data-id="${s.id}">Guardar</button>
       ` : `
         <span style="flex:1;min-width:0;">${s.nombre}</span>
-        <button class="btn btn-ghost btn-sm cc-sub-editar" data-id="${s.id}">✏️ Editar</button>
+        <button class="btn btn-ghost btn-sm cc-sub-editar" data-id="${s.id}">Editar</button>
       `}
       <button class="row-del cc-sub-del" data-id="${s.id}" style="font-size:14px;">Eliminar</button>
     </div>
@@ -1426,7 +1426,7 @@ async function renderCatalogoCuentas() {
             <button class="btn btn-ghost btn-sm cc-mayor-save" data-id="${m.id}">Guardar</button>
           ` : `
             <strong style="flex:1;min-width:0;">${m.nombre}</strong>
-            <button class="btn btn-ghost btn-sm cc-mayor-editar" data-id="${m.id}">✏️ Editar</button>
+            <button class="btn btn-ghost btn-sm cc-mayor-editar" data-id="${m.id}">Editar</button>
           `}
           <button class="row-del cc-mayor-del" data-id="${m.id}" style="font-size:15px;">Eliminar</button>
         </div>
@@ -2408,7 +2408,7 @@ async function openTraspasoModal(businessId, onDone) {
 /* ---------- Celdas compartidas: clasificación de una salida (gasto/proveedor/otro) ---------- */
 function salidaCellsHtml(r, subcuentas, mayores, facturasPend, prefix, traspasoCtx) {
   if (r.tipo_salida === 'traspaso') {
-    return `<td><span style="color:var(--muted);">🔁 Traspaso</span></td><td>—</td>`;
+    return `<td><span style="color:var(--muted);">Traspaso</span></td><td>—</td>`;
   }
   const tipo = r.tipo_salida || 'otro';
   const tipoSelect = `<select class="cell salida-tipo" data-id="${r.id}">
@@ -2426,7 +2426,7 @@ function salidaCellsHtml(r, subcuentas, mayores, facturasPend, prefix, traspasoC
     </select>`;
   } else if (tipo === 'proveedor') {
     const idsVinculados = facturaIdsDe(r);
-    detalle = `<button class="btn btn-ghost btn-sm salida-abrir-facturas" data-id="${r.id}">${idsVinculados.length ? '🧾 ' + idsVinculados.length + ' factura(s)' : '🧾 Elegir facturas'}</button>`;
+    detalle = `<button class="btn btn-ghost btn-sm salida-abrir-facturas" data-id="${r.id}">${idsVinculados.length ? '' + idsVinculados.length + ' factura(s)' : 'Elegir facturas'}</button>`;
   } else if (tipo === 'traspaso_banco' && traspasoCtx) {
     const opciones = (traspasoCtx.cuentasBanco || []).filter(c => !(traspasoCtx.origenTipo === 'banco' && c.id === traspasoCtx.origenId));
     detalle = `<select class="cell salida-traspaso-destino" data-id="${r.id}" data-tipo="banco">
@@ -2588,7 +2588,7 @@ async function renderEfectivo() {
       <div class="card-head">
         <h3>Cajas de efectivo por moneda</h3>
         <div style="display:flex;gap:8px;">
-          <button class="btn btn-ghost btn-sm" id="traspasoBtnEfvo">🔁 Transferir</button>
+          <button class="btn btn-ghost btn-sm" id="traspasoBtnEfvo">Transferir</button>
           <button class="btn btn-gold btn-sm" id="addMonedaBtn">+ Agregar moneda</button>
         </div>
       </div>
@@ -2742,7 +2742,7 @@ async function renderBancos() {
       <div class="card-head">
         <h3>Cuentas bancarias</h3>
         <div style="display:flex;gap:8px;">
-          <button class="btn btn-ghost btn-sm" id="traspasoBtnBanco">🔁 Transferir</button>
+          <button class="btn btn-ghost btn-sm" id="traspasoBtnBanco">Transferir</button>
           <button class="btn btn-gold btn-sm" id="addCuentaBtn">+ Agregar cuenta</button>
         </div>
       </div>
@@ -2826,7 +2826,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     <div class="card-head" style="margin-top:14px;">
       <span class="hint">Saldo al inicio de ${STATE.currentMonth}: ${fmt(saldoApertura)}</span>
       <div style="display:flex;gap:8px;">
-        <button class="btn btn-ghost btn-sm" id="importMovBtn">📥 Importar movimientos (Excel)</button>
+        <button class="btn btn-ghost btn-sm" id="importMovBtn">Importar movimientos (Excel)</button>
         <button class="btn btn-ghost btn-sm" id="addMovBtnBanco">+ Agregar movimiento</button>
       </div>
     </div>
@@ -2864,7 +2864,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
 /* ============================================================
    PROVEEDORES
    ============================================================ */
-let STATE_provFiltro = 'Todos';
+let STATE_provFiltro = 'Pendiente';
 let STATE_provExpandido = null;
 
 async function renderProveedores() {
@@ -2935,14 +2935,14 @@ async function renderProveedores() {
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           <button class="btn btn-ghost btn-sm" id="openProveedoresCatBtn">⚙ Catálogo de proveedores</button>
           <button class="btn btn-ghost btn-sm" id="openCuentasBtnProv">⚙ Catálogo de cuentas</button>
-          <button class="btn btn-ghost btn-sm" id="importFacturasBtn">📥 Importar facturas (Excel)</button>
-          <button class="btn btn-ghost btn-sm" id="provisionarPropinasBtn">🔄 Poner al día propinas</button>
+          <button class="btn btn-ghost btn-sm" id="importFacturasBtn">Importar facturas (Excel)</button>
+          <button class="btn btn-ghost btn-sm" id="provisionarPropinasBtn">Poner al día propinas</button>
           <button class="btn btn-gold btn-sm" id="addProvBtn">+ Agregar factura</button>
         </div>
       </div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Al marcar "Pagado" y elegir de dónde, se crea/actualiza automáticamente el movimiento real en esa cuenta (y se descuenta su saldo).</p>
       <div class="tag-row">
-        ${['Todos','Pendiente','Pagado'].map(f => `<div class="tag prov-tab ${STATE_provFiltro===f?'active':''}" data-f="${f}">${f}</div>`).join('')}
+        ${['Pendiente','Todos','Pagado'].map(f => `<div class="tag prov-tab ${STATE_provFiltro===f?'active':''}" data-f="${f}">${f}</div>`).join('')}
       </div>
       <div class="table-wrap">
         <table>
@@ -3458,6 +3458,20 @@ function detalleSubcuentaHtml(filas, colspan) {
   </td></tr>`;
 }
 
+const MESES_LARGO = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+function estadoResultadosSubtitulo(periodo) {
+  const año = STATE.currentMonth.slice(0,4);
+  if (STATE_plVista === 'anual') return `Estado de Resultados — Enero a Diciembre ${año}`;
+  if (STATE_plVista === 'acumulado') {
+    const mesActual = MESES_LARGO[Number(STATE.currentMonth.slice(5,7)) - 1];
+    return `Estado de Resultados — Enero a ${mesActual} ${año}`;
+  }
+  if (STATE_plRangoDesde && STATE_plRangoHasta) {
+    return `Estado de Resultados — Del ${fechaCorta(periodo.start)} al ${fechaCorta(periodo.end)}`;
+  }
+  const mesActual = MESES_LARGO[Number(STATE.currentMonth.slice(5,7)) - 1];
+  return `Estado de Resultados — ${mesActual} ${año}`;
+}
 function plTagsHtml() {
   const { start, end } = monthBounds(STATE.currentMonth);
   return `<div class="tag-row">
@@ -3587,8 +3601,9 @@ async function renderPLAnual(el, b) {
   const margenRow = `<tr><td style="font-style:italic;color:var(--muted);">Margen</td>${datos.map(d=>`<td class="num">${d.totalIngresosFinal?((d.utilidad/d.totalIngresosFinal*100).toFixed(0)+'%'):'—'}</td>`).join('')}<td class="num">—</td></tr>`;
 
   el.innerHTML = plTagsHtml() + `
+    <p style="font-size:13px;color:var(--muted);margin:-4px 0 14px;font-weight:600;">${estadoResultadosSubtitulo()}</p>
     <div class="card">
-      <div class="card-head"><h3>P&L — Todos los meses de ${year}</h3><button class="btn btn-ghost btn-sm" id="openCuentasBtnPLAnual">⚙ Catálogo de cuentas</button></div>
+      <div class="card-head"><h3>P&L — Todos los meses de ${year}</h3></div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Concepto</th>${mesesLabel.map(m=>`<th>${m}</th>`).join('')}<th>Acumulado</th></tr></thead>
@@ -3616,7 +3631,6 @@ async function renderPLAnual(el, b) {
       </div>
     </div>
   `;
-  document.getElementById('openCuentasBtnPLAnual').addEventListener('click', () => openCuentasModal(b.id, () => renderPLAnual(el, b)));
 }
 
 function filaArbolSubcuentaHtml(nodo, conTerceraColumna, nivel, detalleHtmlSiAbierto) {
@@ -3689,6 +3703,7 @@ async function renderPL() {
 
   el.innerHTML = `
     ${plTagsHtml()}
+    <p style="font-size:13px;color:var(--muted);margin:-4px 0 14px;font-weight:600;">${estadoResultadosSubtitulo(periodo)}</p>
     <div class="kpi-grid">
       <div class="kpi"><div class="label">Total ingresos</div><div class="value num">${fmt(totalIngresosFinal)}</div></div>
       ${gCostos.totalClasificado ? `<div class="kpi"><div class="label">Utilidad bruta</div><div class="value num ${utilidadBruta>=0?'green':'red'}">${fmt(utilidadBruta)}</div></div>` : ''}
@@ -3732,7 +3747,6 @@ async function renderPL() {
       <div class="card-head">
         <h3>Gastos por cuenta — ${periodoLabel}</h3>
         <div style="display:flex;gap:8px;">
-          <button class="btn btn-ghost btn-sm" id="openCuentasBtnPL">⚙ Catálogo de cuentas</button>
           <button class="btn btn-gold btn-sm" id="addGastoBtn">+ Ajuste manual</button>
         </div>
       </div>
@@ -3790,7 +3804,6 @@ async function renderPL() {
     STATE_plDetalleAbierto = STATE_plDetalleAbierto === tr.dataset.subcuenta ? null : tr.dataset.subcuenta;
     renderPL();
   }));
-  document.getElementById('openCuentasBtnPL').addEventListener('click', () => openCuentasModal(b.id, renderPL));
   document.getElementById('addGastoBtn').addEventListener('click', async () => {
     await sb.from('fz_pl_gastos').insert({ business_id: b.id, mes: STATE.currentMonth, monto: 0 });
     renderPL();
@@ -3907,7 +3920,7 @@ async function renderPolizas() {
         <h3>Pólizas de Diario</h3>
         <div style="display:flex;gap:8px;">
           <button class="btn btn-ghost btn-sm" id="openCuentasBtnPolizas">⚙ Catálogo de cuentas</button>
-          <button class="btn btn-ghost btn-sm" id="importPolizasBtn">📥 Importar pólizas (Excel)</button>
+          <button class="btn btn-ghost btn-sm" id="importPolizasBtn">Importar pólizas (Excel)</button>
           <button class="btn btn-gold btn-sm" id="addPolizaBtn">+ Nueva póliza</button>
         </div>
       </div>
@@ -3915,7 +3928,7 @@ async function renderPolizas() {
       <div class="grid-3" style="margin-bottom:12px;">
         <div class="field" style="margin-bottom:0;">
           <label>Buscar (concepto, número o importe)</label>
-          <input type="text" id="polizaBuscarTexto" placeholder="🔎 Ej. renta, 1500, #12" value="${STATE_polizaFiltroTexto}">
+          <input type="text" id="polizaBuscarTexto" placeholder="Ej. renta, 1500, #12" value="${STATE_polizaFiltroTexto}">
         </div>
         <div class="field" style="margin-bottom:0;">
           <label>Desde</label>
@@ -4013,7 +4026,7 @@ function polizaCardHtml(p, lineasPoliza, subcuentas, mayores, cuentasBanco, mone
         </div>
         <div style="display:flex;align-items:center;gap:10px;">
           <span class="badge ${cuadrada?'pag':'pend'}">${cuadrada ? 'Cuadrada' : 'Diferencia ' + fmt(diff)}</span>
-          <button class="btn btn-gold btn-sm poliza-cerrar" data-id="${p.id}">💾 Guardar</button>
+          <button class="btn btn-gold btn-sm poliza-cerrar" data-id="${p.id}">Cerrar</button>
           <button class="btn btn-ghost btn-sm poliza-del" data-id="${p.id}" style="color:var(--red);">Eliminar póliza</button>
         </div>
       </div>
