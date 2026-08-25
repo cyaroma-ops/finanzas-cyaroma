@@ -1822,13 +1822,16 @@ async function crearCuentaOCajaRapida(businessId, tipo) {
    ============================================================ */
 function normalizarEncabezado(k) {
   return k.toString().trim().toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, ''); // quita acentos
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // quita acentos
+    .replace(/[^a-z0-9]/g, ''); // quita espacios, barras, guiones, puntuación
 }
 function buscarColumna(row, candidatos) {
-  const claves = Object.keys(row);
+  const claves = Object.keys(row).map(k => ({ original: k, norm: normalizarEncabezado(k) }));
   for (const c of candidatos) {
-    const found = claves.find(k => normalizarEncabezado(k) === c);
-    if (found) return row[found];
+    const cNorm = normalizarEncabezado(c);
+    let found = claves.find(x => x.norm === cNorm); // 1) coincidencia exacta
+    if (!found) found = claves.find(x => x.norm.includes(cNorm)); // 2) coincidencia parcial (ej. columna combinada "Proveedor / Concepto")
+    if (found) return row[found.original];
   }
   return null;
 }
