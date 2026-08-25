@@ -4102,8 +4102,8 @@ async function crearBorradorPolizaNueva(businessId) {
     esNueva: true, businessId,
     poliza: { id: null, numero: maxNum + 1, fecha: todayStr(), concepto: '', archivo_path: null, archivo_nombre: null },
     lineas: [
-      { id: 'tmp_1', subcuenta_id: null, cuenta_tipo: 'subcuenta', cuenta_ref_id: null, cargo: 0, abono: 0, descripcion: '', orden: 0 },
-      { id: 'tmp_2', subcuenta_id: null, cuenta_tipo: 'subcuenta', cuenta_ref_id: null, cargo: 0, abono: 0, descripcion: '', orden: 1 },
+      { id: 'tmp_1', subcuenta_id: null, cuenta_tipo: 'subcuenta', cuenta_ref_id: null, cargo: 0, abono: 0, descripcion: '', referencia: '', orden: 0 },
+      { id: 'tmp_2', subcuenta_id: null, cuenta_tipo: 'subcuenta', cuenta_ref_id: null, cargo: 0, abono: 0, descripcion: '', referencia: '', orden: 1 },
     ],
   };
 }
@@ -4116,8 +4116,8 @@ async function crearBorradorPolizaExistente(polizaId, businessId) {
 }
 
 function polizaEsBorradorVacio(borrador) {
-  return !(borrador.poliza.concepto || '').trim() && !borrador.poliza.archivo_path && borrador.lineas.every(l =>
-    (Number(l.cargo) || 0) === 0 && (Number(l.abono) || 0) === 0 && !l.subcuenta_id && !l.cuenta_ref_id && !(l.descripcion || '').trim()
+  return !(borrador.poliza.concepto || '').trim() && !borrador.poliza.archivo_path && !borrador.poliza.archivoPendiente && borrador.lineas.every(l =>
+    (Number(l.cargo) || 0) === 0 && (Number(l.abono) || 0) === 0 && !l.subcuenta_id && !l.cuenta_ref_id && !(l.descripcion || '').trim() && !(l.referencia || '').trim()
   );
 }
 
@@ -4150,6 +4150,7 @@ function renderizarBorradorPoliza() {
   if (activo && wrap.contains(activo)) {
     foco = {
       clases: Array.from(activo.classList), id: activo.dataset.id || null,
+      campo: activo.dataset.field || null,
       selStart: typeof activo.selectionStart === 'number' ? activo.selectionStart : null,
       selEnd: typeof activo.selectionEnd === 'number' ? activo.selectionEnd : null,
     };
@@ -4159,8 +4160,8 @@ function renderizarBorradorPoliza() {
   wireBorradorPolizaHandlers(wrap);
 
   if (foco && foco.id) {
-    const candidatos = Array.from(wrap.querySelectorAll(`[data-id="${foco.id}"]`));
-    const elegido = candidatos.find(c => foco.clases.every(cl => c.classList.contains(cl))) || candidatos[0];
+    const candidatos = Array.from(wrap.querySelectorAll(`[data-id="${foco.id}"]`)).filter(c => foco.clases.every(cl => c.classList.contains(cl)));
+    const elegido = candidatos.find(c => (c.dataset.field || null) === foco.campo) || candidatos[0];
     if (elegido) {
       elegido.focus();
       if (foco.selStart !== null && elegido.setSelectionRange) {
@@ -4176,21 +4177,29 @@ function polizaCardHtmlBorrador(borrador) {
   const totalAbono = lineasPoliza.reduce((s, l) => s + (Number(l.abono) || 0), 0);
   const diff = totalCargo - totalAbono;
   const cuadrada = Math.abs(diff) < 0.01;
-
-  const cuentaUnificadaHtml = (l) => {
-    const selVal = l.cuenta_tipo === 'banco' ? `banco:${l.cuenta_ref_id || ''}` : l.cuenta_tipo === 'efectivo' ? `efectivo:${l.cuenta_ref_id || ''}` : `sub:${l.subcuenta_id || ''}`;
-    const subOpts = opcionesSubcuentaHtmlPrefijadas(catalogos.subcuentas, catalogos.mayores, l.subcuenta_id);
-    const bancoOpts = catalogos.cuentasBanco.map(c => `<option value="banco:${c.id}" ${selVal===`banco:${c.id}`?'selected':''}>${c.nombre}</option>`).join('');
-    const efvoOpts = catalogos.monedasEfectivo.map(m => `<option value="efectivo:${m.id}" ${selVal===`efectivo:${m.id}`?'selected':''}>${m.nombre}</option>`).join('');
-    return `<td><select class="cell linea-cuenta-unif" data-id="${l.id}">
-      <option value="">— elegir cuenta —</option>
-      ${subOpts ? `<optgroup label="Cuentas contables">${subOpts}</optgroup>` : ''}
-      ${bancoOpts ? `<optgroup label="Bancos">${bancoOpts}</optgroup>` : ''}
-      ${efvoOpts ? `<optgroup label="Cajas de efectivo">${efvoOpts}</optgroup>` : ''}
-    </select></td>`;
+  const catalogoItems = catalogoCuentasUnificado(catalogos);
+  const labelDeLinea = (l) => {
+    const match = catalogoItems.find(it =>
+      (l.cuenta_tipo === 'banco' && it.tipo === 'banco' && it.id === l.cuenta_ref_id) ||
+      (l.cuenta_tipo === 'efectivo' && it.tipo === 'efectivo' && it.id === l.cuenta_ref_id) ||
+      ((!l.cuenta_tipo || l.cuenta_tipo === 'subcuenta') && it.tipo === 'sub' && it.id === l.subcuenta_id)
+    );
+    return match ? match.label : '';
   };
 
+  let adjuntoHtml;
+  if (borrador.esNueva) {
+    adjuntoHtml = p.archivoPendiente
+      ? `<span style="font-size:12px;color:var(--navy-1);">${p.archivoPendiente.name} <span style="color:var(--muted);">(se subirá al guardar)</span> <button class="quitar-adjunto-pendiente" style="border:none;background:none;color:var(--red);cursor:pointer;">✕</button></span>`
+      : `<label style="font-size:12px;color:var(--navy-3);text-decoration:underline;cursor:pointer;">Adjuntar (se sube al guardar)<input type="file" accept=".pdf,.jpg,.jpeg,.png" class="adjunto-pendiente-input" style="display:none;"></label>`;
+  } else {
+    adjuntoHtml = adjuntoCellHtml(p.archivo_path, p.archivo_nombre, p.id);
+  }
+
   return `
+    <datalist id="listaCuentasPoliza">
+      ${catalogoItems.map(it => `<option value="${it.label.replace(/"/g,'&quot;')}">`).join('')}
+    </datalist>
     <div class="card" style="background:#fbfcfe;border:1.5px solid var(--line);margin-bottom:16px;position:relative;">
       <button class="poliza-cerrar-x" title="Cerrar" style="position:absolute;top:10px;right:14px;background:none;border:none;font-size:20px;color:var(--muted);cursor:pointer;line-height:1;">✕</button>
       <div class="card-head" style="margin-bottom:10px;">
@@ -4198,9 +4207,7 @@ function polizaCardHtmlBorrador(borrador) {
           <strong style="color:var(--navy-1);">${borrador.esNueva ? 'Nueva póliza' : 'Póliza #' + (p.numero ?? '—')}</strong>
           <input class="cell poliza-cell" type="date" value="${p.fecha}" data-field="fecha" style="width:auto;">
           <input class="cell poliza-cell" type="text" placeholder="Concepto de la póliza" value="${p.concepto || ''}" data-field="concepto" style="min-width:220px;">
-          ${borrador.esNueva
-            ? `<span style="font-size:11.5px;color:var(--muted);">Guarda la póliza para poder adjuntar un archivo</span>`
-            : adjuntoCellHtml(p.archivo_path, p.archivo_nombre, p.id)}
+          ${adjuntoHtml}
         </div>
         <div style="display:flex;align-items:center;gap:10px;">
           <span class="badge ${cuadrada ? 'pag' : 'pend'}">${cuadrada ? 'Cuadrada' : 'Diferencia ' + fmt(diff)}</span>
@@ -4210,17 +4217,18 @@ function polizaCardHtmlBorrador(borrador) {
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Cuenta</th><th>Descripción</th><th>Cargo</th><th>Abono</th><th></th></tr></thead>
+          <thead><tr><th>Cuenta</th><th>Referencia/Factura</th><th>Descripción</th><th>Cargo</th><th>Abono</th><th></th></tr></thead>
           <tbody>
             ${lineasPoliza.map(l => `<tr>
-              ${cuentaUnificadaHtml(l)}
+              <td><input class="cell linea-cuenta-buscar" list="listaCuentasPoliza" placeholder="Escribe para buscar…" value="${labelDeLinea(l).replace(/"/g,'&quot;')}" data-id="${l.id}" data-field="cuenta"></td>
+              <td><input class="cell linea-cell" type="text" value="${l.referencia || ''}" data-id="${l.id}" data-field="referencia"></td>
               <td><input class="cell linea-cell" type="text" value="${l.descripcion || ''}" data-id="${l.id}" data-field="descripcion"></td>
               <td><input class="cell linea-cell num" type="number" step="0.01" value="${l.cargo ?? 0}" data-id="${l.id}" data-field="cargo"></td>
               <td><input class="cell linea-cell num" type="number" step="0.01" value="${l.abono ?? 0}" data-id="${l.id}" data-field="abono"></td>
               <td><button class="row-del linea-del" data-id="${l.id}">✕</button></td>
             </tr>`).join('')}
             <tr class="total-row">
-              <td colspan="2">Totales</td>
+              <td colspan="3">Totales</td>
               <td class="num">${fmt(totalCargo)}</td>
               <td class="num">${fmt(totalAbono)}</td>
               <td></td>
@@ -4232,25 +4240,44 @@ function polizaCardHtmlBorrador(borrador) {
     </div>`;
 }
 
+function catalogoCuentasUnificado(catalogos) {
+  const items = [];
+  catalogos.mayores.forEach(m => {
+    const recorrer = (s, prefijo) => {
+      const label = `${prefijo} › ${s.nombre}`;
+      items.push({ label, tipo: 'sub', id: s.id });
+      subcuentasHijas(s.id, catalogos.subcuentas).forEach(h => recorrer(h, label));
+    };
+    subcuentasRaiz(m.id, catalogos.subcuentas).forEach(s => recorrer(s, m.nombre));
+  });
+  catalogos.cuentasBanco.forEach(c => items.push({ label: `Banco — ${c.nombre}`, tipo: 'banco', id: c.id }));
+  catalogos.monedasEfectivo.forEach(m => items.push({ label: `Caja — ${m.nombre}`, tipo: 'efectivo', id: m.id }));
+  return items;
+}
+
 function wireBorradorPolizaHandlers(wrap) {
   wrap.querySelectorAll('.poliza-cell').forEach(inp => inp.addEventListener('change', () => {
     STATE_polizaBorrador.poliza[inp.dataset.field] = inp.value;
     renderizarBorradorPoliza();
   }));
-  wrap.querySelectorAll('.linea-cuenta-unif').forEach(sel => sel.addEventListener('change', () => {
-    const [tipo, id] = sel.value.split(':');
-    const linea = STATE_polizaBorrador.lineas.find(l => l.id === sel.dataset.id);
+  wrap.querySelectorAll('.linea-cuenta-buscar').forEach(inp => inp.addEventListener('change', () => {
+    const linea = STATE_polizaBorrador.lineas.find(l => l.id === inp.dataset.id);
     if (!linea) return;
-    if (tipo === 'banco') { linea.cuenta_tipo = 'banco'; linea.cuenta_ref_id = id || null; linea.subcuenta_id = null; }
-    else if (tipo === 'efectivo') { linea.cuenta_tipo = 'efectivo'; linea.cuenta_ref_id = id || null; linea.subcuenta_id = null; }
-    else { linea.cuenta_tipo = 'subcuenta'; linea.subcuenta_id = id || null; linea.cuenta_ref_id = null; }
+    const catalogoItems = catalogoCuentasUnificado(STATE_polizaBorrador.catalogos);
+    const texto = inp.value.trim();
+    if (!texto) { linea.cuenta_tipo = 'subcuenta'; linea.subcuenta_id = null; linea.cuenta_ref_id = null; renderizarBorradorPoliza(); return; }
+    const match = catalogoItems.find(it => it.label === texto);
+    if (!match) { toast('No se encontró esa cuenta. Elige una de la lista que aparece al escribir.', 'error'); renderizarBorradorPoliza(); return; }
+    if (match.tipo === 'banco') { linea.cuenta_tipo = 'banco'; linea.cuenta_ref_id = match.id; linea.subcuenta_id = null; }
+    else if (match.tipo === 'efectivo') { linea.cuenta_tipo = 'efectivo'; linea.cuenta_ref_id = match.id; linea.subcuenta_id = null; }
+    else { linea.cuenta_tipo = 'subcuenta'; linea.subcuenta_id = match.id; linea.cuenta_ref_id = null; }
     renderizarBorradorPoliza();
   }));
   wrap.querySelectorAll('.linea-cell').forEach(inp => inp.addEventListener('change', () => {
     const linea = STATE_polizaBorrador.lineas.find(l => l.id === inp.dataset.id);
     if (!linea) return;
     const field = inp.dataset.field;
-    linea[field] = field === 'descripcion' ? (inp.value || '') : leerMonto(inp.value);
+    linea[field] = (field === 'descripcion' || field === 'referencia') ? (inp.value || '') : leerMonto(inp.value);
     renderizarBorradorPoliza();
   }));
   wrap.querySelectorAll('.linea-del').forEach(btn => btn.addEventListener('click', () => {
@@ -4260,7 +4287,7 @@ function wireBorradorPolizaHandlers(wrap) {
   const addBtn = wrap.querySelector('.addLineaBtn');
   if (addBtn) addBtn.addEventListener('click', () => {
     const siguienteOrden = Math.max(-1, ...STATE_polizaBorrador.lineas.map(l => l.orden || 0)) + 1;
-    STATE_polizaBorrador.lineas.push({ id: 'tmp_' + Date.now() + '_' + Math.random().toString(36).slice(2,6), subcuenta_id: null, cuenta_tipo: 'subcuenta', cuenta_ref_id: null, cargo: 0, abono: 0, descripcion: '', orden: siguienteOrden });
+    STATE_polizaBorrador.lineas.push({ id: 'tmp_' + Date.now() + '_' + Math.random().toString(36).slice(2,6), subcuenta_id: null, cuenta_tipo: 'subcuenta', cuenta_ref_id: null, cargo: 0, abono: 0, descripcion: '', referencia: '', orden: siguienteOrden });
     renderizarBorradorPoliza();
   });
   const guardarBtn = wrap.querySelector('.poliza-guardar');
@@ -4278,7 +4305,25 @@ function wireBorradorPolizaHandlers(wrap) {
     document.getElementById('modalPoliza').classList.remove('show');
     renderPolizas();
   });
-  if (!STATE_polizaBorrador.esNueva) wireAdjuntosHandlers(wrap, 'fz_polizas', STATE_polizaBorrador.businessId, () => refrescarAdjuntoBorrador());
+  if (STATE_polizaBorrador.esNueva) {
+    const pendienteInput = wrap.querySelector('.adjunto-pendiente-input');
+    if (pendienteInput) pendienteInput.addEventListener('change', () => {
+      const file = pendienteInput.files[0];
+      if (!file) return;
+      const ext = (file.name.split('.').pop() || '').toLowerCase();
+      if (!ADJUNTOS_EXT_PERMITIDAS.includes(ext)) { toast('Solo se permiten archivos PDF, JPG o PNG.', 'error'); return; }
+      if (file.size > ADJUNTOS_MAX_MB * 1024 * 1024) { toast(`El archivo pesa más de ${ADJUNTOS_MAX_MB} MB.`, 'error'); return; }
+      STATE_polizaBorrador.poliza.archivoPendiente = file;
+      renderizarBorradorPoliza();
+    });
+    const quitarPendienteBtn = wrap.querySelector('.quitar-adjunto-pendiente');
+    if (quitarPendienteBtn) quitarPendienteBtn.addEventListener('click', () => {
+      STATE_polizaBorrador.poliza.archivoPendiente = null;
+      renderizarBorradorPoliza();
+    });
+  } else {
+    wireAdjuntosHandlers(wrap, 'fz_polizas', STATE_polizaBorrador.businessId, () => refrescarAdjuntoBorrador());
+  }
 }
 
 async function refrescarAdjuntoBorrador() {
@@ -4307,13 +4352,17 @@ async function guardarBorradorPoliza() {
     const { data, error } = await sb.from('fz_polizas').insert({ business_id: businessId, numero: borrador.poliza.numero, fecha: borrador.poliza.fecha, concepto: borrador.poliza.concepto }).select().single();
     if (error) { toast('Error guardando la póliza: ' + error.message, 'error'); return; }
     polizaId = data.id;
+    if (borrador.poliza.archivoPendiente) {
+      const subido = await subirAdjunto('fz_polizas', polizaId, businessId, borrador.poliza.archivoPendiente);
+      if (subido) await sb.from('fz_polizas').update({ archivo_path: subido.path, archivo_nombre: subido.nombre }).eq('id', polizaId);
+    }
   } else {
     const { error } = await sb.from('fz_polizas').update({ fecha: borrador.poliza.fecha, concepto: borrador.poliza.concepto }).eq('id', polizaId);
     if (error) { toast('Error guardando la póliza: ' + error.message, 'error'); return; }
   }
 
   for (const l of borrador.lineas) {
-    const payload = { subcuenta_id: l.subcuenta_id || null, cuenta_tipo: l.cuenta_tipo || 'subcuenta', cuenta_ref_id: l.cuenta_ref_id || null, cargo: Number(l.cargo) || 0, abono: Number(l.abono) || 0, descripcion: l.descripcion || null, orden: l.orden || 0 };
+    const payload = { subcuenta_id: l.subcuenta_id || null, cuenta_tipo: l.cuenta_tipo || 'subcuenta', cuenta_ref_id: l.cuenta_ref_id || null, cargo: Number(l.cargo) || 0, abono: Number(l.abono) || 0, descripcion: l.descripcion || null, referencia: l.referencia || null, orden: l.orden || 0 };
     if (String(l.id).startsWith('tmp_')) {
       await sb.from('fz_polizas_lineas').insert({ business_id: businessId, poliza_id: polizaId, ...payload });
     } else {
