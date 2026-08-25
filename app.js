@@ -2751,6 +2751,17 @@ async function renderEfectivo() {
 
 async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
   const box = document.getElementById('monedaLedger');
+  const scrollY = window.scrollY;
+  const activo = document.activeElement;
+  let foco = null;
+  if (activo && box && box.contains(activo)) {
+    foco = {
+      clases: Array.from(activo.classList), id: activo.dataset.id || null,
+      campo: activo.dataset.field || null,
+      selStart: typeof activo.selectionStart === 'number' ? activo.selectionStart : null,
+      selEnd: typeof activo.selectionEnd === 'number' ? activo.selectionEnd : null,
+    };
+  }
   const [ledgerRes, subcuentas, mayores, facturasPend, cuentasBancoQ, monedasEfectivoQ] = await Promise.all([
     getMonedaLedgerRows(businessId, moneda, conceptosEfectivo, STATE.currentMonth),
     loadSubcuentas(businessId),
@@ -2837,6 +2848,18 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
       await confirmarYEliminarMovimiento('fz_efectivo_mov', { ...row, id: btn.dataset.id }, () => renderMonedaLedger(moneda, businessId, conceptosEfectivo));
     });
   });
+
+  if (foco && foco.id) {
+    const candidatos = Array.from(box.querySelectorAll(`[data-id="${foco.id}"]`)).filter(c => foco.clases.every(cl => c.classList.contains(cl)));
+    const elegido = candidatos.find(c => (c.dataset.field || null) === foco.campo) || candidatos[0];
+    if (elegido) {
+      elegido.focus();
+      if (foco.selStart !== null && elegido.setSelectionRange) {
+        try { elegido.setSelectionRange(foco.selStart, foco.selEnd); } catch (e) {}
+      }
+    }
+  }
+  window.scrollTo(0, scrollY);
 }
 
 /* ============================================================
@@ -2908,6 +2931,17 @@ async function renderBancos() {
 
 async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
   const box = document.getElementById('bancoLedger');
+  const scrollY = window.scrollY;
+  const activo = document.activeElement;
+  let foco = null;
+  if (activo && box && box.contains(activo)) {
+    foco = {
+      clases: Array.from(activo.classList), id: activo.dataset.id || null,
+      campo: activo.dataset.field || null,
+      selStart: typeof activo.selectionStart === 'number' ? activo.selectionStart : null,
+      selEnd: typeof activo.selectionEnd === 'number' ? activo.selectionEnd : null,
+    };
+  }
   const cuentaQ = await sb.from('fz_bancos_cuentas').select('*').eq('id', cuentaId).single();
   const cuentaArr = cuentaQ.data;
   if (!conceptosTarjetas) {
@@ -3002,6 +3036,18 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
       await confirmarYEliminarMovimiento('fz_bancos_mov', { ...row, id: btn.dataset.id }, () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas));
     });
   });
+
+  if (foco && foco.id) {
+    const candidatos = Array.from(box.querySelectorAll(`[data-id="${foco.id}"]`)).filter(c => foco.clases.every(cl => c.classList.contains(cl)));
+    const elegido = candidatos.find(c => (c.dataset.field || null) === foco.campo) || candidatos[0];
+    if (elegido) {
+      elegido.focus();
+      if (foco.selStart !== null && elegido.setSelectionRange) {
+        try { elegido.setSelectionRange(foco.selStart, foco.selEnd); } catch (e) {}
+      }
+    }
+  }
+  window.scrollTo(0, scrollY);
 }
 
 /* ============================================================
