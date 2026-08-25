@@ -1929,6 +1929,25 @@ function openImportExcelModal(tipo, businessId, onDone, extra) {
         if (error) { toast('Error al importar: ' + error.message, 'error'); return; }
         toast(`${payload.length} movimientos importados.`);
 
+      } else if (tipo === 'efectivo_mov') {
+        const monedaId = extra;
+        if (!monedaId) { toast('Selecciona primero una caja de efectivo.', 'error'); return; }
+        const payload = rows.map(r => ({
+          business_id: businessId,
+          moneda_id: monedaId,
+          fecha: parseFechaExcel(buscarColumna(r, ['fecha'])),
+          proveedor: String(buscarColumna(r, ['proveedor', 'concepto']) || '').trim() || null,
+          descripcion: String(buscarColumna(r, ['descripcion', 'descripción']) || '').trim() || null,
+          factura: String(buscarColumna(r, ['factura', 'referencia']) || '').trim() || null,
+          depositos: Number(buscarColumna(r, ['depositos', 'depósitos', 'abono', 'abonos'])) || 0,
+          cargos: Number(buscarColumna(r, ['cargos', 'cargo'])) || 0,
+          tipo_salida: 'otro',
+        })).filter(m => m.depositos || m.cargos);
+        if (!payload.length) { toast('No se encontraron filas válidas (revisa las columnas Depósitos/Cargos).', 'error'); return; }
+        const { error } = await sb.from('fz_efectivo_mov').insert(payload);
+        if (error) { toast('Error al importar: ' + error.message, 'error'); return; }
+        toast(`${payload.length} movimientos importados.`);
+
       } else if (tipo === 'ventas') {
         const [conceptosVentaQ, conceptosQ, conceptosSistemaQ] = await Promise.all([
           sb.from('fz_conceptos_venta').select('*').eq('business_id', businessId),
@@ -2765,7 +2784,10 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
   box.innerHTML = `
     <div class="card-head" style="margin-top:14px;">
       <span class="hint">Saldo al inicio de ${STATE.currentMonth}: ${fmtNum(saldoApertura)} ${moneda.nombre}</span>
-      <button class="btn btn-ghost btn-sm" id="addMovBtnEfvo">+ Agregar movimiento (pago en efectivo)</button>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-ghost btn-sm" id="importMovBtnEfvo">Importar movimientos (Excel)</button>
+        <button class="btn btn-ghost btn-sm" id="addMovBtnEfvo">+ Agregar movimiento (pago en efectivo)</button>
+      </div>
     </div>
     <div class="table-wrap">
       <table>
@@ -2776,6 +2798,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
     </div>
   `;
 
+  document.getElementById('importMovBtnEfvo').addEventListener('click', () => openImportExcelModal('efectivo_mov', businessId, () => renderMonedaLedger(moneda, businessId, conceptosEfectivo), moneda.id));
   document.getElementById('addMovBtnEfvo').addEventListener('click', () => {
     openMovimientoModal({ tipo: 'efectivo', refId: moneda.id, businessId, onDone: () => renderMonedaLedger({ ...moneda }, businessId, conceptosEfectivo) });
   });
