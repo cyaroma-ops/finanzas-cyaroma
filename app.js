@@ -2532,10 +2532,9 @@ function salidaCellsHtml(r, subcuentas, mayores, facturasPend, prefix, traspasoC
   </select>`;
   let detalle = '—';
   if (tipo === 'gasto') {
-    detalle = `<select class="cell salida-detalle" data-id="${r.id}" data-field="subcuenta_id">
-      <option value="">— elegir subcuenta —</option>
-      ${opcionesSubcuentaHtml(subcuentas, mayores, r.subcuenta_id)}
-    </select>`;
+    const subActual = subcuentas.find(s => s.id === r.subcuenta_id);
+    const labelActual = subActual ? rutaSubcuenta(subActual, subcuentas, mayores) : '';
+    detalle = `<input class="cell salida-detalle-buscar" list="datalistGastoSubcuentas" data-id="${r.id}" value="${labelActual.replace(/"/g,'&quot;')}" placeholder="Escribe para buscar…">`;
   } else if (tipo === 'proveedor') {
     const idsVinculados = facturaIdsDe(r);
     detalle = `<button class="btn btn-ghost btn-sm salida-abrir-facturas" data-id="${r.id}">${idsVinculados.length ? '' + idsVinculados.length + ' factura(s)' : 'Elegir facturas'}</button>`;
@@ -2560,7 +2559,7 @@ function facturaIdsDe(r) {
   return [];
 }
 
-function wireSalidaCellHandlers(container, table, onChange, traspasoCtx, facturasPend) {
+function wireSalidaCellHandlers(container, table, onChange, traspasoCtx, facturasPend, subcuentas, mayores) {
   container.querySelectorAll('.salida-tipo').forEach(sel => sel.addEventListener('change', async () => {
     await sb.from(table).update({ tipo_salida: sel.value, subcuenta_id: null, proveedor_factura_id: null, proveedor_factura_ids: [] }).eq('id', sel.dataset.id);
     onChange();
@@ -2568,6 +2567,14 @@ function wireSalidaCellHandlers(container, table, onChange, traspasoCtx, factura
   container.querySelectorAll('.salida-detalle').forEach(sel => sel.addEventListener('change', async () => {
     const field = sel.dataset.field;
     await sb.from(table).update({ [field]: sel.value || null }).eq('id', sel.dataset.id);
+    onChange();
+  }));
+  container.querySelectorAll('.salida-detalle-buscar').forEach(inp => inp.addEventListener('change', async () => {
+    const texto = inp.value.trim();
+    if (!texto) { await sb.from(table).update({ subcuenta_id: null }).eq('id', inp.dataset.id); onChange(); return; }
+    const match = (subcuentas || []).find(s => rutaSubcuenta(s, subcuentas, mayores) === texto);
+    if (!match) { toast('No se encontró esa cuenta. Elige una de la lista que aparece al escribir.', 'error'); onChange(); return; }
+    await sb.from(table).update({ subcuenta_id: match.id }).eq('id', inp.dataset.id);
     onChange();
   }));
   container.querySelectorAll('.salida-abrir-facturas').forEach(btn => btn.addEventListener('click', () => {
@@ -2783,8 +2790,16 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
 
   const totalCargosMes = ledger.reduce((s,r)=>s+(Number(r.cargos)||0),0);
   const totalDepositosMes = ledger.reduce((s,r)=>s+(Number(r.depositos)||0),0);
+  const sinClasificar = ledger.filter(r => !r.auto && (r.tipo_salida || 'otro') === 'otro' && (Number(r.cargos)||0) > 0);
+  const totalSinClasificar = sinClasificar.reduce((s,r)=>s+(Number(r.cargos)||0),0);
+  const datalistSubcuentas = `<datalist id="datalistGastoSubcuentas">${subcuentas.map(s => `<option value="${rutaSubcuenta(s, subcuentas, mayores).replace(/"/g,'&quot;')}">`).join('')}</datalist>`;
 
   box.innerHTML = `
+    ${datalistSubcuentas}
+    ${sinClasificar.length ? `<div class="card" style="background:#fff8ec;border:1px solid #f0d99a;margin-bottom:12px;padding:12px 16px;">
+      <strong style="color:#8a6d1f;">${sinClasificar.length} cargo(s) sin clasificar este mes</strong>
+      <span style="color:var(--muted);"> — suman ${fmt(totalSinClasificar)}. Ve a la columna "Tipo de salida" para clasificarlos.</span>
+    </div>` : ''}
     <div class="card-head" style="margin-top:14px;">
       <span class="hint">Saldo al inicio de ${STATE.currentMonth}: ${fmtNum(saldoApertura)} ${moneda.nombre}</span>
       <div style="display:flex;gap:8px;">
@@ -2805,7 +2820,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
   document.getElementById('addMovBtnEfvo').addEventListener('click', () => {
     openMovimientoModal({ tipo: 'efectivo', refId: moneda.id, businessId, onDone: () => renderMonedaLedger({ ...moneda }, businessId, conceptosEfectivo) });
   });
-  wireSalidaCellHandlers(box, 'fz_efectivo_mov', () => renderMonedaLedger(moneda, businessId, conceptosEfectivo), traspasoCtx, facturasPend);
+  wireSalidaCellHandlers(box, 'fz_efectivo_mov', () => renderMonedaLedger(moneda, businessId, conceptosEfectivo), traspasoCtx, facturasPend, subcuentas, mayores);
   wireInputsMoneda(box);
   wireAdjuntosHandlers(box, 'fz_efectivo_mov', businessId, () => renderMonedaLedger(moneda, businessId, conceptosEfectivo));
   box.querySelectorAll('.mov-cell').forEach(inp => {
@@ -2940,8 +2955,16 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
 
   const totalDepositosMes = ledger.reduce((s,m)=>s+(Number(m.depositos)||0),0);
   const totalCargosMes = ledger.reduce((s,m)=>s+(Number(m.cargos)||0),0);
+  const sinClasificar = ledger.filter(m => !m.auto && (m.tipo_salida || 'otro') === 'otro' && (Number(m.cargos)||0) > 0);
+  const totalSinClasificar = sinClasificar.reduce((s,m)=>s+(Number(m.cargos)||0),0);
+  const datalistSubcuentas = `<datalist id="datalistGastoSubcuentas">${subcuentas.map(s => `<option value="${rutaSubcuenta(s, subcuentas, mayores).replace(/"/g,'&quot;')}">`).join('')}</datalist>`;
 
   box.innerHTML = `
+    ${datalistSubcuentas}
+    ${sinClasificar.length ? `<div class="card" style="background:#fff8ec;border:1px solid #f0d99a;margin-bottom:12px;padding:12px 16px;">
+      <strong style="color:#8a6d1f;">${sinClasificar.length} cargo(s) sin clasificar este mes</strong>
+      <span style="color:var(--muted);"> — suman ${fmt(totalSinClasificar)}. Ve a la columna "Tipo de salida" para clasificarlos.</span>
+    </div>` : ''}
     <div class="card-head" style="margin-top:14px;">
       <span class="hint">Saldo al inicio de ${STATE.currentMonth}: ${fmt(saldoApertura)}</span>
       <div style="display:flex;gap:8px;">
@@ -2962,7 +2985,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
   document.getElementById('addMovBtnBanco').addEventListener('click', () => {
     openMovimientoModal({ tipo: 'banco', refId: cuentaId, businessId, onDone: () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas) });
   });
-  wireSalidaCellHandlers(box, 'fz_bancos_mov', () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas), traspasoCtx, facturasPend);
+  wireSalidaCellHandlers(box, 'fz_bancos_mov', () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas), traspasoCtx, facturasPend, subcuentas, mayores);
   wireInputsMoneda(box);
   wireAdjuntosHandlers(box, 'fz_bancos_mov', businessId, () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas));
   box.querySelectorAll('.mov-cell').forEach(inp => {
