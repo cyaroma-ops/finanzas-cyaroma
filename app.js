@@ -62,11 +62,14 @@ function toast(msg, kind) {
 /* ---------- Auditoría: registrar quién crea/edita/elimina qué ---------- */
 async function registrarAuditoria(businessId, accion, modulo, descripcion) {
   try {
-    await sb.from('fz_auditoria').insert({
+    const { error } = await sb.from('fz_auditoria').insert({
       business_id: businessId, usuario_email: STATE.user?.email || null,
       accion, modulo, descripcion,
     });
-  } catch (e) { /* nunca bloquear la operación principal por un fallo de auditoría */ }
+    if (error) toast('No se pudo registrar en Auditoría: ' + error.message, 'error');
+  } catch (e) {
+    toast('No se pudo registrar en Auditoría: ' + (e?.message || e), 'error');
+  }
 }
 
 /* ---------- Adjuntos (PDF/imagen) en Proveedores, Bancos, Efectivo, Pólizas ---------- */
@@ -2520,7 +2523,7 @@ async function openTraspasoModal(businessId, onDone) {
 /* ---------- Celdas compartidas: clasificación de una salida (gasto/proveedor/otro) ---------- */
 function salidaCellsHtml(r, subcuentas, mayores, facturasPend, prefix, traspasoCtx) {
   if (r.tipo_salida === 'traspaso') {
-    return `<td><span style="color:var(--muted);">Traspaso</span></td><td>—</td>`;
+    return `<td data-salida-tipo-cell="${r.id}"><span style="color:var(--muted);">Traspaso</span></td><td data-salida-detalle-cell="${r.id}">—</td>`;
   }
   const tipo = r.tipo_salida || 'otro';
   const tipoSelect = `<select class="cell salida-tipo" data-id="${r.id}">
@@ -2551,7 +2554,14 @@ function salidaCellsHtml(r, subcuentas, mayores, facturasPend, prefix, traspasoC
       ${opciones.map(m => `<option value="${m.id}">${m.nombre}</option>`).join('')}
     </select>`;
   }
-  return `<td>${tipoSelect}</td><td>${detalle}</td>`;
+  return `<td data-salida-tipo-cell="${r.id}">${tipoSelect}</td><td data-salida-detalle-cell="${r.id}">${detalle}</td>`;
+}
+function sinClasificarBannerHtml(count, total) {
+  if (!count) return '';
+  return `<div class="card" style="background:#fff8ec;border:1px solid #f0d99a;margin-bottom:12px;padding:12px 16px;">
+    <strong style="color:#8a6d1f;">${count} cargo(s) sin clasificar este mes</strong>
+    <span style="color:var(--muted);"> — suman ${fmt(total)}. Ve a la columna "Tipo de salida" para clasificarlos.</span>
+  </div>`;
 }
 function facturaIdsDe(r) {
   if (Array.isArray(r.proveedor_factura_ids) && r.proveedor_factura_ids.length) return r.proveedor_factura_ids;
@@ -2559,23 +2569,57 @@ function facturaIdsDe(r) {
   return [];
 }
 
-function wireSalidaCellHandlers(container, table, onChange, traspasoCtx, facturasPend, subcuentas, mayores) {
+function wireSalidaCellHandlers(container, table, onChange, traspasoCtx, facturasPend, subcuentas, mayores, ledger, prefix, actualizarResumen) {
+  const reemplazarCeldasDeFila = (rowId) => {
+    if (!ledger) { onChange(); return; }
+    const rowObj = ledger.find(x => x.id === rowId);
+    if (!rowObj) { onChange(); return; }
+    const tr = container.querySelector(`[data-salida-tipo-cell="${rowId}"]`)?.closest('tr');
+    if (!tr) { onChange(); return; }
+    const nuevoHtml = salidaCellsHtml(rowObj, subcuentas, mayores, facturasPend, prefix, traspasoCtx);
+    const tempRow = document.createElement('tr');
+    tempRow.innerHTML = nuevoHtml;
+    const tipoCellVieja = tr.querySelector(`[data-salida-tipo-cell="${rowId}"]`);
+    const detalleCellVieja = tr.querySelector(`[data-salida-detalle-cell="${rowId}"]`);
+    const [nuevaTipoCell, nuevaDetalleCell] = Array.from(tempRow.children);
+    if (tipoCellVieja) tipoCellVieja.replaceWith(nuevaTipoCell);
+    if (detalleCellVieja) detalleCellVieja.replaceWith(nuevaDetalleCell);
+    wireSalidaCellHandlers(tr, table, onChange, traspasoCtx, facturasPend, subcuentas, mayores, ledger, prefix, actualizarResumen);
+    if (actualizarResumen) actualizarResumen();
+    const foco = nuevaDetalleCell.querySelector('select, input');
+    if (foco) foco.focus();
+  };
   container.querySelectorAll('.salida-tipo').forEach(sel => sel.addEventListener('change', async () => {
-    await sb.from(table).update({ tipo_salida: sel.value, subcuenta_id: null, proveedor_factura_id: null, proveedor_factura_ids: [] }).eq('id', sel.dataset.id);
-    onChange();
+    const { error } = await sb.from(table).update({ tipo_salida: sel.value, subcuenta_id: null, proveedor_factura_id: null, proveedor_factura_ids: [] }).eq('id', sel.dataset.id);
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    if (ledger) {
+      const rowObj = ledger.find(x => x.id === sel.dataset.id);
+      if (rowObj) { rowObj.tipo_salida = sel.value; rowObj.subcuenta_id = null; rowObj.proveedor_factura_id = null; rowObj.proveedor_factura_ids = []; }
+    }
+    reemplazarCeldasDeFila(sel.dataset.id);
   }));
   container.querySelectorAll('.salida-detalle').forEach(sel => sel.addEventListener('change', async () => {
     const field = sel.dataset.field;
-    await sb.from(table).update({ [field]: sel.value || null }).eq('id', sel.dataset.id);
-    onChange();
+    const { error } = await sb.from(table).update({ [field]: sel.value || null }).eq('id', sel.dataset.id);
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    if (ledger) { const rowObj = ledger.find(x => x.id === sel.dataset.id); if (rowObj) rowObj[field] = sel.value || null; }
+    reemplazarCeldasDeFila(sel.dataset.id);
   }));
   container.querySelectorAll('.salida-detalle-buscar').forEach(inp => inp.addEventListener('change', async () => {
     const texto = inp.value.trim();
-    if (!texto) { await sb.from(table).update({ subcuenta_id: null }).eq('id', inp.dataset.id); onChange(); return; }
+    if (!texto) {
+      const { error } = await sb.from(table).update({ subcuenta_id: null }).eq('id', inp.dataset.id);
+      if (error) { toast('Error: ' + error.message, 'error'); return; }
+      if (ledger) { const rowObj = ledger.find(x => x.id === inp.dataset.id); if (rowObj) rowObj.subcuenta_id = null; }
+      reemplazarCeldasDeFila(inp.dataset.id);
+      return;
+    }
     const match = (subcuentas || []).find(s => rutaSubcuenta(s, subcuentas, mayores) === texto);
-    if (!match) { toast('No se encontró esa cuenta. Elige una de la lista que aparece al escribir.', 'error'); onChange(); return; }
-    await sb.from(table).update({ subcuenta_id: match.id }).eq('id', inp.dataset.id);
-    onChange();
+    if (!match) { toast('No se encontró esa cuenta. Elige una de la lista que aparece al escribir.', 'error'); reemplazarCeldasDeFila(inp.dataset.id); return; }
+    const { error } = await sb.from(table).update({ subcuenta_id: match.id }).eq('id', inp.dataset.id);
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    if (ledger) { const rowObj = ledger.find(x => x.id === inp.dataset.id); if (rowObj) rowObj.subcuenta_id = match.id; }
+    reemplazarCeldasDeFila(inp.dataset.id);
   }));
   container.querySelectorAll('.salida-abrir-facturas').forEach(btn => btn.addEventListener('click', () => {
     openFacturasPagoModal(btn.dataset.id, table, facturasPend, traspasoCtx, onChange);
@@ -2807,10 +2851,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
 
   box.innerHTML = `
     ${datalistSubcuentas}
-    ${sinClasificar.length ? `<div class="card" style="background:#fff8ec;border:1px solid #f0d99a;margin-bottom:12px;padding:12px 16px;">
-      <strong style="color:#8a6d1f;">${sinClasificar.length} cargo(s) sin clasificar este mes</strong>
-      <span style="color:var(--muted);"> — suman ${fmt(totalSinClasificar)}. Ve a la columna "Tipo de salida" para clasificarlos.</span>
-    </div>` : ''}
+    <div id="sinClasificarBannerEfvo">${sinClasificarBannerHtml(sinClasificar.length, totalSinClasificar)}</div>
     <div class="card-head" style="margin-top:14px;">
       <span class="hint">Saldo al inicio de ${STATE.currentMonth}: ${fmtNum(saldoApertura)} ${moneda.nombre}</span>
       <div style="display:flex;gap:8px;">
@@ -2831,7 +2872,12 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
   document.getElementById('addMovBtnEfvo').addEventListener('click', () => {
     openMovimientoModal({ tipo: 'efectivo', refId: moneda.id, businessId, onDone: () => renderMonedaLedger({ ...moneda }, businessId, conceptosEfectivo) });
   });
-  wireSalidaCellHandlers(box, 'fz_efectivo_mov', () => renderMonedaLedger(moneda, businessId, conceptosEfectivo), traspasoCtx, facturasPend, subcuentas, mayores);
+  wireSalidaCellHandlers(box, 'fz_efectivo_mov', () => renderMonedaLedger(moneda, businessId, conceptosEfectivo), traspasoCtx, facturasPend, subcuentas, mayores, ledger, 'mov', () => {
+    const restantes = ledger.filter(r => !r.auto && (r.tipo_salida || 'otro') === 'otro' && (Number(r.cargos)||0) > 0);
+    const totalRestante = restantes.reduce((s,r)=>s+(Number(r.cargos)||0),0);
+    const banner = document.getElementById('sinClasificarBannerEfvo');
+    if (banner) banner.innerHTML = sinClasificarBannerHtml(restantes.length, totalRestante);
+  });
   wireInputsMoneda(box);
   wireAdjuntosHandlers(box, 'fz_efectivo_mov', businessId, () => renderMonedaLedger(moneda, businessId, conceptosEfectivo));
   box.querySelectorAll('.mov-cell').forEach(inp => {
@@ -2999,10 +3045,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
 
   box.innerHTML = `
     ${datalistSubcuentas}
-    ${sinClasificar.length ? `<div class="card" style="background:#fff8ec;border:1px solid #f0d99a;margin-bottom:12px;padding:12px 16px;">
-      <strong style="color:#8a6d1f;">${sinClasificar.length} cargo(s) sin clasificar este mes</strong>
-      <span style="color:var(--muted);"> — suman ${fmt(totalSinClasificar)}. Ve a la columna "Tipo de salida" para clasificarlos.</span>
-    </div>` : ''}
+    <div id="sinClasificarBannerBanco">${sinClasificarBannerHtml(sinClasificar.length, totalSinClasificar)}</div>
     <div class="card-head" style="margin-top:14px;">
       <span class="hint">Saldo al inicio de ${STATE.currentMonth}: ${fmt(saldoApertura)}</span>
       <div style="display:flex;gap:8px;">
@@ -3023,7 +3066,12 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
   document.getElementById('addMovBtnBanco').addEventListener('click', () => {
     openMovimientoModal({ tipo: 'banco', refId: cuentaId, businessId, onDone: () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas) });
   });
-  wireSalidaCellHandlers(box, 'fz_bancos_mov', () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas), traspasoCtx, facturasPend, subcuentas, mayores);
+  wireSalidaCellHandlers(box, 'fz_bancos_mov', () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas), traspasoCtx, facturasPend, subcuentas, mayores, ledger, 'mov', () => {
+    const restantes = ledger.filter(m => !m.auto && (m.tipo_salida || 'otro') === 'otro' && (Number(m.cargos)||0) > 0);
+    const totalRestante = restantes.reduce((s,m)=>s+(Number(m.cargos)||0),0);
+    const banner = document.getElementById('sinClasificarBannerBanco');
+    if (banner) banner.innerHTML = sinClasificarBannerHtml(restantes.length, totalRestante);
+  });
   wireInputsMoneda(box);
   wireAdjuntosHandlers(box, 'fz_bancos_mov', businessId, () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas));
   box.querySelectorAll('.mov-cell').forEach(inp => {
