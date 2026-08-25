@@ -225,6 +225,7 @@ async function boot() {
   if (!STATE.esPropietario) {
     document.getElementById('openUsuariosBtn').style.display = 'none';
     document.getElementById('addBizBtn').style.display = 'none';
+    document.getElementById('editBizBtn').style.display = 'none';
   }
 
   document.getElementById('monthPicker').addEventListener('change', (e) => {
@@ -590,9 +591,9 @@ async function getBancoLedgerRows(businessId, cuenta, conceptosTarjetas, mesFilt
   polizaLineas.forEach(l => {
     autoRows.push({ id: 'poliza-' + l.id, fecha: l.poliza.fecha, descripcion: `Póliza #${l.poliza.numero ?? ''} — ${l.descripcion || l.poliza.concepto || ''}`, concepto: 'Póliza de diario', cargos: Number(l.abono) || 0, depositos: Number(l.cargo) || 0, auto: true });
   });
-  const { data: movs } = await sb.from('fz_bancos_mov').select('*').eq('cuenta_id', cuenta.id).order('fecha');
+  const { data: movs } = await sb.from('fz_bancos_mov').select('*').eq('cuenta_id', cuenta.id).order('fecha').order('created_at');
   const manualRows = (movs || []).map(m => ({ ...m, auto: false }));
-  const todas = [...autoRows, ...manualRows].sort((a, b) => a.fecha.localeCompare(b.fecha));
+  const todas = [...autoRows, ...manualRows].sort((a, b) => a.fecha.localeCompare(b.fecha) || (a.created_at||'').localeCompare(b.created_at||''));
   if (!mesFiltro) return todas;
   const mesStart = mesFiltro + '-01';
   const mesEnd = mesFiltro + '-31';
@@ -2608,9 +2609,9 @@ async function getMonedaLedgerRows(businessId, moneda, conceptosEfectivo, mesFil
   polizaLineas.forEach(l => {
     autoRows.push({ id: 'poliza-' + l.id, fecha: l.poliza.fecha, proveedor: 'Póliza de diario', descripcion: `Póliza #${l.poliza.numero ?? ''} — ${l.descripcion || l.poliza.concepto || ''}`, factura: '', cargos: Number(l.abono) || 0, depositos: Number(l.cargo) || 0, auto: true });
   });
-  const { data: movs } = await sb.from('fz_efectivo_mov').select('*').eq('moneda_id', moneda.id).order('fecha');
+  const { data: movs } = await sb.from('fz_efectivo_mov').select('*').eq('moneda_id', moneda.id).order('fecha').order('created_at');
   const manualRows = (movs || []).map(m => ({ ...m, auto: false }));
-  const todas = [...autoRows, ...manualRows].sort((a, b) => a.fecha.localeCompare(b.fecha));
+  const todas = [...autoRows, ...manualRows].sort((a, b) => a.fecha.localeCompare(b.fecha) || (a.created_at||'').localeCompare(b.created_at||''));
   if (!mesFiltro) return todas;
   const mesStart = mesFiltro + '-01';
   const mesEnd = mesFiltro + '-31';
@@ -4058,16 +4059,8 @@ async function renderPolizas() {
 
   document.getElementById('openCuentasBtnPolizas').addEventListener('click', () => openCuentasModal(b.id, renderPolizas));
   document.getElementById('importPolizasBtn').addEventListener('click', () => openImportExcelModal('polizas', b.id, renderPolizas));
-  document.getElementById('addPolizaBtn').addEventListener('click', async () => {
-    const maxNum = todasPolizas.reduce((mx,p)=>Math.max(mx, p.numero||0), 0);
-    const { data, error } = await sb.from('fz_polizas').insert({ business_id: b.id, numero: maxNum+1, fecha: todayStr(), concepto: '' }).select().single();
-    if (error) { toast('Error: ' + error.message, 'error'); return; }
-    await sb.from('fz_polizas_lineas').insert([
-      { business_id: b.id, poliza_id: data.id, cargo: 0, abono: 0, orden: 0 },
-      { business_id: b.id, poliza_id: data.id, cargo: 0, abono: 0, orden: 1 },
-    ]);
-    registrarAuditoria(b.id, 'crear', 'Pólizas', `Póliza #${maxNum+1} creada`);
-    openPolizaModal(data.id, b.id);
+  document.getElementById('addPolizaBtn').addEventListener('click', () => {
+    openPolizaModal(null, b.id);
   });
   document.getElementById('polizaBuscarTexto').addEventListener('input', (e) => { STATE_polizaFiltroTexto = e.target.value; renderPolizas(); });
   document.getElementById('polizaFiltroDesde').addEventListener('change', (e) => { STATE_polizaFiltroDesde = e.target.value; renderPolizas(); });
@@ -4080,189 +4073,90 @@ async function renderPolizas() {
   window.scrollTo(0, scrollY);
 }
 
-function polizaCardHtml(p, lineasPoliza, subcuentas, mayores, cuentasBanco, monedasEfectivo) {
-  const totalCargo = lineasPoliza.reduce((s,l)=>s+(Number(l.cargo)||0),0);
-  const totalAbono = lineasPoliza.reduce((s,l)=>s+(Number(l.abono)||0),0);
-  const diff = totalCargo - totalAbono;
-  const cuadrada = Math.abs(diff) < 0.01;
-  const cuentaCellsHtml = (l) => {
-    const tipo = l.cuenta_tipo || 'subcuenta';
-    const tipoSelect = `<select class="cell linea-tipo" data-id="${l.id}">
-      <option value="subcuenta" ${tipo==='subcuenta'?'selected':''}>Cuenta contable</option>
-      <option value="banco" ${tipo==='banco'?'selected':''}>Banco</option>
-      <option value="efectivo" ${tipo==='efectivo'?'selected':''}>Efectivo</option>
-    </select>`;
-    let cuentaSelect;
-    if (tipo === 'banco') {
-      cuentaSelect = `<select class="cell linea-cuenta" data-id="${l.id}" data-tipo="banco">
-        <option value="">— elegir cuenta bancaria —</option>
-        ${cuentasBanco.map(c => `<option value="${c.id}" ${l.cuenta_ref_id===c.id?'selected':''}>${c.nombre}</option>`).join('')}
-      </select>`;
-    } else if (tipo === 'efectivo') {
-      cuentaSelect = `<select class="cell linea-cuenta" data-id="${l.id}" data-tipo="efectivo">
-        <option value="">— elegir caja —</option>
-        ${monedasEfectivo.map(m => `<option value="${m.id}" ${l.cuenta_ref_id===m.id?'selected':''}>${m.nombre}</option>`).join('')}
-      </select>`;
-    } else {
-      cuentaSelect = `<select class="cell linea-cuenta" data-id="${l.id}" data-tipo="subcuenta">
-        <option value="">— elegir subcuenta —</option>
-        ${opcionesSubcuentaHtml(subcuentas, mayores, l.subcuenta_id)}
-      </select>`;
-    }
-    return `<td>${tipoSelect}</td><td>${cuentaSelect}</td>`;
-  };
-  return `
-    <div class="card" style="background:#fbfcfe;border:1.5px solid var(--line);margin-bottom:16px;position:relative;">
-      <button class="poliza-cerrar-x" data-id="${p.id}" title="Cerrar sin guardar" style="position:absolute;top:10px;right:14px;background:none;border:none;font-size:20px;color:var(--muted);cursor:pointer;line-height:1;">✕</button>
-      <div class="card-head" style="margin-bottom:10px;">
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-          <strong style="color:var(--navy-1);">Póliza #${p.numero ?? '—'}</strong>
-          <input class="cell poliza-cell" type="date" value="${p.fecha}" data-id="${p.id}" data-field="fecha" style="width:auto;">
-          <input class="cell poliza-cell" type="text" placeholder="Concepto de la póliza" value="${p.concepto||''}" data-id="${p.id}" data-field="concepto" style="min-width:220px;">
-          ${adjuntoCellHtml(p.archivo_path, p.archivo_nombre, p.id)}
-        </div>
-        <div style="display:flex;align-items:center;gap:10px;">
-          <span class="badge ${cuadrada?'pag':'pend'}">${cuadrada ? 'Cuadrada' : 'Diferencia ' + fmt(diff)}</span>
-          <button class="btn btn-gold btn-sm poliza-cerrar" data-id="${p.id}">Guardar</button>
-          <button class="btn btn-ghost btn-sm poliza-del" data-id="${p.id}" style="color:var(--red);">Eliminar póliza</button>
-        </div>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Tipo</th><th>Cuenta</th><th>Descripción</th><th>Cargo</th><th>Abono</th><th></th></tr></thead>
-          <tbody>
-            ${lineasPoliza.map(l => `<tr>
-              ${cuentaCellsHtml(l)}
-              <td><input class="cell linea-cell" type="text" value="${l.descripcion||''}" data-id="${l.id}" data-field="descripcion"></td>
-              <td><input class="cell linea-cell num" type="number" step="0.01" value="${l.cargo ?? 0}" data-id="${l.id}" data-field="cargo"></td>
-              <td><input class="cell linea-cell num" type="number" step="0.01" value="${l.abono ?? 0}" data-id="${l.id}" data-field="abono"></td>
-              <td><button class="row-del linea-del" data-id="${l.id}">✕</button></td>
-            </tr>`).join('')}
-            <tr class="total-row">
-              <td colspan="3">Totales</td>
-              <td class="num">${fmt(totalCargo)}</td>
-              <td class="num">${fmt(totalAbono)}</td>
-              <td></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <button class="btn btn-ghost btn-sm addLineaBtn" data-poliza="${p.id}" style="margin-top:10px;">+ Agregar línea</button>
-    </div>`;
+/* ============================================================
+   PÓLIZAS DE DIARIO — modo "borrador": nada se guarda en la base
+   de datos mientras editas; solo al darle "Guardar". La "X" descarta
+   los cambios (o pregunta primero, si ya habías editado algo).
+   ============================================================ */
+let STATE_polizaBorrador = null; // { esNueva, businessId, poliza:{...}, lineas:[...], catalogos:{...}, original:'...json...' }
+
+function opcionesSubcuentaHtmlPrefijadas(subcuentas, mayores, selectedId) {
+  const porMayor = mayores.map(m => {
+    const construirNivel = (padreId, nivel) => {
+      return subcuentas.filter(s => s.cuenta_mayor_id === m.id && (s.subcuenta_padre_id || null) === padreId)
+        .flatMap(s => [
+          `<option value="sub:${s.id}" ${selectedId===s.id?'selected':''}>${'—'.repeat(nivel)} ${s.nombre}</option>`,
+          ...construirNivel(s.id, nivel + 1),
+        ]);
+    };
+    const opts = construirNivel(null, 0);
+    return opts.length ? `<optgroup label="${m.nombre}">${opts.join('')}</optgroup>` : '';
+  }).join('');
+  return porMayor;
 }
 
-function wirePolizaHandlers(el, businessId) {
-  el.querySelectorAll('.poliza-cerrar').forEach(btn => btn.addEventListener('click', async () => {
-    const polizaId = btn.dataset.id;
-    const [pInfoQ, lineasInfoQ] = await Promise.all([
-      sb.from('fz_polizas').select('numero,fecha,concepto,archivo_path').eq('id', polizaId).single(),
-      sb.from('fz_polizas_lineas').select('cargo,abono,subcuenta_id,cuenta_ref_id,descripcion').eq('poliza_id', polizaId),
-    ]);
-    const pInfo = pInfoQ.data;
-    const sinUsar = !(pInfo?.concepto || '').trim() && !pInfo?.archivo_path && (lineasInfoQ.data || []).every(l =>
-      (Number(l.cargo) || 0) === 0 && (Number(l.abono) || 0) === 0 && !l.subcuenta_id && !l.cuenta_ref_id && !(l.descripcion || '').trim()
-    );
-    if (sinUsar) {
-      await sb.from('fz_polizas').delete().eq('id', polizaId); // nunca se usó, no tiene caso guardarla ni auditarla
-    } else {
-      registrarAuditoria(businessId, 'editar', 'Pólizas', `Póliza #${pInfo?.numero ?? '—'} (${pInfo?.fecha || ''}) — ${pInfo?.concepto || 'sin concepto'}`);
-    }
-    document.getElementById('modalPoliza').classList.remove('show');
-    STATE_polizaAbiertaId = null;
-    renderPolizas();
-  }));
-  el.querySelectorAll('.poliza-cerrar-x').forEach(btn => btn.addEventListener('click', async () => {
-    const polizaId = btn.dataset.id;
-    const [pInfoQ, lineasInfoQ] = await Promise.all([
-      sb.from('fz_polizas').select('concepto,archivo_path').eq('id', polizaId).single(),
-      sb.from('fz_polizas_lineas').select('cargo,abono,subcuenta_id,cuenta_ref_id,descripcion').eq('poliza_id', polizaId),
-    ]);
-    const sinUsar = !(pInfoQ.data?.concepto || '').trim() && !pInfoQ.data?.archivo_path && (lineasInfoQ.data || []).every(l =>
-      (Number(l.cargo) || 0) === 0 && (Number(l.abono) || 0) === 0 && !l.subcuenta_id && !l.cuenta_ref_id && !(l.descripcion || '').trim()
-    );
-    if (sinUsar) {
-      await sb.from('fz_polizas').delete().eq('id', polizaId); // se borra sola: nunca se llegó a usar
-    }
-    document.getElementById('modalPoliza').classList.remove('show');
-    STATE_polizaAbiertaId = null;
-    renderPolizas();
-  }));
-  el.querySelectorAll('.poliza-cell').forEach(inp => inp.addEventListener('change', async () => {
-    await sb.from('fz_polizas').update({ [inp.dataset.field]: inp.value }).eq('id', inp.dataset.id);
-    refrescarPolizaAbierta(businessId);
-  }));
-  el.querySelectorAll('.poliza-del').forEach(btn => btn.addEventListener('click', async () => {
-    if (!confirm('¿Estás seguro que deseas eliminar esta póliza? Esta acción no se puede deshacer.')) return;
-    const { data: pInfo } = await sb.from('fz_polizas').select('numero,fecha,concepto').eq('id', btn.dataset.id).single();
-    await sb.from('fz_polizas').delete().eq('id', btn.dataset.id);
-    registrarAuditoria(businessId, 'eliminar', 'Pólizas', `Póliza #${pInfo?.numero ?? '—'} (${pInfo?.fecha || ''}) — ${pInfo?.concepto || 'sin concepto'}`);
-    document.getElementById('modalPoliza').classList.remove('show');
-    if (STATE_polizaAbiertaId === btn.dataset.id) STATE_polizaAbiertaId = null;
-    renderPolizas();
-  }));
-  el.querySelectorAll('.linea-tipo').forEach(sel => sel.addEventListener('change', async () => {
-    const { error } = await sb.from('fz_polizas_lineas').update({ cuenta_tipo: sel.value, subcuenta_id: null, cuenta_ref_id: null }).eq('id', sel.dataset.id);
-    if (error) { toast('Error: ' + error.message, 'error'); return; }
-    refrescarPolizaAbierta(businessId);
-  }));
-  el.querySelectorAll('.linea-cuenta').forEach(sel => sel.addEventListener('change', async () => {
-    const tipo = sel.dataset.tipo;
-    const payload = tipo === 'subcuenta' ? { subcuenta_id: sel.value || null, cuenta_ref_id: null } : { cuenta_ref_id: sel.value || null, subcuenta_id: null };
-    const { error } = await sb.from('fz_polizas_lineas').update(payload).eq('id', sel.dataset.id);
-    if (error) { toast('Error: ' + error.message, 'error'); return; }
-    refrescarPolizaAbierta(businessId);
-  }));
-  el.querySelectorAll('.linea-cell').forEach(inp => inp.addEventListener('change', async () => {
-    const field = inp.dataset.field;
-    const val = field === 'descripcion' ? (inp.value || null) : leerMonto(inp.value);
-    await sb.from('fz_polizas_lineas').update({ [field]: val }).eq('id', inp.dataset.id);
-    refrescarPolizaAbierta(businessId);
-  }));
-  el.querySelectorAll('.linea-del').forEach(btn => btn.addEventListener('click', async () => {
-    await sb.from('fz_polizas_lineas').delete().eq('id', btn.dataset.id);
-    refrescarPolizaAbierta(businessId);
-  }));
-  el.querySelectorAll('.addLineaBtn').forEach(btn => btn.addEventListener('click', async () => {
-    const { data: existentes } = await sb.from('fz_polizas_lineas').select('orden').eq('poliza_id', btn.dataset.poliza);
-    const siguienteOrden = (existentes || []).reduce((mx,l)=>Math.max(mx, l.orden||0), -1) + 1;
-    await sb.from('fz_polizas_lineas').insert({ business_id: businessId, poliza_id: btn.dataset.poliza, cargo: 0, abono: 0, orden: siguienteOrden });
-    refrescarPolizaAbierta(businessId);
-  }));
-  wireAdjuntosHandlers(el, 'fz_polizas', businessId, () => refrescarPolizaAbierta(businessId));
+async function crearBorradorPolizaNueva(businessId) {
+  const { data: existentes } = await sb.from('fz_polizas').select('numero').eq('business_id', businessId);
+  const maxNum = (existentes || []).reduce((mx, p) => Math.max(mx, p.numero || 0), 0);
+  return {
+    esNueva: true, businessId,
+    poliza: { id: null, numero: maxNum + 1, fecha: todayStr(), concepto: '', archivo_path: null, archivo_nombre: null },
+    lineas: [
+      { id: 'tmp_1', subcuenta_id: null, cuenta_tipo: 'subcuenta', cuenta_ref_id: null, cargo: 0, abono: 0, descripcion: '', orden: 0 },
+      { id: 'tmp_2', subcuenta_id: null, cuenta_tipo: 'subcuenta', cuenta_ref_id: null, cargo: 0, abono: 0, descripcion: '', orden: 1 },
+    ],
+  };
+}
+async function crearBorradorPolizaExistente(polizaId, businessId) {
+  const [{ data: p }, { data: lineas }] = await Promise.all([
+    sb.from('fz_polizas').select('*').eq('id', polizaId).single(),
+    sb.from('fz_polizas_lineas').select('*').eq('poliza_id', polizaId).order('orden'),
+  ]);
+  return { esNueva: false, businessId, poliza: { ...p }, lineas: (lineas || []).map(l => ({ ...l })) };
+}
+
+function polizaEsBorradorVacio(borrador) {
+  return !(borrador.poliza.concepto || '').trim() && !borrador.poliza.archivo_path && borrador.lineas.every(l =>
+    (Number(l.cargo) || 0) === 0 && (Number(l.abono) || 0) === 0 && !l.subcuenta_id && !l.cuenta_ref_id && !(l.descripcion || '').trim()
+  );
 }
 
 async function openPolizaModal(polizaId, businessId) {
-  STATE_polizaAbiertaId = polizaId;
+  const [subcuentas, mayores, cuentasBancoQ, monedasQ] = await Promise.all([
+    loadSubcuentas(businessId), loadCuentasMayor(businessId),
+    sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
+    sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
+  ]);
+  const catalogos = { subcuentas, mayores, cuentasBanco: cuentasBancoQ.data || [], monedasEfectivo: monedasQ.data || [] };
+  const base = polizaId ? await crearBorradorPolizaExistente(polizaId, businessId) : await crearBorradorPolizaNueva(businessId);
+  STATE_polizaBorrador = { ...base, catalogos };
+  STATE_polizaBorrador.original = JSON.stringify({ poliza: STATE_polizaBorrador.poliza, lineas: STATE_polizaBorrador.lineas });
   document.getElementById('modalPoliza').classList.add('show');
-  await refrescarPolizaAbierta(businessId);
+  renderizarBorradorPoliza();
 }
 
-async function refrescarPolizaAbierta(businessId) {
-  const wrap = document.getElementById('modalPolizaBody');
-  if (!wrap || !STATE_polizaAbiertaId) { renderPolizas(); return; }
+function polizaBorradorEsSucio() {
+  if (!STATE_polizaBorrador) return false;
+  if (STATE_polizaBorrador.esNueva) return !polizaEsBorradorVacio(STATE_polizaBorrador);
+  return JSON.stringify({ poliza: STATE_polizaBorrador.poliza, lineas: STATE_polizaBorrador.lineas }) !== STATE_polizaBorrador.original;
+}
 
-  // Recordar qué campo tenía el foco (y en qué línea) para no perder el lugar al redibujar
+function renderizarBorradorPoliza() {
+  const wrap = document.getElementById('modalPolizaBody');
+  if (!wrap || !STATE_polizaBorrador) return;
+
   const activo = document.activeElement;
   let foco = null;
   if (activo && wrap.contains(activo)) {
     foco = {
-      clases: Array.from(activo.classList),
-      id: activo.dataset.id || null,
+      clases: Array.from(activo.classList), id: activo.dataset.id || null,
       selStart: typeof activo.selectionStart === 'number' ? activo.selectionStart : null,
       selEnd: typeof activo.selectionEnd === 'number' ? activo.selectionEnd : null,
     };
   }
 
-  const [{ data: p }, lineasQ, subcuentas, mayores, cuentasBancoQ, monedasQ] = await Promise.all([
-    sb.from('fz_polizas').select('*').eq('id', STATE_polizaAbiertaId).single(),
-    sb.from('fz_polizas_lineas').select('*').eq('poliza_id', STATE_polizaAbiertaId).order('orden'),
-    loadSubcuentas(businessId), loadCuentasMayor(businessId),
-    sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
-    sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
-  ]);
-  if (!p) { document.getElementById('modalPoliza').classList.remove('show'); renderPolizas(); return; }
-  wrap.innerHTML = polizaCardHtml(p, lineasQ.data || [], subcuentas, mayores, cuentasBancoQ.data || [], monedasQ.data || []);
-  wirePolizaHandlers(wrap, businessId);
+  wrap.innerHTML = polizaCardHtmlBorrador(STATE_polizaBorrador);
+  wireBorradorPolizaHandlers(wrap);
 
   if (foco && foco.id) {
     const candidatos = Array.from(wrap.querySelectorAll(`[data-id="${foco.id}"]`));
@@ -4275,3 +4169,176 @@ async function refrescarPolizaAbierta(businessId) {
     }
   }
 }
+
+function polizaCardHtmlBorrador(borrador) {
+  const { poliza: p, lineas: lineasPoliza, catalogos } = borrador;
+  const totalCargo = lineasPoliza.reduce((s, l) => s + (Number(l.cargo) || 0), 0);
+  const totalAbono = lineasPoliza.reduce((s, l) => s + (Number(l.abono) || 0), 0);
+  const diff = totalCargo - totalAbono;
+  const cuadrada = Math.abs(diff) < 0.01;
+
+  const cuentaUnificadaHtml = (l) => {
+    const selVal = l.cuenta_tipo === 'banco' ? `banco:${l.cuenta_ref_id || ''}` : l.cuenta_tipo === 'efectivo' ? `efectivo:${l.cuenta_ref_id || ''}` : `sub:${l.subcuenta_id || ''}`;
+    const subOpts = opcionesSubcuentaHtmlPrefijadas(catalogos.subcuentas, catalogos.mayores, l.subcuenta_id);
+    const bancoOpts = catalogos.cuentasBanco.map(c => `<option value="banco:${c.id}" ${selVal===`banco:${c.id}`?'selected':''}>${c.nombre}</option>`).join('');
+    const efvoOpts = catalogos.monedasEfectivo.map(m => `<option value="efectivo:${m.id}" ${selVal===`efectivo:${m.id}`?'selected':''}>${m.nombre}</option>`).join('');
+    return `<td><select class="cell linea-cuenta-unif" data-id="${l.id}">
+      <option value="">— elegir cuenta —</option>
+      ${subOpts ? `<optgroup label="Cuentas contables">${subOpts}</optgroup>` : ''}
+      ${bancoOpts ? `<optgroup label="Bancos">${bancoOpts}</optgroup>` : ''}
+      ${efvoOpts ? `<optgroup label="Cajas de efectivo">${efvoOpts}</optgroup>` : ''}
+    </select></td>`;
+  };
+
+  return `
+    <div class="card" style="background:#fbfcfe;border:1.5px solid var(--line);margin-bottom:16px;position:relative;">
+      <button class="poliza-cerrar-x" title="Cerrar" style="position:absolute;top:10px;right:14px;background:none;border:none;font-size:20px;color:var(--muted);cursor:pointer;line-height:1;">✕</button>
+      <div class="card-head" style="margin-bottom:10px;">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+          <strong style="color:var(--navy-1);">${borrador.esNueva ? 'Nueva póliza' : 'Póliza #' + (p.numero ?? '—')}</strong>
+          <input class="cell poliza-cell" type="date" value="${p.fecha}" data-field="fecha" style="width:auto;">
+          <input class="cell poliza-cell" type="text" placeholder="Concepto de la póliza" value="${p.concepto || ''}" data-field="concepto" style="min-width:220px;">
+          ${borrador.esNueva
+            ? `<span style="font-size:11.5px;color:var(--muted);">Guarda la póliza para poder adjuntar un archivo</span>`
+            : adjuntoCellHtml(p.archivo_path, p.archivo_nombre, p.id)}
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <span class="badge ${cuadrada ? 'pag' : 'pend'}">${cuadrada ? 'Cuadrada' : 'Diferencia ' + fmt(diff)}</span>
+          <button class="btn btn-gold btn-sm poliza-guardar">Guardar</button>
+          ${!borrador.esNueva ? `<button class="btn btn-ghost btn-sm poliza-del" data-id="${p.id}" style="color:var(--red);">Eliminar póliza</button>` : ''}
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Cuenta</th><th>Descripción</th><th>Cargo</th><th>Abono</th><th></th></tr></thead>
+          <tbody>
+            ${lineasPoliza.map(l => `<tr>
+              ${cuentaUnificadaHtml(l)}
+              <td><input class="cell linea-cell" type="text" value="${l.descripcion || ''}" data-id="${l.id}" data-field="descripcion"></td>
+              <td><input class="cell linea-cell num" type="number" step="0.01" value="${l.cargo ?? 0}" data-id="${l.id}" data-field="cargo"></td>
+              <td><input class="cell linea-cell num" type="number" step="0.01" value="${l.abono ?? 0}" data-id="${l.id}" data-field="abono"></td>
+              <td><button class="row-del linea-del" data-id="${l.id}">✕</button></td>
+            </tr>`).join('')}
+            <tr class="total-row">
+              <td colspan="2">Totales</td>
+              <td class="num">${fmt(totalCargo)}</td>
+              <td class="num">${fmt(totalAbono)}</td>
+              <td></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <button class="btn btn-ghost btn-sm addLineaBtn" style="margin-top:10px;">+ Agregar línea</button>
+    </div>`;
+}
+
+function wireBorradorPolizaHandlers(wrap) {
+  wrap.querySelectorAll('.poliza-cell').forEach(inp => inp.addEventListener('change', () => {
+    STATE_polizaBorrador.poliza[inp.dataset.field] = inp.value;
+    renderizarBorradorPoliza();
+  }));
+  wrap.querySelectorAll('.linea-cuenta-unif').forEach(sel => sel.addEventListener('change', () => {
+    const [tipo, id] = sel.value.split(':');
+    const linea = STATE_polizaBorrador.lineas.find(l => l.id === sel.dataset.id);
+    if (!linea) return;
+    if (tipo === 'banco') { linea.cuenta_tipo = 'banco'; linea.cuenta_ref_id = id || null; linea.subcuenta_id = null; }
+    else if (tipo === 'efectivo') { linea.cuenta_tipo = 'efectivo'; linea.cuenta_ref_id = id || null; linea.subcuenta_id = null; }
+    else { linea.cuenta_tipo = 'subcuenta'; linea.subcuenta_id = id || null; linea.cuenta_ref_id = null; }
+    renderizarBorradorPoliza();
+  }));
+  wrap.querySelectorAll('.linea-cell').forEach(inp => inp.addEventListener('change', () => {
+    const linea = STATE_polizaBorrador.lineas.find(l => l.id === inp.dataset.id);
+    if (!linea) return;
+    const field = inp.dataset.field;
+    linea[field] = field === 'descripcion' ? (inp.value || '') : leerMonto(inp.value);
+    renderizarBorradorPoliza();
+  }));
+  wrap.querySelectorAll('.linea-del').forEach(btn => btn.addEventListener('click', () => {
+    STATE_polizaBorrador.lineas = STATE_polizaBorrador.lineas.filter(l => l.id !== btn.dataset.id);
+    renderizarBorradorPoliza();
+  }));
+  const addBtn = wrap.querySelector('.addLineaBtn');
+  if (addBtn) addBtn.addEventListener('click', () => {
+    const siguienteOrden = Math.max(-1, ...STATE_polizaBorrador.lineas.map(l => l.orden || 0)) + 1;
+    STATE_polizaBorrador.lineas.push({ id: 'tmp_' + Date.now() + '_' + Math.random().toString(36).slice(2,6), subcuenta_id: null, cuenta_tipo: 'subcuenta', cuenta_ref_id: null, cargo: 0, abono: 0, descripcion: '', orden: siguienteOrden });
+    renderizarBorradorPoliza();
+  });
+  const guardarBtn = wrap.querySelector('.poliza-guardar');
+  if (guardarBtn) guardarBtn.addEventListener('click', guardarBorradorPoliza);
+  const cerrarXBtn = wrap.querySelector('.poliza-cerrar-x');
+  if (cerrarXBtn) cerrarXBtn.addEventListener('click', cerrarModalPolizaConfirmando);
+  const delBtn = wrap.querySelector('.poliza-del');
+  if (delBtn) delBtn.addEventListener('click', async () => {
+    if (!confirm('¿Estás seguro que deseas eliminar esta póliza? Esta acción no se puede deshacer.')) return;
+    const businessId = STATE_polizaBorrador.businessId;
+    const p = STATE_polizaBorrador.poliza;
+    await sb.from('fz_polizas').delete().eq('id', p.id);
+    registrarAuditoria(businessId, 'eliminar', 'Pólizas', `Póliza #${p.numero ?? '—'} (${p.fecha || ''}) — ${p.concepto || 'sin concepto'}`);
+    STATE_polizaBorrador = null;
+    document.getElementById('modalPoliza').classList.remove('show');
+    renderPolizas();
+  });
+  if (!STATE_polizaBorrador.esNueva) wireAdjuntosHandlers(wrap, 'fz_polizas', STATE_polizaBorrador.businessId, () => refrescarAdjuntoBorrador());
+}
+
+async function refrescarAdjuntoBorrador() {
+  // el archivo ya se subió y ya se guardó en la BD (la póliza ya existía); solo refrescamos el dato local
+  if (!STATE_polizaBorrador || STATE_polizaBorrador.esNueva) return;
+  const { data: p } = await sb.from('fz_polizas').select('archivo_path,archivo_nombre').eq('id', STATE_polizaBorrador.poliza.id).single();
+  if (p) { STATE_polizaBorrador.poliza.archivo_path = p.archivo_path; STATE_polizaBorrador.poliza.archivo_nombre = p.archivo_nombre; }
+  STATE_polizaBorrador.original = JSON.stringify({ poliza: STATE_polizaBorrador.poliza, lineas: STATE_polizaBorrador.lineas });
+  renderizarBorradorPoliza();
+}
+
+async function guardarBorradorPoliza() {
+  const borrador = STATE_polizaBorrador;
+  const businessId = borrador.businessId;
+
+  if (polizaEsBorradorVacio(borrador)) {
+    if (!borrador.esNueva) await sb.from('fz_polizas').delete().eq('id', borrador.poliza.id);
+    STATE_polizaBorrador = null;
+    document.getElementById('modalPoliza').classList.remove('show');
+    renderPolizas();
+    return;
+  }
+
+  let polizaId = borrador.poliza.id;
+  if (borrador.esNueva) {
+    const { data, error } = await sb.from('fz_polizas').insert({ business_id: businessId, numero: borrador.poliza.numero, fecha: borrador.poliza.fecha, concepto: borrador.poliza.concepto }).select().single();
+    if (error) { toast('Error guardando la póliza: ' + error.message, 'error'); return; }
+    polizaId = data.id;
+  } else {
+    const { error } = await sb.from('fz_polizas').update({ fecha: borrador.poliza.fecha, concepto: borrador.poliza.concepto }).eq('id', polizaId);
+    if (error) { toast('Error guardando la póliza: ' + error.message, 'error'); return; }
+  }
+
+  for (const l of borrador.lineas) {
+    const payload = { subcuenta_id: l.subcuenta_id || null, cuenta_tipo: l.cuenta_tipo || 'subcuenta', cuenta_ref_id: l.cuenta_ref_id || null, cargo: Number(l.cargo) || 0, abono: Number(l.abono) || 0, descripcion: l.descripcion || null, orden: l.orden || 0 };
+    if (String(l.id).startsWith('tmp_')) {
+      await sb.from('fz_polizas_lineas').insert({ business_id: businessId, poliza_id: polizaId, ...payload });
+    } else {
+      await sb.from('fz_polizas_lineas').update(payload).eq('id', l.id);
+    }
+  }
+  if (!borrador.esNueva) {
+    const idsActuales = borrador.lineas.filter(l => !String(l.id).startsWith('tmp_')).map(l => l.id);
+    const { data: existentesEnBD } = await sb.from('fz_polizas_lineas').select('id').eq('poliza_id', polizaId);
+    const idsABorrar = (existentesEnBD || []).map(l => l.id).filter(id => !idsActuales.includes(id));
+    if (idsABorrar.length) await sb.from('fz_polizas_lineas').delete().in('id', idsABorrar);
+  }
+
+  registrarAuditoria(businessId, borrador.esNueva ? 'crear' : 'editar', 'Pólizas', `Póliza #${borrador.poliza.numero ?? '—'} (${borrador.poliza.fecha || ''}) — ${borrador.poliza.concepto || 'sin concepto'}`);
+  STATE_polizaBorrador = null;
+  document.getElementById('modalPoliza').classList.remove('show');
+  renderPolizas();
+}
+
+function cerrarModalPolizaConfirmando() {
+  if (polizaBorradorEsSucio()) {
+    if (!confirm('¿Deseas salir sin guardar? Se perderán los cambios que hiciste.')) return;
+  }
+  STATE_polizaBorrador = null;
+  document.getElementById('modalPoliza').classList.remove('show');
+  renderPolizas();
+}
+
