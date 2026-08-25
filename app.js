@@ -2857,9 +2857,13 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
       if (foco.selStart !== null && elegido.setSelectionRange) {
         try { elegido.setSelectionRange(foco.selStart, foco.selEnd); } catch (e) {}
       }
+      elegido.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    } else {
+      window.scrollTo(0, scrollY);
     }
+  } else {
+    window.scrollTo(0, scrollY);
   }
-  window.scrollTo(0, scrollY);
 }
 
 /* ============================================================
@@ -3045,9 +3049,13 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
       if (foco.selStart !== null && elegido.setSelectionRange) {
         try { elegido.setSelectionRange(foco.selStart, foco.selEnd); } catch (e) {}
       }
+      elegido.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    } else {
+      window.scrollTo(0, scrollY);
     }
+  } else {
+    window.scrollTo(0, scrollY);
   }
-  window.scrollTo(0, scrollY);
 }
 
 /* ============================================================
