@@ -48,8 +48,39 @@ h1,h2,h3,.serif{font-family:'Cormorant Garamond',serif;}
 /* ---------- LOGIN ---------- */
 #loginScreen{
   position:fixed;inset:0;z-index:200;
-  background:radial-gradient(1200px 800px at 15% 10%, var(--navy-3), var(--navy-1) 60%);
+  display:flex;
+  overflow:hidden;
+}
+.login-left{
+  flex:1 1 46%;
+  max-width:560px;
+  background:linear-gradient(160deg,var(--navy-2) 0%, var(--navy-1) 70%);
+  position:relative;
+  display:flex;flex-direction:column;
+  padding:48px 52px;
+  color:#fff;
+  overflow:hidden;
+}
+.login-left-decor{
+  position:absolute;inset:0;pointer-events:none;opacity:.09;
+}
+.login-left-top{position:relative;z-index:1;}
+.login-left-top img{height:46px;width:auto;filter:brightness(0) invert(1);opacity:.95;}
+.login-left-mid{position:relative;z-index:1;flex:1;display:flex;flex-direction:column;justify-content:center;max-width:420px;}
+.login-left-mid .eyebrow{font-family:'Cormorant Garamond',serif;font-size:34px;font-weight:700;letter-spacing:1px;color:#fff;margin-bottom:16px;}
+.login-left-mid h2{font-family:'Cormorant Garamond',serif;font-size:20px;font-weight:600;color:var(--gold);margin-bottom:4px;letter-spacing:.2px;}
+.login-left-mid p{font-size:13.5px;line-height:1.65;color:#c7d4e8;margin-top:14px;}
+.login-features{display:flex;flex-wrap:wrap;gap:22px;margin-top:34px;position:relative;z-index:1;}
+.login-feature{display:flex;align-items:center;gap:8px;font-size:11.5px;letter-spacing:.3px;color:#dfe6f2;}
+.login-feature svg{width:17px;height:17px;stroke:var(--gold);flex-shrink:0;}
+.login-left-bottom{position:relative;z-index:1;padding-top:24px;}
+.login-left-bottom .brandline{font-size:13px;font-weight:700;letter-spacing:2px;color:#fff;}
+.login-left-bottom .subline{font-size:9.5px;letter-spacing:2.2px;color:var(--gold);margin-top:6px;text-transform:uppercase;}
+.login-right{
+  flex:1 1 54%;
+  background:var(--paper);
   display:flex;align-items:center;justify-content:center;
+  padding:32px;
 }
 .login-card{
   width:min(400px,92vw);
@@ -59,8 +90,33 @@ h1,h2,h3,.serif{font-family:'Cormorant Garamond',serif;}
   box-shadow:0 30px 80px rgba(0,0,0,.35);
   text-align:center;
 }
+.login-form-inner{
+  width:min(360px,100%);
+  text-align:center;
+}
 .login-brand{
-  display:flex;flex-direction:column;align-items:center;gap:6px;margin-bottom:24px;
+  display:flex;flex-direction:column;align-items:center;gap:2px;margin-bottom:26px;
+}
+.login-brand .logo-img{height:68px;width:auto;margin-bottom:10px;}
+.login-brand h1{font-size:22px;color:var(--navy-1);letter-spacing:.3px;}
+.login-brand p{font-size:11px;color:var(--muted);letter-spacing:1.8px;text-transform:uppercase;margin-top:3px;}
+.login-secure{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:16px;font-size:11px;color:var(--muted);letter-spacing:.2px;}
+.login-secure svg{width:13px;height:13px;stroke:var(--muted);}
+.pass-wrap{position:relative;}
+.pass-wrap input{padding-right:40px;}
+.pass-toggle{position:absolute;right:0;top:0;height:100%;width:38px;background:none;border:none;cursor:pointer;color:var(--muted);display:flex;align-items:center;justify-content:center;}
+.pass-toggle svg{width:18px;height:18px;}
+@media (max-width:860px){
+  #loginScreen{flex-direction:column;}
+  .login-left{
+    flex:0 0 auto;max-width:none;padding:22px 24px;flex-direction:row;align-items:center;gap:14px;
+  }
+  .login-left-top img{height:32px;}
+  .login-left-mid{display:none;}
+  .login-features{display:none;}
+  .login-left-bottom{display:none;}
+  .login-left-top{flex:1;}
+  .login-right{flex:1;padding:24px;}
 }
 .login-brand .mark{
   width:52px;height:52px;border-radius:12px;
@@ -68,9 +124,6 @@ h1,h2,h3,.serif{font-family:'Cormorant Garamond',serif;}
   display:flex;align-items:center;justify-content:center;
   color:var(--gold);font-family:'Cormorant Garamond',serif;font-weight:700;font-size:26px;
 }
-.login-brand .logo-img{height:74px;width:auto;margin-bottom:6px;}
-.login-brand h1{font-size:24px;color:var(--navy-1);letter-spacing:.3px;}
-.login-brand p{font-size:12.5px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;margin-top:2px;}
 .field{margin-bottom:14px;text-align:left;}
 .field label{font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:5px;letter-spacing:.3px;}
 .field input,.field select{
@@ -276,23 +329,68 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 
 <!-- ============ LOGIN ============ -->
 <div id="loginScreen">
-  <div class="login-card">
-    <div class="login-brand">
-      <img class="logo-img" src="logo-cya.jpg" alt="CYA Roma & Associates">
-      <h1>Control Financiero</h1>
-      <p>Grupo &middot; Multi-negocio</p>
+  <div class="login-left">
+    <svg class="login-left-decor" viewBox="0 0 500 700" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+      <polyline points="0,520 60,470 120,500 180,420 240,450 300,360 360,390 420,300 480,340 540,260" fill="none" stroke="#ffffff" stroke-width="3"/>
+      <circle cx="120" cy="500" r="5" fill="#b98a2e"/>
+      <circle cx="240" cy="450" r="5" fill="#b98a2e"/>
+      <circle cx="360" cy="390" r="5" fill="#b98a2e"/>
+      <circle cx="480" cy="340" r="5" fill="#b98a2e"/>
+      <rect x="30" y="580" width="22" height="90" fill="#ffffff"/>
+      <rect x="70" y="550" width="22" height="120" fill="#ffffff"/>
+      <rect x="110" y="600" width="22" height="70" fill="#ffffff"/>
+      <rect x="150" y="530" width="22" height="140" fill="#ffffff"/>
+      <rect x="190" y="565" width="22" height="105" fill="#ffffff"/>
+    </svg>
+    <div class="login-left-top">
+      <img src="logo-ca-white.png" alt="CYA Roma &amp; Associates">
     </div>
-    <div class="field">
-      <label>Correo</label>
-      <input type="email" id="loginEmail" placeholder="tucorreo@despacho.com">
+    <div class="login-left-mid">
+      <div class="eyebrow">CONTROL FINANCIERO</div>
+      <h2>Información clara. Decisiones mejor fundamentadas.</h2>
+      <p>Plataforma de gestión financiera de CYA Roma &amp; Associates para el control y seguimiento de múltiples negocios.</p>
+      <div class="login-features">
+        <div class="login-feature"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M3 3v18h18"/><path d="M18 17V9M13 17V5M8 17v-4"/></svg>Ventas</div>
+        <div class="login-feature"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><rect x="3" y="10" width="18" height="9" rx="1"/><path d="M3 10l9-6 9 6"/><path d="M7 14v3M12 14v3M17 14v3"/></svg>Bancos</div>
+        <div class="login-feature"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="3"/></svg>Efectivo</div>
+        <div class="login-feature"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M16 3H4a2 2 0 00-2 2v14l4-4h10a2 2 0 002-2V5a2 2 0 00-2-2z"/></svg>Proveedores</div>
+        <div class="login-feature"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/></svg>Resultados</div>
+      </div>
     </div>
-    <div class="field">
-      <label>Contraseña</label>
-      <input type="password" id="loginPass" placeholder="••••••••">
+    <div class="login-left-bottom">
+      <div class="brandline">CYA ROMA &amp; ASSOCIATES</div>
+      <div class="subline">Responsabilidad · Confianza · Experiencia</div>
     </div>
-    <div class="login-error" id="loginError"></div>
-    <button class="btn btn-primary" id="loginBtn">Entrar</button>
-    <p style="text-align:center;font-size:10.5px;color:#8a99b3;margin-top:18px;letter-spacing:.2px;">© <span id="loginCopyrightYear"></span> CYAroma / Roma &amp; Associates®. Todos los derechos reservados.</p>
+  </div>
+
+  <div class="login-right">
+    <div class="login-form-inner">
+      <div class="login-brand">
+        <img class="logo-img" src="logo-cya.jpg" alt="CYA Roma & Associates">
+        <h1>Control Financiero</h1>
+        <p>Plataforma de gestión financiera</p>
+      </div>
+      <div class="field">
+        <label>Correo</label>
+        <input type="email" id="loginEmail" placeholder="tucorreo@despacho.com">
+      </div>
+      <div class="field">
+        <label>Contraseña</label>
+        <div class="pass-wrap">
+          <input type="password" id="loginPass" placeholder="••••••••">
+          <button type="button" class="pass-toggle" id="togglePassBtn" aria-label="Mostrar contraseña" tabindex="-1">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="login-error" id="loginError"></div>
+      <button class="btn btn-primary" id="loginBtn">Entrar</button>
+      <div class="login-secure">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="9" rx="1"/><path d="M8 11V7a4 4 0 018 0v4"/></svg>
+        Acceso seguro y confidencial
+      </div>
+      <p style="text-align:center;font-size:10.5px;color:#8a99b3;margin-top:22px;letter-spacing:.2px;">© <span id="loginCopyrightYear"></span> CYAroma / Roma &amp; Associates®. Todos los derechos reservados.</p>
+    </div>
   </div>
 </div>
 

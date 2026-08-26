@@ -164,6 +164,10 @@ async function checkSession() {
 }
 
 document.getElementById('loginBtn').addEventListener('click', doLogin);
+document.getElementById('togglePassBtn').addEventListener('click', () => {
+  const inp = document.getElementById('loginPass');
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+});
 document.getElementById('loginPass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
 
 async function doLogin() {
@@ -3974,7 +3978,16 @@ async function renderPLAnual(el, b) {
   const filasCosto = mayoresCosto.map(m => {
     const totalPorMes = datos.map(d => d.gCostos.porMayor.find(pm=>pm.nombre===m.nombre)?.subtotal || 0);
     if (!totalPorMes.some(v=>Math.abs(v)>0.004)) return '';
-    return filaHtml(m.nombre, totalPorMes, { bold:true, bg:true }) + filasSubcuentasPorMayor(m, d => d.gCostos.porMayor.find(pm=>pm.nombre===m.nombre));
+    let filaPct = '';
+    const idxVenta = m.concepto_venta_vinculado_id ? conceptosVenta.findIndex(c => c.id === m.concepto_venta_vinculado_id) : -1;
+    if (idxVenta >= 0) {
+      const pctPorMes = datos.map((d,i) => {
+        const venta = d.ingresosPorConcepto[idxVenta];
+        return venta ? (totalPorMes[i] / venta * 100) : null;
+      });
+      filaPct = `<tr><td style="padding-left:22px;font-style:italic;color:var(--muted);font-size:11px;">% vs ${conceptosVenta[idxVenta].nombre}</td>${pctPorMes.map(v => `<td class="num" style="color:var(--muted);font-size:11px;">${v===null?'—':v.toFixed(1)+'%'}</td>`).join('')}<td class="num" style="color:var(--muted);font-size:11px;"></td></tr>`;
+    }
+    return filaHtml(m.nombre, totalPorMes, { bold:true, bg:true }) + filasSubcuentasPorMayor(m, d => d.gCostos.porMayor.find(pm=>pm.nombre===m.nombre)) + filaPct;
   }).join('');
   const filaTotalCosto = filaHtml('Total Costo de Ventas', datos.map(d=>d.gCostos.totalClasificado), { total:true });
   const filaUtilidadBruta = filaHtml('Utilidad Bruta', datos.map(d=>d.utilidadBruta), { total:true, perValueColor:true });
