@@ -3468,6 +3468,9 @@ async function computeUtilidadAcumulada(businessId, hastaYm) {
 function fmtNeg(n) {
   return Number(n) < 0 ? `<span style="color:var(--red);">${fmt(n)}</span>` : fmt(n);
 }
+function fmtSigno(n) {
+  return `<span style="color:${Number(n)>=0?'var(--green)':'var(--red)'};">${fmt(n)}</span>`;
+}
 function filaArbolBalanceHtml(nodo, nivel) {
   const indent = 40 + (nivel - 1) * 18;
   let html = `<tr><td style="padding-left:${indent}px;color:var(--muted);font-size:12.5px;">${nodo.nombre}</td><td class="num">${fmtNeg(nodo.total)}</td></tr>`;
@@ -3577,8 +3580,8 @@ async function renderBalanceGeneral() {
             <tr><td style="padding-left:22px;font-weight:600;">${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.total)}</td></tr>
             ${m.subs.map(s => filaArbolBalanceHtml(s, 1)).join('')}
           `).join('')}
-          <tr><td style="padding-left:22px;">Utilidad acumulada del ejercicio ${STATE.currentMonth.slice(0,4)}</td><td class="num">${fmtNeg(utilidadAcumulada)}</td></tr>
-          <tr class="total-row"><td>Total Capital</td><td class="num">${fmtNeg(totalCapital)}</td></tr>
+          <tr><td style="padding-left:22px;">Utilidad acumulada del ejercicio ${STATE.currentMonth.slice(0,4)}</td><td class="num">${fmtSigno(utilidadAcumulada)}</td></tr>
+          <tr class="total-row"><td>Total Capital</td><td class="num">${fmtSigno(totalCapital)}</td></tr>
 
           <tr class="total-row" style="border-top:2px solid var(--navy-1);"><td>Total Pasivo + Capital</td><td class="num">${fmtNeg(totalPasivoCapital)}</td></tr>
         </tbody>
