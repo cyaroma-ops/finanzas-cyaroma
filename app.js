@@ -3939,6 +3939,7 @@ async function renderPLAnual(el, b) {
       </div>
     </div>
   `;
+  wirePLTags(el);
 }
 
 function filaArbolSubcuentaHtml(nodo, conTerceraColumna, nivel, detalleHtmlSiAbierto) {
