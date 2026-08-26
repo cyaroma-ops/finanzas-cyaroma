@@ -377,21 +377,36 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <p>Plataforma de gestión financiera</p>
       </div>
       <div class="login-brand-rule"></div>
-      <div class="field">
-        <label>Correo</label>
-        <input type="email" id="loginEmail" placeholder="tucorreo@despacho.com">
-      </div>
-      <div class="field">
-        <label>Contraseña</label>
-        <div class="pass-wrap">
-          <input type="password" id="loginPass" placeholder="••••••••">
-          <button type="button" class="pass-toggle" id="togglePassBtn" aria-label="Mostrar contraseña" tabindex="-1">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
-          </button>
+
+      <div id="loginStep1">
+        <div class="field">
+          <label>Correo</label>
+          <input type="email" id="loginEmail" placeholder="tucorreo@despacho.com">
         </div>
+        <div class="field">
+          <label>Contraseña</label>
+          <div class="pass-wrap">
+            <input type="password" id="loginPass" placeholder="••••••••">
+            <button type="button" class="pass-toggle" id="togglePassBtn" aria-label="Mostrar contraseña" tabindex="-1">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="login-error" id="loginError"></div>
+        <button class="btn btn-primary" id="loginBtn">Entrar</button>
       </div>
-      <div class="login-error" id="loginError"></div>
-      <button class="btn btn-primary" id="loginBtn">Entrar</button>
+
+      <div id="loginStep2" style="display:none;">
+        <p style="font-size:13px;color:var(--muted);margin-bottom:16px;line-height:1.6;">Ingresa el código de 6 dígitos de tu app de autenticación (Google Authenticator, Authy, etc.)</p>
+        <div class="field">
+          <label>Código de verificación</label>
+          <input type="text" id="mfaCodeInput" placeholder="000000" inputmode="numeric" maxlength="6" style="text-align:center;letter-spacing:6px;font-size:19px;">
+        </div>
+        <div class="login-error" id="mfaCodeError"></div>
+        <button class="btn btn-primary" id="mfaVerifyBtn">Verificar</button>
+        <button class="btn btn-ghost" id="mfaCancelBtn" style="width:100%;margin-top:8px;">Cancelar</button>
+      </div>
+
       <div class="login-secure">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="9" rx="1"/><path d="M8 11V7a4 4 0 018 0v4"/></svg>
         Acceso seguro y confidencial
@@ -488,6 +503,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 
       <div class="sb-foot">
         <button class="add-biz-btn" id="openUsuariosBtn" style="margin-bottom:10px;">👥 Usuarios autorizados</button>
+        <button class="add-biz-btn" id="openMfaBtn" style="margin-bottom:10px;">Autenticación de dos pasos</button>
         <div class="sb-user">
           <span id="userEmail"></span>
           <button class="logout-btn" id="logoutBtn">Salir</button>
@@ -572,6 +588,17 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
     <div class="modal-actions">
       <button class="btn btn-ghost" id="cancelEditBiz">Cancelar</button>
       <button class="btn btn-gold" id="saveEditBiz">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: configurar autenticación de dos pasos (2FA) -->
+<div class="modal-bg" id="modalMfa">
+  <div class="modal" style="width:min(420px,92vw);">
+    <h3>Autenticación de dos pasos</h3>
+    <div id="mfaModalBody"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="cancelMfaModal">Cerrar</button>
     </div>
   </div>
 </div>

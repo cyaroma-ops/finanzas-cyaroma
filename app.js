@@ -155,10 +155,23 @@ document.addEventListener('keydown', (e) => {
 });
 
 /* ---------- AUTH ---------- */
+async function requiereCodigoMFA() {
+  const { data, error } = await sb.auth.mfa.getAuthenticatorAssuranceLevel();
+  if (error) return false;
+  return data.currentLevel === 'aal1' && data.nextLevel === 'aal2';
+}
+function mostrarPasoMFA() {
+  document.getElementById('loginStep1').style.display = 'none';
+  document.getElementById('loginStep2').style.display = 'block';
+  document.getElementById('mfaCodeInput').value = '';
+  document.getElementById('mfaCodeError').textContent = '';
+  document.getElementById('mfaCodeInput').focus();
+}
 async function checkSession() {
   const { data } = await sb.auth.getSession();
   if (data.session) {
     STATE.user = data.session.user;
+    if (await requiereCodigoMFA()) { mostrarPasoMFA(); return; }
     await boot();
   }
 }
@@ -182,8 +195,32 @@ async function doLogin() {
   btn.textContent = 'Entrar'; btn.disabled = false;
   if (error) { errEl.textContent = 'Correo o contraseña incorrectos.'; return; }
   STATE.user = data.user;
+  if (await requiereCodigoMFA()) { mostrarPasoMFA(); return; }
   await boot();
 }
+
+async function verificarCodigoMFA() {
+  const code = document.getElementById('mfaCodeInput').value.trim();
+  const errEl = document.getElementById('mfaCodeError');
+  errEl.textContent = '';
+  if (!code || code.length < 6) { errEl.textContent = 'Ingresa el código de 6 dígitos.'; return; }
+  const { data: factors } = await sb.auth.mfa.listFactors();
+  const factor = (factors?.totp || []).find(f => f.status === 'verified');
+  if (!factor) { errEl.textContent = 'No se encontró tu método de verificación.'; return; }
+  const btn = document.getElementById('mfaVerifyBtn');
+  btn.textContent = 'Verificando...'; btn.disabled = true;
+  const { error } = await sb.auth.mfa.challengeAndVerify({ factorId: factor.id, code });
+  btn.textContent = 'Verificar'; btn.disabled = false;
+  if (error) { errEl.textContent = 'Código incorrecto. Intenta de nuevo.'; return; }
+  await boot();
+}
+document.getElementById('mfaVerifyBtn').addEventListener('click', verificarCodigoMFA);
+document.getElementById('mfaCodeInput').addEventListener('keydown', e => { if (e.key === 'Enter') verificarCodigoMFA(); });
+document.getElementById('mfaCancelBtn').addEventListener('click', async () => {
+  await sb.auth.signOut();
+  document.getElementById('loginStep2').style.display = 'none';
+  document.getElementById('loginStep1').style.display = 'block';
+});
 
 document.getElementById('logoutBtn').addEventListener('click', async () => {
   await sb.auth.signOut();
@@ -229,8 +266,10 @@ async function boot() {
   setupNav();
   setupBizControls();
   setupUsuariosControls();
+  setupMfaControls();
   if (!STATE.esPropietario) {
     document.getElementById('openUsuariosBtn').style.display = 'none';
+    document.getElementById('openMfaBtn').style.display = 'none';
     document.querySelector('.nav-item[data-section="negocios"]').style.display = 'none';
   }
 
@@ -417,6 +456,72 @@ function abrirEditarNegocio(negocio) {
   document.getElementById('editBizRazonSocial').value = negocio.razon_social || '';
   document.getElementById('modalEditBiz').dataset.bizId = negocio.id;
   document.getElementById('modalEditBiz').classList.add('show');
+}
+
+/* ---------- Autenticación de dos pasos (2FA / MFA) ---------- */
+function setupMfaControls() {
+  document.getElementById('openMfaBtn').addEventListener('click', async () => {
+    document.getElementById('modalMfa').classList.add('show');
+    await renderModalMfa();
+  });
+  document.getElementById('cancelMfaModal').addEventListener('click', () => {
+    document.getElementById('modalMfa').classList.remove('show');
+  });
+}
+
+async function renderModalMfa() {
+  const body = document.getElementById('mfaModalBody');
+  body.innerHTML = `<p class="empty">Cargando…</p>`;
+  const { data, error } = await sb.auth.mfa.listFactors();
+  if (error) { body.innerHTML = `<p style="color:var(--red);">Error: ${error.message}</p>`; return; }
+
+  const verificado = (data.totp || []).find(f => f.status === 'verified');
+  if (verificado) {
+    body.innerHTML = `
+      <p style="font-size:13.5px;color:var(--muted);margin-bottom:16px;">La autenticación de dos pasos ya está <strong style="color:var(--green);">activada</strong> en tu cuenta. Cada vez que inicies sesión, se te pedirá también el código de tu app de autenticación.</p>
+      <button class="btn btn-ghost" id="mfaDesactivarBtn" style="color:var(--red);width:100%;">Desactivar autenticación de dos pasos</button>
+    `;
+    document.getElementById('mfaDesactivarBtn').addEventListener('click', async () => {
+      if (!confirm('¿Seguro que deseas desactivar la autenticación de dos pasos? Tu cuenta quedará protegida solo con tu contraseña.')) return;
+      const { error } = await sb.auth.mfa.unenroll({ factorId: verificado.id });
+      if (error) { toast('Error: ' + error.message, 'error'); return; }
+      toast('Autenticación de dos pasos desactivada.');
+      renderModalMfa();
+    });
+    return;
+  }
+
+  // limpiar factores a medio configurar (de intentos anteriores sin terminar)
+  const sinVerificar = (data.totp || []).filter(f => f.status !== 'verified');
+  for (const f of sinVerificar) { await sb.auth.mfa.unenroll({ factorId: f.id }); }
+
+  const { data: enrollData, error: enrollError } = await sb.auth.mfa.enroll({ factorType: 'totp', friendlyName: 'Finanzas CYA Roma ' + Date.now() });
+  if (enrollError) { body.innerHTML = `<p style="color:var(--red);">Error: ${enrollError.message}</p>`; return; }
+  const qr = enrollData.totp.qr_code;
+  const qrHtml = qr.startsWith('data:') ? `<img src="${qr}" style="width:180px;height:180px;">`
+    : qr.trim().startsWith('<svg') ? qr
+    : `<img src="data:image/svg+xml;utf8,${encodeURIComponent(qr)}" style="width:180px;height:180px;">`;
+
+  body.innerHTML = `
+    <p style="font-size:13px;color:var(--muted);margin-bottom:14px;">1. Escanea este código con tu app de autenticación (Google Authenticator, Authy, etc.)</p>
+    <div style="text-align:center;margin-bottom:14px;">${qrHtml}</div>
+    <p style="font-size:11px;color:var(--muted);text-align:center;margin-bottom:16px;word-break:break-all;">O ingresa este código manualmente:<br><strong>${enrollData.totp.secret}</strong></p>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:8px;">2. Ingresa el código de 6 dígitos que te muestre la app:</p>
+    <div class="field">
+      <input type="text" id="mfaEnrollCode" placeholder="000000" inputmode="numeric" maxlength="6" style="text-align:center;letter-spacing:6px;font-size:18px;">
+    </div>
+    <div class="login-error" id="mfaEnrollError"></div>
+    <button class="btn btn-gold" id="mfaEnrollVerifyBtn" style="width:100%;">Activar</button>
+  `;
+  document.getElementById('mfaEnrollVerifyBtn').addEventListener('click', async () => {
+    const code = document.getElementById('mfaEnrollCode').value.trim();
+    const errEl = document.getElementById('mfaEnrollError');
+    if (!code || code.length < 6) { errEl.textContent = 'Ingresa el código de 6 dígitos.'; return; }
+    const { error } = await sb.auth.mfa.challengeAndVerify({ factorId: enrollData.id, code });
+    if (error) { errEl.textContent = 'Código incorrecto. Intenta de nuevo.'; return; }
+    toast('¡Autenticación de dos pasos activada!');
+    renderModalMfa();
+  });
 }
 
 /* ---------- NAVEGACIÓN ---------- */
