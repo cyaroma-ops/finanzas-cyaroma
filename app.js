@@ -4528,19 +4528,26 @@ async function guardarBorradorPoliza() {
     if (error) { toast('Error guardando la póliza: ' + error.message, 'error'); return; }
   }
 
+  let huboError = false;
   for (const l of borrador.lineas) {
     const payload = { subcuenta_id: l.subcuenta_id || null, cuenta_tipo: l.cuenta_tipo || 'subcuenta', cuenta_ref_id: l.cuenta_ref_id || null, cargo: Number(l.cargo) || 0, abono: Number(l.abono) || 0, descripcion: l.descripcion || null, referencia: l.referencia || null, orden: l.orden || 0 };
     if (String(l.id).startsWith('tmp_')) {
-      await sb.from('fz_polizas_lineas').insert({ business_id: businessId, poliza_id: polizaId, ...payload });
+      const { error } = await sb.from('fz_polizas_lineas').insert({ business_id: businessId, poliza_id: polizaId, ...payload });
+      if (error) { toast('Error guardando una línea: ' + error.message, 'error'); huboError = true; }
     } else {
-      await sb.from('fz_polizas_lineas').update(payload).eq('id', l.id);
+      const { error } = await sb.from('fz_polizas_lineas').update(payload).eq('id', l.id);
+      if (error) { toast('Error guardando una línea: ' + error.message, 'error'); huboError = true; }
     }
   }
+  if (huboError) return; // no cerramos la ventana: así no pierdes lo que llevas capturado, corrige y vuelve a intentar
   if (!borrador.esNueva) {
     const idsActuales = borrador.lineas.filter(l => !String(l.id).startsWith('tmp_')).map(l => l.id);
     const { data: existentesEnBD } = await sb.from('fz_polizas_lineas').select('id').eq('poliza_id', polizaId);
     const idsABorrar = (existentesEnBD || []).map(l => l.id).filter(id => !idsActuales.includes(id));
-    if (idsABorrar.length) await sb.from('fz_polizas_lineas').delete().in('id', idsABorrar);
+    if (idsABorrar.length) {
+      const { error } = await sb.from('fz_polizas_lineas').delete().in('id', idsABorrar);
+      if (error) { toast('Error al quitar líneas eliminadas: ' + error.message, 'error'); return; }
+    }
   }
 
   registrarAuditoria(businessId, borrador.esNueva ? 'crear' : 'editar', 'Pólizas', `Póliza #${borrador.poliza.numero ?? '—'} (${borrador.poliza.fecha || ''}) — ${borrador.poliza.concepto || 'sin concepto'}`);
