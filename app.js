@@ -3730,6 +3730,17 @@ function estadoResultadosSubtitulo(periodo) {
     return `Estado de Resultados — Enero a ${mesActual} ${año}`;
   }
   if (STATE_plRangoDesde && STATE_plRangoHasta) {
+    const bDesde = monthBounds(STATE_plRangoDesde.slice(0,7));
+    const bHasta = monthBounds(STATE_plRangoHasta.slice(0,7));
+    const esRangoDeMesesCompletos = periodo.start === bDesde.start && periodo.end === bHasta.end;
+    if (esRangoDeMesesCompletos) {
+      const mesDesde = MESES_LARGO[Number(STATE_plRangoDesde.slice(5,7)) - 1];
+      const añoDesde = STATE_plRangoDesde.slice(0,4);
+      const mesHasta = MESES_LARGO[Number(STATE_plRangoHasta.slice(5,7)) - 1];
+      const añoHasta = STATE_plRangoHasta.slice(0,4);
+      if (STATE_plRangoDesde === STATE_plRangoHasta || (mesDesde === mesHasta && añoDesde === añoHasta)) return `Estado de Resultados — ${mesDesde} ${añoDesde}`;
+      return `Estado de Resultados — ${mesDesde}${añoDesde!==añoHasta?' '+añoDesde:''} a ${mesHasta} ${añoHasta}`;
+    }
     return `Estado de Resultados — Del ${fechaCorta(periodo.start)} al ${fechaCorta(periodo.end)}`;
   }
   const mesActual = MESES_LARGO[Number(STATE.currentMonth.slice(5,7)) - 1];
@@ -3746,16 +3757,17 @@ function plTagsHtml() {
     <div class="grid-3" style="margin:10px 0 4px;max-width:560px;">
       <div class="field" style="margin-bottom:0;">
         <label>Del día</label>
-        <input type="date" id="plRangoDesde" min="${start}" max="${end}" value="${STATE_plRangoDesde || start}">
+        <input type="date" id="plRangoDesde" value="${STATE_plRangoDesde || start}">
       </div>
       <div class="field" style="margin-bottom:0;">
         <label>Al día</label>
-        <input type="date" id="plRangoHasta" min="${start}" max="${end}" value="${STATE_plRangoHasta || end}">
+        <input type="date" id="plRangoHasta" value="${STATE_plRangoHasta || end}">
       </div>
       <div class="field" style="margin-bottom:0;display:flex;align-items:flex-end;">
         ${(STATE_plRangoDesde||STATE_plRangoHasta) ? `<button class="btn btn-ghost btn-sm" id="plRangoLimpiar">✕ Ver mes completo</button>` : ''}
       </div>
-    </div>` : ''}`;
+    </div>
+    <p style="font-size:11.5px;color:var(--muted);margin:-2px 0 12px;">Puedes elegir un rango que abarque varios meses (ej. junio a julio) — no tiene que quedarse dentro de un solo mes.</p>` : ''}`;
 }
 function wirePLTags(el) {
   el.querySelector('#plTabMensual').addEventListener('click', () => { STATE_plVista = 'mensual'; renderPL(); });
