@@ -426,7 +426,7 @@ const SECTION_META = {
   efectivo: { title: 'Efectivo & Divisas', sub: '', showMonth: true, needsBiz: true },
   bancos: { title: 'Bancos', sub: '', showMonth: true, needsBiz: true },
   proveedores: { title: 'Proveedores', sub: '', showMonth: false, needsBiz: true },
-  pl: { title: 'P&L', sub: '', showMonth: true, needsBiz: true },
+  pl: { title: 'Estado de Resultados', sub: '', showMonth: true, needsBiz: true },
   flujo: { title: 'Flujo de Efectivo', sub: '', showMonth: false, needsBiz: true },
   polizas: { title: 'Pólizas de Diario', sub: '', showMonth: false, needsBiz: true },
   balance: { title: 'Balance General', sub: 'Al día de hoy', showMonth: false, needsBiz: true },
@@ -1758,7 +1758,7 @@ async function openDesgloseModal(businessId, facturaId, onClose) {
   const subcuentas = await loadSubcuentas(businessId);
   const mayores = await loadCuentasMayor(businessId);
   const sel = document.getElementById('newDesgloseSubcuenta');
-  sel.innerHTML = opcionesSubcuentaHtml(subcuentas, mayores, null) || `<option value="">— crea subcuentas primero en el P&L —</option>`;
+  sel.innerHTML = opcionesSubcuentaHtml(subcuentas, mayores, null) || `<option value="">— crea subcuentas primero en Catálogo de Cuentas —</option>`;
 
   await renderDesgloseList(businessId, facturaId, subcuentas, mayores);
   document.getElementById('modalDesglose').classList.add('show');
@@ -3733,7 +3733,17 @@ function detalleSubcuentaHtml(filas, colspan) {
 const MESES_LARGO = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
 function estadoResultadosSubtitulo(periodo) {
   const año = STATE.currentMonth.slice(0,4);
-  if (STATE_plVista === 'anual') return `Estado de Resultados — Enero a Diciembre ${año}`;
+  if (STATE_plVista === 'anual') {
+    const desdeYm = STATE_plAnualDesdeYm || `${año}-01`;
+    const hastaYm = STATE_plAnualHastaYm || `${año}-12`;
+    if (!STATE_plAnualDesdeYm && !STATE_plAnualHastaYm) return `Estado de Resultados — Enero a Diciembre ${año}`;
+    const mesDesde = MESES_LARGO[Number(desdeYm.slice(5,7)) - 1];
+    const añoDesde = desdeYm.slice(0,4);
+    const mesHasta = MESES_LARGO[Number(hastaYm.slice(5,7)) - 1];
+    const añoHasta = hastaYm.slice(0,4);
+    if (desdeYm === hastaYm) return `Estado de Resultados — ${mesDesde} ${añoDesde}`;
+    return `Estado de Resultados — ${mesDesde}${añoDesde!==añoHasta?' '+añoDesde:''} a ${mesHasta} ${añoHasta}`;
+  }
   if (STATE_plVista === 'acumulado') {
     const mesActual = MESES_LARGO[Number(STATE.currentMonth.slice(5,7)) - 1];
     return `Estado de Resultados — Enero a ${mesActual} ${año}`;
@@ -3923,7 +3933,7 @@ async function renderPLAnual(el, b) {
   el.innerHTML = plTagsHtml() + `
     <p style="font-size:13px;color:var(--muted);margin:-4px 0 14px;font-weight:600;">${estadoResultadosSubtitulo()}</p>
     <div class="card">
-      <div class="card-head"><h3>P&L — ${mesesYm.length===12 && desdeYm===`${year}-01` ? `Todos los meses de ${year}` : `${MESES_LARGO[Number(desdeYm.slice(5,7))-1]} ${desdeYm.slice(0,4)} a ${MESES_LARGO[Number(hastaYm.slice(5,7))-1]} ${hastaYm.slice(0,4)}`}</h3></div>
+      <div class="card-head"><h3>Detalle mes por mes</h3></div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Concepto</th>${mesesLabel.map(m=>`<th>${m}</th>`).join('')}<th>Acumulado</th></tr></thead>
