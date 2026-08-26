@@ -292,6 +292,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
     </div>
     <div class="login-error" id="loginError"></div>
     <button class="btn btn-primary" id="loginBtn">Entrar</button>
+    <p style="text-align:center;font-size:10.5px;color:#8a99b3;margin-top:18px;letter-spacing:.2px;">© <span id="loginCopyrightYear"></span> CYAroma / Roma &amp; Associates®. Todos los derechos reservados.</p>
   </div>
 </div>
 
@@ -325,8 +326,6 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
       <div class="biz-select-wrap">
         <label>Negocio activo</label>
         <select id="bizSelect"></select>
-        <button class="add-biz-btn" id="editBizBtn" style="margin-top:8px;">Editar perfil del negocio</button>
-        <button class="add-biz-btn" id="addBizBtn">+ Agregar negocio</button>
       </div>
 
       <nav class="nav" id="navList">
@@ -375,6 +374,10 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <div class="nav-item" data-section="auditoria">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           Auditoría
+        </div>
+        <div class="nav-item" data-section="negocios">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/><path d="M9 9h1"/><path d="M9 13h1"/><path d="M14 9h1"/><path d="M14 13h1"/><path d="M9 21v-4h6v4"/></svg>
+          Negocios
         </div>
       </nav>
 
@@ -428,6 +431,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <section class="section" id="sec-balance"></section>
         <section class="section" id="sec-catalogo"></section>
         <section class="section" id="sec-auditoria"></section>
+        <section class="section" id="sec-negocios"></section>
       </div>
     </main>
   </div>

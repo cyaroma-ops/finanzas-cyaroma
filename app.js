@@ -227,8 +227,7 @@ async function boot() {
   setupUsuariosControls();
   if (!STATE.esPropietario) {
     document.getElementById('openUsuariosBtn').style.display = 'none';
-    document.getElementById('addBizBtn').style.display = 'none';
-    document.getElementById('editBizBtn').style.display = 'none';
+    document.querySelector('.nav-item[data-section="negocios"]').style.display = 'none';
   }
 
   document.getElementById('monthPicker').addEventListener('change', (e) => {
@@ -372,10 +371,6 @@ function setupBizControls() {
     renderCurrentSection();
     cerrarMenuMovil();
   });
-  document.getElementById('addBizBtn').addEventListener('click', () => {
-    document.getElementById('newBizName').value = '';
-    document.getElementById('modalBiz').classList.add('show');
-  });
   document.getElementById('cancelBiz').addEventListener('click', () => {
     document.getElementById('modalBiz').classList.remove('show');
   });
@@ -392,31 +387,32 @@ function setupBizControls() {
     document.getElementById('bizSelect').value = data.id;
     renderCurrentSection();
     toast('Negocio agregado.');
-  });
-  document.getElementById('editBizBtn').addEventListener('click', () => {
-    const b = biz();
-    if (!b) { toast('Selecciona un negocio primero.', 'error'); return; }
-    document.getElementById('editBizName').value = b.name || '';
-    document.getElementById('editBizRazonSocial').value = b.razon_social || '';
-    document.getElementById('modalEditBiz').classList.add('show');
+    if (STATE.currentSection === 'negocios') renderNegocios();
   });
   document.getElementById('cancelEditBiz').addEventListener('click', () => {
     document.getElementById('modalEditBiz').classList.remove('show');
   });
   document.getElementById('saveEditBiz').addEventListener('click', async () => {
-    const b = biz();
+    const bizId = document.getElementById('modalEditBiz').dataset.bizId;
     const name = document.getElementById('editBizName').value.trim();
     const razon_social = document.getElementById('editBizRazonSocial').value.trim() || null;
     if (!name) { toast('Escribe el nombre comercial.', 'error'); return; }
-    const { error } = await sb.from('businesses').update({ name, razon_social }).eq('id', b.id);
+    const { error } = await sb.from('businesses').update({ name, razon_social }).eq('id', bizId);
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     document.getElementById('modalEditBiz').classList.remove('show');
     await loadBusinesses();
     renderBizSelect();
-    document.getElementById('bizSelect').value = b.id;
+    if (STATE.currentBusinessId === bizId) document.getElementById('bizSelect').value = bizId;
     updateTopbar();
     toast('Perfil del negocio actualizado.');
+    if (STATE.currentSection === 'negocios') renderNegocios();
   });
+}
+function abrirEditarNegocio(negocio) {
+  document.getElementById('editBizName').value = negocio.name || '';
+  document.getElementById('editBizRazonSocial').value = negocio.razon_social || '';
+  document.getElementById('modalEditBiz').dataset.bizId = negocio.id;
+  document.getElementById('modalEditBiz').classList.add('show');
 }
 
 /* ---------- NAVEGACIÓN ---------- */
@@ -432,6 +428,7 @@ const SECTION_META = {
   balance: { title: 'Balance General', sub: 'Al día de hoy', showMonth: false, needsBiz: true },
   catalogo: { title: 'Catálogo de Cuentas', sub: 'Estructura contable: cuenta mayor › subcuenta › sub-subcuenta', showMonth: false, needsBiz: true },
   auditoria: { title: 'Auditoría', sub: 'Quién creó, editó o eliminó cada registro', showMonth: false, needsBiz: true },
+  negocios: { title: 'Negocios', sub: 'Alta y perfil de cada negocio del grupo', showMonth: false, needsBiz: false },
 };
 
 function cerrarMenuMovil() {
@@ -516,6 +513,7 @@ function renderCurrentSection() {
   if (s === 'balance') renderBalanceGeneral();
   if (s === 'catalogo') renderCatalogoCuentas();
   if (s === 'auditoria') renderAuditoria();
+  if (s === 'negocios') renderNegocios();
 }
 
 /* ============================================================
@@ -1335,6 +1333,45 @@ let STATE_audFiltroTexto = '';
 let STATE_audFiltroUsuario = '';
 let STATE_audFiltroAccion = '';
 
+/* ============================================================
+   NEGOCIOS — alta y perfil (nombre comercial + razón social)
+   ============================================================ */
+async function renderNegocios() {
+  const el = document.getElementById('sec-negocios');
+  const negocios = STATE.businesses || [];
+
+  el.innerHTML = `
+    <div class="card">
+      <div class="card-head">
+        <h3>Negocios del grupo</h3>
+        <button class="btn btn-gold btn-sm" id="negociosAddBtn">+ Agregar negocio</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Nombre comercial</th><th>Razón social</th><th>Estatus</th><th></th></tr></thead>
+          <tbody>
+            ${negocios.length ? negocios.map(n => `<tr>
+              <td>${n.name}</td>
+              <td>${n.razon_social || '<span style="color:var(--muted);">— sin capturar —</span>'}</td>
+              <td>${n.active !== false ? '<span class="badge pag">Activo</span>' : '<span class="badge pend">Inactivo</span>'}</td>
+              <td><button class="btn btn-ghost btn-sm negocio-editar" data-id="${n.id}">Editar</button></td>
+            </tr>`).join('') : `<tr><td colspan="4" class="empty">Aún no hay negocios registrados.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('negociosAddBtn').addEventListener('click', () => {
+    document.getElementById('newBizName').value = '';
+    document.getElementById('modalBiz').classList.add('show');
+  });
+  el.querySelectorAll('.negocio-editar').forEach(btn => btn.addEventListener('click', () => {
+    const negocio = negocios.find(n => n.id === btn.dataset.id);
+    if (negocio) abrirEditarNegocio(negocio);
+  }));
+}
+
 async function renderAuditoria() {
   const el = document.getElementById('sec-auditoria');
   const b = biz();
@@ -1416,10 +1453,11 @@ async function renderCatalogoCuentas() {
   const b = biz();
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
   const scrollY = window.scrollY;
-  const [mayores, subcuentas, cuentasBancoQ, monedasQ] = await Promise.all([
+  const [mayores, subcuentas, cuentasBancoQ, monedasQ, conceptosVenta] = await Promise.all([
     loadCuentasMayor(b.id), loadSubcuentas(b.id),
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', b.id).order('nombre'),
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', b.id).order('orden'),
+    loadConceptosVenta(b.id),
   ]);
   const cuentasBanco = cuentasBancoQ.data || [];
   const monedasEfectivo = monedasQ.data || [];
@@ -1446,6 +1484,13 @@ async function renderCatalogoCuentas() {
         <div class="field" style="margin-bottom:0;display:flex;align-items:flex-end;">
           <button class="btn btn-gold" id="ccSaveMayor" style="width:100%;">+ Agregar cuenta mayor</button>
         </div>
+      </div>
+      <div class="field" id="ccVinculoWrap" style="display:none;max-width:340px;">
+        <label>Vincular a categoría de venta (para calcular % de costo)</label>
+        <select id="ccNuevaMayorVinculo">
+          <option value="">— sin vincular —</option>
+          ${conceptosVenta.map(c => `<option value="${c.id}">${c.nombre}</option>`).join('')}
+        </select>
       </div>
       <p style="font-size:11.5px;color:var(--muted);margin-top:-4px;">Al crearla se agrega automáticamente una subcuenta con el mismo nombre, lista para usarse en Pólizas de Diario. Puedes agregarle más subcuentas abajo si necesitas desglosarla.</p>
     </div>
@@ -1520,7 +1565,7 @@ async function renderCatalogoCuentas() {
       const editando = STATE_ccEditando.has(m.id);
       return `
       <div style="margin-bottom:10px;">
-        <div style="display:flex;align-items:center;gap:8px;padding:6px 4px;background:#f7f9fc;border-radius:7px;">
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 4px;background:#f7f9fc;border-radius:7px;flex-wrap:wrap;">
           ${editando ? `
             <input class="cell cc-mayor-nombre" type="text" value="${m.nombre}" data-id="${m.id}" style="flex:1;min-width:0;font-weight:700;">
             <select class="cell cc-mayor-tipo" data-id="${m.id}" style="width:auto;">
@@ -1531,9 +1576,14 @@ async function renderCatalogoCuentas() {
               <option value="costo" ${m.tipo==='costo'?'selected':''}>Costo de Ventas</option>
               <option value="gasto" ${m.tipo==='gasto'?'selected':''}>Gasto</option>
             </select>
+            ${m.tipo==='costo' ? `<select class="cell cc-mayor-vinculo" data-id="${m.id}" style="width:auto;min-width:180px;">
+              <option value="">— sin vincular a venta —</option>
+              ${conceptosVenta.map(c => `<option value="${c.id}" ${m.concepto_venta_vinculado_id===c.id?'selected':''}>% vs ${c.nombre}</option>`).join('')}
+            </select>` : ''}
             <button class="btn btn-ghost btn-sm cc-mayor-save" data-id="${m.id}">Guardar</button>
           ` : `
             <strong style="flex:1;min-width:0;">${m.nombre}</strong>
+            ${m.concepto_venta_vinculado_id ? `<span style="font-size:11px;color:var(--muted);">(% vs ${conceptosVenta.find(c=>c.id===m.concepto_venta_vinculado_id)?.nombre||''})</span>` : ''}
             <button class="btn btn-ghost btn-sm cc-mayor-editar" data-id="${m.id}">Editar</button>
           `}
           <button class="row-del cc-mayor-del" data-id="${m.id}" style="font-size:15px;">Eliminar</button>
@@ -1553,12 +1603,18 @@ async function renderCatalogoCuentas() {
   document.getElementById('ccNuevaSubMayor').innerHTML = mayores.map(m => `<option value="${m.id}">${m.nombre} (${TIPO_CUENTA_LABEL[m.tipo]})</option>`).join('') || `<option value="">— crea una cuenta mayor primero —</option>`;
   actualizarSubPadre();
   document.getElementById('ccNuevaSubMayor').addEventListener('change', actualizarSubPadre);
+  const toggleVinculo = () => {
+    document.getElementById('ccVinculoWrap').style.display = document.getElementById('ccNuevaMayorTipo').value === 'costo' ? 'block' : 'none';
+  };
+  document.getElementById('ccNuevaMayorTipo').addEventListener('change', toggleVinculo);
+  toggleVinculo();
 
   document.getElementById('ccSaveMayor').addEventListener('click', async () => {
     const nombre = document.getElementById('ccNuevaMayorNombre').value.trim();
     const tipo = document.getElementById('ccNuevaMayorTipo').value;
+    const vinculo = tipo === 'costo' ? (document.getElementById('ccNuevaMayorVinculo').value || null) : null;
     if (!nombre) { toast('Escribe un nombre.', 'error'); return; }
-    const { data: nuevaMayor, error } = await sb.from('fz_cuentas_mayor').insert({ business_id: b.id, nombre, tipo, orden: 99 }).select().single();
+    const { data: nuevaMayor, error } = await sb.from('fz_cuentas_mayor').insert({ business_id: b.id, nombre, tipo, orden: 99, concepto_venta_vinculado_id: vinculo }).select().single();
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     const { error: e2 } = await sb.from('fz_subcuentas').insert({ business_id: b.id, cuenta_mayor_id: nuevaMayor.id, nombre, orden: 0 });
     if (e2) toast('La cuenta mayor se creó, pero hubo un error creando su subcuenta por default: ' + e2.message, 'error');
@@ -1586,8 +1642,10 @@ async function renderCatalogoCuentas() {
   el.querySelectorAll('.cc-mayor-save').forEach(btn => btn.addEventListener('click', async () => {
     const inp = el.querySelector(`.cc-mayor-nombre[data-id="${btn.dataset.id}"]`);
     const selTipo = el.querySelector(`.cc-mayor-tipo[data-id="${btn.dataset.id}"]`);
+    const selVinculo = el.querySelector(`.cc-mayor-vinculo[data-id="${btn.dataset.id}"]`);
     const payload = { nombre: inp.value.trim() };
     if (selTipo) payload.tipo = selTipo.value;
+    payload.concepto_venta_vinculado_id = (selTipo && selTipo.value === 'costo' && selVinculo) ? (selVinculo.value || null) : null;
     const { error } = await sb.from('fz_cuentas_mayor').update(payload).eq('id', btn.dataset.id);
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     STATE_ccEditando.delete(btn.dataset.id);
@@ -3632,7 +3690,7 @@ async function computeGastosClasificados(businessId, periodo, subcuentas, mayore
     const subs = subcuentasRaiz(m.id, subcuentas)
       .map(s => construirArbolSubcuenta(s.id, subcuentas, porSubcuenta))
       .filter(s => s.total);
-    return { nombre: m.nombre, subs, subtotal: subs.reduce((s,x)=>s+x.total,0) };
+    return { nombre: m.nombre, subs, subtotal: subs.reduce((s,x)=>s+x.total,0), conceptoVentaVinculadoId: m.concepto_venta_vinculado_id || null };
   }).filter(m => m.subtotal);
 
   const totalClasificado = porMayor.reduce((s,m)=>s+m.subtotal,0);
@@ -4000,7 +4058,7 @@ async function renderPL() {
   ]);
   const v = ventasQ.data || [];
   const ingresosPorConcepto = conceptosVenta.map(c => ({
-    nombre: c.nombre, tipo: c.tipo,
+    id: c.id, nombre: c.nombre, tipo: c.tipo,
     monto: v.reduce((s, r) => s + (Number((r.venta_data || {})[c.id]) || 0), 0),
   }));
   const totalIngresosVentas = ingresosPorConcepto.reduce((s, i) => s + (i.tipo === 'resta' ? -i.monto : i.monto), 0);
@@ -4066,11 +4124,15 @@ async function renderPL() {
       <div class="card-head"><h3>Costo de Ventas — ${periodoLabel}</h3></div>
       <table>
         <tbody>
-          ${gCostos.porMayor.map(m => `
+          ${gCostos.porMayor.map(m => {
+            const ventaVinculada = m.conceptoVentaVinculadoId ? ingresosPorConcepto.find(i => i.id === m.conceptoVentaVinculadoId) : null;
+            const porcentaje = (ventaVinculada && ventaVinculada.monto) ? ` <span style="color:var(--muted);font-weight:400;">(${(m.subtotal/ventaVinculada.monto*100).toFixed(1)}% de ${ventaVinculada.nombre})</span>` : '';
+            return `
             <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">${m.nombre}</td></tr>
             ${m.subs.map(s => filaArbolSubcuentaHtml(s, false, 0, detalleCostoHtml)).join('')}
-            <tr><td style="padding-left:22px;font-style:italic;color:var(--muted);">Subtotal ${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.subtotal)}</td></tr>
-          `).join('')}
+            <tr><td style="padding-left:22px;font-style:italic;color:var(--muted);">Subtotal ${m.nombre}${porcentaje}</td><td class="num" style="font-weight:600;">${fmtNeg(m.subtotal)}</td></tr>
+          `;
+          }).join('')}
           <tr class="total-row"><td>Total Costo de Ventas</td><td class="num">${fmtNeg(gCostos.totalClasificado)}</td></tr>
           <tr class="total-row" style="border-top:2px solid var(--navy-1);"><td>Utilidad Bruta</td><td class="num" style="color:${utilidadBruta>=0?'var(--green)':'var(--red)'};">${fmt(utilidadBruta)}</td></tr>
         </tbody>
@@ -4191,6 +4253,7 @@ async function renderFlujo() {
 }
 
 document.getElementById('copyrightYear').textContent = new Date().getFullYear();
+document.getElementById('loginCopyrightYear').textContent = new Date().getFullYear();
 checkSession();
 
 /* ============================================================
