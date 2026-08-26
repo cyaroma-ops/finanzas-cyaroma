@@ -3461,9 +3461,12 @@ async function computeUtilidadAcumulada(businessId, hastaYm) {
   return totalIngresosFinal - gastosTotales;
 }
 
+function fmtNeg(n) {
+  return Number(n) < 0 ? `<span style="color:var(--red);">${fmt(n)}</span>` : fmt(n);
+}
 function filaArbolBalanceHtml(nodo, nivel) {
   const indent = 40 + (nivel - 1) * 18;
-  let html = `<tr><td style="padding-left:${indent}px;color:var(--muted);font-size:12.5px;">${nodo.nombre}</td><td class="num">${fmt(nodo.total)}</td></tr>`;
+  let html = `<tr><td style="padding-left:${indent}px;color:var(--muted);font-size:12.5px;">${nodo.nombre}</td><td class="num">${fmtNeg(nodo.total)}</td></tr>`;
   nodo.hijos.forEach(h => { html += filaArbolBalanceHtml(h, nivel + 1); });
   return html;
 }
@@ -3539,7 +3542,7 @@ async function renderBalanceGeneral() {
     <div class="kpi-grid">
       <div class="kpi"><div class="label">Total Activo</div><div class="value num">${fmt(totalActivo)}</div></div>
       <div class="kpi"><div class="label">Total Pasivo</div><div class="value num red">${fmt(totalPasivo)}</div></div>
-      <div class="kpi"><div class="label">Total Capital</div><div class="value num green">${fmt(totalCapital)}</div></div>
+      <div class="kpi"><div class="label">Total Capital</div><div class="value num ${totalCapital>=0?'green':'red'}">${fmt(totalCapital)}</div></div>
       <div class="kpi"><div class="label">¿Cuadra?</div><div class="value num ${cuadra?'green':'red'}">${cuadra ? '✓ Sí' : fmt(diferenciaCuadre)}</div></div>
     </div>
     <div class="card">
@@ -3547,33 +3550,33 @@ async function renderBalanceGeneral() {
       <table>
         <tbody>
           <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">ACTIVO</td></tr>
-          <tr><td style="padding-left:22px;font-weight:600;">Efectivo y equivalentes</td><td class="num" style="font-weight:600;">${fmt(totalEfectivo)}</td></tr>
-          ${detalleEfectivo.map(d => `<tr><td style="padding-left:40px;color:var(--muted);font-size:12.5px;">${d.nombre}</td><td class="num">${fmt(d.monto)}</td></tr>`).join('')}
-          <tr><td style="padding-left:22px;font-weight:600;">Bancos</td><td class="num" style="font-weight:600;">${fmt(totalBancos)}</td></tr>
-          ${detalleBancos.map(d => `<tr><td style="padding-left:40px;color:var(--muted);font-size:12.5px;">${d.nombre}</td><td class="num">${fmt(d.monto)}</td></tr>`).join('')}
+          <tr><td style="padding-left:22px;font-weight:600;">Efectivo y equivalentes</td><td class="num" style="font-weight:600;">${fmtNeg(totalEfectivo)}</td></tr>
+          ${detalleEfectivo.map(d => `<tr><td style="padding-left:40px;color:var(--muted);font-size:12.5px;">${d.nombre}</td><td class="num">${fmtNeg(d.monto)}</td></tr>`).join('')}
+          <tr><td style="padding-left:22px;font-weight:600;">Bancos</td><td class="num" style="font-weight:600;">${fmtNeg(totalBancos)}</td></tr>
+          ${detalleBancos.map(d => `<tr><td style="padding-left:40px;color:var(--muted);font-size:12.5px;">${d.nombre}</td><td class="num">${fmtNeg(d.monto)}</td></tr>`).join('')}
           ${otrosActivos.map(m => `
-            <tr><td style="padding-left:22px;font-weight:600;">${m.nombre}</td><td class="num" style="font-weight:600;">${fmt(m.total)}</td></tr>
+            <tr><td style="padding-left:22px;font-weight:600;">${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.total)}</td></tr>
             ${m.subs.map(s => filaArbolBalanceHtml(s, 1)).join('')}
           `).join('')}
-          <tr class="total-row"><td>Total Activo</td><td class="num">${fmt(totalActivo)}</td></tr>
+          <tr class="total-row"><td>Total Activo</td><td class="num">${fmtNeg(totalActivo)}</td></tr>
 
           <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">PASIVO</td></tr>
-          <tr><td style="padding-left:22px;font-weight:600;">Proveedores por pagar</td><td class="num" style="font-weight:600;">${fmt(proveedoresPendiente)}</td></tr>
+          <tr><td style="padding-left:22px;font-weight:600;">Proveedores por pagar</td><td class="num" style="font-weight:600;">${fmtNeg(proveedoresPendiente)}</td></tr>
           ${otrosPasivos.map(m => `
-            <tr><td style="padding-left:22px;font-weight:600;">${m.nombre}</td><td class="num" style="font-weight:600;">${fmt(m.total)}</td></tr>
+            <tr><td style="padding-left:22px;font-weight:600;">${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.total)}</td></tr>
             ${m.subs.map(s => filaArbolBalanceHtml(s, 1)).join('')}
           `).join('')}
-          <tr class="total-row"><td>Total Pasivo</td><td class="num">${fmt(totalPasivo)}</td></tr>
+          <tr class="total-row"><td>Total Pasivo</td><td class="num">${fmtNeg(totalPasivo)}</td></tr>
 
           <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">CAPITAL</td></tr>
           ${cuentasCapital.map(m => `
-            <tr><td style="padding-left:22px;font-weight:600;">${m.nombre}</td><td class="num" style="font-weight:600;">${fmt(m.total)}</td></tr>
+            <tr><td style="padding-left:22px;font-weight:600;">${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.total)}</td></tr>
             ${m.subs.map(s => filaArbolBalanceHtml(s, 1)).join('')}
           `).join('')}
-          <tr><td style="padding-left:22px;">Utilidad acumulada del ejercicio ${STATE.currentMonth.slice(0,4)}</td><td class="num">${fmt(utilidadAcumulada)}</td></tr>
-          <tr class="total-row"><td>Total Capital</td><td class="num">${fmt(totalCapital)}</td></tr>
+          <tr><td style="padding-left:22px;">Utilidad acumulada del ejercicio ${STATE.currentMonth.slice(0,4)}</td><td class="num">${fmtNeg(utilidadAcumulada)}</td></tr>
+          <tr class="total-row"><td>Total Capital</td><td class="num">${fmtNeg(totalCapital)}</td></tr>
 
-          <tr class="total-row" style="border-top:2px solid var(--navy-1);"><td>Total Pasivo + Capital</td><td class="num">${fmt(totalPasivoCapital)}</td></tr>
+          <tr class="total-row" style="border-top:2px solid var(--navy-1);"><td>Total Pasivo + Capital</td><td class="num">${fmtNeg(totalPasivoCapital)}</td></tr>
         </tbody>
       </table>
       <p style="font-size:11.5px;color:var(--muted);margin-top:12px;">Efectivo, Bancos y Proveedores se calculan en automático desde sus módulos. Las demás cuentas (Activos fijos, Acreedores, Capital, etc.) se alimentan desde Pólizas de Diario — usa el Catálogo de Cuentas para crearlas.</p>
@@ -3853,8 +3856,8 @@ async function renderPLAnual(el, b) {
   const sum = arr => arr.reduce((s,x)=>s+x,0);
   const filaHtml = (label, valores, opts={}) => `<tr class="${opts.total?'total-row':''}" style="${opts.bg?'background:#f7f9fc;':''}">
     <td style="${opts.indentPx?`padding-left:${opts.indentPx}px;`:(opts.indent?'padding-left:22px;':'')}${opts.italic?'font-style:italic;color:var(--muted);':''}${opts.bold?'font-weight:700;':''}">${label}</td>
-    ${valores.map(v => `<td class="num" style="${opts.color?`color:${opts.color};`:''}">${fmt(v)}</td>`).join('')}
-    <td class="num" style="font-weight:700;${opts.color?`color:${opts.color};`:''}">${fmt(sum(valores))}</td>
+    ${valores.map(v => `<td class="num" style="${opts.color?`color:${opts.color};`:(Number(v)<0?'color:var(--red);':'')}">${fmt(v)}</td>`).join('')}
+    <td class="num" style="font-weight:700;${opts.color?`color:${opts.color};`:(sum(valores)<0?'color:var(--red);':'')}">${fmt(sum(valores))}</td>
   </tr>`;
 
   // Desglose por subcuenta (y sub-subcuenta, con sangría) de un mayor específico, mes a mes
@@ -3947,7 +3950,7 @@ function filaArbolSubcuentaHtml(nodo, conTerceraColumna, nivel, detalleHtmlSiAbi
   const abierto = STATE_plDetalleAbierto === nodo.id;
   let html = `<tr class="pl-subcuenta-row" data-subcuenta="${nodo.id}" style="cursor:pointer;">
     <td style="padding-left:${indent}px;${nivel>0?'color:var(--muted);font-size:12.5px;':''}">${abierto?'▾':'▸'} ${nodo.nombre}</td>
-    <td class="num">${fmt(nodo.total)}</td>${conTerceraColumna?'<td></td>':''}
+    <td class="num">${fmtNeg(nodo.total)}</td>${conTerceraColumna?'<td></td>':''}
   </tr>`;
   if (abierto) html += detalleHtmlSiAbierto;
   nodo.hijos.forEach(h => { html += filaArbolSubcuentaHtml(h, conTerceraColumna, nivel + 1, detalleHtmlSiAbierto); });
@@ -4031,7 +4034,7 @@ async function renderPL() {
             <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">${m.nombre} (póliza)</td></tr>
             ${m.subs.map(s => filaArbolSubcuentaHtml(s, false, 0, detalleIngresoHtml)).join('')}
           `).join('')}
-          <tr class="total-row"><td>Total ingresos</td><td class="num">${fmt(totalIngresosFinal)}</td></tr>
+          <tr class="total-row"><td>Total ingresos</td><td class="num">${fmtNeg(totalIngresosFinal)}</td></tr>
         </tbody>
       </table>
     </div>
@@ -4044,9 +4047,9 @@ async function renderPL() {
           ${gCostos.porMayor.map(m => `
             <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">${m.nombre}</td></tr>
             ${m.subs.map(s => filaArbolSubcuentaHtml(s, false, 0, detalleCostoHtml)).join('')}
-            <tr><td style="padding-left:22px;font-style:italic;color:var(--muted);">Subtotal ${m.nombre}</td><td class="num" style="font-weight:600;">${fmt(m.subtotal)}</td></tr>
+            <tr><td style="padding-left:22px;font-style:italic;color:var(--muted);">Subtotal ${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.subtotal)}</td></tr>
           `).join('')}
-          <tr class="total-row"><td>Total Costo de Ventas</td><td class="num">${fmt(gCostos.totalClasificado)}</td></tr>
+          <tr class="total-row"><td>Total Costo de Ventas</td><td class="num">${fmtNeg(gCostos.totalClasificado)}</td></tr>
           <tr class="total-row" style="border-top:2px solid var(--navy-1);"><td>Utilidad Bruta</td><td class="num" style="color:${utilidadBruta>=0?'var(--green)':'var(--red)'};">${fmt(utilidadBruta)}</td></tr>
         </tbody>
       </table>
@@ -4061,15 +4064,15 @@ async function renderPL() {
       </div>
       <table>
         <tbody>
-          <tr><td>Gastos operativos del día (desde Ventas, sin clasificar)</td><td class="num">${fmt(gastosOperativos)}</td><td></td></tr>
+          <tr><td>Gastos operativos del día (desde Ventas, sin clasificar)</td><td class="num">${fmtNeg(gastosOperativos)}</td><td></td></tr>
           ${faltanteCaja ? `<tr><td>Faltante de caja (conciliación de Ventas)</td><td class="num" style="color:var(--red);">${fmt(faltanteCaja)}</td><td></td></tr>` : ''}
           ${gClas.porMayor.map(m => `
             <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">${m.nombre}</td><td></td></tr>
             ${m.subs.map(s => filaArbolSubcuentaHtml(s, true, 0, detalleGastoHtml)).join('')}
-            <tr><td style="padding-left:22px;font-style:italic;color:var(--muted);">Subtotal ${m.nombre}</td><td class="num" style="font-weight:600;">${fmt(m.subtotal)}</td><td></td></tr>
+            <tr><td style="padding-left:22px;font-style:italic;color:var(--muted);">Subtotal ${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.subtotal)}</td><td></td></tr>
           `).join('')}
-          ${gClas.sinClasificar ? `<tr><td>Otros gastos sin subcuenta asignada</td><td class="num">${fmt(gClas.sinClasificar)}</td><td></td></tr>` : ''}
-          <tr class="total-row"><td>Total gastos</td><td class="num">${fmt(gastosTotales)}</td><td></td></tr>
+          ${gClas.sinClasificar ? `<tr><td>Otros gastos sin subcuenta asignada</td><td class="num">${fmtNeg(gClas.sinClasificar)}</td><td></td></tr>` : ''}
+          <tr class="total-row"><td>Total gastos</td><td class="num">${fmtNeg(gastosTotales)}</td><td></td></tr>
         </tbody>
       </table>
       <p style="font-size:12px;color:var(--muted);margin-top:10px;">Los gastos se toman de las facturas de Proveedores (por su desglose), de las salidas de Bancos/Efectivo marcadas como "Gasto", y de los ajustes manuales de abajo.</p>
@@ -4097,7 +4100,7 @@ async function renderPL() {
       <div class="card-head"><h3>Resultado</h3></div>
       <table>
         <tbody>
-          <tr><td>Total ingresos</td><td class="num">${fmt(totalIngresosFinal)}</td></tr>
+          <tr><td>Total ingresos</td><td class="num">${fmtNeg(totalIngresosFinal)}</td></tr>
           ${gCostos.totalClasificado ? `
           <tr><td>Costo de Ventas</td><td class="num" style="color:var(--red);">-${fmt(gCostos.totalClasificado)}</td></tr>
           <tr class="total-row"><td>Utilidad Bruta</td><td class="num" style="color:${utilidadBruta>=0?'var(--green)':'var(--red)'};">${fmt(utilidadBruta)}</td></tr>` : ''}
