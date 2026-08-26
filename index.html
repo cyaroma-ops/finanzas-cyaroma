@@ -237,24 +237,38 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
      imprimen perfecto porque no necesitan incrustarse. */
   *{font-family:Arial, Helvetica, sans-serif !important;}
   h1,h2,h3,.serif,.print-header h2{font-family:Georgia,'Times New Roman',serif !important;}
-  .card{box-shadow:none;border:1px solid #ccc;}
-  .kpi{break-inside:avoid;}
-  .kpi-grid{grid-template-columns:repeat(auto-fit,minmax(130px,1fr)) !important;gap:8px !important;margin-bottom:14px !important;}
-  .kpi{padding:8px 10px !important;}
-  .kpi .label{font-size:9px !important;margin-bottom:3px !important;}
-  .kpi .value{font-size:16px !important;}
+
+  /* Tarjetas: nada de cajas ni sombras — solo una línea fina separando secciones, como un reporte real */
+  .card{box-shadow:none !important;border:none !important;border-radius:0 !important;padding:0 0 4px 0 !important;margin-bottom:18px !important;border-bottom:1px solid #ddd !important;}
+  .card:last-child{border-bottom:none !important;}
+  .card-head{margin-bottom:8px !important;border-bottom:1.5px solid #222;padding-bottom:5px;}
+  .card-head h3{font-size:15px !important;letter-spacing:.3px;}
+  .card-head .hint{font-size:11px !important;}
+
+  /* KPIs: en vez de cajas, una sola línea de texto plano bien espaciada */
+  .kpi-grid{display:flex !important;flex-wrap:wrap;gap:0 !important;margin-bottom:16px !important;border-bottom:1.5px solid #222;padding-bottom:10px;}
+  .kpi{background:none !important;box-shadow:none !important;border:none !important;padding:0 22px 0 0 !important;break-inside:avoid;}
+  .kpi .label{font-size:9.5px !important;margin-bottom:4px !important;}
+  .kpi .value{font-size:17px !important;}
+
   .table-wrap, .table-wrap.scroll-sticky{overflow:visible !important;max-height:none !important;}
-  table{break-inside:auto;font-size:10px;width:100%;table-layout:auto;}
+  table{break-inside:auto;font-size:11px;width:100%;table-layout:auto;border-collapse:collapse;}
   tr{break-inside:avoid;break-after:auto;}
   thead{display:table-header-group;} /* repite el encabezado de columnas en cada página nueva */
   tfoot{display:table-row-group;}
+  th{background:none !important;color:#333 !important;font-size:9.5px !important;border-bottom:1.5px solid #222 !important;padding:6px 10px !important;}
+  td{padding:6px 10px !important;border-bottom:1px solid #e2e2e2 !important;}
+  tr.total-row td{background:none !important;color:#000 !important;border-top:1.5px solid #222 !important;border-bottom:1.5px solid #222 !important;}
+  tr[style*="background"]{background:none !important;}
+  tr[style*="background"] td{border-top:1px solid #999 !important;padding-top:10px !important;}
+
   .content{padding:0 !important;}
   .topbar{position:static;border-bottom:none;padding:0 0 10px 0;}
   body{background:#fff;}
   .main{width:100%;}
-  .print-header{display:block !important;margin-bottom:14px;border-bottom:2px solid var(--navy-1);padding-bottom:10px;}
-  .print-header h2{font-size:22px;color:var(--navy-1);}
-  .print-header p{font-size:12px;color:var(--muted);}
+  .print-header{display:block !important;margin-bottom:16px;border-bottom:2px solid #000;padding-bottom:10px;}
+  .print-header h2{font-size:23px;color:#000;}
+  .print-header p{font-size:11.5px;color:#555;}
 }
 </style>
 </head>
