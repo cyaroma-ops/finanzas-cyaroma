@@ -3375,6 +3375,8 @@ function provRowHtml(p, catalogo, opcionesPagoDesde) {
 let STATE_plVista = 'mensual'; // 'mensual' | 'acumulado' | 'anual'
 let STATE_plRangoDesde = '';
 let STATE_plRangoHasta = '';
+let STATE_plAnualDesdeYm = ''; // 'YYYY-MM', vacío = enero del año actual
+let STATE_plAnualHastaYm = ''; // 'YYYY-MM', vacío = diciembre del año actual
 let STATE_plDetalleAbierto = null; // subcuenta id cuyo detalle está desplegado
 
 function periodoPL(ym, vista) {
@@ -3767,11 +3769,26 @@ function plTagsHtml() {
         ${(STATE_plRangoDesde||STATE_plRangoHasta) ? `<button class="btn btn-ghost btn-sm" id="plRangoLimpiar">✕ Ver mes completo</button>` : ''}
       </div>
     </div>
-    <p style="font-size:11.5px;color:var(--muted);margin:-2px 0 12px;">Puedes elegir un rango que abarque varios meses (ej. junio a julio) — no tiene que quedarse dentro de un solo mes.</p>` : ''}`;
+    <p style="font-size:11.5px;color:var(--muted);margin:-2px 0 12px;">Puedes elegir un rango que abarque varios meses (ej. junio a julio) — no tiene que quedarse dentro de un solo mes.</p>` : ''}
+  ${STATE_plVista==='anual' ? `
+    <div class="grid-3" style="margin:10px 0 4px;max-width:560px;">
+      <div class="field" style="margin-bottom:0;">
+        <label>Desde el mes</label>
+        <input type="month" id="plAnualDesde" value="${STATE_plAnualDesdeYm || STATE.currentMonth.slice(0,4)+'-01'}">
+      </div>
+      <div class="field" style="margin-bottom:0;">
+        <label>Hasta el mes</label>
+        <input type="month" id="plAnualHasta" value="${STATE_plAnualHastaYm || STATE.currentMonth.slice(0,4)+'-12'}">
+      </div>
+      <div class="field" style="margin-bottom:0;display:flex;align-items:flex-end;">
+        ${(STATE_plAnualDesdeYm||STATE_plAnualHastaYm) ? `<button class="btn btn-ghost btn-sm" id="plAnualLimpiar">✕ Ver año completo</button>` : ''}
+      </div>
+    </div>
+    <p style="font-size:11.5px;color:var(--muted);margin:-2px 0 12px;">Por default muestra los 12 meses del año — acórtalo para ver solo algunos meses uno junto al otro (ej. Junio y Julio).</p>` : ''}`;
 }
 function wirePLTags(el) {
-  el.querySelector('#plTabMensual').addEventListener('click', () => { STATE_plVista = 'mensual'; renderPL(); });
-  el.querySelector('#plTabAcumulado').addEventListener('click', () => { STATE_plVista = 'acumulado'; STATE_plRangoDesde=''; STATE_plRangoHasta=''; renderPL(); });
+  el.querySelector('#plTabMensual').addEventListener('click', () => { STATE_plVista = 'mensual'; STATE_plAnualDesdeYm=''; STATE_plAnualHastaYm=''; renderPL(); });
+  el.querySelector('#plTabAcumulado').addEventListener('click', () => { STATE_plVista = 'acumulado'; STATE_plRangoDesde=''; STATE_plRangoHasta=''; STATE_plAnualDesdeYm=''; STATE_plAnualHastaYm=''; renderPL(); });
   el.querySelector('#plTabAnual').addEventListener('click', () => { STATE_plVista = 'anual'; STATE_plRangoDesde=''; STATE_plRangoHasta=''; renderPL(); });
   const rd = el.querySelector('#plRangoDesde');
   const rh = el.querySelector('#plRangoHasta');
@@ -3779,6 +3796,12 @@ function wirePLTags(el) {
   if (rh) rh.addEventListener('change', () => { STATE_plRangoHasta = rh.value; STATE_plRangoDesde = STATE_plRangoDesde || rd.value; renderPL(); });
   const limpiar = el.querySelector('#plRangoLimpiar');
   if (limpiar) limpiar.addEventListener('click', () => { STATE_plRangoDesde=''; STATE_plRangoHasta=''; renderPL(); });
+  const pad = el.querySelector('#plAnualDesde');
+  const pah = el.querySelector('#plAnualHasta');
+  if (pad) pad.addEventListener('change', () => { STATE_plAnualDesdeYm = pad.value; STATE_plAnualHastaYm = STATE_plAnualHastaYm || pah.value; renderPL(); });
+  if (pah) pah.addEventListener('change', () => { STATE_plAnualHastaYm = pah.value; STATE_plAnualDesdeYm = STATE_plAnualDesdeYm || pad.value; renderPL(); });
+  const limpiarAnual = el.querySelector('#plAnualLimpiar');
+  if (limpiarAnual) limpiarAnual.addEventListener('click', () => { STATE_plAnualDesdeYm=''; STATE_plAnualHastaYm=''; renderPL(); });
 }
 
 async function renderPLAnual(el, b) {
@@ -3786,14 +3809,24 @@ async function renderPLAnual(el, b) {
   wirePLTags(el);
 
   const year = STATE.currentMonth.slice(0, 4);
+  const desdeYm = STATE_plAnualDesdeYm || `${year}-01`;
+  const hastaYm = STATE_plAnualHastaYm || `${year}-12`;
   const [conceptosVenta, conceptos, subcuentas, mayores, conceptosSistema] = await Promise.all([
     loadConceptosVenta(b.id), loadConceptos(b.id), loadSubcuentas(b.id), loadCuentasMayor(b.id), loadConceptosSistema(b.id),
   ]);
   const porCatPL = { efectivo: conceptos.filter(c=>c.categoria==='efectivo'), tarjetas: conceptos.filter(c=>c.categoria==='tarjetas'), bancos: conceptos.filter(c=>c.categoria==='bancos'), cxc: conceptos.filter(c=>c.categoria==='cxc'), propinas: conceptos.filter(c=>c.categoria==='propinas') };
   const mayoresGasto = mayores.filter(m => m.tipo === 'gasto');
   const mayoresCosto = mayores.filter(m => m.tipo === 'costo');
-  const mesesYm = Array.from({ length: 12 }, (_, i) => `${year}-${String(i + 1).padStart(2, '0')}`);
-  const mesesLabel = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+  const mesesYm = [];
+  { // generar todos los YYYY-MM entre desdeYm y hastaYm (puede cruzar años)
+    let [ay, am] = desdeYm.split('-').map(Number);
+    const [by, bm] = hastaYm.split('-').map(Number);
+    while (ay < by || (ay === by && am <= bm)) {
+      mesesYm.push(`${ay}-${String(am).padStart(2,'0')}`);
+      am++; if (am > 12) { am = 1; ay++; }
+    }
+  }
+  const mesesLabel = mesesYm.map(ym => `${MESES_LARGO[Number(ym.slice(5,7))-1].slice(0,3)} ${ym.slice(2,4)}`);
 
   const datos = [];
   for (const ym of mesesYm) {
@@ -3878,22 +3911,22 @@ async function renderPLAnual(el, b) {
   el.innerHTML = plTagsHtml() + `
     <p style="font-size:13px;color:var(--muted);margin:-4px 0 14px;font-weight:600;">${estadoResultadosSubtitulo()}</p>
     <div class="card">
-      <div class="card-head"><h3>P&L — Todos los meses de ${year}</h3></div>
+      <div class="card-head"><h3>P&L — ${mesesYm.length===12 && desdeYm===`${year}-01` ? `Todos los meses de ${year}` : `${MESES_LARGO[Number(desdeYm.slice(5,7))-1]} ${desdeYm.slice(0,4)} a ${MESES_LARGO[Number(hastaYm.slice(5,7))-1]} ${hastaYm.slice(0,4)}`}</h3></div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Concepto</th>${mesesLabel.map(m=>`<th>${m}</th>`).join('')}<th>Acumulado</th></tr></thead>
           <tbody>
-            <tr style="background:#f7f9fc;"><td colspan="14" style="font-weight:700;">Ingresos</td></tr>
+            <tr style="background:#f7f9fc;"><td colspan="${mesesYm.length + 2}" style="font-weight:700;">Ingresos</td></tr>
             ${filasIngreso}
             ${filaSobrante}
             ${filaPoliza}
             ${filaTotalIngresos}
             ${hayMayoresCosto ? `
-            <tr style="background:#f7f9fc;"><td colspan="14" style="font-weight:700;">Costo de Ventas</td></tr>
+            <tr style="background:#f7f9fc;"><td colspan="${mesesYm.length + 2}" style="font-weight:700;">Costo de Ventas</td></tr>
             ${filasCosto}
             ${filaTotalCosto}
             ${filaUtilidadBruta}` : ''}
-            <tr style="background:#f7f9fc;"><td colspan="14" style="font-weight:700;">Gastos</td></tr>
+            <tr style="background:#f7f9fc;"><td colspan="${mesesYm.length + 2}" style="font-weight:700;">Gastos</td></tr>
             ${filaGastosOp}
             ${filaFaltante}
             ${filasMayor}
