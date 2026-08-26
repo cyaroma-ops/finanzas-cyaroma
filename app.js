@@ -482,8 +482,10 @@ function updateTopbar() {
   document.getElementById('monthPicker').style.display = meta.showMonth ? 'block' : 'none';
 
   const printBtn = document.getElementById('printBtn');
+  const printOrientacion = document.getElementById('printOrientacion');
   if (SECCIONES_IMPRIMIBLES.includes(STATE.currentSection)) {
     printBtn.style.display = 'inline-flex';
+    printOrientacion.style.display = 'inline-flex';
     printBtn.onclick = () => {
       const tituloImpresion = STATE.currentSection === 'pl'
         ? 'Estado de Resultados' + (b ? ' — ' + b.name : '')
@@ -491,10 +493,12 @@ function updateTopbar() {
       const mesLegible = MESES_LARGO[Number(STATE.currentMonth.slice(5,7)) - 1] + ' ' + STATE.currentMonth.slice(0,4);
       document.getElementById('printTitle').textContent = tituloImpresion;
       document.getElementById('printSub').textContent = `${b?.razon_social ? b.razon_social + ' · ' : ''}${meta.showMonth ? mesLegible + ' · ' : ''}Impreso el ${new Date().toLocaleDateString('es-MX', { year:'numeric', month:'long', day:'numeric' })}`;
+      document.getElementById('printOrientationStyle').textContent = `@media print { @page { size: ${printOrientacion.value}; margin: 12mm; } }`;
       window.print();
     };
   } else {
     printBtn.style.display = 'none';
+    printOrientacion.style.display = 'none';
   }
 }
 
@@ -3759,6 +3763,7 @@ function plTagsHtml() {
     <div class="tag ${STATE_plVista==='anual'?'active':''}" id="plTabAnual">Todos los meses</div>
   </div>
   ${STATE_plVista==='mensual' ? `
+    <div class="pl-controles-rango">
     <div class="grid-3" style="margin:10px 0 4px;max-width:560px;">
       <div class="field" style="margin-bottom:0;">
         <label>Del día</label>
@@ -3772,8 +3777,10 @@ function plTagsHtml() {
         ${(STATE_plRangoDesde||STATE_plRangoHasta) ? `<button class="btn btn-ghost btn-sm" id="plRangoLimpiar">✕ Ver mes completo</button>` : ''}
       </div>
     </div>
-    <p style="font-size:11.5px;color:var(--muted);margin:-2px 0 12px;">Puedes elegir un rango que abarque varios meses (ej. junio a julio) — no tiene que quedarse dentro de un solo mes.</p>` : ''}
+    <p style="font-size:11.5px;color:var(--muted);margin:-2px 0 12px;">Puedes elegir un rango que abarque varios meses (ej. junio a julio) — no tiene que quedarse dentro de un solo mes.</p>
+    </div>` : ''}
   ${STATE_plVista==='anual' ? `
+    <div class="pl-controles-rango">
     <div class="grid-3" style="margin:10px 0 4px;max-width:560px;">
       <div class="field" style="margin-bottom:0;">
         <label>Desde el mes</label>
@@ -3787,7 +3794,8 @@ function plTagsHtml() {
         ${(STATE_plAnualDesdeYm||STATE_plAnualHastaYm) ? `<button class="btn btn-ghost btn-sm" id="plAnualLimpiar">✕ Ver año completo</button>` : ''}
       </div>
     </div>
-    <p style="font-size:11.5px;color:var(--muted);margin:-2px 0 12px;">Por default muestra los 12 meses del año — acórtalo para ver solo algunos meses uno junto al otro (ej. Junio y Julio).</p>` : ''}`;
+    <p style="font-size:11.5px;color:var(--muted);margin:-2px 0 12px;">Por default muestra los 12 meses del año — acórtalo para ver solo algunos meses uno junto al otro (ej. Junio y Julio).</p>
+    </div>` : ''}`;
 }
 function wirePLTags(el) {
   el.querySelector('#plTabMensual').addEventListener('click', () => { STATE_plVista = 'mensual'; STATE_plAnualDesdeYm=''; STATE_plAnualHastaYm=''; renderPL(); });
