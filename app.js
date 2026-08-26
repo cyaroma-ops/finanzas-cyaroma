@@ -1281,6 +1281,16 @@ function subcuentaIdsDescendientes(subcuentaId, subcuentas) {
   const hijas = subcuentasHijas(subcuentaId, subcuentas);
   return hijas.flatMap(h => [h.id, ...subcuentaIdsDescendientes(h.id, subcuentas)]);
 }
+function opcionesMoverSubcuenta(s, subcuentas) {
+  const excluidos = new Set([s.id, ...subcuentaIdsDescendientes(s.id, subcuentas)]);
+  const candidatos = subcuentas.filter(x => x.cuenta_mayor_id === s.cuenta_mayor_id && !excluidos.has(x.id));
+  const construirNivel = (padreId, nivel) => candidatos.filter(x => (x.subcuenta_padre_id || null) === padreId)
+    .flatMap(x => [
+      `<option value="${x.id}" ${s.subcuenta_padre_id===x.id?'selected':''}>${'—'.repeat(nivel)} ${x.nombre}</option>`,
+      ...construirNivel(x.id, nivel + 1),
+    ]);
+  return `<option value="">— nivel superior (dentro de su cuenta mayor) —</option>` + construirNivel(null, 0).join('');
+}
 function rutaSubcuenta(subcuenta, subcuentas, mayores) {
   const partes = [subcuenta.nombre];
   let actual = subcuenta;
@@ -1484,10 +1494,11 @@ async function renderCatalogoCuentas() {
   const filaSubHtml = (s, nivel) => {
     const editando = STATE_ccEditando.has(s.id);
     return `
-    <div style="display:flex;align-items:center;gap:8px;padding:6px 4px 6px ${16 + nivel*18}px;border-bottom:1px solid var(--line);font-size:13px;">
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 4px 6px ${16 + nivel*18}px;border-bottom:1px solid var(--line);font-size:13px;flex-wrap:wrap;">
       ${nivel>0?'<span style="color:var(--muted);">—</span>':''}
       ${editando ? `
-        <input class="cell cc-sub-nombre" type="text" value="${s.nombre}" data-id="${s.id}" style="flex:1;min-width:0;">
+        <input class="cell cc-sub-nombre" type="text" value="${s.nombre}" data-id="${s.id}" style="flex:1;min-width:120px;">
+        <select class="cell cc-sub-padre" data-id="${s.id}" style="min-width:200px;">${opcionesMoverSubcuenta(s, subcuentas)}</select>
         <button class="btn btn-ghost btn-sm cc-sub-save" data-id="${s.id}">Guardar</button>
       ` : `
         <span style="flex:1;min-width:0;">${s.nombre}</span>
@@ -1582,9 +1593,14 @@ async function renderCatalogoCuentas() {
   }));
   el.querySelectorAll('.cc-sub-save').forEach(btn => btn.addEventListener('click', async () => {
     const inp = el.querySelector(`.cc-sub-nombre[data-id="${btn.dataset.id}"]`);
-    const { error } = await sb.from('fz_subcuentas').update({ nombre: inp.value.trim() }).eq('id', btn.dataset.id);
+    const selPadre = el.querySelector(`.cc-sub-padre[data-id="${btn.dataset.id}"]`);
+    const nuevoPadreId = selPadre ? (selPadre.value || null) : undefined;
+    const payload = { nombre: inp.value.trim() };
+    if (nuevoPadreId !== undefined) payload.subcuenta_padre_id = nuevoPadreId;
+    const { error } = await sb.from('fz_subcuentas').update(payload).eq('id', btn.dataset.id);
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     STATE_ccEditando.delete(btn.dataset.id);
+    registrarAuditoria(biz()?.id, 'editar', 'Catálogo de Cuentas', `Subcuenta "${payload.nombre}" reubicada`);
     toast('Guardado.');
     renderCatalogoCuentas();
   }));
