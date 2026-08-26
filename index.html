@@ -52,71 +52,76 @@ h1,h2,h3,.serif{font-family:'Cormorant Garamond',serif;}
   overflow:hidden;
 }
 .login-left{
-  flex:1 1 46%;
-  max-width:560px;
-  background:linear-gradient(160deg,var(--navy-2) 0%, var(--navy-1) 70%);
+  flex:0 0 38%;
+  max-width:640px;
+  min-width:340px;
+  background:linear-gradient(160deg,var(--navy-2) 0%, var(--navy-1) 75%);
   position:relative;
   display:flex;flex-direction:column;
-  padding:48px 52px;
+  padding:56px 56px 44px;
   color:#fff;
   overflow:hidden;
 }
 .login-left-decor{
-  position:absolute;inset:0;pointer-events:none;opacity:.09;
+  position:absolute;inset:0;pointer-events:none;
 }
 .login-left-top{position:relative;z-index:1;}
-.login-left-top img{height:46px;width:auto;filter:brightness(0) invert(1);opacity:.95;}
-.login-left-mid{position:relative;z-index:1;flex:1;display:flex;flex-direction:column;justify-content:center;max-width:420px;}
-.login-left-mid .eyebrow{font-family:'Cormorant Garamond',serif;font-size:34px;font-weight:700;letter-spacing:1px;color:#fff;margin-bottom:16px;}
-.login-left-mid h2{font-family:'Cormorant Garamond',serif;font-size:20px;font-weight:600;color:var(--gold);margin-bottom:4px;letter-spacing:.2px;}
-.login-left-mid p{font-size:13.5px;line-height:1.65;color:#c7d4e8;margin-top:14px;}
-.login-features{display:flex;flex-wrap:wrap;gap:22px;margin-top:34px;position:relative;z-index:1;}
-.login-feature{display:flex;align-items:center;gap:8px;font-size:11.5px;letter-spacing:.3px;color:#dfe6f2;}
-.login-feature svg{width:17px;height:17px;stroke:var(--gold);flex-shrink:0;}
-.login-left-bottom{position:relative;z-index:1;padding-top:24px;}
-.login-left-bottom .brandline{font-size:13px;font-weight:700;letter-spacing:2px;color:#fff;}
-.login-left-bottom .subline{font-size:9.5px;letter-spacing:2.2px;color:var(--gold);margin-top:6px;text-transform:uppercase;}
+.login-left-top img{height:auto;width:230px;max-width:70%;opacity:.97;}
+.login-left-mid{position:relative;z-index:1;flex:1;display:flex;flex-direction:column;justify-content:center;max-width:440px;}
+.login-left-mid .eyebrow{font-family:'Cormorant Garamond',serif;font-size:46px;font-weight:700;letter-spacing:1px;color:#fff;line-height:1.05;}
+.login-left-mid .eyebrow-rule{width:56px;height:3px;background:var(--gold);margin:16px 0 18px;border-radius:2px;}
+.login-left-mid h2{font-family:'Cormorant Garamond',serif;font-size:21px;font-weight:600;color:var(--gold);margin-bottom:4px;letter-spacing:.2px;line-height:1.35;}
+.login-left-mid p{font-size:14px;line-height:1.7;color:#c7d4e8;margin-top:16px;max-width:400px;}
+.login-features{display:flex;flex-wrap:nowrap;justify-content:space-between;gap:14px;margin-top:38px;position:relative;z-index:1;}
+.login-feature{display:flex;flex-direction:column;align-items:flex-start;gap:8px;font-size:12px;letter-spacing:.2px;color:#e6ecf6;white-space:nowrap;}
+.login-feature svg{width:21px;height:21px;stroke:var(--gold);flex-shrink:0;}
+.login-left-bottom{position:relative;z-index:1;padding-top:30px;}
+.login-left-bottom .brandline{font-size:13.5px;font-weight:700;letter-spacing:2.2px;color:#fff;}
+.login-left-bottom .subline{font-size:9.5px;letter-spacing:2.2px;color:var(--gold);margin-top:7px;text-transform:uppercase;}
 .login-right{
-  flex:1 1 54%;
+  flex:1 1 62%;
   background:var(--paper);
   display:flex;align-items:center;justify-content:center;
   padding:32px;
 }
-.login-card{
-  width:min(400px,92vw);
-  background:var(--card);
-  border-radius:18px;
-  padding:40px 36px;
-  box-shadow:0 30px 80px rgba(0,0,0,.35);
-  text-align:center;
-}
 .login-form-inner{
-  width:min(360px,100%);
+  width:min(460px,92vw);
   text-align:center;
 }
 .login-brand{
-  display:flex;flex-direction:column;align-items:center;gap:2px;margin-bottom:26px;
+  display:flex;flex-direction:column;align-items:center;gap:0;margin-bottom:10px;
 }
-.login-brand .logo-img{height:68px;width:auto;margin-bottom:10px;}
-.login-brand h1{font-size:22px;color:var(--navy-1);letter-spacing:.3px;}
-.login-brand p{font-size:11px;color:var(--muted);letter-spacing:1.8px;text-transform:uppercase;margin-top:3px;}
-.login-secure{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:16px;font-size:11px;color:var(--muted);letter-spacing:.2px;}
-.login-secure svg{width:13px;height:13px;stroke:var(--muted);}
+.login-brand .logo-img{height:auto;width:220px;max-width:80%;margin-bottom:18px;}
+.login-brand h1{font-family:'Cormorant Garamond',serif;font-size:27px;font-weight:700;color:var(--navy-1);letter-spacing:.3px;}
+.login-brand p{font-size:11.5px;color:var(--muted);letter-spacing:2px;text-transform:uppercase;margin-top:5px;}
+.login-brand-rule{width:44px;height:2px;background:var(--gold);margin:18px auto 26px;border-radius:2px;}
+.login-secure{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:18px;font-size:11.5px;color:var(--muted);letter-spacing:.2px;}
+.login-secure svg{width:14px;height:14px;stroke:var(--muted);}
 .pass-wrap{position:relative;}
-.pass-wrap input{padding-right:40px;}
-.pass-toggle{position:absolute;right:0;top:0;height:100%;width:38px;background:none;border:none;cursor:pointer;color:var(--muted);display:flex;align-items:center;justify-content:center;}
-.pass-toggle svg{width:18px;height:18px;}
+.pass-wrap input{padding-right:42px;}
+.pass-toggle{position:absolute;right:0;top:0;height:100%;width:40px;background:none;border:none;cursor:pointer;color:var(--muted);display:flex;align-items:center;justify-content:center;}
+.pass-toggle svg{width:19px;height:19px;}
+#loginScreen .field{margin-bottom:16px;}
+#loginScreen .field label{font-size:12.5px;}
+#loginScreen .field input{padding:13px 15px;font-size:14.5px;border-radius:10px;}
+#loginScreen .btn-primary{width:100%;padding:13px 18px;font-size:14.5px;border-radius:10px;margin-top:4px;}
+@media (max-width:1000px){
+  .login-left{flex-basis:34%;padding:44px 38px 36px;}
+  .login-features{flex-wrap:wrap;gap:16px 20px;}
+}
 @media (max-width:860px){
-  #loginScreen{flex-direction:column;}
+  #loginScreen{flex-direction:column;overflow-y:auto;}
   .login-left{
-    flex:0 0 auto;max-width:none;padding:22px 24px;flex-direction:row;align-items:center;gap:14px;
+    flex:0 0 auto;max-width:none;padding:20px 24px;flex-direction:row;align-items:center;gap:14px;min-width:0;
   }
-  .login-left-top img{height:32px;}
+  .login-left-top img{width:150px;}
   .login-left-mid{display:none;}
   .login-features{display:none;}
   .login-left-bottom{display:none;}
   .login-left-top{flex:1;}
-  .login-right{flex:1;padding:24px;}
+  .login-right{flex:1;padding:28px 22px;}
+  .login-form-inner{width:min(400px,100%);}
+  .login-brand .logo-img{width:170px;}
 }
 .login-brand .mark{
   width:52px;height:52px;border-radius:12px;
@@ -331,23 +336,23 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 <div id="loginScreen">
   <div class="login-left">
     <svg class="login-left-decor" viewBox="0 0 500 700" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
-      <polyline points="0,520 60,470 120,500 180,420 240,450 300,360 360,390 420,300 480,340 540,260" fill="none" stroke="#ffffff" stroke-width="3"/>
-      <circle cx="120" cy="500" r="5" fill="#b98a2e"/>
-      <circle cx="240" cy="450" r="5" fill="#b98a2e"/>
-      <circle cx="360" cy="390" r="5" fill="#b98a2e"/>
-      <circle cx="480" cy="340" r="5" fill="#b98a2e"/>
-      <rect x="30" y="580" width="22" height="90" fill="#ffffff"/>
-      <rect x="70" y="550" width="22" height="120" fill="#ffffff"/>
-      <rect x="110" y="600" width="22" height="70" fill="#ffffff"/>
-      <rect x="150" y="530" width="22" height="140" fill="#ffffff"/>
-      <rect x="190" y="565" width="22" height="105" fill="#ffffff"/>
+      <polyline points="-20,540 60,500 130,525 200,460 270,485 340,410 410,435 480,370 550,395" fill="none" stroke="#ffffff" stroke-width="2" opacity=".10"/>
+      <circle cx="130" cy="525" r="3.5" fill="#ffffff" opacity=".14"/>
+      <circle cx="270" cy="485" r="3.5" fill="#ffffff" opacity=".14"/>
+      <circle cx="410" cy="435" r="3.5" fill="#ffffff" opacity=".14"/>
+      <rect x="40" y="600" width="16" height="70" fill="#ffffff" opacity=".06"/>
+      <rect x="70" y="580" width="16" height="90" fill="#ffffff" opacity=".06"/>
+      <rect x="100" y="615" width="16" height="55" fill="#ffffff" opacity=".06"/>
+      <rect x="130" y="565" width="16" height="105" fill="#ffffff" opacity=".06"/>
+      <circle cx="420" cy="120" r="180" fill="#ffffff" opacity=".025"/>
     </svg>
     <div class="login-left-top">
-      <img src="logo-ca-white.png" alt="CYA Roma &amp; Associates">
+      <img src="logo-full-white.png" alt="CYA Roma &amp; Associates">
     </div>
     <div class="login-left-mid">
-      <div class="eyebrow">CONTROL FINANCIERO</div>
-      <h2>Información clara. Decisiones mejor fundamentadas.</h2>
+      <div class="eyebrow">CONTROL<br>FINANCIERO</div>
+      <div class="eyebrow-rule"></div>
+      <h2>Información clara.<br>Decisiones mejor fundamentadas.</h2>
       <p>Plataforma de gestión financiera de CYA Roma &amp; Associates para el control y seguimiento de múltiples negocios.</p>
       <div class="login-features">
         <div class="login-feature"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M3 3v18h18"/><path d="M18 17V9M13 17V5M8 17v-4"/></svg>Ventas</div>
@@ -366,10 +371,11 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   <div class="login-right">
     <div class="login-form-inner">
       <div class="login-brand">
-        <img class="logo-img" src="logo-cya.jpg" alt="CYA Roma & Associates">
+        <img class="logo-img" src="logo-full-color.png" alt="CYA Roma &amp; Associates">
         <h1>Control Financiero</h1>
         <p>Plataforma de gestión financiera</p>
       </div>
+      <div class="login-brand-rule"></div>
       <div class="field">
         <label>Correo</label>
         <input type="email" id="loginEmail" placeholder="tucorreo@despacho.com">
@@ -389,7 +395,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="9" rx="1"/><path d="M8 11V7a4 4 0 018 0v4"/></svg>
         Acceso seguro y confidencial
       </div>
-      <p style="text-align:center;font-size:10.5px;color:#8a99b3;margin-top:22px;letter-spacing:.2px;">© <span id="loginCopyrightYear"></span> CYAroma / Roma &amp; Associates®. Todos los derechos reservados.</p>
+      <p style="text-align:center;font-size:10.5px;color:#8a99b3;margin-top:24px;letter-spacing:.2px;">© <span id="loginCopyrightYear"></span> CYA Roma &amp; Associates. Todos los derechos reservados.</p>
     </div>
   </div>
 </div>
