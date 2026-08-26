@@ -112,16 +112,18 @@ h1,h2,h3,.serif{font-family:'Cormorant Garamond',serif;}
 @media (max-width:860px){
   #loginScreen{flex-direction:column;overflow-y:auto;}
   .login-left{
-    flex:0 0 auto;max-width:none;padding:20px 24px;flex-direction:row;align-items:center;gap:14px;min-width:0;
+    flex:0 0 auto;max-width:none;padding:16px 20px;flex-direction:row;align-items:center;justify-content:center;gap:0;min-width:0;
   }
-  .login-left-top img{width:150px;}
+  .login-left-top{flex:none;}
+  .login-left-top img{width:128px;}
   .login-left-mid{display:none;}
   .login-features{display:none;}
   .login-left-bottom{display:none;}
-  .login-left-top{flex:1;}
-  .login-right{flex:1;padding:28px 22px;}
+  .login-right{flex:1;padding:22px 22px;}
   .login-form-inner{width:min(400px,100%);}
-  .login-brand .logo-img{width:170px;}
+  .login-brand h1{font-size:24px;}
+  .login-brand-rule{margin:14px auto 20px;}
+  #loginScreen .field{margin-bottom:13px;}
 }
 .login-brand .mark{
   width:52px;height:52px;border-radius:12px;
@@ -363,7 +365,6 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
       </div>
     </div>
     <div class="login-left-bottom">
-      <div class="brandline">CYA ROMA &amp; ASSOCIATES</div>
       <div class="subline">Responsabilidad · Confianza · Experiencia</div>
     </div>
   </div>
@@ -371,7 +372,6 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   <div class="login-right">
     <div class="login-form-inner">
       <div class="login-brand">
-        <img class="logo-img" src="logo-full-color.png" alt="CYA Roma &amp; Associates">
         <h1>Control Financiero</h1>
         <p>Plataforma de gestión financiera</p>
       </div>
