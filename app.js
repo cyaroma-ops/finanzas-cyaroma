@@ -3854,10 +3854,11 @@ async function renderPLAnual(el, b) {
   }
 
   const sum = arr => arr.reduce((s,x)=>s+x,0);
+  const colorCelda = (v, opts) => opts.perValueColor ? `color:${Number(v)>=0?'var(--green)':'var(--red)'};` : (opts.color?`color:${opts.color};`:(Number(v)<0?'color:var(--red);':''));
   const filaHtml = (label, valores, opts={}) => `<tr class="${opts.total?'total-row':''}" style="${opts.bg?'background:#f7f9fc;':''}">
     <td style="${opts.indentPx?`padding-left:${opts.indentPx}px;`:(opts.indent?'padding-left:22px;':'')}${opts.italic?'font-style:italic;color:var(--muted);':''}${opts.bold?'font-weight:700;':''}">${label}</td>
-    ${valores.map(v => `<td class="num" style="${opts.color?`color:${opts.color};`:(Number(v)<0?'color:var(--red);':'')}">${fmt(v)}</td>`).join('')}
-    <td class="num" style="font-weight:700;${opts.color?`color:${opts.color};`:(sum(valores)<0?'color:var(--red);':'')}">${fmt(sum(valores))}</td>
+    ${valores.map(v => `<td class="num" style="${colorCelda(v, opts)}">${fmt(v)}</td>`).join('')}
+    <td class="num" style="font-weight:700;${colorCelda(sum(valores), opts)}">${fmt(sum(valores))}</td>
   </tr>`;
 
   // Desglose por subcuenta (y sub-subcuenta, con sangría) de un mayor específico, mes a mes
@@ -3897,7 +3898,7 @@ async function renderPLAnual(el, b) {
     return filaHtml(m.nombre, totalPorMes, { bold:true, bg:true }) + filasSubcuentasPorMayor(m, d => d.gCostos.porMayor.find(pm=>pm.nombre===m.nombre));
   }).join('');
   const filaTotalCosto = filaHtml('Total Costo de Ventas', datos.map(d=>d.gCostos.totalClasificado), { total:true });
-  const filaUtilidadBruta = filaHtml('Utilidad Bruta', datos.map(d=>d.utilidadBruta), { total:true, color: sum(datos.map(d=>d.utilidadBruta))>=0?'var(--green)':'var(--red)' });
+  const filaUtilidadBruta = filaHtml('Utilidad Bruta', datos.map(d=>d.utilidadBruta), { total:true, perValueColor:true });
 
   const filaGastosOp = filaHtml('Gastos operativos (sin clasificar, Ventas)', datos.map(d=>d.gastosOperativos));
   const filaFaltante = datos.some(d=>d.faltanteCaja) ? filaHtml('Faltante de caja (conciliación)', datos.map(d=>d.faltanteCaja), { color:'var(--red)' }) : '';
@@ -3908,7 +3909,7 @@ async function renderPLAnual(el, b) {
   const filaSinClasificar = datos.some(d=>d.gClas.sinClasificar) ? filaHtml('Otros gastos sin subcuenta', datos.map(d=>d.gClas.sinClasificar)) : '';
   const filaTotalGastos = filaHtml('Total gastos', datos.map(d=>d.gastosTotales), { total:true });
 
-  const filaUtilidad = filaHtml('Utilidad / Pérdida', datos.map(d=>d.utilidad), { total:true, color: sum(datos.map(d=>d.utilidad))>=0?'var(--green)':'var(--red)' });
+  const filaUtilidad = filaHtml('Utilidad / Pérdida', datos.map(d=>d.utilidad), { total:true, perValueColor:true });
   const margenRow = `<tr><td style="font-style:italic;color:var(--muted);">Margen</td>${datos.map(d=>`<td class="num">${d.totalIngresosFinal?((d.utilidad/d.totalIngresosFinal*100).toFixed(0)+'%'):'—'}</td>`).join('')}<td class="num">—</td></tr>`;
 
   el.innerHTML = plTagsHtml() + `
