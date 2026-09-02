@@ -787,26 +787,39 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 
 <!-- Modal: desglose de factura -->
 <div class="modal-bg" id="modalDesglose">
-  <div class="modal" style="width:min(480px,92vw);">
+  <div class="modal" style="width:min(520px,92vw);">
     <h3>Desglose de factura</h3>
     <p style="font-size:12.5px;color:var(--muted);margin-bottom:10px;">Reparte el importe de esta factura entre las subcuentas que correspondan.</p>
     <div id="desgloseTotales" style="font-size:13px;margin-bottom:12px;font-weight:600;"></div>
     <div id="desgloseList" style="max-height:220px;overflow-y:auto;margin-bottom:14px;"></div>
+    <div id="desgloseEditandoAviso" style="display:none;background:#fff8ec;border:1px solid #f0d99a;border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:12.5px;color:#8a6d1f;">Editando línea existente — al guardar se actualiza, no se agrega otra.</div>
+    <div class="field" style="margin-bottom:10px;">
+      <label>Subcuenta</label>
+      <select id="newDesgloseSubcuenta"></select>
+    </div>
     <div class="grid-3" style="align-items:end;">
-      <div class="field" style="margin-bottom:0;grid-column:span 2;">
-        <label>Subcuenta</label>
-        <select id="newDesgloseSubcuenta"></select>
+      <div class="field" style="margin-bottom:0;">
+        <label>Importe (sin IVA)</label>
+        <input type="text" inputmode="decimal" id="newDesgloseImporte" placeholder="0.00">
       </div>
       <div class="field" style="margin-bottom:0;">
-        <label>Monto</label>
-        <input type="number" step="0.01" id="newDesgloseMonto" placeholder="0.00">
+        <label>IVA</label>
+        <input type="text" inputmode="decimal" id="newDesgloseIva" placeholder="0.00">
       </div>
-      <div class="field" style="margin-bottom:0;grid-column:span 3;">
-        <label>Descripción (opcional)</label>
-        <input type="text" id="newDesgloseDescripcion" placeholder="Ej. Cloro, Servilletas">
+      <div class="field" style="margin-bottom:0;">
+        <label>= Monto total</label>
+        <input type="text" inputmode="decimal" id="newDesgloseMonto" placeholder="0.00">
       </div>
     </div>
-    <button class="btn btn-ghost btn-sm" id="addDesgloseLinea" style="margin-top:8px;">+ Agregar línea</button>
+    <p style="font-size:11px;color:var(--muted);margin:-4px 0 10px;">Llena Importe + IVA y presiona Enter para que se sumen solos y se registre la línea — o captura "Monto total" directo si no necesitas desglosar el IVA.</p>
+    <div class="field" style="margin-bottom:0;">
+      <label>Descripción (opcional)</label>
+      <input type="text" id="newDesgloseDescripcion" placeholder="Ej. Cloro, Servilletas">
+    </div>
+    <div style="display:flex;gap:8px;margin-top:10px;">
+      <button class="btn btn-ghost btn-sm" id="cancelarEdicionDesglose" style="display:none;">Cancelar edición</button>
+      <button class="btn btn-gold btn-sm" id="addDesgloseLinea">+ Agregar línea</button>
+    </div>
     <div class="modal-actions">
       <button class="btn btn-gold" id="closeDesglose" style="width:100%;">Cerrar</button>
     </div>

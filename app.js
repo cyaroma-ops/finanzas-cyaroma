@@ -1923,28 +1923,72 @@ function desgloseLineas(desglose) {
   return Object.entries(desglose).filter(([,v]) => Number(v)).map(([subcuenta_id, monto]) => ({ subcuenta_id, monto: Number(monto), descripcion: null }));
 }
 
+let STATE_desgloseEditandoIdx = null;
+
 async function openDesgloseModal(businessId, facturaId, onClose) {
   const subcuentas = await loadSubcuentas(businessId);
   const mayores = await loadCuentasMayor(businessId);
   const sel = document.getElementById('newDesgloseSubcuenta');
   sel.innerHTML = opcionesSubcuentaHtml(subcuentas, mayores, null) || `<option value="">— crea subcuentas primero en Catálogo de Cuentas —</option>`;
 
+  STATE_desgloseEditandoIdx = null;
+  limpiarFormDesglose();
   await renderDesgloseList(businessId, facturaId, subcuentas, mayores);
   document.getElementById('modalDesglose').classList.add('show');
   document.getElementById('closeDesglose').onclick = () => { document.getElementById('modalDesglose').classList.remove('show'); if (onClose) onClose(); };
-  document.getElementById('addDesgloseLinea').onclick = async () => {
-    const subId = document.getElementById('newDesgloseSubcuenta').value;
-    const monto = Number(document.getElementById('newDesgloseMonto').value) || 0;
-    const descripcion = document.getElementById('newDesgloseDescripcion').value.trim() || null;
-    if (!subId || !monto) { toast('Selecciona subcuenta y monto.', 'error'); return; }
-    const { data: fRow } = await sb.from('fz_proveedores').select('desglose').eq('id', facturaId).single();
-    const lineas = desgloseLineas(fRow?.desglose);
-    lineas.push({ subcuenta_id: subId, monto, descripcion });
-    await sb.from('fz_proveedores').update({ desglose: lineas }).eq('id', facturaId);
-    document.getElementById('newDesgloseMonto').value = '';
-    document.getElementById('newDesgloseDescripcion').value = '';
-    renderDesgloseList(businessId, facturaId, subcuentas, mayores);
+
+  const importeInp = document.getElementById('newDesgloseImporte');
+  const ivaInp = document.getElementById('newDesgloseIva');
+  const montoInp = document.getElementById('newDesgloseMonto');
+
+  const sumarImporteIva = () => {
+    const importe = leerMonto(importeInp.value);
+    const iva = leerMonto(ivaInp.value);
+    if (importe || iva) montoInp.value = (importe + iva) ? fmtInputVal(importe + iva) : '';
   };
+  importeInp.addEventListener('input', sumarImporteIva);
+  ivaInp.addEventListener('input', sumarImporteIva);
+  importeInp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); ivaInp.focus(); ivaInp.select(); } });
+  ivaInp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); guardarLineaDesglose(businessId, facturaId, subcuentas, mayores); } });
+  montoInp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); guardarLineaDesglose(businessId, facturaId, subcuentas, mayores); } });
+
+  document.getElementById('addDesgloseLinea').onclick = () => guardarLineaDesglose(businessId, facturaId, subcuentas, mayores);
+  document.getElementById('cancelarEdicionDesglose').onclick = () => {
+    STATE_desgloseEditandoIdx = null;
+    limpiarFormDesglose();
+  };
+}
+
+function actualizarUiModoDesglose() {
+  document.getElementById('desgloseEditandoAviso').style.display = STATE_desgloseEditandoIdx !== null ? 'block' : 'none';
+  document.getElementById('cancelarEdicionDesglose').style.display = STATE_desgloseEditandoIdx !== null ? 'inline-flex' : 'none';
+  document.getElementById('addDesgloseLinea').textContent = STATE_desgloseEditandoIdx !== null ? 'Guardar cambios' : '+ Agregar línea';
+}
+function limpiarFormDesglose() {
+  document.getElementById('newDesgloseImporte').value = '';
+  document.getElementById('newDesgloseIva').value = '';
+  document.getElementById('newDesgloseMonto').value = '';
+  document.getElementById('newDesgloseDescripcion').value = '';
+  actualizarUiModoDesglose();
+}
+
+async function guardarLineaDesglose(businessId, facturaId, subcuentas, mayores) {
+  const subId = document.getElementById('newDesgloseSubcuenta').value;
+  const importe = leerMonto(document.getElementById('newDesgloseImporte').value);
+  const iva = leerMonto(document.getElementById('newDesgloseIva').value);
+  const montoDirecto = leerMonto(document.getElementById('newDesgloseMonto').value);
+  const monto = montoDirecto || (importe + iva);
+  const descripcion = document.getElementById('newDesgloseDescripcion').value.trim() || null;
+  if (!subId || !monto) { toast('Selecciona subcuenta y captura un monto (o Importe + IVA).', 'error'); return; }
+  const { data: fRow } = await sb.from('fz_proveedores').select('desglose').eq('id', facturaId).single();
+  const lineas = desgloseLineas(fRow?.desglose);
+  const nuevaLinea = { subcuenta_id: subId, monto, descripcion, importe: importe || null, iva: iva || null };
+  if (STATE_desgloseEditandoIdx !== null) lineas[STATE_desgloseEditandoIdx] = nuevaLinea;
+  else lineas.push(nuevaLinea);
+  await sb.from('fz_proveedores').update({ desglose: lineas }).eq('id', facturaId);
+  STATE_desgloseEditandoIdx = null;
+  limpiarFormDesglose();
+  renderDesgloseList(businessId, facturaId, subcuentas, mayores);
 }
 async function renderDesgloseList(businessId, facturaId, subcuentas, mayores) {
   const { data: fRow } = await sb.from('fz_proveedores').select('*').eq('id', facturaId).single();
@@ -1958,14 +2002,31 @@ async function renderDesgloseList(businessId, facturaId, subcuentas, mayores) {
       <div style="min-width:0;">
         <div>${sub ? rutaSubcuenta(sub, subcuentas, mayores) : '(subcuenta eliminada)'}</div>
         ${linea.descripcion ? `<div style="color:var(--muted);font-size:11.5px;">${linea.descripcion}</div>` : ''}
+        ${(linea.importe || linea.iva) ? `<div style="color:var(--muted);font-size:11px;">Importe ${fmt(linea.importe||0)} + IVA ${fmt(linea.iva||0)}</div>` : ''}
       </div>
-      <span style="display:flex;align-items:center;gap:10px;flex-shrink:0;"><strong>${fmt(linea.monto)}</strong><button class="row-del desglose-del" data-idx="${idx}" style="font-size:14px;">✕</button></span>
+      <span style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+        <strong>${fmt(linea.monto)}</strong>
+        <button class="btn btn-ghost btn-sm desglose-editar" data-idx="${idx}" style="padding:3px 8px;font-size:11.5px;">Editar</button>
+        <button class="row-del desglose-del" data-idx="${idx}" style="font-size:14px;">✕</button>
+      </span>
     </div>`;
   }).join('') || `<div class="empty" style="padding:10px;">Sin líneas todavía.</div>`;
+  box.querySelectorAll('.desglose-editar').forEach(btn => btn.addEventListener('click', () => {
+    const idx = Number(btn.dataset.idx);
+    const linea = lineas[idx];
+    STATE_desgloseEditandoIdx = idx;
+    document.getElementById('newDesgloseSubcuenta').value = linea.subcuenta_id || '';
+    document.getElementById('newDesgloseImporte').value = linea.importe ? fmtInputVal(linea.importe) : '';
+    document.getElementById('newDesgloseIva').value = linea.iva ? fmtInputVal(linea.iva) : '';
+    document.getElementById('newDesgloseMonto').value = fmtInputVal(linea.monto);
+    document.getElementById('newDesgloseDescripcion').value = linea.descripcion || '';
+    actualizarUiModoDesglose();
+  }));
   box.querySelectorAll('.desglose-del').forEach(btn => btn.addEventListener('click', async () => {
     const idx = Number(btn.dataset.idx);
     const nuevas = lineas.filter((_,i)=>i!==idx);
     await sb.from('fz_proveedores').update({ desglose: nuevas }).eq('id', facturaId);
+    if (STATE_desgloseEditandoIdx === idx) { STATE_desgloseEditandoIdx = null; limpiarFormDesglose(); }
     renderDesgloseList(businessId, facturaId, subcuentas, mayores);
   }));
 }
