@@ -1073,7 +1073,7 @@ async function renderVentas() {
   el.querySelectorAll('.ventas-cell').forEach(inp => {
     inp.addEventListener('change', async () => {
       const id = inp.dataset.id, field = inp.dataset.field;
-      const val = field === 'fecha' ? inp.value : Number(inp.value) || 0;
+      const val = field === 'fecha' ? inp.value : leerMonto(inp.value);
       const { error: e3 } = await sb.from('fz_ventas').update({ [field]: val }).eq('id', id);
       if (e3) { toast('Error guardando: ' + e3.message, 'error'); return; }
       renderVentas();
@@ -1090,7 +1090,7 @@ async function renderVentas() {
       const ventaId = inp.dataset.ventaId, conceptoId = inp.dataset.concepto;
       const row = rows.find(r => r.id === ventaId);
       const vd = { ...(row.venta_data || {}) };
-      vd[conceptoId] = Number(inp.value) || 0;
+      vd[conceptoId] = leerMonto(inp.value);
       const { error } = await sb.from('fz_ventas').update({ venta_data: vd }).eq('id', ventaId);
       if (error) { toast('Error guardando: ' + error.message, 'error'); return; }
       renderVentas();
@@ -1101,7 +1101,7 @@ async function renderVentas() {
       const ventaId = inp.dataset.ventaId, conceptoId = inp.dataset.concepto;
       const row = rows.find(r => r.id === ventaId);
       const sd = { ...(row.sistema_data || {}) };
-      sd[conceptoId] = Number(inp.value) || 0;
+      sd[conceptoId] = leerMonto(inp.value);
       const { error } = await sb.from('fz_ventas').update({ sistema_data: sd }).eq('id', ventaId);
       if (error) { toast('Error guardando: ' + error.message, 'error'); return; }
       renderVentas();
@@ -1112,18 +1112,20 @@ async function renderVentas() {
       const ventaId = inp.dataset.ventaId, conceptoId = inp.dataset.concepto, field = inp.dataset.field;
       const row = rows.find(r => r.id === ventaId);
       const rd = { ...(row.recon_data || {}) };
-      rd[conceptoId] = { ...(rd[conceptoId] || {}), [field]: Number(inp.value) || 0 };
+      const montoVal = leerMonto(inp.value);
+      rd[conceptoId] = { ...(rd[conceptoId] || {}), [field]: montoVal };
       const { error: e4 } = await sb.from('fz_ventas').update({ recon_data: rd }).eq('id', ventaId);
       if (e4) { toast('Error guardando: ' + e4.message, 'error'); return; }
       if (field === 'monto') {
         const concepto = conceptos.find(c => c.id === conceptoId);
         if (concepto && concepto.categoria === 'propinas') {
-          await provisionarPropina(b.id, ventaId, concepto, Number(inp.value) || 0, row.fecha);
+          await provisionarPropina(b.id, ventaId, concepto, montoVal, row.fecha);
         }
       }
       renderVentas();
     });
   });
+  wireInputsMoneda(el);
   window.scrollTo(0, scrollY);
 }
 
@@ -1175,17 +1177,17 @@ function ventasRowHtml(r, conceptosVenta, porCat, recibidoCats, conceptosSistema
   const rd = r.recon_data || {};
   const sd = r.sistema_data || {};
   const total = totalVentaDinamico(r, conceptosVenta);
-  const cellForVenta = (c) => `<td><input class="cell vd-cell num" type="number" step="0.01" value="${vd[c.id] ?? 0}" data-venta-id="${r.id}" data-concepto="${c.id}"></td>`;
-  const cellForSistema = (c) => `<td><input class="cell sistema-cell num" type="number" step="0.01" value="${sd[c.id] ?? 0}" data-venta-id="${r.id}" data-concepto="${c.id}"></td>`;
+  const cellForVenta = (c) => `<td><input class="cell vd-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(vd[c.id])}" data-venta-id="${r.id}" data-concepto="${c.id}"></td>`;
+  const cellForSistema = (c) => `<td><input class="cell sistema-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(sd[c.id])}" data-venta-id="${r.id}" data-concepto="${c.id}"></td>`;
   const cellForRecon = (c) => {
     const entry = rd[c.id] || {};
     if (c.es_moneda) {
       return `<td><div style="display:flex;flex-direction:column;gap:2px;">
-        <input class="cell recon-cell num" type="number" step="0.01" placeholder="monto" value="${entry.monto ?? ''}" data-venta-id="${r.id}" data-concepto="${c.id}" data-field="monto" style="width:70px;">
-        <input class="cell recon-cell num" type="number" step="0.01" placeholder="TC" value="${entry.tc ?? ''}" data-venta-id="${r.id}" data-concepto="${c.id}" data-field="tc" style="width:70px;color:var(--muted);font-size:11.5px;">
+        <input class="cell recon-cell num num-fmt" type="text" inputmode="decimal" placeholder="monto" value="${entry.monto != null ? fmtInputVal(entry.monto) : ''}" data-venta-id="${r.id}" data-concepto="${c.id}" data-field="monto" style="width:70px;">
+        <input class="cell recon-cell num num-fmt" type="text" inputmode="decimal" placeholder="TC" value="${entry.tc != null ? fmtInputVal(entry.tc) : ''}" data-venta-id="${r.id}" data-concepto="${c.id}" data-field="tc" style="width:70px;color:var(--muted);font-size:11.5px;">
       </div></td>`;
     }
-    return `<td><input class="cell recon-cell num" type="number" step="0.01" value="${entry.monto ?? 0}" data-venta-id="${r.id}" data-concepto="${c.id}" data-field="monto"></td>`;
+    return `<td><input class="cell recon-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(entry.monto)}" data-venta-id="${r.id}" data-concepto="${c.id}" data-field="monto"></td>`;
   };
   const { totalEfvo, totalTarj, totalBancos, totalCxc, totalProp, difEfvo, difTarj, difTotal } = computeRowDiffs(r, conceptosVenta, porCat, conceptosSistema);
   const colorDif = (v) => Math.abs(v) < 1 ? 'inherit' : 'var(--red)';
@@ -1193,7 +1195,7 @@ function ventasRowHtml(r, conceptosVenta, porCat, recibidoCats, conceptosSistema
     <td><input class="cell ventas-cell" type="date" value="${r.fecha}" data-id="${r.id}" data-field="fecha"></td>
     ${conceptosVenta.map(cellForVenta).join('')}
     <td class="num" style="font-weight:700;">${fmt(total)}</td>
-    ${conceptosSistema.length ? conceptosSistema.map(cellForSistema).join('') : SISTEMA_COLS.map(([k]) => `<td><input class="cell ventas-cell num" type="number" step="0.01" value="${r[k] ?? 0}" data-id="${r.id}" data-field="${k}"></td>`).join('')}
+    ${conceptosSistema.length ? conceptosSistema.map(cellForSistema).join('') : SISTEMA_COLS.map(([k]) => `<td><input class="cell ventas-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(r[k])}" data-id="${r.id}" data-field="${k}"></td>`).join('')}
     ${recibidoCats.flatMap(cat => porCat[cat].map(cellForRecon)).join('')}
     <td class="num" style="font-weight:700;">${fmt(totalEfvo)}</td>
     <td class="num" style="font-weight:700;">${fmt(totalTarj)}</td>
@@ -2259,17 +2261,17 @@ async function openVentaDiaModal(businessId, onDone) {
     ${conceptosVenta.length ? `
       <h4 style="margin:16px 0 8px;color:var(--navy-1);font-family:'Cormorant Garamond',serif;font-size:18px;">Lo vendido</h4>
       <div class="grid-2">
-        ${conceptosVenta.map(c => `<div class="field" style="margin-bottom:8px;"><label>${c.nombre}${c.tipo==='resta'?' (descuento)':''}</label><input type="number" step="0.01" class="vd-venta" data-id="${c.id}" value="0"></div>`).join('')}
+        ${conceptosVenta.map(c => `<div class="field" style="margin-bottom:8px;"><label>${c.nombre}${c.tipo==='resta'?' (descuento)':''}</label><input type="text" inputmode="decimal" class="vd-venta num-fmt" data-id="${c.id}" value="0.00"></div>`).join('')}
       </div>` : `<div class="empty" style="margin:12px 0;">Este negocio no tiene categorías de venta configuradas.</div>`}
 
     <h4 style="margin:16px 0 8px;color:var(--navy-1);font-family:'Cormorant Garamond',serif;font-size:18px;">Sistema</h4>
     <div class="grid-2">
-      ${conceptosSistema.length ? conceptosSistema.map(c => `<div class="field"><label>${c.nombre} (sistema)</label><input type="number" step="0.01" class="vd-sistema" data-id="${c.id}" value="0"></div>`).join('') : `
-        <div class="field"><label>Efectivo (sistema)</label><input type="number" step="0.01" id="vdEfectivoSistema" value="0"></div>
-        <div class="field"><label>Tarjetas (sistema)</label><input type="number" step="0.01" id="vdTarjetasSistema" value="0"></div>
-        <div class="field"><label>CxC (sistema)</label><input type="number" step="0.01" id="vdCxc" value="0"></div>
+      ${conceptosSistema.length ? conceptosSistema.map(c => `<div class="field"><label>${c.nombre} (sistema)</label><input type="text" inputmode="decimal" class="vd-sistema num-fmt" data-id="${c.id}" value="0.00"></div>`).join('') : `
+        <div class="field"><label>Efectivo (sistema)</label><input type="text" inputmode="decimal" class="num-fmt" id="vdEfectivoSistema" value="0.00"></div>
+        <div class="field"><label>Tarjetas (sistema)</label><input type="text" inputmode="decimal" class="num-fmt" id="vdTarjetasSistema" value="0.00"></div>
+        <div class="field"><label>CxC (sistema)</label><input type="text" inputmode="decimal" class="num-fmt" id="vdCxc" value="0.00"></div>
       `}
-      <div class="field"><label>Gastos del día</label><input type="number" step="0.01" id="vdGastos" value="0"></div>
+      <div class="field"><label>Gastos del día</label><input type="text" inputmode="decimal" class="num-fmt" id="vdGastos" value="0.00"></div>
     </div>
 
     ${['efectivo','tarjetas','bancos','cxc','propinas'].filter(cat => porCat[cat].length).map(cat => `
@@ -2278,37 +2280,38 @@ async function openVentaDiaModal(businessId, onDone) {
         ${porCat[cat].map(c => `
           <div class="field" style="margin-bottom:8px;">
             <label>${c.nombre}${c.es_moneda?' (+ TC)':''}</label>
-            <input type="number" step="0.01" class="vd-recon" data-id="${c.id}" value="0">
-            ${c.es_moneda ? `<input type="number" step="0.0001" class="vd-recon-tc" data-id="${c.id}" placeholder="Tipo de cambio" style="margin-top:5px;">` : ''}
+            <input type="text" inputmode="decimal" class="vd-recon num-fmt" data-id="${c.id}" value="0.00">
+            ${c.es_moneda ? `<input type="text" inputmode="decimal" class="vd-recon-tc num-fmt" data-id="${c.id}" placeholder="Tipo de cambio" style="margin-top:5px;">` : ''}
           </div>`).join('')}
       </div>`).join('')}
   `;
 
   document.getElementById('modalVentaDia').classList.add('show');
+  wireInputsMoneda(form);
   document.getElementById('closeVentaDia').onclick = () => document.getElementById('modalVentaDia').classList.remove('show');
   document.getElementById('saveVentaDia').onclick = async () => {
     const fecha = document.getElementById('vdFecha').value || todayStr();
     const venta_data = {};
-    form.querySelectorAll('.vd-venta').forEach(inp => { venta_data[inp.dataset.id] = Number(inp.value) || 0; });
+    form.querySelectorAll('.vd-venta').forEach(inp => { venta_data[inp.dataset.id] = leerMonto(inp.value); });
     const recon_data = {};
     form.querySelectorAll('.vd-recon').forEach(inp => {
-      const monto = Number(inp.value) || 0;
+      const monto = leerMonto(inp.value);
       const tcInput = form.querySelector(`.vd-recon-tc[data-id="${inp.dataset.id}"]`);
-      recon_data[inp.dataset.id] = tcInput ? { monto, tc: Number(tcInput.value) || 0 } : { monto };
+      recon_data[inp.dataset.id] = tcInput ? { monto, tc: leerMonto(tcInput.value) } : { monto };
     });
     const payload = {
       business_id: businessId, fecha, venta_data,
-      gastos: Number(document.getElementById('vdGastos').value) || 0,
+      gastos: leerMonto(document.getElementById('vdGastos').value),
       recon_data,
     };
     if (conceptosSistema.length) {
       const sistema_data = {};
-      form.querySelectorAll('.vd-sistema').forEach(inp => { sistema_data[inp.dataset.id] = Number(inp.value) || 0; });
+      form.querySelectorAll('.vd-sistema').forEach(inp => { sistema_data[inp.dataset.id] = leerMonto(inp.value); });
       payload.sistema_data = sistema_data;
     } else {
-      payload.efectivo_sistema = Number(document.getElementById('vdEfectivoSistema').value) || 0;
-      payload.tarjetas_sistema = Number(document.getElementById('vdTarjetasSistema').value) || 0;
-      payload.cxc = Number(document.getElementById('vdCxc').value) || 0;
+      payload.efectivo_sistema = leerMonto(document.getElementById('vdEfectivoSistema').value);
+      payload.tarjetas_sistema = leerMonto(document.getElementById('vdTarjetasSistema').value);
+      payload.cxc = leerMonto(document.getElementById('vdCxc').value);
     }
     const { data: nuevaVenta, error } = await sb.from('fz_ventas').insert(payload).select().single();
     if (error) { toast('Error: ' + error.message, 'error'); return; }
@@ -2921,7 +2924,7 @@ async function renderEfectivo() {
           ${monedasConSaldo.map(m => `<tr>
             <td>${m.nombre}${m.activo===false?' (inactiva)':''}</td>
             <td class="num">${fmtNum(m.saldo)}</td>
-            <td class="num"><input class="cell tc-reporte-cell" type="number" step="0.0001" value="${m.tc_reporte}" data-id="${m.id}" style="width:75px;color:var(--muted);"></td>
+            <td class="num"><input class="cell tc-reporte-cell" type="text" inputmode="decimal" value="${m.tc_reporte}" data-id="${m.id}" style="width:75px;color:var(--muted);"></td>
             <td class="num" style="font-weight:700;">${fmt(m.pesoEquiv)}</td>
           </tr>`).join('')}
           ${bancosConSaldo.map(c => `<tr>
@@ -2952,7 +2955,7 @@ async function renderEfectivo() {
 
   el.querySelectorAll('.tc-reporte-cell').forEach(inp => {
     inp.addEventListener('change', async () => {
-      const val = Number(inp.value) || 1;
+      const val = leerMonto(inp.value) || 1;
       await sb.from('fz_efectivo_monedas').update({ tc_reporte: val }).eq('id', inp.dataset.id);
       renderEfectivo();
     });
@@ -4290,7 +4293,7 @@ async function renderPL() {
                 ${opcionesSubcuentaHtml(subcuentas, mayores, g.subcuenta_id)}
               </select></td>
               <td><input class="cell gasto-cell" type="text" placeholder="Ej. Cloro, Servilletas" value="${g.descripcion||''}" data-id="${g.id}" data-field="descripcion"></td>
-              <td><input class="cell gasto-cell num" type="number" step="0.01" value="${g.monto ?? 0}" data-id="${g.id}" data-field="monto"></td>
+              <td><input class="cell gasto-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(g.monto)}" data-id="${g.id}" data-field="monto"></td>
               <td><button class="row-del gasto-del" data-id="${g.id}">✕</button></td>
             </tr>`).join('')}
           </tbody>
@@ -4325,11 +4328,12 @@ async function renderPL() {
   el.querySelectorAll('.gasto-cell').forEach(inp => {
     inp.addEventListener('change', async () => {
       const field = inp.dataset.field;
-      const val = field === 'monto' ? Number(inp.value) || 0 : (inp.value || null);
+      const val = field === 'monto' ? leerMonto(inp.value) : (inp.value || null);
       await sb.from('fz_pl_gastos').update({ [field]: val }).eq('id', inp.dataset.id);
       renderPL();
     });
   });
+  wireInputsMoneda(el);
   el.querySelectorAll('.gasto-del').forEach(btn => btn.addEventListener('click', async () => {
     await sb.from('fz_pl_gastos').delete().eq('id', btn.dataset.id);
     renderPL();
@@ -4642,8 +4646,8 @@ function polizaCardHtmlBorrador(borrador) {
               <td><input class="cell linea-cuenta-buscar" list="listaCuentasPoliza" placeholder="Escribe para buscar…" value="${labelDeLinea(l).replace(/"/g,'&quot;')}" data-id="${l.id}" data-field="cuenta"></td>
               <td><input class="cell linea-cell" type="text" value="${l.referencia || ''}" data-id="${l.id}" data-field="referencia"></td>
               <td><input class="cell linea-cell" type="text" value="${l.descripcion || ''}" data-id="${l.id}" data-field="descripcion"></td>
-              <td><input class="cell linea-cell num" type="number" step="0.01" value="${l.cargo ?? 0}" data-id="${l.id}" data-field="cargo"></td>
-              <td><input class="cell linea-cell num" type="number" step="0.01" value="${l.abono ?? 0}" data-id="${l.id}" data-field="abono"></td>
+              <td><input class="cell linea-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(l.cargo)}" data-id="${l.id}" data-field="cargo"></td>
+              <td><input class="cell linea-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(l.abono)}" data-id="${l.id}" data-field="abono"></td>
               <td><button class="row-del linea-del" data-id="${l.id}">✕</button></td>
             </tr>`).join('')}
             <tr class="total-row">
@@ -4743,6 +4747,7 @@ function wireBorradorPolizaHandlers(wrap) {
   } else {
     wireAdjuntosHandlers(wrap, 'fz_polizas', STATE_polizaBorrador.businessId, () => refrescarAdjuntoBorrador());
   }
+  wireInputsMoneda(wrap);
 }
 
 async function refrescarAdjuntoBorrador() {
