@@ -771,7 +771,14 @@ async function computeBusinessSummary(businessId, ym) {
 
   const posicionNeta = efectivoTotal + bancosTotal - proveedoresPendientes - otrosPasivosTotal;
 
-  return { ventasMes, gastosOperativosMes, efectivoTotal, efectivoDetalle, bancosTotal, bancosDetalle, proveedoresPendientes, otrosPasivosDetalle, otrosPasivosTotal, posicionNeta };
+  const periodoMes = { start, end, mesStart: ym, mesEnd: ym };
+  const [gClasMes, gCostosMes] = await Promise.all([
+    computeGastosClasificados(businessId, periodoMes, subcuentas, mayores),
+    computeGastosClasificados(businessId, periodoMes, subcuentas, mayores, 'costo'),
+  ]);
+  const gastosTotalMes = gastosOperativosMes + gClasMes.totalClasificado + gClasMes.sinClasificar + gCostosMes.totalClasificado;
+
+  return { ventasMes, gastosOperativosMes, gastosTotalMes, efectivoTotal, efectivoDetalle, bancosTotal, bancosDetalle, proveedoresPendientes, otrosPasivosDetalle, otrosPasivosTotal, posicionNeta };
 }
 
 /* ============================================================
@@ -1005,7 +1012,7 @@ async function renderVentas() {
   el.innerHTML = `
     <div class="kpi-grid">
       <div class="kpi"><div class="label">Total ventas del mes</div><div class="value num">${fmt(totalGeneral)}</div></div>
-      <div class="kpi"><div class="label">Gastos operativos del mes</div><div class="value num red">${fmt(gastosMes)}</div></div>
+      <div class="kpi"><div class="label">Gastos capturados en Ventas</div><div class="value num red">${fmt(gastosMes)}</div></div>
       <div class="kpi"><div class="label">Propinas del mes</div><div class="value num">${fmt(mesProp)}</div></div>
       <div class="kpi"><div class="label">Diferencia acumulada del mes</div><div class="value num ${Math.abs(mesDifTotal)<1?'green':'red'}">${fmt(mesDifTotal)}</div></div>
     </div>
@@ -3710,7 +3717,8 @@ function fmtSigno(n) {
 }
 function filaArbolBalanceHtml(nodo, nivel) {
   const indent = 40 + (nivel - 1) * 18;
-  let html = `<tr><td style="padding-left:${indent}px;color:var(--muted);font-size:12.5px;">${nodo.nombre}</td><td class="num">${fmtNeg(nodo.total)}</td></tr>`;
+  const estilo = nivel === 1 ? 'font-weight:600;' : 'color:var(--muted);font-size:12.5px;';
+  let html = `<tr><td style="padding-left:${indent}px;${estilo}">${nodo.nombre}</td><td class="num" style="${nivel === 1 ? 'font-weight:600;' : ''}">${fmtNeg(nodo.total)}</td></tr>`;
   nodo.hijos.forEach(h => { html += filaArbolBalanceHtml(h, nivel + 1); });
   return html;
 }
@@ -4231,9 +4239,10 @@ async function renderPLAnual(el, b) {
 function filaArbolSubcuentaHtml(nodo, conTerceraColumna, nivel, detalleHtmlSiAbierto) {
   const indent = 22 + nivel * 18;
   const abierto = STATE_plDetalleAbierto === nodo.id;
+  const estilo = nivel === 0 ? 'font-weight:600;' : 'color:var(--muted);font-size:12.5px;';
   let html = `<tr class="pl-subcuenta-row" data-subcuenta="${nodo.id}" style="cursor:pointer;">
-    <td style="padding-left:${indent}px;${nivel>0?'color:var(--muted);font-size:12.5px;':''}">${abierto?'▾':'▸'} ${nodo.nombre}</td>
-    <td class="num">${fmtNeg(nodo.total)}</td>${conTerceraColumna?'<td></td>':''}
+    <td style="padding-left:${indent}px;${estilo}">${abierto?'▾':'▸'} ${nodo.nombre}</td>
+    <td class="num" style="${nivel === 0 ? 'font-weight:600;' : ''}">${fmtNeg(nodo.total)}</td>${conTerceraColumna?'<td></td>':''}
   </tr>`;
   if (abierto) html += detalleHtmlSiAbierto;
   nodo.hijos.forEach(h => { html += filaArbolSubcuentaHtml(h, conTerceraColumna, nivel + 1, detalleHtmlSiAbierto); });
@@ -4450,8 +4459,10 @@ async function renderFlujo() {
       <div class="card-head"><h3>Resumen del mes — ${STATE.currentMonth}</h3></div>
       <div class="kpi-grid">
         <div class="kpi"><div class="label">Ventas del mes</div><div class="value num">${fmt(s.ventasMes)}</div></div>
-        <div class="kpi"><div class="label">Gastos operativos del mes</div><div class="value num red">${fmt(s.gastosOperativosMes)}</div></div>
+        <div class="kpi"><div class="label">Total gastos y costos del mes</div><div class="value num red">${fmt(s.gastosTotalMes)}</div></div>
+        <div class="kpi"><div class="label">Gastos capturados en Ventas</div><div class="value num red">${fmt(s.gastosOperativosMes)}</div></div>
       </div>
+      <p style="font-size:11px;color:var(--muted);margin-top:10px;">"Total gastos y costos" incluye todo lo clasificado en Proveedores, Bancos, Efectivo, Pólizas y Costo de Ventas — igual que en el Estado de Resultados. "Gastos capturados en Ventas" es solo lo que se anota manualmente en la casilla de Gastos al capturar el día en Ventas.</p>
     </div>
   `;
 }
