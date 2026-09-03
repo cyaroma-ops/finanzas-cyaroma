@@ -238,6 +238,7 @@ async function checkAcceso(email) {
   const row = data?.[0];
   if (!row || row.activo === false) return { autorizado: false };
   STATE.esPropietario = !!row.es_propietario;
+  STATE.nombreUsuario = row.nombre || null;
   if (!STATE.esPropietario) {
     const { data: permisos } = await sb.from('fz_usuario_negocios').select('business_id').ilike('email', email);
     STATE.negociosPermitidos = (permisos || []).map(p => p.business_id);
@@ -592,14 +593,18 @@ function updateTopbar() {
   if (SECCIONES_IMPRIMIBLES.includes(STATE.currentSection)) {
     printBtn.style.display = 'inline-flex';
     printOrientacion.style.display = 'inline-flex';
+    if (STATE.currentSection === 'pl') {
+      printOrientacion.value = (STATE_plVista === 'anual') ? 'landscape' : 'portrait';
+    }
     printBtn.onclick = () => {
+      document.body.dataset.printSection = STATE.currentSection;
       const tituloImpresion = STATE.currentSection === 'pl'
         ? 'Estado de Resultados' + (b ? ' — ' + b.name : '')
         : titulo;
       const mesLegible = MESES_LARGO[Number(STATE.currentMonth.slice(5,7)) - 1] + ' ' + STATE.currentMonth.slice(0,4);
       document.getElementById('printTitle').textContent = tituloImpresion;
-      document.getElementById('printSub').textContent = `${b?.razon_social ? b.razon_social + ' · ' : ''}${meta.showMonth ? mesLegible + ' · ' : ''}Impreso el ${new Date().toLocaleDateString('es-MX', { year:'numeric', month:'long', day:'numeric' })}`;
-      document.getElementById('printOrientationStyle').textContent = `@media print { @page { size: ${printOrientacion.value}; margin: 12mm; } }`;
+      document.getElementById('printSub').textContent = `${STATE.nombreUsuario ? STATE.nombreUsuario + ' · ' : ''}${meta.showMonth ? mesLegible + ' · ' : ''}Impreso el ${new Date().toLocaleDateString('es-MX', { year:'numeric', month:'long', day:'numeric' })}`;
+      document.getElementById('printOrientationStyle').textContent = `@media print { @page { size: ${printOrientacion.value}; margin: 12mm 12mm 20mm 12mm; @bottom-center { content: "Página " counter(page) " de " counter(pages); font-size: 9px; color: #999; } } }`;
       window.print();
     };
   } else {
@@ -3612,6 +3617,7 @@ let STATE_plRangoDesde = '';
 let STATE_plRangoHasta = '';
 let STATE_plAnualDesdeYm = ''; // 'YYYY-MM', vacío = enero del año actual
 let STATE_plAnualHastaYm = ''; // 'YYYY-MM', vacío = diciembre del año actual
+let STATE_plAnualModo = 'detalle'; // 'detalle' | 'ejecutivo'
 let STATE_plDetalleAbierto = null; // subcuenta id cuyo detalle está desplegado
 
 function periodoPL(ym, vista) {
@@ -4173,14 +4179,26 @@ async function renderPLAnual(el, b) {
   const filaUtilidad = filaHtml('Utilidad / Pérdida', datos.map(d=>d.utilidad), { total:true, perValueColor:true });
   const margenRow = `<tr><td style="font-style:italic;color:var(--muted);">Margen</td>${datos.map(d=>`<td class="num">${d.totalIngresosFinal?((d.utilidad/d.totalIngresosFinal*100).toFixed(0)+'%'):'—'}</td>`).join('')}<td class="num">—</td></tr>`;
 
+  const esEjecutivo = STATE_plAnualModo === 'ejecutivo';
   el.innerHTML = plTagsHtml() + `
-    <p style="font-size:13px;color:var(--muted);margin:-4px 0 14px;font-weight:600;">${estadoResultadosSubtitulo()}</p>
+    <p style="font-size:13px;color:var(--muted);margin:-4px 0 10px;font-weight:600;">${estadoResultadosSubtitulo()}</p>
+    <div class="tag-row" style="margin-bottom:14px;">
+      <div class="tag ${!esEjecutivo?'active':''}" id="plAnualModoDetalle">Detalle</div>
+      <div class="tag ${esEjecutivo?'active':''}" id="plAnualModoEjecutivo">Ejecutivo</div>
+    </div>
     <div class="card">
-      <div class="card-head"><h3>Detalle mes por mes</h3></div>
+      <div class="card-head"><h3>${esEjecutivo ? 'Resumen ejecutivo mes por mes' : 'Detalle mes por mes'}</h3></div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Concepto</th>${mesesLabel.map(m=>`<th>${m}</th>`).join('')}<th>Acumulado</th></tr></thead>
           <tbody>
+            ${esEjecutivo ? `
+            ${filaTotalIngresos}
+            ${hayMayoresCosto ? filaTotalCosto + filaUtilidadBruta : ''}
+            ${filaTotalGastos}
+            ${filaUtilidad}
+            ${margenRow}
+            ` : `
             <tr style="background:#f7f9fc;"><td colspan="${mesesYm.length + 2}" style="font-weight:700;">Ingresos</td></tr>
             ${filasIngreso}
             ${filaSobrante}
@@ -4199,12 +4217,15 @@ async function renderPLAnual(el, b) {
             ${filaTotalGastos}
             ${filaUtilidad}
             ${margenRow}
+            `}
           </tbody>
         </table>
       </div>
     </div>
   `;
   wirePLTags(el);
+  document.getElementById('plAnualModoDetalle').addEventListener('click', () => { STATE_plAnualModo = 'detalle'; renderPL(); });
+  document.getElementById('plAnualModoEjecutivo').addEventListener('click', () => { STATE_plAnualModo = 'ejecutivo'; renderPL(); });
 }
 
 function filaArbolSubcuentaHtml(nodo, conTerceraColumna, nivel, detalleHtmlSiAbierto) {

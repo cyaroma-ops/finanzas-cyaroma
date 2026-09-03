@@ -13,7 +13,7 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<style id="printOrientationStyle">@media print { @page { size: landscape; margin: 12mm; } }</style>
+<style id="printOrientationStyle">@media print { @page { size: landscape; margin: 12mm 12mm 20mm 12mm; @bottom-center { content: "Página " counter(page) " de " counter(pages); font-size: 9px; color: #999; } } }</style>
 <style>
 :root{
   --navy-1:#0a1f3d;
@@ -290,6 +290,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 #sidebarOverlay.show{display:block;}
 
 .print-header{display:none;}
+.print-footer{display:none;}
 @media print{
   .sidebar, .topbar-actions, .btn, .modal-bg, .tag-row, .card-head button, #topbarActions, .row-del, #menuToggleBtn, #sidebarOverlay, #pageTitle, #pageSub, .pl-controles-rango{display:none !important;}
   input.cell, select.cell{border:none !important;background:transparent !important;color:inherit !important;-webkit-appearance:none;appearance:none;}
@@ -320,8 +321,10 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   th{background:none !important;color:#333 !important;font-size:9.5px !important;border-bottom:1.5px solid #222 !important;padding:6px 10px !important;}
   td{padding:6px 10px !important;border-bottom:1px solid #e2e2e2 !important;}
   tr.total-row td{background:none !important;border-top:1.5px solid #222 !important;border-bottom:1.5px solid #222 !important;}
+  tr.total-row{break-after:avoid;break-before:avoid;}
   tr[style*="background"]{background:none !important;}
   tr[style*="background"] td{border-top:1px solid #999 !important;padding-top:10px !important;}
+  body[data-print-section="pl"] .kpi-grid{display:none !important;}
 
   .content{padding:0 !important;}
   .topbar{position:static;border-bottom:none;padding:0 0 10px 0;}
@@ -330,6 +333,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   .print-header{display:block !important;margin-bottom:16px;border-bottom:2px solid #000;padding-bottom:10px;}
   .print-header h2{font-size:23px;color:#000;}
   .print-header p{font-size:11.5px;color:#555;}
+  .print-footer{display:block !important;position:fixed;bottom:0;left:0;right:0;text-align:center;font-size:9px;color:#999;letter-spacing:.3px;}
 }
 </style>
 </head>
@@ -540,6 +544,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
           <h2 id="printTitle"></h2>
           <p id="printSub"></p>
         </div>
+        <div class="print-footer" id="printFooter">Elaborado por CYA Roma &amp; Associates</div>
         <!-- Sections injected by module scripts -->
         <section class="section" id="sec-dashboard"></section>
         <section class="section" id="sec-ventas"></section>
