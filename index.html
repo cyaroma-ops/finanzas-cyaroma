@@ -791,6 +791,19 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 </div>
 
 <!-- Modal: desglose de factura -->
+<!-- Panel deslizable: vista previa de adjuntos sin salir de la pantalla -->
+<div id="adjuntoPreviewOverlay" style="display:none;position:fixed;inset:0;background:rgba(10,31,61,.4);z-index:300;"></div>
+<div id="adjuntoPreviewDrawer" style="display:none;position:fixed;left:0;right:0;bottom:0;height:min(78vh,720px);background:#fff;z-index:301;border-radius:16px 16px 0 0;box-shadow:0 -10px 40px rgba(0,0,0,.25);flex-direction:column;">
+  <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--line);">
+    <strong id="adjuntoPreviewNombre" style="font-size:14px;color:var(--navy-1);"></strong>
+    <div style="display:flex;gap:10px;align-items:center;">
+      <a id="adjuntoPreviewDescargar" href="#" target="_blank" class="btn btn-ghost btn-sm">Abrir en pestaña nueva</a>
+      <button id="adjuntoPreviewCerrar" style="border:none;background:none;font-size:22px;color:var(--muted);cursor:pointer;line-height:1;">✕</button>
+    </div>
+  </div>
+  <div id="adjuntoPreviewBody" style="flex:1;overflow:auto;background:#f4f6f9;"></div>
+</div>
+
 <div class="modal-bg" id="modalDesglose">
   <div class="modal" style="width:min(520px,92vw);">
     <h3>Desglose de factura</h3>

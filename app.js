@@ -88,11 +88,27 @@ async function subirAdjunto(tabla, registroId, businessId, file) {
   if (error) { toast('Error subiendo el archivo: ' + error.message, 'error'); return null; }
   return { path, nombre: file.name };
 }
-async function verAdjunto(path) {
-  const { data, error } = await sb.storage.from(ADJUNTOS_BUCKET).createSignedUrl(path, 60);
+async function verAdjunto(path, nombre) {
+  const { data, error } = await sb.storage.from(ADJUNTOS_BUCKET).createSignedUrl(path, 300);
   if (error || !data) { toast('No se pudo abrir el archivo.', 'error'); return; }
-  window.open(data.signedUrl, '_blank');
+  const ext = (path.split('.').pop() || '').toLowerCase();
+  const esImagen = ['jpg','jpeg','png'].includes(ext);
+  const body = document.getElementById('adjuntoPreviewBody');
+  body.innerHTML = esImagen
+    ? `<div style="display:flex;align-items:center;justify-content:center;min-height:100%;padding:20px;"><img src="${data.signedUrl}" style="max-width:100%;max-height:70vh;box-shadow:0 4px 20px rgba(0,0,0,.15);border-radius:6px;"></div>`
+    : `<iframe src="${data.signedUrl}" style="width:100%;height:100%;border:none;min-height:70vh;"></iframe>`;
+  document.getElementById('adjuntoPreviewNombre').textContent = nombre || 'Adjunto';
+  document.getElementById('adjuntoPreviewDescargar').href = data.signedUrl;
+  document.getElementById('adjuntoPreviewOverlay').style.display = 'block';
+  document.getElementById('adjuntoPreviewDrawer').style.display = 'flex';
 }
+function cerrarPreviewAdjunto() {
+  document.getElementById('adjuntoPreviewOverlay').style.display = 'none';
+  document.getElementById('adjuntoPreviewDrawer').style.display = 'none';
+  document.getElementById('adjuntoPreviewBody').innerHTML = '';
+}
+document.getElementById('adjuntoPreviewCerrar').addEventListener('click', cerrarPreviewAdjunto);
+document.getElementById('adjuntoPreviewOverlay').addEventListener('click', cerrarPreviewAdjunto);
 function adjuntoCellHtml(archivoPath, archivoNombre, registroId) {
   if (archivoPath) {
     return `<span class="adjunto-chip" style="display:inline-flex;align-items:center;gap:6px;font-size:12px;white-space:nowrap;">
@@ -120,7 +136,7 @@ function wireAdjuntosHandlers(container, tabla, businessId, onDone) {
     });
   });
   container.querySelectorAll('.adjunto-ver').forEach(a => {
-    a.addEventListener('click', (e) => { e.preventDefault(); verAdjunto(a.dataset.path); });
+    a.addEventListener('click', (e) => { e.preventDefault(); verAdjunto(a.dataset.path, a.title); });
   });
   container.querySelectorAll('.adjunto-quitar').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -747,14 +763,14 @@ async function computeBusinessSummary(businessId, ym) {
   const monedas = (monedasQ.data || []).filter(m => m.activo !== false);
   const efectivoDetalle = await Promise.all(monedas.map(async m => {
     const saldo = await computeMonedaSaldo(businessId, m, conceptosEfectivo);
-    return { nombre: m.nombre, saldo, tc: m.tc_reporte, pesoEquiv: saldo * (Number(m.tc_reporte) || 1) };
+    return { id: m.id, nombre: m.nombre, saldo, tc: m.tc_reporte, pesoEquiv: saldo * (Number(m.tc_reporte) || 1) };
   }));
   const efectivoTotal = efectivoDetalle.reduce((s,d)=>s+d.pesoEquiv,0);
 
   const cuentas = cuentasQ.data || [];
   const bancosDetalle = await Promise.all(cuentas.map(async c => {
     const saldo = await computeBancoSaldo(businessId, c, conceptosTarjetas);
-    return { nombre: c.nombre, saldo, activo: c.activo !== false };
+    return { id: c.id, nombre: c.nombre, saldo, activo: c.activo !== false };
   }));
   const bancosTotal = bancosDetalle.filter(d=>d.activo).reduce((s,d)=>s+d.saldo,0);
 
@@ -3921,13 +3937,13 @@ async function getDetalleGastoSubcuenta(businessId, periodo, subcuentaId) {
     desgloseLineas(f.desglose).forEach(linea => {
       if (linea.subcuenta_id === subcuentaId && Number(linea.monto)) {
         const pago = f.estatus === 'Pagado' ? (f.pagado_desde || 'Pagado') : (f.estatus === 'Parcial' ? `Parcial · ${f.pagado_desde || 'sin especificar'}` : 'Pendiente de pago');
-        filas.push({ fecha: f.fecha, proveedor: f.proveedor || '(sin proveedor)', concepto: linea.descripcion || f.factura || '(factura)', importe: Number(linea.monto), pago });
+        filas.push({ fecha: f.fecha, proveedor: f.proveedor || '(sin proveedor)', concepto: linea.descripcion || f.factura || '(factura)', importe: Number(linea.monto), pago, origen: { tipo: 'proveedor', id: f.id, fecha: f.fecha } });
       }
     });
   });
-  (bmQ.data || []).forEach(m => filas.push({ fecha: m.fecha, proveedor: m.descripcion || '(movimiento bancario)', concepto: m.concepto || '—', importe: Number(m.cargos) || 0, pago: 'Banco' }));
-  (emQ.data || []).forEach(m => filas.push({ fecha: m.fecha, proveedor: m.proveedor || '(movimiento efectivo)', concepto: m.descripcion || '—', importe: Number(m.cargos) || 0, pago: 'Efectivo' }));
-  (plGastosQ.data || []).forEach(g => filas.push({ fecha: g.mes + '-01', proveedor: 'Ajuste manual', concepto: g.descripcion || '—', importe: Number(g.monto) || 0, pago: 'Ajuste manual' }));
+  (bmQ.data || []).forEach(m => filas.push({ fecha: m.fecha, proveedor: m.descripcion || '(movimiento bancario)', concepto: m.concepto || '—', importe: Number(m.cargos) || 0, pago: 'Banco', origen: { tipo: 'bancos', id: m.id, cuentaId: m.cuenta_id, fecha: m.fecha } }));
+  (emQ.data || []).forEach(m => filas.push({ fecha: m.fecha, proveedor: m.proveedor || '(movimiento efectivo)', concepto: m.descripcion || '—', importe: Number(m.cargos) || 0, pago: 'Efectivo', origen: { tipo: 'efectivo', id: m.id, monedaId: m.moneda_id, fecha: m.fecha } }));
+  (plGastosQ.data || []).forEach(g => filas.push({ fecha: g.mes + '-01', proveedor: 'Ajuste manual', concepto: g.descripcion || '—', importe: Number(g.monto) || 0, pago: 'Ajuste manual', origen: { tipo: 'ajuste', id: g.id, fecha: g.mes + '-01' } }));
 
   const lineasPoliza = lineasPolizaQ.data || [];
   if (lineasPoliza.length) {
@@ -3938,7 +3954,7 @@ async function getDetalleGastoSubcuenta(businessId, periodo, subcuentaId) {
       const p = polizaMap[l.poliza_id];
       if (!p) return;
       const monto = (Number(l.cargo) || 0) - (Number(l.abono) || 0);
-      if (monto) filas.push({ fecha: p.fecha, proveedor: `Póliza #${p.numero ?? ''}`, concepto: l.descripcion || p.concepto || '—', importe: monto, pago: 'Póliza de diario' });
+      if (monto) filas.push({ fecha: p.fecha, proveedor: `Póliza #${p.numero ?? ''}`, concepto: l.descripcion || p.concepto || '—', importe: monto, pago: 'Póliza de diario', origen: { tipo: 'poliza', id: p.id, fecha: p.fecha } });
     });
   }
 
@@ -3957,7 +3973,7 @@ async function getDetalleIngresoSubcuenta(businessId, periodo, subcuentaId) {
     const p = polizaMap[l.poliza_id];
     if (!p) return;
     const monto = (Number(l.abono) || 0) - (Number(l.cargo) || 0);
-    if (monto) filas.push({ fecha: p.fecha, proveedor: `Póliza #${p.numero ?? ''}`, concepto: l.descripcion || p.concepto || '—', importe: monto, pago: 'Póliza de diario' });
+    if (monto) filas.push({ fecha: p.fecha, proveedor: `Póliza #${p.numero ?? ''}`, concepto: l.descripcion || p.concepto || '—', importe: monto, pago: 'Póliza de diario', origen: { tipo: 'poliza', id: p.id, fecha: p.fecha } });
   });
   return filas.sort((a,b) => a.fecha.localeCompare(b.fecha));
 }
@@ -3966,17 +3982,68 @@ function detalleSubcuentaHtml(filas, colspan) {
   if (!filas.length) return `<tr><td colspan="${colspan}" style="padding-left:34px;color:var(--muted);font-size:12px;">Sin movimientos detallados para este período.</td></tr>`;
   return `<tr><td colspan="${colspan}" style="padding:0 0 8px 34px;">
     <table style="width:100%;">
-      <thead><tr><th>Fecha</th><th>Proveedor</th><th>Concepto</th><th>Importe</th><th>Cómo se pagó</th></tr></thead>
+      <thead><tr><th>Fecha</th><th>Proveedor</th><th>Concepto</th><th>Importe</th><th>Cómo se pagó</th><th></th></tr></thead>
       <tbody>${filas.map(f => `<tr>
         <td>${fechaCorta(f.fecha)}</td>
         <td>${f.proveedor}</td>
         <td>${f.concepto}</td>
         <td class="num">${fmt(f.importe)}</td>
         <td>${f.pago}</td>
+        <td>${f.origen && f.origen.tipo !== 'ajuste' ? `<button class="btn btn-ghost btn-sm abrir-origen-btn" data-origen='${JSON.stringify(f.origen).replace(/'/g,'&apos;')}' style="font-size:11px;padding:3px 8px;">Abrir ↗</button>` : ''}</td>
       </tr>`).join('')}</tbody>
     </table>
   </td></tr>`;
 }
+
+function irASeccion(nombreSeccion) {
+  STATE.currentSection = nombreSeccion;
+  localStorage.setItem('finanzas_ultima_seccion', nombreSeccion);
+  document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+  const item = document.querySelector(`.nav-item[data-section="${nombreSeccion}"]`);
+  if (item) item.classList.add('active');
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  const sec = document.getElementById('sec-' + nombreSeccion);
+  if (sec) sec.classList.add('active');
+  updateTopbar();
+  renderCurrentSection();
+}
+
+function resaltarFilaPorId(id, intentos) {
+  intentos = intentos || 0;
+  const el = document.querySelector(`[data-id="${id}"]`);
+  if (el) {
+    const tr = el.closest('tr') || el;
+    tr.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const original = tr.style.backgroundColor;
+    tr.style.transition = 'background-color 0.4s';
+    tr.style.backgroundColor = '#fff3cd';
+    setTimeout(() => { tr.style.backgroundColor = original; }, 2200);
+  } else if (intentos < 12) {
+    setTimeout(() => resaltarFilaPorId(id, intentos + 1), 150);
+  }
+}
+
+async function abrirOrigenDesdeDetalle(origen, businessId) {
+  if (!origen) return;
+  if (origen.tipo === 'poliza') {
+    await openPolizaModal(origen.id, businessId);
+    return;
+  }
+  if (origen.fecha) STATE.currentMonth = origen.fecha.slice(0, 7);
+  if (origen.tipo === 'bancos') {
+    STATE_bancoCuentaAbierta = origen.cuentaId;
+    irASeccion('bancos');
+    setTimeout(() => resaltarFilaPorId(origen.id), 350);
+  } else if (origen.tipo === 'efectivo') {
+    STATE_monedaAbierta = origen.monedaId;
+    irASeccion('efectivo');
+    setTimeout(() => resaltarFilaPorId(origen.id), 350);
+  } else if (origen.tipo === 'proveedor') {
+    irASeccion('proveedores');
+    setTimeout(() => resaltarFilaPorId(origen.id), 350);
+  }
+}
+
 
 const MESES_LARGO = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
 function estadoResultadosSubtitulo(periodo) {
@@ -4412,6 +4479,11 @@ async function renderPL() {
     STATE_plDetalleAbierto = STATE_plDetalleAbierto === tr.dataset.subcuenta ? null : tr.dataset.subcuenta;
     renderPL();
   }));
+  el.querySelectorAll('.abrir-origen-btn').forEach(btn => btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const origen = JSON.parse(btn.dataset.origen.replace(/&apos;/g, "'"));
+    abrirOrigenDesdeDetalle(origen, b.id);
+  }));
   document.getElementById('addGastoBtn').addEventListener('click', async () => {
     await sb.from('fz_pl_gastos').insert({ business_id: b.id, mes: STATE.currentMonth, monto: 0 });
     renderPL();
@@ -4446,8 +4518,8 @@ async function renderFlujo() {
       <div class="card-head"><h3>Cash Position — ${b.name}</h3><span class="hint">Al día de hoy</span></div>
       <table>
         <tbody>
-          ${s.efectivoDetalle.map(m => `<tr><td>Caja — ${m.nombre} (${fmtNum(m.saldo)} × TC ${fmtNum(m.tc)})</td><td class="num">${fmt(m.pesoEquiv)}</td></tr>`).join('')}
-          ${s.bancosDetalle.map(d => `<tr><td>Banco — ${d.nombre}${d.activo?'':' (inactiva)'}</td><td class="num">${fmt(d.saldo)}</td></tr>`).join('')}
+          ${s.efectivoDetalle.map(m => `<tr class="flujo-link-efectivo" data-id="${m.id}" style="cursor:pointer;"><td>Caja — ${m.nombre} (${fmtNum(m.saldo)} × TC ${fmtNum(m.tc)}) ↗</td><td class="num">${fmt(m.pesoEquiv)}</td></tr>`).join('')}
+          ${s.bancosDetalle.map(d => `<tr class="flujo-link-banco" data-id="${d.id}" style="cursor:pointer;"><td>Banco — ${d.nombre}${d.activo?'':' (inactiva)'} ↗</td><td class="num">${fmt(d.saldo)}</td></tr>`).join('')}
           <tr class="total-row"><td>Total disponible (caja + bancos)</td><td class="num">${fmt(s.efectivoTotal + s.bancosTotal)}</td></tr>
           <tr><td>Menos: proveedores pendientes de pago</td><td class="num" style="color:var(--red);">-${fmt(s.proveedoresPendientes)}</td></tr>
           ${s.otrosPasivosDetalle.map(p => `<tr><td>Menos: ${p.nombre}</td><td class="num" style="color:var(--red);">-${fmt(p.monto)}</td></tr>`).join('')}
@@ -4465,6 +4537,14 @@ async function renderFlujo() {
       <p style="font-size:11px;color:var(--muted);margin-top:10px;">"Total gastos y costos" incluye todo lo clasificado en Proveedores, Bancos, Efectivo, Pólizas y Costo de Ventas — igual que en el Estado de Resultados. "Gastos capturados en Ventas" es solo lo que se anota manualmente en la casilla de Gastos al capturar el día en Ventas.</p>
     </div>
   `;
+  el.querySelectorAll('.flujo-link-efectivo').forEach(tr => tr.addEventListener('click', () => {
+    STATE_monedaAbierta = tr.dataset.id;
+    irASeccion('efectivo');
+  }));
+  el.querySelectorAll('.flujo-link-banco').forEach(tr => tr.addEventListener('click', () => {
+    STATE_bancoCuentaAbierta = tr.dataset.id;
+    irASeccion('bancos');
+  }));
 }
 
 document.getElementById('copyrightYear').textContent = new Date().getFullYear();
