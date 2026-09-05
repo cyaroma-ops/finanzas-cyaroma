@@ -804,6 +804,22 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   <div id="adjuntoPreviewBody" style="flex:1;overflow:auto;background:#f4f6f9;"></div>
 </div>
 
+<!-- Modal: gestionar los adjuntos (múltiples) de un registro -->
+<div class="modal-bg" id="modalAdjuntos">
+  <div class="modal" style="width:min(420px,92vw);">
+    <h3>Archivos adjuntos</h3>
+    <div id="adjuntosModalList" style="max-height:280px;overflow-y:auto;margin-bottom:14px;"></div>
+    <label class="btn btn-gold btn-sm" style="cursor:pointer;display:inline-block;">
+      + Agregar archivo(s)
+      <input type="file" id="adjuntosModalInput" accept=".pdf,.jpg,.jpeg,.png" multiple style="display:none;">
+    </label>
+    <p style="font-size:11px;color:var(--muted);margin-top:8px;">Puedes seleccionar varios archivos a la vez (PDF, JPG o PNG, hasta 5 MB cada uno).</p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="cerrarModalAdjuntos" style="width:100%;">Cerrar</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-bg" id="modalDesglose">
   <div class="modal" style="width:min(520px,92vw);">
     <h3>Desglose de factura</h3>

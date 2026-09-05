@@ -4625,6 +4625,7 @@ async function renderPolizas() {
     if (STATE_polizaFiltroHasta && p.fecha > STATE_polizaFiltroHasta) return false;
     return true;
   });
+  const conteoAdjuntosPolizas = await contarAdjuntosPorRegistro('fz_polizas', polizas.map(p => p.id));
 
   el.innerHTML = `
     <div class="kpi-grid">
@@ -4658,22 +4659,25 @@ async function renderPolizas() {
       </div>
       ${(STATE_polizaFiltroTexto||STATE_polizaFiltroDesde||STATE_polizaFiltroHasta) ? `<button class="btn btn-ghost btn-sm" id="polizaLimpiarFiltro" style="margin-bottom:12px;">✕ Limpiar filtros</button>` : ''}
       ${subcuentas.length === 0 ? `<div class="empty">Aún no tienes cuentas en el catálogo. Crea al menos una (de cualquier tipo) para poder registrar pólizas.</div>` : ''}
-      <div id="polizasList">
-        ${polizas.length === 0 ? `<div class="empty">${todasPolizas.length ? 'Ninguna póliza coincide con la búsqueda.' : 'Sin pólizas todavía.'}</div>` : polizas.map(p => {
-          const t = totalesPoliza(p);
-          const cuadrada = Math.abs(t.cargo-t.abono)<0.01 && t.count>0;
-          return `<div class="card poliza-resumen-row" data-poliza="${p.id}" style="cursor:pointer;background:#fbfcfe;border:1.5px solid var(--line);margin-bottom:10px;padding:12px 16px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
-            <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
-              <strong style="color:var(--navy-1);">Póliza #${p.numero ?? '—'}</strong>
-              <span style="color:var(--muted);font-size:13px;">${fechaCorta(p.fecha)}</span>
-              <span style="font-size:13.5px;">${p.concepto || '(sin concepto)'}</span>
-            </div>
-            <div style="display:flex;align-items:center;gap:14px;">
-              <span class="num" style="font-weight:700;">${fmt(t.cargo)}</span>
-              <span class="badge ${cuadrada?'pag':'pend'}">${cuadrada ? 'Cuadrada' : 'Diferencia ' + fmt(t.cargo-t.abono)}</span>
-            </div>
-          </div>`;
-        }).join('')}
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>No. Póliza</th><th>Fecha</th><th>Concepto</th><th>Adjunto</th><th>Importe</th><th>Estado</th></tr></thead>
+          <tbody id="polizasList">
+            ${polizas.length === 0 ? `<tr><td colspan="6" class="empty">${todasPolizas.length ? 'Ninguna póliza coincide con la búsqueda.' : 'Sin pólizas todavía.'}</td></tr>` : polizas.map(p => {
+              const t = totalesPoliza(p);
+              const cuadrada = Math.abs(t.cargo-t.abono)<0.01 && t.count>0;
+              const nAdj = conteoAdjuntosPolizas[p.id] || 0;
+              return `<tr class="poliza-resumen-row" data-poliza="${p.id}" style="cursor:pointer;">
+                <td>#${p.numero ?? '—'}</td>
+                <td>${fechaCorta(p.fecha)}</td>
+                <td>${p.concepto || '<span style="color:var(--muted);">(sin concepto)</span>'}</td>
+                <td>${nAdj ? nAdj + (nAdj===1?' archivo':' archivos') : '—'}</td>
+                <td class="num" style="font-weight:700;">${fmt(t.cargo)}</td>
+                <td><span class="badge ${cuadrada?'pag':'pend'}">${cuadrada ? 'Cuadrada' : 'Diferencia ' + fmt(t.cargo-t.abono)}</span></td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
       </div>
     </div>
   `;
