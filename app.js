@@ -3981,15 +3981,18 @@ async function getDetalleIngresoSubcuenta(businessId, periodo, subcuentaId) {
 function detalleSubcuentaHtml(filas, colspan) {
   if (!filas.length) return `<tr><td colspan="${colspan}" style="padding-left:34px;color:var(--muted);font-size:12px;">Sin movimientos detallados para este período.</td></tr>`;
   return `<tr><td colspan="${colspan}" style="padding:0 0 8px 34px;">
-    <table style="width:100%;">
+    <table style="width:100%;table-layout:fixed;">
+      <colgroup>
+        <col style="width:80px;"><col style="width:150px;"><col><col style="width:100px;"><col style="width:110px;"><col style="width:70px;">
+      </colgroup>
       <thead><tr><th>Fecha</th><th>Proveedor</th><th>Concepto</th><th>Importe</th><th>Cómo se pagó</th><th></th></tr></thead>
       <tbody>${filas.map(f => `<tr>
-        <td>${fechaCorta(f.fecha)}</td>
-        <td>${f.proveedor}</td>
-        <td>${f.concepto}</td>
-        <td class="num">${fmt(f.importe)}</td>
-        <td>${f.pago}</td>
-        <td>${f.origen && f.origen.tipo !== 'ajuste' ? `<button class="btn btn-ghost btn-sm abrir-origen-btn" data-origen='${JSON.stringify(f.origen).replace(/'/g,'&apos;')}' style="font-size:11px;padding:3px 8px;">Abrir ↗</button>` : ''}</td>
+        <td style="white-space:nowrap;">${fechaCorta(f.fecha)}</td>
+        <td style="white-space:normal;word-break:break-word;">${f.proveedor}</td>
+        <td style="white-space:normal;word-break:break-word;">${f.concepto}</td>
+        <td class="num" style="white-space:nowrap;">${fmt(f.importe)}</td>
+        <td style="white-space:normal;">${f.pago}</td>
+        <td style="white-space:nowrap;">${f.origen && f.origen.tipo !== 'ajuste' ? `<button class="btn btn-ghost btn-sm abrir-origen-btn" data-origen='${JSON.stringify(f.origen).replace(/'/g,'&apos;')}' style="font-size:11px;padding:3px 8px;">Abrir ↗</button>` : ''}</td>
       </tr>`).join('')}</tbody>
     </table>
   </td></tr>`;
