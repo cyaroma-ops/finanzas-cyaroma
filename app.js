@@ -1324,6 +1324,21 @@ async function renderConceptosList(businessId) {
 }
 
 /* ---------- Modal: categorías de venta (lo vendido) ---------- */
+async function moverOrdenLista(tabla, items, idx, direccion, onDone) {
+  const otroIdx = idx + direccion;
+  if (otroIdx < 0 || otroIdx >= items.length) return;
+  const nuevos = [...items];
+  [nuevos[idx], nuevos[otroIdx]] = [nuevos[otroIdx], nuevos[idx]];
+  await Promise.all(nuevos.map((item, i) => sb.from(tabla).update({ orden: i }).eq('id', item.id)));
+  onDone();
+}
+function botonesOrdenHtml(idx, total, claseBase) {
+  return `<span style="display:inline-flex;flex-direction:column;margin-right:6px;">
+    <button class="${claseBase}-subir" data-idx="${idx}" title="Subir" style="border:none;background:none;color:${idx===0?'#ccc':'var(--muted)'};cursor:${idx===0?'default':'pointer'};font-size:11px;line-height:1;padding:0;" ${idx===0?'disabled':''}>▲</button>
+    <button class="${claseBase}-bajar" data-idx="${idx}" title="Bajar" style="border:none;background:none;color:${idx===total-1?'#ccc':'var(--muted)'};cursor:${idx===total-1?'default':'pointer'};font-size:11px;line-height:1;padding:0;" ${idx===total-1?'disabled':''}>▼</button>
+  </span>`;
+}
+
 async function openVentaConceptosModal(businessId) {
   await renderVentaConceptosList(businessId);
   document.getElementById('modalConceptosVenta').classList.add('show');
@@ -1335,7 +1350,8 @@ async function openVentaConceptosModal(businessId) {
     const nombre = document.getElementById('newConceptoVentaNombre').value.trim();
     const tipo = document.getElementById('newConceptoVentaTipo').value;
     if (!nombre) { toast('Escribe un nombre para la categoría.', 'error'); return; }
-    const { error } = await sb.from('fz_conceptos_venta').insert({ business_id: businessId, nombre, tipo, orden: 99 });
+    const existentes = await loadConceptosVenta(businessId);
+    const { error } = await sb.from('fz_conceptos_venta').insert({ business_id: businessId, nombre, tipo, orden: existentes.length });
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     document.getElementById('newConceptoVentaNombre').value = '';
     renderVentaConceptosList(businessId);
@@ -1345,11 +1361,13 @@ async function renderVentaConceptosList(businessId) {
   const conceptos = await loadConceptosVenta(businessId);
   const box = document.getElementById('conceptosVentaList');
   if (!conceptos.length) { box.innerHTML = `<div class="empty" style="padding:16px;">Aún no hay categorías. Agrega la primera abajo (ej. Alimentos, Bebidas, Daypass...).</div>`; return; }
-  box.innerHTML = conceptos.map(c => `
+  box.innerHTML = conceptos.map((c, idx) => `
     <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 4px;border-bottom:1px solid var(--line);">
-      <div><strong>${c.nombre}</strong> <span style="color:var(--muted);font-size:12px;">— ${c.tipo === 'resta' ? 'Resta (ej. descuentos)' : 'Suma'}</span></div>
+      <div style="display:flex;align-items:center;">${botonesOrdenHtml(idx, conceptos.length, 'cv-orden')}<div><strong>${c.nombre}</strong> <span style="color:var(--muted);font-size:12px;">— ${c.tipo === 'resta' ? 'Resta (ej. descuentos)' : 'Suma'}</span></div></div>
       <button class="row-del conceptoventa-del" data-id="${c.id}" style="font-size:16px;">✕</button>
     </div>`).join('');
+  box.querySelectorAll('.cv-orden-subir').forEach(btn => btn.addEventListener('click', () => moverOrdenLista('fz_conceptos_venta', conceptos, Number(btn.dataset.idx), -1, () => renderVentaConceptosList(businessId))));
+  box.querySelectorAll('.cv-orden-bajar').forEach(btn => btn.addEventListener('click', () => moverOrdenLista('fz_conceptos_venta', conceptos, Number(btn.dataset.idx), 1, () => renderVentaConceptosList(businessId))));
   box.querySelectorAll('.conceptoventa-del').forEach(btn => {
     btn.addEventListener('click', async () => {
       await sb.from('fz_conceptos_venta').delete().eq('id', btn.dataset.id);
@@ -1700,11 +1718,13 @@ async function renderCatalogoCuentas() {
   ['activo','pasivo','capital','ingreso','costo','gasto'].forEach(tipo => {
     const box = document.getElementById('ccList-' + tipo);
     if (!box) return;
-    box.innerHTML = mayores.filter(m => m.tipo === tipo).map(m => {
+    const mayoresTipo = mayores.filter(m => m.tipo === tipo);
+    box.innerHTML = mayoresTipo.map((m, idx) => {
       const editando = STATE_ccEditando.has(m.id);
       return `
       <div style="margin-bottom:10px;">
         <div style="display:flex;align-items:center;gap:8px;padding:6px 4px;background:#f7f9fc;border-radius:7px;flex-wrap:wrap;">
+          ${botonesOrdenHtml(idx, mayoresTipo.length, 'cc-mayor-orden')}
           ${editando ? `
             <input class="cell cc-mayor-nombre" type="text" value="${m.nombre}" data-id="${m.id}" style="flex:1;min-width:0;font-weight:700;">
             <select class="cell cc-mayor-tipo" data-id="${m.id}" style="width:auto;">
@@ -1730,6 +1750,8 @@ async function renderCatalogoCuentas() {
         ${subcuentasRaiz(m.id, subcuentas).map(s => filaSubHtml(s, 0)).join('') || `<div style="padding:6px 4px 6px 16px;color:var(--muted);font-size:12px;">Sin subcuentas todavía.</div>`}
       </div>`;
     }).join('');
+    box.querySelectorAll('.cc-mayor-orden-subir').forEach(btn => btn.addEventListener('click', () => moverOrdenLista('fz_cuentas_mayor', mayoresTipo, Number(btn.dataset.idx), -1, () => renderCatalogoCuentas())));
+    box.querySelectorAll('.cc-mayor-orden-bajar').forEach(btn => btn.addEventListener('click', () => moverOrdenLista('fz_cuentas_mayor', mayoresTipo, Number(btn.dataset.idx), 1, () => renderCatalogoCuentas())));
   });
 
   const actualizarSubPadre = () => {
@@ -1753,7 +1775,8 @@ async function renderCatalogoCuentas() {
     const tipo = document.getElementById('ccNuevaMayorTipo').value;
     const vinculo = tipo === 'costo' ? (document.getElementById('ccNuevaMayorVinculo').value || null) : null;
     if (!nombre) { toast('Escribe un nombre.', 'error'); return; }
-    const { data: nuevaMayor, error } = await sb.from('fz_cuentas_mayor').insert({ business_id: b.id, nombre, tipo, orden: 99, concepto_venta_vinculado_id: vinculo }).select().single();
+    const cantidadEnTipo = mayores.filter(m => m.tipo === tipo).length;
+    const { data: nuevaMayor, error } = await sb.from('fz_cuentas_mayor').insert({ business_id: b.id, nombre, tipo, orden: cantidadEnTipo, concepto_venta_vinculado_id: vinculo }).select().single();
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     const { error: e2 } = await sb.from('fz_subcuentas').insert({ business_id: b.id, cuenta_mayor_id: nuevaMayor.id, nombre, orden: 0 });
     if (e2) toast('La cuenta mayor se creó, pero hubo un error creando su subcuenta por default: ' + e2.message, 'error');
