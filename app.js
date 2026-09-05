@@ -629,21 +629,21 @@ function updateTopbar() {
   }
 }
 
-function renderCurrentSection() {
+async function renderCurrentSection() {
   updateTopbar();
   const s = STATE.currentSection;
-  if (s === 'dashboard') renderDashboard();
-  if (s === 'ventas') renderVentas();
-  if (s === 'efectivo') renderEfectivo();
-  if (s === 'bancos') renderBancos();
-  if (s === 'proveedores') renderProveedores();
-  if (s === 'pl') renderPL();
-  if (s === 'flujo') renderFlujo();
-  if (s === 'polizas') renderPolizas();
-  if (s === 'balance') renderBalanceGeneral();
-  if (s === 'catalogo') renderCatalogoCuentas();
-  if (s === 'auditoria') renderAuditoria();
-  if (s === 'negocios') renderNegocios();
+  if (s === 'dashboard') return renderDashboard();
+  if (s === 'ventas') return renderVentas();
+  if (s === 'efectivo') return renderEfectivo();
+  if (s === 'bancos') return renderBancos();
+  if (s === 'proveedores') return renderProveedores();
+  if (s === 'pl') return renderPL();
+  if (s === 'flujo') return renderFlujo();
+  if (s === 'polizas') return renderPolizas();
+  if (s === 'balance') return renderBalanceGeneral();
+  if (s === 'catalogo') return renderCatalogoCuentas();
+  if (s === 'auditoria') return renderAuditoria();
+  if (s === 'negocios') return renderNegocios();
 }
 
 /* ============================================================
@@ -3995,7 +3995,7 @@ function detalleSubcuentaHtml(filas, colspan) {
   </td></tr>`;
 }
 
-function irASeccion(nombreSeccion) {
+async function irASeccion(nombreSeccion) {
   STATE.currentSection = nombreSeccion;
   localStorage.setItem('finanzas_ultima_seccion', nombreSeccion);
   document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
@@ -4004,8 +4004,7 @@ function irASeccion(nombreSeccion) {
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
   const sec = document.getElementById('sec-' + nombreSeccion);
   if (sec) sec.classList.add('active');
-  updateTopbar();
-  renderCurrentSection();
+  await renderCurrentSection();
 }
 
 function resaltarFilaPorId(id, intentos) {
@@ -4032,16 +4031,16 @@ async function abrirOrigenDesdeDetalle(origen, businessId) {
   if (origen.fecha) STATE.currentMonth = origen.fecha.slice(0, 7);
   if (origen.tipo === 'bancos') {
     STATE_bancoCuentaAbierta = origen.cuentaId;
-    irASeccion('bancos');
-    setTimeout(() => resaltarFilaPorId(origen.id), 350);
+    await irASeccion('bancos');
   } else if (origen.tipo === 'efectivo') {
     STATE_monedaAbierta = origen.monedaId;
-    irASeccion('efectivo');
-    setTimeout(() => resaltarFilaPorId(origen.id), 350);
+    await irASeccion('efectivo');
   } else if (origen.tipo === 'proveedor') {
-    irASeccion('proveedores');
-    setTimeout(() => resaltarFilaPorId(origen.id), 350);
+    await irASeccion('proveedores');
+  } else {
+    return;
   }
+  resaltarFilaPorId(origen.id);
 }
 
 
