@@ -1382,17 +1382,44 @@ async function openVentaConceptosModal(businessId) {
     renderVentaConceptosList(businessId);
   };
 }
+function opcionesSubcuentasIngreso(subcuentas, mayores, selectedId) {
+  const mayoresIngreso = mayores.filter(m => m.tipo === 'ingreso');
+  const partes = mayoresIngreso.map(m => {
+    const construirNivel = (padreId, nivel) => subcuentas.filter(s => s.cuenta_mayor_id === m.id && (s.subcuenta_padre_id || null) === padreId)
+      .flatMap(s => [
+        `<option value="${s.id}" ${selectedId===s.id?'selected':''}>${'—'.repeat(nivel)} ${s.nombre}</option>`,
+        ...construirNivel(s.id, nivel + 1),
+      ]);
+    const opts = construirNivel(null, 0);
+    return opts.length ? `<optgroup label="${m.nombre}">${opts.join('')}</optgroup>` : '';
+  }).join('');
+  return partes;
+}
 async function renderVentaConceptosList(businessId) {
-  const conceptos = await loadConceptosVenta(businessId);
+  const [conceptos, subcuentas, mayores] = await Promise.all([loadConceptosVenta(businessId), loadSubcuentas(businessId), loadCuentasMayor(businessId)]);
   const box = document.getElementById('conceptosVentaList');
   if (!conceptos.length) { box.innerHTML = `<div class="empty" style="padding:16px;">Aún no hay categorías. Agrega la primera abajo (ej. Alimentos, Bebidas, Daypass...).</div>`; return; }
+  const hayCatalogoIngreso = mayores.some(m => m.tipo === 'ingreso');
   box.innerHTML = conceptos.map((c, idx) => `
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 4px;border-bottom:1px solid var(--line);">
-      <div style="display:flex;align-items:center;">${botonesOrdenHtml(idx, conceptos.length, 'cv-orden')}<div><strong>${c.nombre}</strong> <span style="color:var(--muted);font-size:12px;">— ${c.tipo === 'resta' ? 'Resta (ej. descuentos)' : 'Suma'}</span></div></div>
-      <button class="row-del conceptoventa-del" data-id="${c.id}" style="font-size:16px;">✕</button>
+    <div style="padding:8px 4px;border-bottom:1px solid var(--line);">
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <div style="display:flex;align-items:center;">${botonesOrdenHtml(idx, conceptos.length, 'cv-orden')}<div><strong>${c.nombre}</strong> <span style="color:var(--muted);font-size:12px;">— ${c.tipo === 'resta' ? 'Resta (ej. descuentos)' : 'Suma'}</span></div></div>
+        <button class="row-del conceptoventa-del" data-id="${c.id}" style="font-size:16px;">✕</button>
+      </div>
+      ${hayCatalogoIngreso ? `<div style="margin:6px 0 0 26px;">
+        <select class="cell cv-vinculo" data-id="${c.id}" style="font-size:12px;max-width:280px;">
+          <option value="">— sin agrupar en el Estado de Resultados —</option>
+          ${opcionesSubcuentasIngreso(subcuentas, mayores, c.subcuenta_vinculada_id)}
+        </select>
+      </div>` : ''}
     </div>`).join('');
   box.querySelectorAll('.cv-orden-subir').forEach(btn => btn.addEventListener('click', () => moverOrdenLista('fz_conceptos_venta', conceptos, Number(btn.dataset.idx), -1, () => renderVentaConceptosList(businessId))));
   box.querySelectorAll('.cv-orden-bajar').forEach(btn => btn.addEventListener('click', () => moverOrdenLista('fz_conceptos_venta', conceptos, Number(btn.dataset.idx), 1, () => renderVentaConceptosList(businessId))));
+  box.querySelectorAll('.cv-vinculo').forEach(sel => sel.addEventListener('change', async () => {
+    const { error } = await sb.from('fz_conceptos_venta').update({ subcuenta_vinculada_id: sel.value || null }).eq('id', sel.dataset.id);
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    toast('Agrupación guardada.');
+  }));
   box.querySelectorAll('.conceptoventa-del').forEach(btn => {
     btn.addEventListener('click', async () => {
       await sb.from('fz_conceptos_venta').delete().eq('id', btn.dataset.id);
@@ -4263,11 +4290,24 @@ async function renderPLAnual(el, b) {
     return subcuentasRaiz(m.id, subcuentas).map(s => render(s, 0)).join('');
   }
 
-  const filasIngreso = conceptosVenta.map((c, idx) => filaHtml(
+  const gruposIngresoAnual = {}; const sinGrupoAnual = [];
+  conceptosVenta.forEach((c, idx) => {
+    const sub = c.subcuenta_vinculada_id ? subcuentas.find(s => s.id === c.subcuenta_vinculada_id) : null;
+    const mayor = sub ? mayores.find(m => m.id === sub.cuenta_mayor_id) : null;
+    if (mayor) (gruposIngresoAnual[mayor.id] ||= { nombre: mayor.nombre, items: [] }).items.push({ c, idx });
+    else sinGrupoAnual.push({ c, idx });
+  });
+  const filaIngresoAnualHtml = ({ c, idx }) => filaHtml(
     c.nombre + (c.tipo==='resta'?' (descuento)':''),
     datos.map(d => d.ingresosPorConcepto[idx]),
-    { color: c.tipo==='resta' ? 'var(--red)' : null }
-  )).join('');
+    { color: c.tipo==='resta' ? 'var(--red)' : null, indent: Object.keys(gruposIngresoAnual).length > 0 }
+  );
+  const filasIngreso = Object.values(gruposIngresoAnual).map(g => {
+    const valoresGrupo = datos.map((d, mesIdx) => g.items.reduce((s, it) => s + (d.ingresosPorConcepto[it.idx] * (it.c.tipo==='resta'?-1:1)), 0));
+    return `<tr style="background:#f7f9fc;"><td colspan="${mesesYm.length + 2}" style="font-weight:700;">${g.nombre}</td></tr>`
+      + g.items.map(filaIngresoAnualHtml).join('')
+      + filaHtml(`Subtotal ${g.nombre}`, valoresGrupo, { italic: true, indentPx: 22 });
+  }).join('') + sinGrupoAnual.map(filaIngresoAnualHtml).join('');
   const mayoresIngreso = mayores.filter(m => m.tipo === 'ingreso');
   const filaSobrante = datos.some(d=>d.sobranteCaja) ? filaHtml('Sobrante de caja (conciliación)', datos.map(d=>d.sobranteCaja), { color:'var(--green)' }) : '';
   const filaPoliza = mayoresIngreso.map(m => {
@@ -4440,7 +4480,24 @@ async function renderPL() {
       <div class="card-head"><h3>Ingresos — ${periodoLabel}</h3><span class="hint">Calculado de Ventas</span></div>
       <table>
         <tbody>
-          ${ingresosPorConcepto.length ? ingresosPorConcepto.map(i => `<tr><td>${i.nombre}${i.tipo==='resta'?' (descuento)':''}</td><td class="num" style="${i.tipo==='resta'?'color:var(--red);':''}">${i.tipo==='resta'?'-':''}${fmt(i.monto)}</td></tr>`).join('') : `<tr><td colspan="2" class="empty">Este negocio no tiene categorías de venta configuradas (ve a Ventas → Configurar categorías de venta).</td></tr>`}
+          ${ingresosPorConcepto.length ? (() => {
+            const grupos = {}; const sinGrupo = [];
+            ingresosPorConcepto.forEach(i => {
+              const concepto = conceptosVenta.find(c => c.id === i.id);
+              const sub = concepto?.subcuenta_vinculada_id ? subcuentas.find(s => s.id === concepto.subcuenta_vinculada_id) : null;
+              const mayor = sub ? mayores.find(m => m.id === sub.cuenta_mayor_id) : null;
+              if (mayor) { (grupos[mayor.id] ||= { nombre: mayor.nombre, items: [] }).items.push(i); }
+              else sinGrupo.push(i);
+            });
+            const filaIngresoHtml = (i) => `<tr><td${grupos && Object.keys(grupos).length ? ' style="padding-left:22px;color:var(--muted);font-size:12.5px;"' : ''}>${i.nombre}${i.tipo==='resta'?' (descuento)':''}</td><td class="num" style="${i.tipo==='resta'?'color:var(--red);':''}">${i.tipo==='resta'?'-':''}${fmt(i.monto)}</td></tr>`;
+            const gruposHtml = Object.values(grupos).map(g => {
+              const subtotal = g.items.reduce((s,i)=>s+(i.tipo==='resta'?-i.monto:i.monto),0);
+              return `<tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">${g.nombre}</td></tr>`
+                + g.items.map(filaIngresoHtml).join('')
+                + `<tr><td style="padding-left:22px;font-style:italic;color:var(--muted);">Subtotal ${g.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(subtotal)}</td></tr>`;
+            }).join('');
+            return gruposHtml + sinGrupo.map(filaIngresoHtml).join('');
+          })() : `<tr><td colspan="2" class="empty">Este negocio no tiene categorías de venta configuradas (ve a Ventas → Configurar categorías de venta).</td></tr>`}
           ${sobranteCaja ? `<tr><td>Sobrante de caja (conciliación de Ventas)</td><td class="num" style="color:var(--green);">${fmt(sobranteCaja)}</td></tr>` : ''}
           ${iPoliza.porMayor.map(m => `
             <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">${m.nombre} (póliza)</td></tr>
