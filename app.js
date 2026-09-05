@@ -109,45 +109,70 @@ function cerrarPreviewAdjunto() {
 }
 document.getElementById('adjuntoPreviewCerrar').addEventListener('click', cerrarPreviewAdjunto);
 document.getElementById('adjuntoPreviewOverlay').addEventListener('click', cerrarPreviewAdjunto);
-function adjuntoCellHtml(archivoPath, archivoNombre, registroId) {
-  if (archivoPath) {
-    return `<span class="adjunto-chip" style="display:inline-flex;align-items:center;gap:6px;font-size:12px;white-space:nowrap;">
-      <a href="#" class="adjunto-ver" data-path="${archivoPath}" title="${archivoNombre||''}" style="color:var(--navy-1);text-decoration:underline;max-width:100px;overflow:hidden;text-overflow:ellipsis;">${archivoNombre||'archivo'}</a>
-      <button class="adjunto-quitar" data-id="${registroId}" data-path="${archivoPath}" style="border:none;background:none;color:var(--red);cursor:pointer;font-size:13px;padding:0;" title="Quitar adjunto">✕</button>
-    </span>`;
-  }
-  return `<label class="adjunto-subir" style="font-size:12px;color:var(--navy-3);text-decoration:underline;cursor:pointer;white-space:nowrap;">
-    Adjuntar
-    <input type="file" accept=".pdf,.jpg,.jpeg,.png" data-id="${registroId}" class="adjunto-input" style="display:none;">
-  </label>`;
+async function cargarAdjuntos(tabla, registroId) {
+  const { data } = await sb.from('fz_adjuntos').select('*').eq('tabla', tabla).eq('registro_id', registroId).order('created_at');
+  return data || [];
+}
+async function contarAdjuntosPorRegistro(tabla, registroIds) {
+  if (!registroIds.length) return {};
+  const { data } = await sb.from('fz_adjuntos').select('registro_id').eq('tabla', tabla).in('registro_id', registroIds);
+  const conteo = {};
+  (data || []).forEach(r => { conteo[r.registro_id] = (conteo[r.registro_id] || 0) + 1; });
+  return conteo;
+}
+function adjuntosCellHtml(conteo, registroId) {
+  const n = conteo || 0;
+  return `<button class="btn btn-ghost btn-sm adjuntos-abrir-btn" data-id="${registroId}" style="font-size:11.5px;padding:3px 9px;white-space:nowrap;">${n ? n + (n===1?' archivo':' archivos') : 'Adjuntar'}</button>`;
 }
 function wireAdjuntosHandlers(container, tabla, businessId, onDone) {
-  container.querySelectorAll('.adjunto-input').forEach(inp => {
-    inp.addEventListener('change', async () => {
-      const file = inp.files[0];
-      if (!file) return;
-      const registroId = inp.dataset.id;
-      const subido = await subirAdjunto(tabla, registroId, businessId, file);
-      if (!subido) return;
-      const { error } = await sb.from(tabla).update({ archivo_path: subido.path, archivo_nombre: subido.nombre }).eq('id', registroId);
-      if (error) { toast('Error guardando referencia del archivo: ' + error.message, 'error'); return; }
-      registrarAuditoria(businessId, 'editar', TABLA_MODULO_LABEL[tabla] || tabla, `Adjuntó archivo "${subido.nombre}"`);
-      onDone();
-    });
-  });
-  container.querySelectorAll('.adjunto-ver').forEach(a => {
-    a.addEventListener('click', (e) => { e.preventDefault(); verAdjunto(a.dataset.path, a.title); });
-  });
-  container.querySelectorAll('.adjunto-quitar').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      if (!confirm('¿Quitar este archivo adjunto?')) return;
-      await sb.storage.from(ADJUNTOS_BUCKET).remove([btn.dataset.path]);
-      await sb.from(tabla).update({ archivo_path: null, archivo_nombre: null }).eq('id', btn.dataset.id);
-      registrarAuditoria(businessId, 'editar', TABLA_MODULO_LABEL[tabla] || tabla, `Quitó archivo adjunto`);
-      onDone();
-    });
+  container.querySelectorAll('.adjuntos-abrir-btn').forEach(btn => {
+    btn.addEventListener('click', () => abrirModalAdjuntos(tabla, btn.dataset.id, businessId, onDone));
   });
 }
+let STATE_adjuntosModalCtx = null;
+async function abrirModalAdjuntos(tabla, registroId, businessId, onDone) {
+  STATE_adjuntosModalCtx = { tabla, registroId, businessId, onDone };
+  document.getElementById('modalAdjuntos').classList.add('show');
+  await renderModalAdjuntosList();
+}
+async function renderModalAdjuntosList() {
+  const { tabla, registroId } = STATE_adjuntosModalCtx;
+  const box = document.getElementById('adjuntosModalList');
+  box.innerHTML = `<p class="empty">Cargando…</p>`;
+  const adjuntos = await cargarAdjuntos(tabla, registroId);
+  box.innerHTML = adjuntos.length ? adjuntos.map(a => `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 4px;border-bottom:1px solid var(--line);font-size:13px;">
+      <a href="#" class="adjuntos-ver-item" data-path="${a.archivo_path}" title="${a.archivo_nombre}" style="color:var(--navy-1);text-decoration:underline;max-width:270px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${a.archivo_nombre}</a>
+      <button class="row-del adjuntos-del-item" data-id="${a.id}" data-path="${a.archivo_path}" style="font-size:14px;flex-shrink:0;">✕</button>
+    </div>`).join('') : `<p class="empty" style="padding:6px 0 14px;">Aún no hay archivos adjuntos.</p>`;
+  box.querySelectorAll('.adjuntos-ver-item').forEach(a => a.addEventListener('click', (e) => { e.preventDefault(); verAdjunto(a.dataset.path, a.title); }));
+  box.querySelectorAll('.adjuntos-del-item').forEach(btn => btn.addEventListener('click', async () => {
+    if (!confirm('¿Quitar este archivo adjunto?')) return;
+    await sb.storage.from(ADJUNTOS_BUCKET).remove([btn.dataset.path]);
+    await sb.from('fz_adjuntos').delete().eq('id', btn.dataset.id);
+    registrarAuditoria(STATE_adjuntosModalCtx.businessId, 'editar', TABLA_MODULO_LABEL[tabla] || tabla, 'Quitó archivo adjunto');
+    await renderModalAdjuntosList();
+    if (STATE_adjuntosModalCtx.onDone) STATE_adjuntosModalCtx.onDone();
+  }));
+}
+document.getElementById('adjuntosModalInput').addEventListener('change', async () => {
+  const { tabla, registroId, businessId } = STATE_adjuntosModalCtx;
+  const input = document.getElementById('adjuntosModalInput');
+  const files = Array.from(input.files);
+  for (const file of files) {
+    const subido = await subirAdjunto(tabla, registroId, businessId, file);
+    if (subido) {
+      const { error } = await sb.from('fz_adjuntos').insert({ business_id: businessId, tabla, registro_id: registroId, archivo_path: subido.path, archivo_nombre: subido.nombre });
+      if (!error) registrarAuditoria(businessId, 'editar', TABLA_MODULO_LABEL[tabla] || tabla, `Adjuntó archivo "${subido.nombre}"`);
+    }
+  }
+  input.value = '';
+  await renderModalAdjuntosList();
+  if (STATE_adjuntosModalCtx.onDone) STATE_adjuntosModalCtx.onDone();
+});
+document.getElementById('cerrarModalAdjuntos').addEventListener('click', () => {
+  document.getElementById('modalAdjuntos').classList.remove('show');
+});
 
 function biz() {
   return STATE.businesses.find(b => b.id === STATE.currentBusinessId) || null;
@@ -3119,6 +3144,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
   const { saldoApertura, rows: ledger } = ledgerRes;
   const traspasoCtx = { cuentasBanco: cuentasBancoQ.data || [], monedasEfectivo: monedasEfectivoQ.data || [], origenTipo: 'efectivo', origenId: moneda.id, origenNombre: 'la caja ' + moneda.nombre, origenCorto: 'Caja — ' + moneda.nombre };
   let saldo = saldoApertura;
+  const conteoAdjuntosEfvo = await contarAdjuntosPorRegistro('fz_efectivo_mov', ledger.filter(r => !r.auto).map(r => r.id));
   const rowsHtml = ledger.map(r => {
     saldo += (Number(r.depositos) || 0) - (Number(r.cargos) || 0);
     if (r.auto) {
@@ -3140,7 +3166,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
       <td><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(r.depositos)}" data-id="${r.id}" data-field="depositos"></td>
       <td class="num" style="font-weight:700;">${fmtNum(saldo)}</td>
       ${salidaCellsHtml(r, subcuentas, mayores, facturasPend, 'mov', traspasoCtx)}
-      <td>${adjuntoCellHtml(r.archivo_path, r.archivo_nombre, r.id)}</td>
+      <td>${adjuntosCellHtml(conteoAdjuntosEfvo[r.id], r.id)}</td>
       <td><button class="row-del mov-del" data-id="${r.id}">✕</button></td>
     </tr>`;
   }).join('');
@@ -3311,6 +3337,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
   const { saldoApertura, rows: ledger } = ledgerRes;
   const traspasoCtx = { cuentasBanco: cuentasBancoQ.data || [], monedasEfectivo: monedasEfectivoQ.data || [], origenTipo: 'banco', origenId: cuentaId, origenNombre: 'el banco ' + (cuentaArr?.nombre || ''), origenCorto: 'Banco — ' + (cuentaArr?.nombre || '') };
   let saldo = saldoApertura;
+  const conteoAdjuntosBanco = await contarAdjuntosPorRegistro('fz_bancos_mov', ledger.filter(m => !m.auto).map(m => m.id));
   const rowsHtml = ledger.map(m => {
     saldo += (Number(m.depositos)||0) - (Number(m.cargos)||0);
     if (m.auto) {
@@ -3334,7 +3361,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
       <td><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(m.cargos)}" data-id="${m.id}" data-field="cargos"></td>
       <td class="num" style="font-weight:700;">${fmt(saldo)}</td>
       ${salidaCellsHtml(m, subcuentas, mayores, facturasPend, 'mov', traspasoCtx)}
-      <td>${adjuntoCellHtml(m.archivo_path, m.archivo_nombre, m.id)}</td>
+      <td>${adjuntosCellHtml(conteoAdjuntosBanco[m.id], m.id)}</td>
       <td><button class="row-del mov-del" data-id="${m.id}">✕</button></td>
     </tr>`;
   }).join('');
@@ -3435,6 +3462,7 @@ async function renderProveedores() {
   const pendiente = all.filter(p => p.estatus === 'Pendiente' || p.estatus === 'Parcial').reduce((s,p)=>s+saldoPend(p),0);
   const pagado = all.filter(p => p.estatus === 'Pagado').reduce((s,p)=>s+(Number(p.importe)||0),0);
   const rows = STATE_provFiltro === 'Todos' ? all : all.filter(p => p.estatus === STATE_provFiltro);
+  const conteoAdjuntosProv = await contarAdjuntosPorRegistro('fz_proveedores', rows.map(p => p.id));
 
   const pendientesTodas = all.filter(p => p.estatus === 'Pendiente' || p.estatus === 'Parcial');
   const porProveedorMap = {};
@@ -3495,7 +3523,7 @@ async function renderProveedores() {
         <table>
           <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Importe</th><th>Desglose</th><th>Estatus</th><th>Fecha pago</th><th>Pagado desde</th><th>Adjunto</th><th></th></tr></thead>
           <tbody>
-            ${rows.map(p => provRowHtml(p, catalogo, opcionesPagoDesde)).join('') || `<tr><td colspan="9" class="empty">Sin registros.</td></tr>`}
+            ${rows.map(p => provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntosProv[p.id])).join('') || `<tr><td colspan="9" class="empty">Sin registros.</td></tr>`}
           </tbody>
         </table>
       </div>
@@ -3623,7 +3651,7 @@ async function syncPagoProveedor(businessId, facturaId) {
   }
 }
 
-function provRowHtml(p, catalogo, opcionesPagoDesde) {
+function provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntos) {
   const desgloseTotal = desgloseLineas(p.desglose).reduce((s,l)=>s+(Number(l.monto)||0),0);
   const desgloseOk = Math.abs(desgloseTotal - (Number(p.importe)||0)) < 1 && desgloseTotal > 0;
   const esCredito = Number(p.importe) < 0;
@@ -3650,7 +3678,7 @@ function provRowHtml(p, catalogo, opcionesPagoDesde) {
       <option value="">— sin especificar —</option>
       ${opcionesPagoDesde.map(o => `<option value="${o.value}" ${(p.pagado_desde_tipo && (p.pagado_desde_tipo+':'+p.pagado_desde_cuenta_id)===o.value)?'selected':''}>${o.label}</option>`).join('')}
     </select></td>
-    <td>${adjuntoCellHtml(p.archivo_path, p.archivo_nombre, p.id)}</td>
+    <td>${adjuntosCellHtml(conteoAdjuntos, p.id)}</td>
     <td><button class="row-del prov-del" data-id="${p.id}">✕</button></td>
   </tr>`;
 }
@@ -4741,7 +4769,8 @@ async function crearBorradorPolizaExistente(polizaId, businessId) {
 }
 
 function polizaEsBorradorVacio(borrador) {
-  return !(borrador.poliza.concepto || '').trim() && !borrador.poliza.archivo_path && !borrador.poliza.archivoPendiente && borrador.lineas.every(l =>
+  const sinArchivos = !(borrador.poliza.archivosPendientes || []).length && !borrador.conteoAdjuntos;
+  return !(borrador.poliza.concepto || '').trim() && sinArchivos && borrador.lineas.every(l =>
     (Number(l.cargo) || 0) === 0 && (Number(l.abono) || 0) === 0 && !l.subcuenta_id && !l.cuenta_ref_id && !(l.descripcion || '').trim() && !(l.referencia || '').trim()
   );
 }
@@ -4756,6 +4785,10 @@ async function openPolizaModal(polizaId, businessId) {
   const base = polizaId ? await crearBorradorPolizaExistente(polizaId, businessId) : await crearBorradorPolizaNueva(businessId);
   STATE_polizaBorrador = { ...base, catalogos };
   STATE_polizaBorrador.original = JSON.stringify({ poliza: STATE_polizaBorrador.poliza, lineas: STATE_polizaBorrador.lineas });
+  if (polizaId) {
+    const conteo = await contarAdjuntosPorRegistro('fz_polizas', [polizaId]);
+    STATE_polizaBorrador.conteoAdjuntos = conteo[polizaId] || 0;
+  }
   document.getElementById('modalPoliza').classList.add('show');
   renderizarBorradorPoliza();
 }
@@ -4814,11 +4847,13 @@ function polizaCardHtmlBorrador(borrador) {
 
   let adjuntoHtml;
   if (borrador.esNueva) {
-    adjuntoHtml = p.archivoPendiente
-      ? `<span style="font-size:12px;color:var(--navy-1);">${p.archivoPendiente.name} <span style="color:var(--muted);">(se subirá al guardar)</span> <button class="quitar-adjunto-pendiente" style="border:none;background:none;color:var(--red);cursor:pointer;">✕</button></span>`
-      : `<label style="font-size:12px;color:var(--navy-3);text-decoration:underline;cursor:pointer;">Adjuntar (se sube al guardar)<input type="file" accept=".pdf,.jpg,.jpeg,.png" class="adjunto-pendiente-input" style="display:none;"></label>`;
+    const pendientes = borrador.poliza.archivosPendientes || [];
+    adjuntoHtml = `<span style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;">
+      ${pendientes.map((f, i) => `<span style="font-size:12px;color:var(--navy-1);background:#f7f9fc;border-radius:5px;padding:2px 6px;">${f.name} <button class="quitar-adjunto-pendiente" data-idx="${i}" style="border:none;background:none;color:var(--red);cursor:pointer;">✕</button></span>`).join('')}
+      <label style="font-size:12px;color:var(--navy-3);text-decoration:underline;cursor:pointer;">${pendientes.length?'+ Agregar otro':'Adjuntar'} (se sube al guardar)<input type="file" accept=".pdf,.jpg,.jpeg,.png" class="adjunto-pendiente-input" style="display:none;"></label>
+    </span>`;
   } else {
-    adjuntoHtml = adjuntoCellHtml(p.archivo_path, p.archivo_nombre, p.id);
+    adjuntoHtml = adjuntosCellHtml(borrador.conteoAdjuntos, p.id);
   }
 
   return `
@@ -4938,14 +4973,14 @@ function wireBorradorPolizaHandlers(wrap) {
       const ext = (file.name.split('.').pop() || '').toLowerCase();
       if (!ADJUNTOS_EXT_PERMITIDAS.includes(ext)) { toast('Solo se permiten archivos PDF, JPG o PNG.', 'error'); return; }
       if (file.size > ADJUNTOS_MAX_MB * 1024 * 1024) { toast(`El archivo pesa más de ${ADJUNTOS_MAX_MB} MB.`, 'error'); return; }
-      STATE_polizaBorrador.poliza.archivoPendiente = file;
+      if (!STATE_polizaBorrador.poliza.archivosPendientes) STATE_polizaBorrador.poliza.archivosPendientes = [];
+      STATE_polizaBorrador.poliza.archivosPendientes.push(file);
       renderizarBorradorPoliza();
     });
-    const quitarPendienteBtn = wrap.querySelector('.quitar-adjunto-pendiente');
-    if (quitarPendienteBtn) quitarPendienteBtn.addEventListener('click', () => {
-      STATE_polizaBorrador.poliza.archivoPendiente = null;
+    wrap.querySelectorAll('.quitar-adjunto-pendiente').forEach(btn => btn.addEventListener('click', () => {
+      STATE_polizaBorrador.poliza.archivosPendientes.splice(Number(btn.dataset.idx), 1);
       renderizarBorradorPoliza();
-    });
+    }));
   } else {
     wireAdjuntosHandlers(wrap, 'fz_polizas', STATE_polizaBorrador.businessId, () => refrescarAdjuntoBorrador());
   }
@@ -4953,11 +4988,10 @@ function wireBorradorPolizaHandlers(wrap) {
 }
 
 async function refrescarAdjuntoBorrador() {
-  // el archivo ya se subió y ya se guardó en la BD (la póliza ya existía); solo refrescamos el dato local
+  // el archivo ya se subió y ya se guardó en la BD (la póliza ya existía); solo refrescamos el conteo local
   if (!STATE_polizaBorrador || STATE_polizaBorrador.esNueva) return;
-  const { data: p } = await sb.from('fz_polizas').select('archivo_path,archivo_nombre').eq('id', STATE_polizaBorrador.poliza.id).single();
-  if (p) { STATE_polizaBorrador.poliza.archivo_path = p.archivo_path; STATE_polizaBorrador.poliza.archivo_nombre = p.archivo_nombre; }
-  STATE_polizaBorrador.original = JSON.stringify({ poliza: STATE_polizaBorrador.poliza, lineas: STATE_polizaBorrador.lineas });
+  const conteo = await contarAdjuntosPorRegistro('fz_polizas', [STATE_polizaBorrador.poliza.id]);
+  STATE_polizaBorrador.conteoAdjuntos = conteo[STATE_polizaBorrador.poliza.id] || 0;
   renderizarBorradorPoliza();
 }
 
@@ -4978,9 +5012,11 @@ async function guardarBorradorPoliza() {
     const { data, error } = await sb.from('fz_polizas').insert({ business_id: businessId, numero: borrador.poliza.numero, fecha: borrador.poliza.fecha, concepto: borrador.poliza.concepto }).select().single();
     if (error) { toast('Error guardando la póliza: ' + error.message, 'error'); return; }
     polizaId = data.id;
-    if (borrador.poliza.archivoPendiente) {
-      const subido = await subirAdjunto('fz_polizas', polizaId, businessId, borrador.poliza.archivoPendiente);
-      if (subido) await sb.from('fz_polizas').update({ archivo_path: subido.path, archivo_nombre: subido.nombre }).eq('id', polizaId);
+    if ((borrador.poliza.archivosPendientes || []).length) {
+      for (const file of borrador.poliza.archivosPendientes) {
+        const subido = await subirAdjunto('fz_polizas', polizaId, businessId, file);
+        if (subido) await sb.from('fz_adjuntos').insert({ business_id: businessId, tabla: 'fz_polizas', registro_id: polizaId, archivo_path: subido.path, archivo_nombre: subido.nombre });
+      }
     }
   } else {
     const { error } = await sb.from('fz_polizas').update({ fecha: borrador.poliza.fecha, concepto: borrador.poliza.concepto }).eq('id', polizaId);
