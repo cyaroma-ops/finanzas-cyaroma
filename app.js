@@ -3769,6 +3769,39 @@ async function renderDirectorioProveedores(el, b) {
   window.scrollTo(0, scrollY);
 }
 
+let STATE_provDetalleFacturaAbierta = null;
+
+async function getPagosDeFactura(businessId, factura) {
+  const { data: lineasPago } = await sb.from('fz_polizas_lineas').select('*').eq('business_id', businessId).eq('cuenta_tipo', 'proveedor').eq('proveedor_factura_id', factura.id);
+  const polizaIds = [...new Set((lineasPago || []).map(l => l.poliza_id))];
+  const { data: polizasInfo } = polizaIds.length ? await sb.from('fz_polizas').select('id,fecha,numero').in('id', polizaIds) : { data: [] };
+  const polizaMap = Object.fromEntries((polizasInfo || []).map(p => [p.id, p]));
+  const pagos = (lineasPago || []).map(l => {
+    const p = polizaMap[l.poliza_id];
+    return { fecha: p?.fecha || '', monto: Number(l.cargo) || 0, label: `Póliza #${p?.numero ?? ''}`, origen: p ? { tipo: 'poliza', id: p.id, fecha: p.fecha } : null };
+  });
+  const pagadoPorPolizas = pagos.reduce((s,pg) => s + pg.monto, 0);
+  const pagadoDirecto = (Number(factura.importe_pagado) || 0) - pagadoPorPolizas;
+  if (pagadoDirecto > 0.004) {
+    pagos.push({ fecha: factura.fecha_pago || '', monto: pagadoDirecto, label: `Pago directo — ${factura.pagado_desde || 'Bancos/Efectivo'}`, origen: null });
+  }
+  return pagos.sort((a,b) => a.fecha.localeCompare(b.fecha));
+}
+function pagosInlineHtml(pagos, colspan) {
+  if (!pagos.length) return `<tr><td colspan="${colspan}" style="padding-left:34px;color:var(--muted);font-size:12px;">Sin pagos registrados.</td></tr>`;
+  return `<tr><td colspan="${colspan}" style="padding:0 0 10px 34px;">
+    <table style="width:100%;">
+      <thead><tr><th>Fecha</th><th>Origen</th><th>Monto</th><th></th></tr></thead>
+      <tbody>${pagos.map(pg => `<tr>
+        <td>${fechaCorta(pg.fecha)}</td>
+        <td>${pg.label}</td>
+        <td class="num">${fmt(pg.monto)}</td>
+        <td>${pg.origen ? `<button class="btn btn-ghost btn-sm abrir-origen-btn" data-origen='${JSON.stringify(pg.origen).replace(/'/g,'&apos;')}' style="font-size:11px;padding:3px 8px;">Abrir ↗</button>` : ''}</td>
+      </tr>`).join('')}</tbody>
+    </table>
+  </td></tr>`;
+}
+
 async function renderProveedorDetalle(el, b) {
   const key = STATE_provDetalleKey;
   if (!key) { STATE_provVista = 'directorio'; return renderProveedores(); }
@@ -3795,6 +3828,16 @@ async function renderProveedorDetalle(el, b) {
     if (pagadoDirecto > 0.004) conteoPagosPorFactura[f.id] = (conteoPagosPorFactura[f.id] || 0) + 1;
   });
 
+  // Si hay una factura con el detalle desplegado, traer sus pagos de una vez
+  let pagosAbiertoHtml = '';
+  if (STATE_provDetalleFacturaAbierta) {
+    const facturaAbierta = facturas.find(f => f.id === STATE_provDetalleFacturaAbierta);
+    if (facturaAbierta) {
+      const pagos = await getPagosDeFactura(b.id, facturaAbierta);
+      pagosAbiertoHtml = pagosInlineHtml(pagos, 7);
+    }
+  }
+
   el.innerHTML = `
     <button class="btn btn-ghost btn-sm" id="provDetalleVolver" style="margin-bottom:14px;">← Volver al directorio</button>
     <div class="kpi-grid" style="margin-bottom:14px;">
@@ -3803,7 +3846,7 @@ async function renderProveedorDetalle(el, b) {
       <div class="kpi"><div class="label">Saldo pendiente</div><div class="value num ${pendiente>0.004?'red':'green'}">${fmt(pendiente)}</div></div>
     </div>
     <div class="card">
-      <div class="card-head"><h3>${nombre}</h3></div>
+      <div class="card-head"><h3>${nombre}</h3><span class="hint">Clic en una factura con pagos para ver el detalle aquí mismo</span></div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Fecha</th><th>Factura</th><th>Importe</th><th>Pagado</th><th>Pendiente</th><th>Estatus</th><th></th></tr></thead>
@@ -3811,23 +3854,32 @@ async function renderProveedorDetalle(el, b) {
             ${orden.length ? orden.map(f => {
               const pend = Number(f.importe) - Number(f.importe_pagado||0);
               const nPagos = conteoPagosPorFactura[f.id] || 0;
-              return `<tr>
-                <td>${fechaCorta(f.fecha)}</td>
+              const abierta = STATE_provDetalleFacturaAbierta === f.id;
+              return `<tr class="${nPagos>0?'factura-pagos-row':''}" data-id="${f.id}" style="${nPagos>0?'cursor:pointer;':''}">
+                <td>${nPagos>0 ? (abierta?'▾':'▸') + ' ' : ''}${fechaCorta(f.fecha)}</td>
                 <td>${f.factura || 's/f'}</td>
                 <td class="num">${fmt(f.importe)}</td>
                 <td class="num">${fmt(f.importe_pagado||0)}</td>
                 <td class="num">${fmtNeg(pend)}</td>
                 <td><span class="badge ${f.estatus==='Pagado'?'pag':'pend'}">${f.estatus}</span></td>
-                <td>${nPagos > 0 ? `<button class="btn btn-ghost btn-sm detalle-ver-pagos" data-id="${f.id}" style="font-size:11px;padding:3px 8px;">Ver pagos (${nPagos})</button>` : ''}</td>
-              </tr>`;
+                <td>${nPagos>0 ? `${nPagos} pago${nPagos>1?'s':''}` : ''}</td>
+              </tr>${abierta ? pagosAbiertoHtml : ''}`;
             }).join('') : `<tr><td colspan="7" class="empty">Sin facturas.</td></tr>`}
           </tbody>
         </table>
       </div>
     </div>
   `;
-  document.getElementById('provDetalleVolver').addEventListener('click', () => { STATE_provVista = 'directorio'; renderProveedores(); });
-  el.querySelectorAll('.detalle-ver-pagos').forEach(btn => btn.addEventListener('click', () => verPagosFactura(btn.dataset.id, b.id)));
+  document.getElementById('provDetalleVolver').addEventListener('click', () => { STATE_provVista = 'directorio'; STATE_provDetalleFacturaAbierta = null; renderProveedores(); });
+  el.querySelectorAll('.factura-pagos-row').forEach(tr => tr.addEventListener('click', () => {
+    STATE_provDetalleFacturaAbierta = STATE_provDetalleFacturaAbierta === tr.dataset.id ? null : tr.dataset.id;
+    renderProveedores();
+  }));
+  el.querySelectorAll('.abrir-origen-btn').forEach(btn => btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const origen = JSON.parse(btn.dataset.origen.replace(/&apos;/g, "'"));
+    abrirOrigenDesdeDetalle(origen, b.id);
+  }));
 }
 
 async function syncPagoProveedor(businessId, facturaId) {
