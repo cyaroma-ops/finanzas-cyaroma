@@ -2568,6 +2568,21 @@ async function confirmarYEliminarMovimiento(table, row, onDone) {
 }
 
 async function aplicarPagoFacturas(idsSeleccionados, montoDisponibleInicial, fechaMov, businessId, origenInfo) {
+  // Si este movimiento ya tenía un desglose guardado (se está editando qué facturas cubre),
+  // primero revertimos esos montos exactos, para no duplicar ni dejar basura de la vez anterior.
+  if (origenInfo.origen_tabla && origenInfo.origen_id) {
+    const { data: previos } = await sb.from('fz_pagos_aplicados').select('*').eq('origen_tabla', origenInfo.origen_tabla).eq('origen_id', origenInfo.origen_id);
+    for (const prev of (previos || [])) {
+      const { data: fPrev } = await sb.from('fz_proveedores').select('importe,importe_pagado').eq('id', prev.factura_id).single();
+      if (fPrev) {
+        const nuevoPagado = Math.max(0, Number(fPrev.importe_pagado || 0) - Number(prev.monto || 0));
+        const nuevoEstatus = nuevoPagado <= 0.004 ? 'Pendiente' : (nuevoPagado >= Number(fPrev.importe) - 0.01 ? 'Pagado' : 'Parcial');
+        await sb.from('fz_proveedores').update({ importe_pagado: nuevoPagado, estatus: nuevoEstatus }).eq('id', prev.factura_id);
+      }
+    }
+    await sb.from('fz_pagos_aplicados').delete().eq('origen_tabla', origenInfo.origen_tabla).eq('origen_id', origenInfo.origen_id);
+  }
+
   if (!idsSeleccionados.length) return { idsAfectados: [], creadoCredito: false, sobrante: 0 };
   const { data: facturas } = await sb.from('fz_proveedores').select('*').in('id', idsSeleccionados);
   if (!facturas || !facturas.length) return { idsAfectados: [], creadoCredito: false, sobrante: 0 };
@@ -2577,10 +2592,15 @@ async function aplicarPagoFacturas(idsSeleccionados, montoDisponibleInicial, fec
 
   let disponible = montoDisponibleInicial + creditos.reduce((s,c)=>s+Math.abs(Number(c.importe)),0);
   const idsAfectados = [];
+  const registrarPago = async (facturaId, monto) => {
+    if (!origenInfo.origen_tabla || !origenInfo.origen_id || !monto) return;
+    await sb.from('fz_pagos_aplicados').insert({ business_id: businessId, factura_id: facturaId, monto, origen_tabla: origenInfo.origen_tabla, origen_id: origenInfo.origen_id, fecha: fechaMov });
+  };
 
   for (const c of creditos) {
     await sb.from('fz_proveedores').update({ estatus: 'Pagado', fecha_pago: fechaMov }).eq('id', c.id);
     idsAfectados.push(c.id);
+    await registrarPago(c.id, Math.abs(Number(c.importe)));
   }
 
   for (const f of reales) {
@@ -2594,9 +2614,10 @@ async function aplicarPagoFacturas(idsSeleccionados, montoDisponibleInicial, fec
       importe_pagado: nuevoPagado, estatus: nuevoEstatus, fecha_pago: fechaMov,
       pagado_desde: origenInfo.pagado_desde, pagado_desde_tipo: origenInfo.pagado_desde_tipo, pagado_desde_cuenta_id: origenInfo.pagado_desde_cuenta_id,
     }).eq('id', f.id);
-    if (errAplicar) toast('Error aplicando pago a "' + (f.factura || f.proveedor) + '": ' + errAplicar.message, 'error');
+    if (errAplicar) { toast('Error aplicando pago a "' + (f.factura || f.proveedor) + '": ' + errAplicar.message, 'error'); continue; }
     idsAfectados.push(f.id);
     disponible -= aplicar;
+    await registrarPago(f.id, aplicar);
   }
 
   let creadoCredito = false;
@@ -2682,6 +2703,7 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
         pagado_desde: traspasoCtx?.origenCorto || null,
         pagado_desde_tipo: traspasoCtx?.origenTipo || null,
         pagado_desde_cuenta_id: traspasoCtx?.origenId || null,
+        origen_tabla: table, origen_id: rowId,
       });
       const { error: e1 } = await sb.from(table).update({ proveedor_factura_ids: idsAfectados, proveedor_factura_id: idsAfectados[0] || null }).eq('id', rowId);
       if (e1) { toast('Error al guardar: ' + e1.message, 'error'); return; }
@@ -2811,6 +2833,10 @@ async function openMovimientoModal(contexto) {
       payload = { business_id: contexto.businessId, cuenta_id: contexto.refId, fecha, concepto: document.getElementById('movCampo1').value || null, referencia: document.getElementById('movReferencia').value || null, descripcion, cargos, depositos, tipo_salida: tipoSalida };
     }
     if (tipoSalida === 'gasto') payload.subcuenta_id = document.getElementById('movSubcuenta').value || null;
+    if (tipoSalida === 'proveedor') payload.proveedor_factura_ids = [];
+
+    const { data: nuevoMov, error } = await sb.from(table).insert(payload).select().single();
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
 
     let creadoCredito = false;
     if (tipoSalida === 'proveedor' && idsFacturas.length) {
@@ -2819,19 +2845,13 @@ async function openMovimientoModal(contexto) {
         pagado_desde: origenCorto,
         pagado_desde_tipo: contexto.tipo === 'efectivo' ? 'efectivo' : 'banco',
         pagado_desde_cuenta_id: contexto.refId,
+        origen_tabla: table, origen_id: nuevoMov.id,
       });
-      payload.proveedor_factura_ids = resultado.idsAfectados;
-      payload.proveedor_factura_id = resultado.idsAfectados[0] || null;
       creadoCredito = resultado.creadoCredito;
-    } else if (tipoSalida === 'proveedor') {
-      payload.proveedor_factura_ids = [];
-    }
-
-    const { error } = await sb.from(table).insert(payload);
-    if (error) { toast('Error: ' + error.message, 'error'); return; }
-    if (tipoSalida === 'proveedor' && idsFacturas.length) {
+      await sb.from(table).update({ proveedor_factura_ids: resultado.idsAfectados, proveedor_factura_id: resultado.idsAfectados[0] || null }).eq('id', nuevoMov.id);
       toast(`${idsFacturas.length} factura(s) procesada(s)${creadoCredito ? ' · se generó un crédito a favor' : ''}.`);
     }
+
     modal.classList.remove('show');
     toast('Movimiento agregado.');
     if (contexto.onDone) contexto.onDone();
@@ -3693,40 +3713,56 @@ async function renderProveedores() {
   window.scrollTo(0, scrollY);
 }
 
-async function verPagosFactura(facturaId, businessId) {
-  const { data: factura } = await sb.from('fz_proveedores').select('*').eq('id', facturaId).single();
-  if (!factura) return;
+async function verDesglosePago(origenTabla, origenId, businessId) {
+  const nombreTabla = origenTabla === 'fz_bancos_mov' ? 'Banco' : 'Efectivo';
+  const { data: mov } = await sb.from(origenTabla).select('*').eq('id', origenId).single();
+  if (!mov) return;
   document.getElementById('modalPagosFactura').classList.add('show');
+  document.getElementById('pagosFacturaTitulo').textContent = `Pago desde ${nombreTabla}`;
   const info = document.getElementById('pagosFacturaInfo');
   const list = document.getElementById('pagosFacturaList');
-  info.textContent = `${factura.proveedor || '(sin proveedor)'} · Factura ${factura.factura || 's/f'} · Total ${fmt(factura.importe)} · Pagado ${fmt(factura.importe_pagado||0)}`;
+  info.innerHTML = `${fechaCorta(mov.fecha)} · ${mov.descripcion || mov.concepto || mov.proveedor || ''} · Importe total <strong>${fmt(mov.cargos)}</strong> <button class="btn btn-ghost btn-sm" id="pagosFacturaAbrirMov" style="font-size:11px;padding:3px 8px;margin-left:6px;">Abrir movimiento ↗</button>`;
+  document.getElementById('pagosFacturaAbrirMov').onclick = () => {
+    document.getElementById('modalPagosFactura').classList.remove('show');
+    abrirOrigenDesdeDetalle({ tipo: origenTabla==='fz_bancos_mov'?'bancos':'efectivo', id: mov.id, cuentaId: mov.cuenta_id, monedaId: mov.moneda_id, fecha: mov.fecha }, businessId);
+  };
   list.innerHTML = `<p class="empty">Cargando…</p>`;
 
-  const { data: lineasPago } = await sb.from('fz_polizas_lineas').select('*').eq('business_id', businessId).eq('cuenta_tipo', 'proveedor').eq('proveedor_factura_id', facturaId);
-  const polizaIds = [...new Set((lineasPago || []).map(l => l.poliza_id))];
-  const { data: polizasInfo } = polizaIds.length ? await sb.from('fz_polizas').select('id,fecha,numero').in('id', polizaIds) : { data: [] };
-  const polizaMap = Object.fromEntries((polizasInfo || []).map(p => [p.id, p]));
-
-  const pagos = (lineasPago || []).map(l => {
-    const p = polizaMap[l.poliza_id];
-    return { fecha: p?.fecha || '', monto: Number(l.cargo) || 0, label: `Póliza #${p?.numero ?? ''}`, origen: p ? { tipo: 'poliza', id: p.id, fecha: p.fecha } : null };
-  });
-  const pagadoPorPolizas = pagos.reduce((s,pg) => s + pg.monto, 0);
-  const pagadoDirecto = (Number(factura.importe_pagado) || 0) - pagadoPorPolizas;
-  if (pagadoDirecto > 0.004) {
-    pagos.push({ fecha: factura.fecha_pago || '', monto: pagadoDirecto, label: `Pago directo — ${factura.pagado_desde || 'Bancos/Efectivo'}`, origen: null });
+  const { data: pagos } = await sb.from('fz_pagos_aplicados').select('*').eq('origen_tabla', origenTabla).eq('origen_id', origenId);
+  if (!pagos || !pagos.length) {
+    // Pago de antes de este rastreo: no tenemos el desglose exacto guardado
+    const idsFacturas = facturaIdsDe(mov);
+    const { data: facturasViejas } = idsFacturas.length ? await sb.from('fz_proveedores').select('*').in('id', idsFacturas) : { data: [] };
+    list.innerHTML = (facturasViejas && facturasViejas.length) ? `
+      <p style="font-size:12px;color:var(--muted);margin-bottom:8px;">Este pago se registró antes de guardar el desglose exacto por factura — se listan las facturas que cubrió, sin el monto exacto de cada una.</p>
+      <table style="width:100%;">
+        <thead><tr><th>Factura</th><th>Fecha</th><th></th></tr></thead>
+        <tbody>${facturasViejas.map(f => `<tr><td>${f.factura||'s/f'} — ${f.proveedor||''}</td><td>${fechaCorta(f.fecha)}</td><td><button class="btn btn-ghost btn-sm pagos-ver-factura" data-id="${f.id}" style="font-size:11px;padding:3px 8px;">Ver factura</button></td></tr>`).join('')}</tbody>
+      </table>` : `<p class="empty" style="padding:10px 0;">No se encontró ninguna factura vinculada a este pago.</p>`;
+  } else {
+    const facturaIds = pagos.map(p => p.factura_id);
+    const { data: facturas } = await sb.from('fz_proveedores').select('*').in('id', facturaIds);
+    const facturaMap = Object.fromEntries((facturas || []).map(f => [f.id, f]));
+    list.innerHTML = `
+      <table style="width:100%;">
+        <thead><tr><th>Factura</th><th>Vencimiento</th><th>Importe original</th><th>Pago aplicado</th></tr></thead>
+        <tbody>${pagos.map(p => {
+          const f = facturaMap[p.factura_id];
+          return `<tr>
+            <td>${f?.factura || 's/f'}${f ? ' — ' + (f.proveedor||'') : ''}</td>
+            <td>${f ? fechaCorta(f.fecha) : ''}</td>
+            <td class="num">${f ? fmt(f.importe) : ''}</td>
+            <td class="num" style="font-weight:600;">${fmt(p.monto)}</td>
+          </tr>`;
+        }).join('')}</tbody>
+        <tfoot><tr class="total-row"><td colspan="3">Total aplicado</td><td class="num">${fmt(pagos.reduce((s,p)=>s+Number(p.monto||0),0))}</td></tr></tfoot>
+      </table>
+    `;
   }
-  pagos.sort((a,b) => a.fecha.localeCompare(b.fecha));
-
-  list.innerHTML = pagos.length ? pagos.map(pg => `
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 4px;border-bottom:1px solid var(--line);font-size:13px;">
-      <div><div>${pg.label}</div><div style="color:var(--muted);font-size:11.5px;">${fechaCorta(pg.fecha)}</div></div>
-      <div style="display:flex;align-items:center;gap:8px;"><strong>${fmt(pg.monto)}</strong>${pg.origen ? `<button class="btn btn-ghost btn-sm pagos-abrir-origen" data-origen='${JSON.stringify(pg.origen).replace(/'/g,'&apos;')}' style="font-size:11px;padding:3px 8px;">Abrir ↗</button>` : ''}</div>
-    </div>`).join('') : `<p class="empty" style="padding:10px 0;">No se encontró el detalle de los pagos.</p>`;
-  list.querySelectorAll('.pagos-abrir-origen').forEach(btn => btn.addEventListener('click', () => {
-    const origen = JSON.parse(btn.dataset.origen.replace(/&apos;/g, "'"));
+  list.querySelectorAll('.pagos-ver-factura').forEach(btn => btn.addEventListener('click', () => {
     document.getElementById('modalPagosFactura').classList.remove('show');
-    abrirOrigenDesdeDetalle(origen, businessId);
+    STATE_provVista = 'facturas';
+    abrirOrigenDesdeDetalle({ tipo: 'proveedor', id: btn.dataset.id }, businessId);
   }));
 }
 document.getElementById('cerrarModalPagosFactura').addEventListener('click', () => {
@@ -3857,7 +3893,7 @@ async function renderProveedorDetalle(el, b) {
               <td>${t.numero}</td>
               <td class="num ${t.monto<0?'red':''}">${t.monto<0?'-':''}${fmt(Math.abs(t.monto))}</td>
               <td class="num" style="font-weight:600;">${fmtNeg(t.saldoAcumulado)}</td>
-              <td><button class="btn btn-ghost btn-sm ${t.origen.tipo==='proveedor'?'ver-factura-btn':'abrir-origen-btn'}" data-origen='${JSON.stringify(t.origen).replace(/'/g,'&apos;')}' style="font-size:11px;padding:3px 8px;">Ver / Editar</button></td>
+              <td><button class="btn btn-ghost btn-sm ${t.origen.tipo==='proveedor'?'ver-factura-btn':(t.origen.tipo==='bancos'||t.origen.tipo==='efectivo'?'ver-desglose-pago-btn':'abrir-origen-btn')}" data-origen='${JSON.stringify(t.origen).replace(/'/g,'&apos;')}' style="font-size:11px;padding:3px 8px;">Ver / Editar</button></td>
             </tr>`).join('') : `<tr><td colspan="6" class="empty">Sin transacciones.</td></tr>`}
           </tbody>
         </table>
@@ -3873,6 +3909,11 @@ async function renderProveedorDetalle(el, b) {
     const origen = JSON.parse(btn.dataset.origen.replace(/&apos;/g, "'"));
     STATE_provVista = 'facturas';
     irASeccion('proveedores').then(() => resaltarFilaPorId(origen.id));
+  }));
+  el.querySelectorAll('.ver-desglose-pago-btn').forEach(btn => btn.addEventListener('click', () => {
+    const origen = JSON.parse(btn.dataset.origen.replace(/&apos;/g, "'"));
+    const tabla = origen.tipo === 'bancos' ? 'fz_bancos_mov' : 'fz_efectivo_mov';
+    verDesglosePago(tabla, origen.id, b.id);
   }));
 }
 
