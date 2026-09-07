@@ -4961,8 +4961,11 @@ async function openPolizaModal(polizaId, businessId) {
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
   ]);
-  const catalogos = { subcuentas, mayores, cuentasBanco: cuentasBancoQ.data || [], monedasEfectivo: monedasQ.data || [] };
   const base = polizaId ? await crearBorradorPolizaExistente(polizaId, businessId) : await crearBorradorPolizaNueva(businessId);
+  const idsYaVinculados = base.lineas.filter(l => l.cuenta_tipo === 'proveedor' && l.proveedor_factura_id).map(l => l.proveedor_factura_id);
+  const { data: facturasData } = await sb.from('fz_proveedores').select('id,proveedor,factura,importe,importe_pagado,estatus').eq('business_id', businessId);
+  const facturasPendientes = (facturasData || []).filter(f => f.estatus === 'Pendiente' || f.estatus === 'Parcial' || idsYaVinculados.includes(f.id));
+  const catalogos = { subcuentas, mayores, cuentasBanco: cuentasBancoQ.data || [], monedasEfectivo: monedasQ.data || [], facturasPendientes };
   STATE_polizaBorrador = { ...base, catalogos };
   STATE_polizaBorrador.original = JSON.stringify({ poliza: STATE_polizaBorrador.poliza, lineas: STATE_polizaBorrador.lineas });
   if (polizaId) {
@@ -5020,6 +5023,7 @@ function polizaCardHtmlBorrador(borrador) {
     const match = catalogoItems.find(it =>
       (l.cuenta_tipo === 'banco' && it.tipo === 'banco' && it.id === l.cuenta_ref_id) ||
       (l.cuenta_tipo === 'efectivo' && it.tipo === 'efectivo' && it.id === l.cuenta_ref_id) ||
+      (l.cuenta_tipo === 'proveedor' && it.tipo === 'proveedor' && it.id === l.proveedor_factura_id) ||
       ((!l.cuenta_tipo || l.cuenta_tipo === 'subcuenta') && it.tipo === 'sub' && it.id === l.subcuenta_id)
     );
     return match ? match.label : '';
@@ -5092,6 +5096,10 @@ function catalogoCuentasUnificado(catalogos) {
   });
   catalogos.cuentasBanco.forEach(c => items.push({ label: `Banco — ${c.nombre}`, tipo: 'banco', id: c.id }));
   catalogos.monedasEfectivo.forEach(m => items.push({ label: `Caja — ${m.nombre}`, tipo: 'efectivo', id: m.id }));
+  (catalogos.facturasPendientes || []).forEach(f => {
+    const saldo = Number(f.importe) - (Number(f.importe_pagado) || 0);
+    items.push({ label: `Pagar: ${f.proveedor} — Factura ${f.factura || 's/f'} (${fmt(saldo)} pendiente)`, tipo: 'proveedor', id: f.id });
+  });
   return items;
 }
 
@@ -5105,12 +5113,17 @@ function wireBorradorPolizaHandlers(wrap) {
     if (!linea) return;
     const catalogoItems = catalogoCuentasUnificado(STATE_polizaBorrador.catalogos);
     const texto = inp.value.trim();
-    if (!texto) { linea.cuenta_tipo = 'subcuenta'; linea.subcuenta_id = null; linea.cuenta_ref_id = null; renderizarBorradorPoliza(); return; }
+    if (!texto) { linea.cuenta_tipo = 'subcuenta'; linea.subcuenta_id = null; linea.cuenta_ref_id = null; linea.proveedor_factura_id = null; renderizarBorradorPoliza(); return; }
     const match = catalogoItems.find(it => it.label === texto);
     if (!match) { toast('No se encontró esa cuenta. Elige una de la lista que aparece al escribir.', 'error'); renderizarBorradorPoliza(); return; }
-    if (match.tipo === 'banco') { linea.cuenta_tipo = 'banco'; linea.cuenta_ref_id = match.id; linea.subcuenta_id = null; }
-    else if (match.tipo === 'efectivo') { linea.cuenta_tipo = 'efectivo'; linea.cuenta_ref_id = match.id; linea.subcuenta_id = null; }
-    else { linea.cuenta_tipo = 'subcuenta'; linea.subcuenta_id = match.id; linea.cuenta_ref_id = null; }
+    if (match.tipo === 'banco') { linea.cuenta_tipo = 'banco'; linea.cuenta_ref_id = match.id; linea.subcuenta_id = null; linea.proveedor_factura_id = null; }
+    else if (match.tipo === 'efectivo') { linea.cuenta_tipo = 'efectivo'; linea.cuenta_ref_id = match.id; linea.subcuenta_id = null; linea.proveedor_factura_id = null; }
+    else if (match.tipo === 'proveedor') {
+      linea.cuenta_tipo = 'proveedor'; linea.proveedor_factura_id = match.id; linea.subcuenta_id = null; linea.cuenta_ref_id = null;
+      const factura = (STATE_polizaBorrador.catalogos.facturasPendientes || []).find(f => f.id === match.id);
+      if (factura && !Number(linea.cargo)) linea.cargo = Number(factura.importe) - (Number(factura.importe_pagado) || 0);
+    }
+    else { linea.cuenta_tipo = 'subcuenta'; linea.subcuenta_id = match.id; linea.cuenta_ref_id = null; linea.proveedor_factura_id = null; }
     renderizarBorradorPoliza();
   }));
   wrap.querySelectorAll('.linea-cell').forEach(inp => inp.addEventListener('change', () => {
@@ -5139,7 +5152,9 @@ function wireBorradorPolizaHandlers(wrap) {
     if (!confirm('¿Estás seguro que deseas eliminar esta póliza? Esta acción no se puede deshacer.')) return;
     const businessId = STATE_polizaBorrador.businessId;
     const p = STATE_polizaBorrador.poliza;
+    const facturasVinculadas = STATE_polizaBorrador.lineas.filter(l => l.cuenta_tipo === 'proveedor' && l.proveedor_factura_id).map(l => l.proveedor_factura_id);
     await sb.from('fz_polizas').delete().eq('id', p.id);
+    for (const facturaId of [...new Set(facturasVinculadas)]) await sincronizarPagoDesdePolizas(businessId, facturaId);
     registrarAuditoria(businessId, 'eliminar', 'Pólizas', `Póliza #${p.numero ?? '—'} (${p.fecha || ''}) — ${p.concepto || 'sin concepto'}`);
     STATE_polizaBorrador = null;
     document.getElementById('modalPoliza').classList.remove('show');
@@ -5175,6 +5190,24 @@ async function refrescarAdjuntoBorrador() {
   renderizarBorradorPoliza();
 }
 
+async function sincronizarPagoDesdePolizas(businessId, facturaId) {
+  const { data: factura } = await sb.from('fz_proveedores').select('*').eq('id', facturaId).single();
+  if (!factura) return;
+  const { data: lineasPago } = await sb.from('fz_polizas_lineas').select('cargo').eq('business_id', businessId).eq('cuenta_tipo', 'proveedor').eq('proveedor_factura_id', facturaId);
+  const pagadoPorPolizas = (lineasPago || []).reduce((s,l) => s + (Number(l.cargo) || 0), 0);
+  if (pagadoPorPolizas > 0.004) {
+    const nuevoEstatus = pagadoPorPolizas >= Number(factura.importe) - 0.01 ? 'Pagado' : 'Parcial';
+    await sb.from('fz_proveedores').update({
+      importe_pagado: pagadoPorPolizas, estatus: nuevoEstatus,
+      fecha_pago: factura.fecha_pago || todayStr(), pagado_desde: 'Póliza de diario',
+      pagado_desde_tipo: null, pagado_desde_cuenta_id: null,
+    }).eq('id', facturaId);
+  } else if (!factura.pagado_desde_tipo && factura.estatus !== 'Pendiente') {
+    // ya no queda ningún pago por pólizas, y tampoco hay un pago manual (banco/efectivo) — regresa a Pendiente
+    await sb.from('fz_proveedores').update({ importe_pagado: 0, estatus: 'Pendiente', fecha_pago: null, pagado_desde: null }).eq('id', facturaId);
+  }
+}
+
 async function guardarBorradorPoliza() {
   const borrador = STATE_polizaBorrador;
   const businessId = borrador.businessId;
@@ -5206,7 +5239,7 @@ async function guardarBorradorPoliza() {
   let huboError = false;
   const idsFinales = []; // ids reales (ya sea existentes o recién creados) que deben permanecer
   for (const l of borrador.lineas) {
-    const payload = { subcuenta_id: l.subcuenta_id || null, cuenta_tipo: l.cuenta_tipo || 'subcuenta', cuenta_ref_id: l.cuenta_ref_id || null, cargo: Number(l.cargo) || 0, abono: Number(l.abono) || 0, descripcion: l.descripcion || null, referencia: l.referencia || null, orden: l.orden || 0 };
+    const payload = { subcuenta_id: l.subcuenta_id || null, cuenta_tipo: l.cuenta_tipo || 'subcuenta', cuenta_ref_id: l.cuenta_ref_id || null, proveedor_factura_id: l.cuenta_tipo === 'proveedor' ? (l.proveedor_factura_id || null) : null, cargo: Number(l.cargo) || 0, abono: Number(l.abono) || 0, descripcion: l.descripcion || null, referencia: l.referencia || null, orden: l.orden || 0 };
     if (String(l.id).startsWith('tmp_')) {
       const { data, error } = await sb.from('fz_polizas_lineas').insert({ business_id: businessId, poliza_id: polizaId, ...payload }).select().single();
       if (error) { toast('Error guardando una línea: ' + error.message, 'error'); huboError = true; }
@@ -5226,6 +5259,12 @@ async function guardarBorradorPoliza() {
       if (error) { toast('Error al quitar líneas eliminadas: ' + error.message, 'error'); return; }
     }
   }
+
+  // Sincronizar el estatus de cualquier factura que haya quedado vinculada (o desvinculada) en esta póliza
+  const facturasOriginal = borrador.esNueva ? [] : JSON.parse(borrador.original).lineas.filter(l => l.cuenta_tipo === 'proveedor' && l.proveedor_factura_id).map(l => l.proveedor_factura_id);
+  const facturasActuales = borrador.lineas.filter(l => l.cuenta_tipo === 'proveedor' && l.proveedor_factura_id).map(l => l.proveedor_factura_id);
+  const facturasASincronizar = [...new Set([...facturasOriginal, ...facturasActuales])];
+  for (const facturaId of facturasASincronizar) await sincronizarPagoDesdePolizas(businessId, facturaId);
 
   registrarAuditoria(businessId, borrador.esNueva ? 'crear' : 'editar', 'Pólizas', `Póliza #${borrador.poliza.numero ?? '—'} (${borrador.poliza.fecha || ''}) — ${borrador.poliza.concepto || 'sin concepto'}`);
   STATE_polizaBorrador = null;
