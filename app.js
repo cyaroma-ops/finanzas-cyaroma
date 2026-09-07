@@ -3492,7 +3492,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
 let STATE_provFiltro = 'Pendiente';
 let STATE_provExpandido = null;
 
-let STATE_provVista = 'facturas'; // 'facturas' | 'directorio' | 'detalle'
+let STATE_provVista = 'directorio'; // 'facturas' | 'directorio' | 'detalle'
 let STATE_provDetalleKey = null;
 
 function claveProveedor(f) {
