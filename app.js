@@ -3780,6 +3780,21 @@ async function renderProveedorDetalle(el, b) {
   const pendiente = totalFacturado - totalPagado;
   const orden = [...facturas].sort((a,b) => b.fecha.localeCompare(a.fecha));
 
+  const idsConPago = facturas.filter(f => Number(f.importe_pagado) > 0).map(f => f.id);
+  const { data: lineasPagoTodas } = idsConPago.length
+    ? await sb.from('fz_polizas_lineas').select('proveedor_factura_id,cargo').eq('business_id', b.id).eq('cuenta_tipo', 'proveedor').in('proveedor_factura_id', idsConPago)
+    : { data: [] };
+  const conteoPagosPorFactura = {};
+  const pagadoPorPolizasPorFactura = {};
+  (lineasPagoTodas || []).forEach(l => {
+    conteoPagosPorFactura[l.proveedor_factura_id] = (conteoPagosPorFactura[l.proveedor_factura_id] || 0) + 1;
+    pagadoPorPolizasPorFactura[l.proveedor_factura_id] = (pagadoPorPolizasPorFactura[l.proveedor_factura_id] || 0) + (Number(l.cargo) || 0);
+  });
+  facturas.forEach(f => {
+    const pagadoDirecto = (Number(f.importe_pagado) || 0) - (pagadoPorPolizasPorFactura[f.id] || 0);
+    if (pagadoDirecto > 0.004) conteoPagosPorFactura[f.id] = (conteoPagosPorFactura[f.id] || 0) + 1;
+  });
+
   el.innerHTML = `
     <button class="btn btn-ghost btn-sm" id="provDetalleVolver" style="margin-bottom:14px;">← Volver al directorio</button>
     <div class="kpi-grid" style="margin-bottom:14px;">
@@ -3795,6 +3810,7 @@ async function renderProveedorDetalle(el, b) {
           <tbody>
             ${orden.length ? orden.map(f => {
               const pend = Number(f.importe) - Number(f.importe_pagado||0);
+              const nPagos = conteoPagosPorFactura[f.id] || 0;
               return `<tr>
                 <td>${fechaCorta(f.fecha)}</td>
                 <td>${f.factura || 's/f'}</td>
@@ -3802,7 +3818,7 @@ async function renderProveedorDetalle(el, b) {
                 <td class="num">${fmt(f.importe_pagado||0)}</td>
                 <td class="num">${fmtNeg(pend)}</td>
                 <td><span class="badge ${f.estatus==='Pagado'?'pag':'pend'}">${f.estatus}</span></td>
-                <td>${Number(f.importe_pagado)>0 ? `<button class="btn btn-ghost btn-sm detalle-ver-pagos" data-id="${f.id}" style="font-size:11px;padding:3px 8px;">Ver pagos</button>` : ''}</td>
+                <td>${nPagos > 0 ? `<button class="btn btn-ghost btn-sm detalle-ver-pagos" data-id="${f.id}" style="font-size:11px;padding:3px 8px;">Ver pagos (${nPagos})</button>` : ''}</td>
               </tr>`;
             }).join('') : `<tr><td colspan="7" class="empty">Sin facturas.</td></tr>`}
           </tbody>
