@@ -3769,69 +3769,55 @@ async function renderDirectorioProveedores(el, b) {
   window.scrollTo(0, scrollY);
 }
 
-let STATE_provDetalleFacturaAbierta = null;
+async function getTransaccionesProveedor(businessId, facturas) {
+  const facturaIds = facturas.map(f => f.id);
+  const transacciones = [];
 
-async function getPagosDeFactura(businessId, factura) {
-  const pagos = [];
+  facturas.forEach(f => {
+    transacciones.push({
+      fecha: f.fecha, tipo: 'Factura', numero: f.factura || 's/f', monto: Number(f.importe) || 0,
+      origen: { tipo: 'proveedor', id: f.id, fecha: f.fecha },
+    });
+  });
 
-  // 1) Pagos aplicados desde Pólizas de Diario
-  const { data: lineasPago } = await sb.from('fz_polizas_lineas').select('*').eq('business_id', businessId).eq('cuenta_tipo', 'proveedor').eq('proveedor_factura_id', factura.id);
+  const { data: lineasPago } = facturaIds.length
+    ? await sb.from('fz_polizas_lineas').select('*').eq('business_id', businessId).eq('cuenta_tipo', 'proveedor').in('proveedor_factura_id', facturaIds)
+    : { data: [] };
   const polizaIds = [...new Set((lineasPago || []).map(l => l.poliza_id))];
   const { data: polizasInfo } = polizaIds.length ? await sb.from('fz_polizas').select('id,fecha,numero').in('id', polizaIds) : { data: [] };
   const polizaMap = Object.fromEntries((polizasInfo || []).map(p => [p.id, p]));
   (lineasPago || []).forEach(l => {
     const p = polizaMap[l.poliza_id];
     if (!p) return;
-    pagos.push({ fecha: p.fecha, monto: Number(l.cargo) || 0, label: `Póliza #${p.numero ?? ''}`, origen: { tipo: 'poliza', id: p.id, fecha: p.fecha } });
+    transacciones.push({
+      fecha: p.fecha, tipo: 'Pago — Póliza de diario', numero: `#${p.numero ?? ''}`, monto: -(Number(l.cargo) || 0),
+      origen: { tipo: 'poliza', id: p.id, fecha: p.fecha },
+    });
   });
 
-  // 2) Pagos directos desde Bancos o Efectivo (cada movimiento por separado, no agrupados)
   const [bmQ, emQ] = await Promise.all([
     sb.from('fz_bancos_mov').select('*').eq('business_id', businessId).eq('tipo_salida', 'proveedor'),
     sb.from('fz_efectivo_mov').select('*').eq('business_id', businessId).eq('tipo_salida', 'proveedor'),
   ]);
-  const movBancos = (bmQ.data || []).filter(m => facturaIdsDe(m).includes(factura.id));
-  const movEfectivo = (emQ.data || []).filter(m => facturaIdsDe(m).includes(factura.id));
-  movBancos.forEach(m => {
-    const compartido = facturaIdsDe(m).length > 1;
-    pagos.push({
-      fecha: m.fecha, monto: Number(m.cargos) || 0,
-      label: `Banco — ${m.descripcion || m.concepto || 'Pago a proveedor'}${compartido ? ' (este pago también cubre otra(s) factura(s))' : ''}`,
+  (bmQ.data || []).forEach(m => {
+    if (!facturaIdsDe(m).some(id => facturaIds.includes(id))) return;
+    transacciones.push({
+      fecha: m.fecha, tipo: 'Pago — Banco', numero: m.concepto || m.descripcion || '—', monto: -(Number(m.cargos) || 0),
       origen: { tipo: 'bancos', id: m.id, cuentaId: m.cuenta_id, fecha: m.fecha },
     });
   });
-  movEfectivo.forEach(m => {
-    const compartido = facturaIdsDe(m).length > 1;
-    pagos.push({
-      fecha: m.fecha, monto: Number(m.cargos) || 0,
-      label: `Efectivo — ${m.descripcion || m.proveedor || 'Pago a proveedor'}${compartido ? ' (este pago también cubre otra(s) factura(s))' : ''}`,
+  (emQ.data || []).forEach(m => {
+    if (!facturaIdsDe(m).some(id => facturaIds.includes(id))) return;
+    transacciones.push({
+      fecha: m.fecha, tipo: 'Pago — Efectivo', numero: m.descripcion || m.proveedor || '—', monto: -(Number(m.cargos) || 0),
       origen: { tipo: 'efectivo', id: m.id, monedaId: m.moneda_id, fecha: m.fecha },
     });
   });
 
-  // Si no se encontró ningún movimiento específico pero sí hay un saldo pagado sin explicar
-  // (datos antiguos de antes de este rastreo), lo mostramos como referencia sin botón de abrir.
-  const explicado = pagos.reduce((s,pg) => s + pg.monto, 0);
-  const sinExplicar = (Number(factura.importe_pagado) || 0) - explicado;
-  if (sinExplicar > 0.004) {
-    pagos.push({ fecha: factura.fecha_pago || '', monto: sinExplicar, label: `Pago registrado antes de este rastreo — ${factura.pagado_desde || 'Bancos/Efectivo'}`, origen: null });
-  }
-
-  return pagos.sort((a,b) => a.fecha.localeCompare(b.fecha));
-}
-function pagosInlineHtml(pagos, colspan) {
-  if (!pagos.length) return `<tr><td colspan="${colspan}" style="padding-left:34px;color:var(--muted);font-size:12px;">Sin pagos registrados.</td></tr>`;
-  return `<tr><td colspan="${colspan}" style="padding:0 0 10px 34px;">
-    <table style="width:100%;">
-      <thead><tr><th>Fecha</th><th>Origen</th><th>Monto</th><th></th></tr></thead>
-      <tbody>${pagos.map(pg => `<tr>
-        <td>${fechaCorta(pg.fecha)}</td>
-        <td>${pg.label}</td>
-        <td class="num">${fmt(pg.monto)}</td>
-        <td>${pg.origen ? `<button class="btn btn-ghost btn-sm abrir-origen-btn" data-origen='${JSON.stringify(pg.origen).replace(/'/g,'&apos;')}' style="font-size:11px;padding:3px 8px;">Abrir ↗</button>` : ''}</td>
-      </tr>`).join('')}</tbody>
-    </table>
-  </td></tr>`;
+  transacciones.sort((a,b) => a.fecha.localeCompare(b.fecha) || (a.tipo==='Factura'?-1:1));
+  let saldo = 0;
+  transacciones.forEach(t => { saldo += t.monto; t.saldoAcumulado = saldo; });
+  return transacciones.reverse(); // más reciente primero, como en QuickBooks
 }
 
 async function renderProveedorDetalle(el, b) {
@@ -3843,41 +3829,7 @@ async function renderProveedorDetalle(el, b) {
   const totalFacturado = facturas.reduce((s,f) => s + (Number(f.importe)||0), 0);
   const totalPagado = facturas.reduce((s,f) => s + (Number(f.importe_pagado)||0), 0);
   const pendiente = totalFacturado - totalPagado;
-  const orden = [...facturas].sort((a,b) => b.fecha.localeCompare(a.fecha));
-
-  const idsConPago = facturas.filter(f => Number(f.importe_pagado) > 0).map(f => f.id);
-  const [lineasPagoQ, bmTodasQ, emTodasQ] = idsConPago.length ? await Promise.all([
-    sb.from('fz_polizas_lineas').select('proveedor_factura_id,cargo').eq('business_id', b.id).eq('cuenta_tipo', 'proveedor').in('proveedor_factura_id', idsConPago),
-    sb.from('fz_bancos_mov').select('*').eq('business_id', b.id).eq('tipo_salida', 'proveedor'),
-    sb.from('fz_efectivo_mov').select('*').eq('business_id', b.id).eq('tipo_salida', 'proveedor'),
-  ]) : [{ data: [] }, { data: [] }, { data: [] }];
-  const conteoPagosPorFactura = {};
-  const pagadoExplicadoPorFactura = {};
-  (lineasPagoQ.data || []).forEach(l => {
-    conteoPagosPorFactura[l.proveedor_factura_id] = (conteoPagosPorFactura[l.proveedor_factura_id] || 0) + 1;
-    pagadoExplicadoPorFactura[l.proveedor_factura_id] = (pagadoExplicadoPorFactura[l.proveedor_factura_id] || 0) + (Number(l.cargo) || 0);
-  });
-  [...(bmTodasQ.data || []), ...(emTodasQ.data || [])].forEach(m => {
-    facturaIdsDe(m).forEach(fid => {
-      if (!idsConPago.includes(fid)) return;
-      conteoPagosPorFactura[fid] = (conteoPagosPorFactura[fid] || 0) + 1;
-      pagadoExplicadoPorFactura[fid] = (pagadoExplicadoPorFactura[fid] || 0) + (Number(m.cargos) || 0);
-    });
-  });
-  facturas.forEach(f => {
-    const sinExplicar = (Number(f.importe_pagado) || 0) - (pagadoExplicadoPorFactura[f.id] || 0);
-    if (sinExplicar > 0.004) conteoPagosPorFactura[f.id] = (conteoPagosPorFactura[f.id] || 0) + 1;
-  });
-
-  // Si hay una factura con el detalle desplegado, traer sus pagos de una vez
-  let pagosAbiertoHtml = '';
-  if (STATE_provDetalleFacturaAbierta) {
-    const facturaAbierta = facturas.find(f => f.id === STATE_provDetalleFacturaAbierta);
-    if (facturaAbierta) {
-      const pagos = await getPagosDeFactura(b.id, facturaAbierta);
-      pagosAbiertoHtml = pagosInlineHtml(pagos, 7);
-    }
-  }
+  const transacciones = await getTransaccionesProveedor(b.id, facturas);
 
   el.innerHTML = `
     <button class="btn btn-ghost btn-sm" id="provDetalleVolver" style="margin-bottom:14px;">← Volver al directorio</button>
@@ -3887,39 +3839,33 @@ async function renderProveedorDetalle(el, b) {
       <div class="kpi"><div class="label">Saldo pendiente</div><div class="value num ${pendiente>0.004?'red':'green'}">${fmt(pendiente)}</div></div>
     </div>
     <div class="card">
-      <div class="card-head"><h3>${nombre}</h3><span class="hint">Clic en una factura con pagos para ver el detalle aquí mismo</span></div>
+      <div class="card-head"><h3>${nombre}</h3><span class="hint">Todas las transacciones, más reciente primero</span></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Fecha</th><th>Factura</th><th>Importe</th><th>Pagado</th><th>Pendiente</th><th>Estatus</th><th></th></tr></thead>
+          <thead><tr><th>Fecha</th><th>Tipo</th><th>Referencia</th><th>Monto</th><th>Saldo</th><th></th></tr></thead>
           <tbody>
-            ${orden.length ? orden.map(f => {
-              const pend = Number(f.importe) - Number(f.importe_pagado||0);
-              const nPagos = conteoPagosPorFactura[f.id] || 0;
-              const abierta = STATE_provDetalleFacturaAbierta === f.id;
-              return `<tr class="${nPagos>0?'factura-pagos-row':''}" data-id="${f.id}" style="${nPagos>0?'cursor:pointer;':''}">
-                <td>${nPagos>0 ? (abierta?'▾':'▸') + ' ' : ''}${fechaCorta(f.fecha)}</td>
-                <td>${f.factura || 's/f'}</td>
-                <td class="num">${fmt(f.importe)}</td>
-                <td class="num">${fmt(f.importe_pagado||0)}</td>
-                <td class="num">${fmtNeg(pend)}</td>
-                <td><span class="badge ${f.estatus==='Pagado'?'pag':'pend'}">${f.estatus}</span></td>
-                <td>${nPagos>0 ? `${nPagos} pago${nPagos>1?'s':''}` : ''}</td>
-              </tr>${abierta ? pagosAbiertoHtml : ''}`;
-            }).join('') : `<tr><td colspan="7" class="empty">Sin facturas.</td></tr>`}
+            ${transacciones.length ? transacciones.map(t => `<tr>
+              <td>${fechaCorta(t.fecha)}</td>
+              <td>${t.tipo}</td>
+              <td>${t.numero}</td>
+              <td class="num ${t.monto<0?'red':''}">${t.monto<0?'-':''}${fmt(Math.abs(t.monto))}</td>
+              <td class="num" style="font-weight:600;">${fmtNeg(t.saldoAcumulado)}</td>
+              <td><button class="btn btn-ghost btn-sm ${t.origen.tipo==='proveedor'?'ver-factura-btn':'abrir-origen-btn'}" data-origen='${JSON.stringify(t.origen).replace(/'/g,'&apos;')}' style="font-size:11px;padding:3px 8px;">Ver / Editar</button></td>
+            </tr>`).join('') : `<tr><td colspan="6" class="empty">Sin transacciones.</td></tr>`}
           </tbody>
         </table>
       </div>
     </div>
   `;
-  document.getElementById('provDetalleVolver').addEventListener('click', () => { STATE_provVista = 'directorio'; STATE_provDetalleFacturaAbierta = null; renderProveedores(); });
-  el.querySelectorAll('.factura-pagos-row').forEach(tr => tr.addEventListener('click', () => {
-    STATE_provDetalleFacturaAbierta = STATE_provDetalleFacturaAbierta === tr.dataset.id ? null : tr.dataset.id;
-    renderProveedores();
-  }));
-  el.querySelectorAll('.abrir-origen-btn').forEach(btn => btn.addEventListener('click', (e) => {
-    e.stopPropagation();
+  document.getElementById('provDetalleVolver').addEventListener('click', () => { STATE_provVista = 'directorio'; renderProveedores(); });
+  el.querySelectorAll('.abrir-origen-btn').forEach(btn => btn.addEventListener('click', () => {
     const origen = JSON.parse(btn.dataset.origen.replace(/&apos;/g, "'"));
     abrirOrigenDesdeDetalle(origen, b.id);
+  }));
+  el.querySelectorAll('.ver-factura-btn').forEach(btn => btn.addEventListener('click', () => {
+    const origen = JSON.parse(btn.dataset.origen.replace(/&apos;/g, "'"));
+    STATE_provVista = 'facturas';
+    irASeccion('proveedores').then(() => resaltarFilaPorId(origen.id));
   }));
 }
 
