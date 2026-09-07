@@ -106,6 +106,7 @@ function cerrarPreviewAdjunto() {
   document.getElementById('adjuntoPreviewOverlay').style.display = 'none';
   document.getElementById('adjuntoPreviewDrawer').style.display = 'none';
   document.getElementById('adjuntoPreviewBody').innerHTML = '';
+  if (STATE_adjuntosModalCtx) document.getElementById('modalAdjuntos').classList.add('show');
 }
 document.getElementById('adjuntoPreviewCerrar').addEventListener('click', cerrarPreviewAdjunto);
 document.getElementById('adjuntoPreviewOverlay').addEventListener('click', cerrarPreviewAdjunto);
@@ -145,7 +146,11 @@ async function renderModalAdjuntosList() {
       <a href="#" class="adjuntos-ver-item" data-path="${a.archivo_path}" title="${a.archivo_nombre}" style="color:var(--navy-1);text-decoration:underline;max-width:270px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${a.archivo_nombre}</a>
       <button class="row-del adjuntos-del-item" data-id="${a.id}" data-path="${a.archivo_path}" style="font-size:14px;flex-shrink:0;">✕</button>
     </div>`).join('') : `<p class="empty" style="padding:6px 0 14px;">Aún no hay archivos adjuntos.</p>`;
-  box.querySelectorAll('.adjuntos-ver-item').forEach(a => a.addEventListener('click', (e) => { e.preventDefault(); verAdjunto(a.dataset.path, a.title); }));
+  box.querySelectorAll('.adjuntos-ver-item').forEach(a => a.addEventListener('click', (e) => {
+    e.preventDefault();
+    document.getElementById('modalAdjuntos').classList.remove('show');
+    verAdjunto(a.dataset.path, a.title);
+  }));
   box.querySelectorAll('.adjuntos-del-item').forEach(btn => btn.addEventListener('click', async () => {
     if (!confirm('¿Quitar este archivo adjunto?')) return;
     await sb.storage.from(ADJUNTOS_BUCKET).remove([btn.dataset.path]);
@@ -172,6 +177,7 @@ document.getElementById('adjuntosModalInput').addEventListener('change', async (
 });
 document.getElementById('cerrarModalAdjuntos').addEventListener('click', () => {
   document.getElementById('modalAdjuntos').classList.remove('show');
+  STATE_adjuntosModalCtx = null;
 });
 
 function biz() {
@@ -4955,7 +4961,7 @@ function polizaCardHtmlBorrador(borrador) {
           <thead><tr><th>Cuenta</th><th>Referencia/Factura</th><th>Descripción</th><th>Cargo</th><th>Abono</th><th></th></tr></thead>
           <tbody>
             ${lineasPoliza.map(l => `<tr>
-              <td><input class="cell linea-cuenta-buscar" list="listaCuentasPoliza" placeholder="Escribe para buscar…" value="${labelDeLinea(l).replace(/"/g,'&quot;')}" data-id="${l.id}" data-field="cuenta"></td>
+              <td><input class="cell linea-cuenta-buscar" list="listaCuentasPoliza" placeholder="Escribe para buscar…" value="${labelDeLinea(l).replace(/"/g,'&quot;')}" title="${labelDeLinea(l).replace(/"/g,'&quot;')}" data-id="${l.id}" data-field="cuenta"></td>
               <td><input class="cell linea-cell" type="text" value="${l.referencia || ''}" data-id="${l.id}" data-field="referencia"></td>
               <td><input class="cell linea-cell" type="text" value="${l.descripcion || ''}" data-id="${l.id}" data-field="descripcion"></td>
               <td><input class="cell linea-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(l.cargo)}" data-id="${l.id}" data-field="cargo"></td>
