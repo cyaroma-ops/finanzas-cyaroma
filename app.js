@@ -3686,8 +3686,10 @@ async function verPagosFactura(facturaId, businessId) {
     const p = polizaMap[l.poliza_id];
     return { fecha: p?.fecha || '', monto: Number(l.cargo) || 0, label: `Póliza #${p?.numero ?? ''}`, origen: p ? { tipo: 'poliza', id: p.id, fecha: p.fecha } : null };
   });
-  if (!pagos.length && factura.pagado_desde_tipo && Number(factura.importe_pagado) > 0) {
-    pagos.push({ fecha: factura.fecha_pago || '', monto: Number(factura.importe_pagado) || 0, label: `Pago directo — ${factura.pagado_desde || ''}`, origen: null });
+  const pagadoPorPolizas = pagos.reduce((s,pg) => s + pg.monto, 0);
+  const pagadoDirecto = (Number(factura.importe_pagado) || 0) - pagadoPorPolizas;
+  if (pagadoDirecto > 0.004) {
+    pagos.push({ fecha: factura.fecha_pago || '', monto: pagadoDirecto, label: `Pago directo — ${factura.pagado_desde || 'Bancos/Efectivo'}`, origen: null });
   }
   pagos.sort((a,b) => a.fecha.localeCompare(b.fecha));
 
@@ -5278,18 +5280,19 @@ async function sincronizarPagoDesdePolizas(businessId, facturaId) {
   const { data: factura } = await sb.from('fz_proveedores').select('*').eq('id', facturaId).single();
   if (!factura) return;
   const { data: lineasPago } = await sb.from('fz_polizas_lineas').select('cargo').eq('business_id', businessId).eq('cuenta_tipo', 'proveedor').eq('proveedor_factura_id', facturaId);
-  const pagadoPorPolizas = (lineasPago || []).reduce((s,l) => s + (Number(l.cargo) || 0), 0);
-  if (pagadoPorPolizas > 0.004) {
-    const nuevoEstatus = pagadoPorPolizas >= Number(factura.importe) - 0.01 ? 'Pagado' : 'Parcial';
-    await sb.from('fz_proveedores').update({
-      importe_pagado: pagadoPorPolizas, estatus: nuevoEstatus,
-      fecha_pago: factura.fecha_pago || todayStr(), pagado_desde: 'Póliza de diario',
-      pagado_desde_tipo: null, pagado_desde_cuenta_id: null,
-    }).eq('id', facturaId);
-  } else if (!factura.pagado_desde_tipo && factura.estatus !== 'Pendiente') {
-    // ya no queda ningún pago por pólizas, y tampoco hay un pago manual (banco/efectivo) — regresa a Pendiente
-    await sb.from('fz_proveedores').update({ importe_pagado: 0, estatus: 'Pendiente', fecha_pago: null, pagado_desde: null }).eq('id', facturaId);
-  }
+  const pagadoPorPolizasAhora = (lineasPago || []).reduce((s,l) => s + (Number(l.cargo) || 0), 0);
+  const pagadoPorPolizasAntes = Number(factura.importe_pagado_polizas) || 0;
+  const delta = pagadoPorPolizasAhora - pagadoPorPolizasAntes;
+  if (Math.abs(delta) < 0.004) return; // nada cambió, no tocar lo que ya había (evita pisar pagos de Bancos/Efectivo)
+
+  const nuevoImportePagado = Math.max(0, (Number(factura.importe_pagado) || 0) + delta);
+  const nuevoEstatus = nuevoImportePagado >= Number(factura.importe) - 0.01 ? 'Pagado'
+    : nuevoImportePagado > 0.004 ? 'Parcial'
+    : 'Pendiente';
+  const payload = { importe_pagado: nuevoImportePagado, importe_pagado_polizas: pagadoPorPolizasAhora, estatus: nuevoEstatus };
+  if (nuevoEstatus === 'Pendiente') { payload.fecha_pago = null; }
+  else if (!factura.fecha_pago) { payload.fecha_pago = todayStr(); }
+  await sb.from('fz_proveedores').update(payload).eq('id', facturaId);
 }
 
 async function guardarBorradorPoliza() {
