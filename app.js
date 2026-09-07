@@ -1761,6 +1761,7 @@ async function renderCatalogoCuentas() {
       ` : `
         <span style="flex:1;min-width:0;">${s.nombre}</span>
         <button class="btn btn-ghost btn-sm cc-sub-editar" data-id="${s.id}">Editar</button>
+        ${nivel===0 ? `<button class="btn btn-ghost btn-sm cc-sub-promover" data-id="${s.id}" data-mayor="${s.cuenta_mayor_id}" title="Convierte esta subcuenta en su propia cuenta mayor, con todo y lo que tenga adentro">Promover a cuenta mayor</button>` : ''}
       `}
       <button class="row-del cc-sub-del" data-id="${s.id}" style="font-size:14px;">Eliminar</button>
     </div>
@@ -1851,6 +1852,23 @@ async function renderCatalogoCuentas() {
   }));
   el.querySelectorAll('.cc-sub-editar').forEach(btn => btn.addEventListener('click', () => {
     STATE_ccEditando.add(btn.dataset.id);
+    renderCatalogoCuentas();
+  }));
+  el.querySelectorAll('.cc-sub-promover').forEach(btn => btn.addEventListener('click', async () => {
+    const sub = subcuentas.find(s => s.id === btn.dataset.id);
+    if (!sub) return;
+    const mayorActual = mayores.find(m => m.id === btn.dataset.mayor);
+    const nombre = prompt('¿Cómo se llamará la nueva cuenta mayor?', sub.nombre);
+    if (!nombre || !nombre.trim()) return;
+    if (!confirm(`Se creará la cuenta mayor "${nombre.trim()}" (tipo ${TIPO_CUENTA_LABEL[mayorActual?.tipo]||''}), y "${sub.nombre}" junto con todo lo que tenga adentro se moverá ahí. No se borra ni se pierde ninguna transacción ya capturada. ¿Continuar?`)) return;
+    const { data: nuevaMayor, error } = await sb.from('fz_cuentas_mayor').insert({ business_id: b.id, nombre: nombre.trim(), tipo: mayorActual?.tipo || 'costo', orden: mayores.filter(m=>m.tipo===(mayorActual?.tipo||'costo')).length }).select().single();
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    const idsAMover = [sub.id, ...subcuentaIdsDescendientes(sub.id, subcuentas)];
+    const { error: e2 } = await sb.from('fz_subcuentas').update({ cuenta_mayor_id: nuevaMayor.id }).in('id', idsAMover);
+    if (e2) { toast('Error moviendo la subcuenta: ' + e2.message, 'error'); return; }
+    await sb.from('fz_subcuentas').update({ subcuenta_padre_id: null }).eq('id', sub.id);
+    registrarAuditoria(b.id, 'editar', 'Catálogo de Cuentas', `"${sub.nombre}" promovida a cuenta mayor independiente`);
+    toast(`"${nombre.trim()}" ya es su propia cuenta mayor. Ahora puedes vincularla a una categoría de venta si aplica.`);
     renderCatalogoCuentas();
   }));
   el.querySelectorAll('.cc-mayor-save').forEach(btn => btn.addEventListener('click', async () => {
