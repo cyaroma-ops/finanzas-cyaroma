@@ -3772,19 +3772,51 @@ async function renderDirectorioProveedores(el, b) {
 let STATE_provDetalleFacturaAbierta = null;
 
 async function getPagosDeFactura(businessId, factura) {
+  const pagos = [];
+
+  // 1) Pagos aplicados desde Pólizas de Diario
   const { data: lineasPago } = await sb.from('fz_polizas_lineas').select('*').eq('business_id', businessId).eq('cuenta_tipo', 'proveedor').eq('proveedor_factura_id', factura.id);
   const polizaIds = [...new Set((lineasPago || []).map(l => l.poliza_id))];
   const { data: polizasInfo } = polizaIds.length ? await sb.from('fz_polizas').select('id,fecha,numero').in('id', polizaIds) : { data: [] };
   const polizaMap = Object.fromEntries((polizasInfo || []).map(p => [p.id, p]));
-  const pagos = (lineasPago || []).map(l => {
+  (lineasPago || []).forEach(l => {
     const p = polizaMap[l.poliza_id];
-    return { fecha: p?.fecha || '', monto: Number(l.cargo) || 0, label: `Póliza #${p?.numero ?? ''}`, origen: p ? { tipo: 'poliza', id: p.id, fecha: p.fecha } : null };
+    if (!p) return;
+    pagos.push({ fecha: p.fecha, monto: Number(l.cargo) || 0, label: `Póliza #${p.numero ?? ''}`, origen: { tipo: 'poliza', id: p.id, fecha: p.fecha } });
   });
-  const pagadoPorPolizas = pagos.reduce((s,pg) => s + pg.monto, 0);
-  const pagadoDirecto = (Number(factura.importe_pagado) || 0) - pagadoPorPolizas;
-  if (pagadoDirecto > 0.004) {
-    pagos.push({ fecha: factura.fecha_pago || '', monto: pagadoDirecto, label: `Pago directo — ${factura.pagado_desde || 'Bancos/Efectivo'}`, origen: null });
+
+  // 2) Pagos directos desde Bancos o Efectivo (cada movimiento por separado, no agrupados)
+  const [bmQ, emQ] = await Promise.all([
+    sb.from('fz_bancos_mov').select('*').eq('business_id', businessId).eq('tipo_salida', 'proveedor'),
+    sb.from('fz_efectivo_mov').select('*').eq('business_id', businessId).eq('tipo_salida', 'proveedor'),
+  ]);
+  const movBancos = (bmQ.data || []).filter(m => facturaIdsDe(m).includes(factura.id));
+  const movEfectivo = (emQ.data || []).filter(m => facturaIdsDe(m).includes(factura.id));
+  movBancos.forEach(m => {
+    const compartido = facturaIdsDe(m).length > 1;
+    pagos.push({
+      fecha: m.fecha, monto: Number(m.cargos) || 0,
+      label: `Banco — ${m.descripcion || m.concepto || 'Pago a proveedor'}${compartido ? ' (este pago también cubre otra(s) factura(s))' : ''}`,
+      origen: { tipo: 'bancos', id: m.id, cuentaId: m.cuenta_id, fecha: m.fecha },
+    });
+  });
+  movEfectivo.forEach(m => {
+    const compartido = facturaIdsDe(m).length > 1;
+    pagos.push({
+      fecha: m.fecha, monto: Number(m.cargos) || 0,
+      label: `Efectivo — ${m.descripcion || m.proveedor || 'Pago a proveedor'}${compartido ? ' (este pago también cubre otra(s) factura(s))' : ''}`,
+      origen: { tipo: 'efectivo', id: m.id, monedaId: m.moneda_id, fecha: m.fecha },
+    });
+  });
+
+  // Si no se encontró ningún movimiento específico pero sí hay un saldo pagado sin explicar
+  // (datos antiguos de antes de este rastreo), lo mostramos como referencia sin botón de abrir.
+  const explicado = pagos.reduce((s,pg) => s + pg.monto, 0);
+  const sinExplicar = (Number(factura.importe_pagado) || 0) - explicado;
+  if (sinExplicar > 0.004) {
+    pagos.push({ fecha: factura.fecha_pago || '', monto: sinExplicar, label: `Pago registrado antes de este rastreo — ${factura.pagado_desde || 'Bancos/Efectivo'}`, origen: null });
   }
+
   return pagos.sort((a,b) => a.fecha.localeCompare(b.fecha));
 }
 function pagosInlineHtml(pagos, colspan) {
@@ -3814,18 +3846,27 @@ async function renderProveedorDetalle(el, b) {
   const orden = [...facturas].sort((a,b) => b.fecha.localeCompare(a.fecha));
 
   const idsConPago = facturas.filter(f => Number(f.importe_pagado) > 0).map(f => f.id);
-  const { data: lineasPagoTodas } = idsConPago.length
-    ? await sb.from('fz_polizas_lineas').select('proveedor_factura_id,cargo').eq('business_id', b.id).eq('cuenta_tipo', 'proveedor').in('proveedor_factura_id', idsConPago)
-    : { data: [] };
+  const [lineasPagoQ, bmTodasQ, emTodasQ] = idsConPago.length ? await Promise.all([
+    sb.from('fz_polizas_lineas').select('proveedor_factura_id,cargo').eq('business_id', b.id).eq('cuenta_tipo', 'proveedor').in('proveedor_factura_id', idsConPago),
+    sb.from('fz_bancos_mov').select('*').eq('business_id', b.id).eq('tipo_salida', 'proveedor'),
+    sb.from('fz_efectivo_mov').select('*').eq('business_id', b.id).eq('tipo_salida', 'proveedor'),
+  ]) : [{ data: [] }, { data: [] }, { data: [] }];
   const conteoPagosPorFactura = {};
-  const pagadoPorPolizasPorFactura = {};
-  (lineasPagoTodas || []).forEach(l => {
+  const pagadoExplicadoPorFactura = {};
+  (lineasPagoQ.data || []).forEach(l => {
     conteoPagosPorFactura[l.proveedor_factura_id] = (conteoPagosPorFactura[l.proveedor_factura_id] || 0) + 1;
-    pagadoPorPolizasPorFactura[l.proveedor_factura_id] = (pagadoPorPolizasPorFactura[l.proveedor_factura_id] || 0) + (Number(l.cargo) || 0);
+    pagadoExplicadoPorFactura[l.proveedor_factura_id] = (pagadoExplicadoPorFactura[l.proveedor_factura_id] || 0) + (Number(l.cargo) || 0);
+  });
+  [...(bmTodasQ.data || []), ...(emTodasQ.data || [])].forEach(m => {
+    facturaIdsDe(m).forEach(fid => {
+      if (!idsConPago.includes(fid)) return;
+      conteoPagosPorFactura[fid] = (conteoPagosPorFactura[fid] || 0) + 1;
+      pagadoExplicadoPorFactura[fid] = (pagadoExplicadoPorFactura[fid] || 0) + (Number(m.cargos) || 0);
+    });
   });
   facturas.forEach(f => {
-    const pagadoDirecto = (Number(f.importe_pagado) || 0) - (pagadoPorPolizasPorFactura[f.id] || 0);
-    if (pagadoDirecto > 0.004) conteoPagosPorFactura[f.id] = (conteoPagosPorFactura[f.id] || 0) + 1;
+    const sinExplicar = (Number(f.importe_pagado) || 0) - (pagadoExplicadoPorFactura[f.id] || 0);
+    if (sinExplicar > 0.004) conteoPagosPorFactura[f.id] = (conteoPagosPorFactura[f.id] || 0) + 1;
   });
 
   // Si hay una factura con el detalle desplegado, traer sus pagos de una vez
