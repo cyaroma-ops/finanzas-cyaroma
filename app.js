@@ -3492,10 +3492,32 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
 let STATE_provFiltro = 'Pendiente';
 let STATE_provExpandido = null;
 
+let STATE_provVista = 'facturas'; // 'facturas' | 'directorio' | 'detalle'
+let STATE_provDetalleKey = null;
+
+function claveProveedor(f) {
+  return f.proveedor_id ? `id:${f.proveedor_id}` : `name:${f.proveedor || '(sin proveedor)'}`;
+}
+
+function provTabsHtml() {
+  return `<div class="tag-row" style="margin-bottom:14px;">
+    <div class="tag ${STATE_provVista==='facturas'?'active':''}" id="provTabFacturas">Facturas</div>
+    <div class="tag ${STATE_provVista==='directorio'||STATE_provVista==='detalle'?'active':''}" id="provTabDirectorio">Directorio de proveedores</div>
+  </div>`;
+}
+function wireProvTabs(el) {
+  document.getElementById('provTabFacturas').addEventListener('click', () => { STATE_provVista = 'facturas'; renderProveedores(); });
+  document.getElementById('provTabDirectorio').addEventListener('click', () => { STATE_provVista = 'directorio'; renderProveedores(); });
+}
+
 async function renderProveedores() {
   const el = document.getElementById('sec-proveedores');
   const b = biz();
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
+
+  if (STATE_provVista === 'directorio') { await renderDirectorioProveedores(el, b); return; }
+  if (STATE_provVista === 'detalle') { await renderProveedorDetalle(el, b); return; }
+
   const scrollY = window.scrollY;
   const [provQ, catalogo, cuentasBancoQ, monedasQ] = await Promise.all([
     sb.from('fz_proveedores').select('*').eq('business_id', b.id).order('fecha', { ascending: false }),
@@ -3527,6 +3549,7 @@ async function renderProveedores() {
   })).sort((a,b) => b.total - a.total);
 
   el.innerHTML = `
+    ${provTabsHtml()}
     <div class="kpi-grid">
       <div class="kpi"><div class="label">Total pendiente</div><div class="value num red">${fmt(pendiente)}</div></div>
       <div class="kpi"><div class="label">Total pagado (histórico)</div><div class="value num green">${fmt(pagado)}</div></div>
@@ -3572,9 +3595,9 @@ async function renderProveedores() {
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Importe</th><th>Desglose</th><th>Estatus</th><th>Fecha pago</th><th>Pagado desde</th><th>Adjunto</th><th>Acciones</th><th></th></tr></thead>
+          <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Importe</th><th>Desglose</th><th>Estatus</th><th>Fecha pago</th><th>Pagado desde</th><th>Adjunto</th><th></th></tr></thead>
           <tbody>
-            ${rows.map(p => provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntosProv[p.id], all)).join('') || `<tr><td colspan="10" class="empty">Sin registros.</td></tr>`}
+            ${rows.map(p => provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntosProv[p.id], all)).join('') || `<tr><td colspan="9" class="empty">Sin registros.</td></tr>`}
           </tbody>
         </table>
       </div>
@@ -3660,11 +3683,7 @@ async function renderProveedores() {
   }));
   el.querySelectorAll('.prov-desglosar').forEach(btn => btn.addEventListener('click', () => openDesgloseModal(b.id, btn.dataset.id, renderProveedores)));
   wireAdjuntosHandlers(el, 'fz_proveedores', b.id, renderProveedores);
-  el.querySelectorAll('.prov-ver-pagos').forEach(btn => btn.addEventListener('click', () => verPagosFactura(btn.dataset.id, b.id)));
-  el.querySelectorAll('.prov-ver-cuenta').forEach(btn => btn.addEventListener('click', () => {
-    const factura = all.find(f => f.id === btn.dataset.id);
-    if (factura) verCuentaProveedor(factura, all, b.id);
-  }));
+  wireProvTabs(el);
   window.scrollTo(0, scrollY);
 }
 
@@ -3708,42 +3727,92 @@ document.getElementById('cerrarModalPagosFactura').addEventListener('click', () 
   document.getElementById('modalPagosFactura').classList.remove('show');
 });
 
-function verCuentaProveedor(factura, todasFacturas, businessId) {
-  const facturasProveedor = factura.proveedor_id
-    ? todasFacturas.filter(f => f.proveedor_id === factura.proveedor_id)
-    : todasFacturas.filter(f => f.proveedor === factura.proveedor);
-  const totalFacturado = facturasProveedor.reduce((s,f) => s + (Number(f.importe)||0), 0);
-  const totalPagado = facturasProveedor.reduce((s,f) => s + (Number(f.importe_pagado)||0), 0);
-  const saldoPendiente = totalFacturado - totalPagado;
+async function renderDirectorioProveedores(el, b) {
+  const scrollY = window.scrollY;
+  const { data: all } = await sb.from('fz_proveedores').select('*').eq('business_id', b.id);
+  const grupos = {};
+  (all || []).forEach(f => {
+    const key = claveProveedor(f);
+    if (!grupos[key]) grupos[key] = { key, nombre: f.proveedor || '(sin proveedor)', facturado: 0, pagado: 0, cantidad: 0 };
+    grupos[key].facturado += Number(f.importe) || 0;
+    grupos[key].pagado += Number(f.importe_pagado) || 0;
+    grupos[key].cantidad += 1;
+  });
+  const lista = Object.values(grupos).map(g => ({ ...g, pendiente: g.facturado - g.pagado })).sort((a,b) => b.pendiente - a.pendiente);
 
-  document.getElementById('cuentaProveedorTitulo').textContent = `Cuenta de ${factura.proveedor || '(sin proveedor)'}`;
-  document.getElementById('cuentaProveedorResumen').innerHTML = `
-    <div class="kpi"><div class="label">Total facturado</div><div class="value num">${fmt(totalFacturado)}</div></div>
-    <div class="kpi"><div class="label">Total pagado</div><div class="value num green">${fmt(totalPagado)}</div></div>
-    <div class="kpi"><div class="label">Saldo pendiente</div><div class="value num ${saldoPendiente>0.004?'red':'green'}">${fmt(saldoPendiente)}</div></div>
+  el.innerHTML = `
+    ${provTabsHtml()}
+    <div class="card">
+      <div class="card-head"><h3>Directorio de proveedores</h3><span class="hint">Clic en un proveedor para ver todo su historial</span></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Proveedor</th><th>No. facturas</th><th>Total facturado</th><th>Total pagado</th><th>Saldo pendiente</th></tr></thead>
+          <tbody>
+            ${lista.length ? lista.map(g => `<tr class="prov-dir-row" data-key="${g.key}" style="cursor:pointer;">
+              <td>${g.nombre}</td>
+              <td>${g.cantidad}</td>
+              <td class="num">${fmt(g.facturado)}</td>
+              <td class="num">${fmt(g.pagado)}</td>
+              <td class="num" style="font-weight:700;">${fmtSigno(-g.pendiente)}</td>
+            </tr>`).join('') : `<tr><td colspan="5" class="empty">Aún no hay proveedores registrados.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
   `;
-  const orden = [...facturasProveedor].sort((a,b) => b.fecha.localeCompare(a.fecha));
-  document.getElementById('cuentaProveedorList').innerHTML = orden.map(f => {
-    const pendiente = Number(f.importe) - Number(f.importe_pagado||0);
-    return `<tr>
-      <td>${fechaCorta(f.fecha)}</td>
-      <td>${f.factura || 's/f'}</td>
-      <td class="num">${fmt(f.importe)}</td>
-      <td class="num">${fmt(f.importe_pagado||0)}</td>
-      <td class="num">${fmtNeg(pendiente)}</td>
-      <td><span class="badge ${f.estatus==='Pagado'?'pag':'pend'}">${f.estatus}</span></td>
-      <td>${Number(f.importe_pagado)>0 ? `<button class="btn btn-ghost btn-sm cuentaprov-ver-pagos" data-id="${f.id}" style="font-size:11px;padding:3px 8px;">Ver pagos</button>` : ''}</td>
-    </tr>`;
-  }).join('') || `<tr><td colspan="7" class="empty">Sin facturas.</td></tr>`;
-  document.querySelectorAll('.cuentaprov-ver-pagos').forEach(btn => btn.addEventListener('click', () => {
-    document.getElementById('modalCuentaProveedor').classList.remove('show');
-    verPagosFactura(btn.dataset.id, businessId);
+  wireProvTabs(el);
+  el.querySelectorAll('.prov-dir-row').forEach(tr => tr.addEventListener('click', () => {
+    STATE_provDetalleKey = tr.dataset.key;
+    STATE_provVista = 'detalle';
+    renderProveedores();
   }));
-  document.getElementById('modalCuentaProveedor').classList.add('show');
+  window.scrollTo(0, scrollY);
 }
-document.getElementById('cerrarModalCuentaProveedor').addEventListener('click', () => {
-  document.getElementById('modalCuentaProveedor').classList.remove('show');
-});
+
+async function renderProveedorDetalle(el, b) {
+  const key = STATE_provDetalleKey;
+  if (!key) { STATE_provVista = 'directorio'; return renderProveedores(); }
+  const { data: all } = await sb.from('fz_proveedores').select('*').eq('business_id', b.id);
+  const facturas = (all || []).filter(f => claveProveedor(f) === key);
+  const nombre = facturas[0]?.proveedor || '(sin proveedor)';
+  const totalFacturado = facturas.reduce((s,f) => s + (Number(f.importe)||0), 0);
+  const totalPagado = facturas.reduce((s,f) => s + (Number(f.importe_pagado)||0), 0);
+  const pendiente = totalFacturado - totalPagado;
+  const orden = [...facturas].sort((a,b) => b.fecha.localeCompare(a.fecha));
+
+  el.innerHTML = `
+    <button class="btn btn-ghost btn-sm" id="provDetalleVolver" style="margin-bottom:14px;">← Volver al directorio</button>
+    <div class="kpi-grid" style="margin-bottom:14px;">
+      <div class="kpi"><div class="label">Total facturado</div><div class="value num">${fmt(totalFacturado)}</div></div>
+      <div class="kpi"><div class="label">Total pagado</div><div class="value num green">${fmt(totalPagado)}</div></div>
+      <div class="kpi"><div class="label">Saldo pendiente</div><div class="value num ${pendiente>0.004?'red':'green'}">${fmt(pendiente)}</div></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>${nombre}</h3></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Fecha</th><th>Factura</th><th>Importe</th><th>Pagado</th><th>Pendiente</th><th>Estatus</th><th></th></tr></thead>
+          <tbody>
+            ${orden.length ? orden.map(f => {
+              const pend = Number(f.importe) - Number(f.importe_pagado||0);
+              return `<tr>
+                <td>${fechaCorta(f.fecha)}</td>
+                <td>${f.factura || 's/f'}</td>
+                <td class="num">${fmt(f.importe)}</td>
+                <td class="num">${fmt(f.importe_pagado||0)}</td>
+                <td class="num">${fmtNeg(pend)}</td>
+                <td><span class="badge ${f.estatus==='Pagado'?'pag':'pend'}">${f.estatus}</span></td>
+                <td>${Number(f.importe_pagado)>0 ? `<button class="btn btn-ghost btn-sm detalle-ver-pagos" data-id="${f.id}" style="font-size:11px;padding:3px 8px;">Ver pagos</button>` : ''}</td>
+              </tr>`;
+            }).join('') : `<tr><td colspan="7" class="empty">Sin facturas.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  document.getElementById('provDetalleVolver').addEventListener('click', () => { STATE_provVista = 'directorio'; renderProveedores(); });
+  el.querySelectorAll('.detalle-ver-pagos').forEach(btn => btn.addEventListener('click', () => verPagosFactura(btn.dataset.id, b.id)));
+}
 
 async function syncPagoProveedor(businessId, facturaId) {
   const { data: factura, error: eFactura } = await sb.from('fz_proveedores').select('*').eq('id', facturaId).single();
@@ -3814,10 +3883,6 @@ function provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntos, todasFactur
       ${opcionesPagoDesde.map(o => `<option value="${o.value}" ${(p.pagado_desde_tipo && (p.pagado_desde_tipo+':'+p.pagado_desde_cuenta_id)===o.value)?'selected':''}>${o.label}</option>`).join('')}
     </select></td>
     <td>${adjuntosCellHtml(conteoAdjuntos, p.id)}</td>
-    <td style="white-space:nowrap;">
-      ${p.proveedor ? `<button class="btn btn-ghost btn-sm prov-ver-cuenta" data-id="${p.id}" style="font-size:11px;padding:4px 8px;display:block;width:100%;margin-bottom:4px;">Cuenta del proveedor</button>` : ''}
-      ${Number(p.importe_pagado) > 0 ? `<button class="btn btn-ghost btn-sm prov-ver-pagos" data-id="${p.id}" style="font-size:11px;padding:4px 8px;display:block;width:100%;">Pagos aplicados</button>` : ''}
-    </td>
     <td><button class="row-del prov-del" data-id="${p.id}">✕</button></td>
   </tr>`;
 }
