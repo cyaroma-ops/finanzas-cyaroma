@@ -698,21 +698,21 @@ function conceptosParaMoneda(moneda, conceptosEfectivo) {
   return conceptosEfectivo.filter(c => !c.moneda_id && c.nombre.trim().toLowerCase() === moneda.nombre.trim().toLowerCase());
 }
 
-async function computeMonedaSaldo(businessId, moneda, conceptosEfectivo) {
+async function computeMonedaSaldo(businessId, moneda, conceptosEfectivo, hastaFecha) {
   const concepts = conceptosParaMoneda(moneda, conceptosEfectivo);
   const [ventasQ, movsQ, polizaLineas] = await Promise.all([
-    concepts.length ? sb.from('fz_ventas').select('recon_data').eq('business_id', businessId) : Promise.resolve({ data: [] }),
-    sb.from('fz_efectivo_mov').select('depositos,cargos').eq('moneda_id', moneda.id),
-    getPolizaLineasParaCuenta(businessId, 'efectivo', moneda.id),
+    concepts.length ? sb.from('fz_ventas').select('recon_data,fecha').eq('business_id', businessId) : Promise.resolve({ data: [] }),
+    sb.from('fz_efectivo_mov').select('depositos,cargos,fecha').eq('moneda_id', moneda.id),
+    getPolizaLineasParaCuenta(businessId, 'efectivo', moneda.id, hastaFecha),
   ]);
   let autoDepositos = 0;
-  (ventasQ.data || []).forEach(v => {
+  (ventasQ.data || []).filter(v => !hastaFecha || v.fecha <= hastaFecha).forEach(v => {
     concepts.forEach(concepto => {
       const entry = (v.recon_data || {})[concepto.id];
       if (entry) autoDepositos += Number(entry.monto) || 0; // valor en la moneda tal cual, sin convertir
     });
   });
-  const manualNet = (movsQ.data || []).reduce((s, m) => s + (Number(m.depositos) || 0) - (Number(m.cargos) || 0), 0);
+  const manualNet = (movsQ.data || []).filter(m => !hastaFecha || m.fecha <= hastaFecha).reduce((s, m) => s + (Number(m.depositos) || 0) - (Number(m.cargos) || 0), 0);
   const polizaNet = polizaLineas.reduce((s, l) => s + (Number(l.cargo) || 0) - (Number(l.abono) || 0), 0);
   return (Number(moneda.saldo_inicial) || 0) + autoDepositos + manualNet + polizaNet;
 }
@@ -721,21 +721,21 @@ async function computeMonedaSaldo(businessId, moneda, conceptosEfectivo) {
 function conceptosParaBanco(cuenta, conceptosTarjetas) {
   return conceptosTarjetas.filter(c => c.banco_cuenta_id === cuenta.id);
 }
-async function computeBancoSaldo(businessId, cuenta, conceptosTarjetas) {
+async function computeBancoSaldo(businessId, cuenta, conceptosTarjetas, hastaFecha) {
   const concepts = conceptosParaBanco(cuenta, conceptosTarjetas);
   const [ventasQ, movsQ, polizaLineas] = await Promise.all([
-    concepts.length ? sb.from('fz_ventas').select('recon_data').eq('business_id', businessId) : Promise.resolve({ data: [] }),
-    sb.from('fz_bancos_mov').select('depositos,cargos').eq('cuenta_id', cuenta.id),
-    getPolizaLineasParaCuenta(businessId, 'banco', cuenta.id),
+    concepts.length ? sb.from('fz_ventas').select('recon_data,fecha').eq('business_id', businessId) : Promise.resolve({ data: [] }),
+    sb.from('fz_bancos_mov').select('depositos,cargos,fecha').eq('cuenta_id', cuenta.id),
+    getPolizaLineasParaCuenta(businessId, 'banco', cuenta.id, hastaFecha),
   ]);
   let autoDepositos = 0;
-  (ventasQ.data || []).forEach(v => {
+  (ventasQ.data || []).filter(v => !hastaFecha || v.fecha <= hastaFecha).forEach(v => {
     concepts.forEach(concepto => {
       const entry = (v.recon_data || {})[concepto.id];
       if (entry) autoDepositos += Number(entry.monto) || 0;
     });
   });
-  const manualNet = (movsQ.data || []).reduce((s, m) => s + (Number(m.depositos) || 0) - (Number(m.cargos) || 0), 0);
+  const manualNet = (movsQ.data || []).filter(m => !hastaFecha || m.fecha <= hastaFecha).reduce((s, m) => s + (Number(m.depositos) || 0) - (Number(m.cargos) || 0), 0);
   const polizaNet = polizaLineas.reduce((s, l) => s + (Number(l.cargo) || 0) - (Number(l.abono) || 0), 0);
   return (Number(cuenta.saldo_inicial) || 0) + autoDepositos + manualNet + polizaNet;
 }
@@ -3763,13 +3763,13 @@ async function getPolizasLineasPeriodo(businessId, periodo) {
   return lineas || [];
 }
 
-async function getPolizaLineasParaCuenta(businessId, tipo, refId) {
+async function getPolizaLineasParaCuenta(businessId, tipo, refId, hastaFecha) {
   const { data: lineas } = await sb.from('fz_polizas_lineas').select('*').eq('business_id', businessId).eq('cuenta_tipo', tipo).eq('cuenta_ref_id', refId);
   if (!lineas || !lineas.length) return [];
   const polizaIds = [...new Set(lineas.map(l => l.poliza_id))];
   const { data: polizas } = await sb.from('fz_polizas').select('id,fecha,concepto,numero').in('id', polizaIds);
   const polizaMap = Object.fromEntries((polizas || []).map(p => [p.id, p]));
-  return lineas.map(l => ({ ...l, poliza: polizaMap[l.poliza_id] })).filter(l => l.poliza);
+  return lineas.map(l => ({ ...l, poliza: polizaMap[l.poliza_id] })).filter(l => l.poliza && (!hastaFecha || l.poliza.fecha <= hastaFecha));
 }
 
 function construirArbolSubcuenta(subcuentaId, subcuentas, porSubcuenta) {
@@ -3786,14 +3786,21 @@ function aplanarArbol(nodo) {
 /* ============================================================
    BALANCE GENERAL — Activo = Pasivo + Capital
    ============================================================ */
-async function computeSaldoCuentaMayorPolizas(businessId, cuentaMayorId, subcuentas, signoNormal) {
+async function computeSaldoCuentaMayorPolizas(businessId, cuentaMayorId, subcuentas, signoNormal, hastaFecha) {
   // signoNormal 'debe' (Activo): Cargo aumenta, Abono disminuye.
   // signoNormal 'haber' (Pasivo/Capital): Abono aumenta, Cargo disminuye.
   const subs = subcuentas.filter(s => s.cuenta_mayor_id === cuentaMayorId);
   if (!subs.length) return { subs: [], total: 0 };
-  const { data: lineas } = await sb.from('fz_polizas_lineas').select('cargo,abono,subcuenta_id').eq('business_id', businessId).eq('cuenta_tipo', 'subcuenta').in('subcuenta_id', subs.map(s => s.id));
+  const { data: lineasRaw } = await sb.from('fz_polizas_lineas').select('cargo,abono,subcuenta_id,poliza_id').eq('business_id', businessId).eq('cuenta_tipo', 'subcuenta').in('subcuenta_id', subs.map(s => s.id));
+  let lineas = lineasRaw || [];
+  if (hastaFecha && lineas.length) {
+    const polizaIds = [...new Set(lineas.map(l => l.poliza_id))];
+    const { data: polizas } = await sb.from('fz_polizas').select('id,fecha').in('id', polizaIds).lte('fecha', hastaFecha);
+    const idsValidos = new Set((polizas || []).map(p => p.id));
+    lineas = lineas.filter(l => idsValidos.has(l.poliza_id));
+  }
   const porSub = {};
-  (lineas || []).forEach(l => {
+  lineas.forEach(l => {
     const neto = signoNormal === 'debe' ? (Number(l.cargo) || 0) - (Number(l.abono) || 0) : (Number(l.abono) || 0) - (Number(l.cargo) || 0);
     porSub[l.subcuenta_id] = (porSub[l.subcuenta_id] || 0) + neto;
   });
@@ -3833,12 +3840,34 @@ function fmtNeg(n) {
 function fmtSigno(n) {
   return `<span style="color:${Number(n)>=0?'var(--green)':'var(--red)'};">${fmt(n)}</span>`;
 }
-function filaArbolBalanceHtml(nodo, nivel) {
+function filaArbolBalanceHtml(nodo, nivel, detalleAbiertoHtml) {
   const indent = 40 + (nivel - 1) * 18;
   const estilo = nivel === 1 ? 'font-weight:600;' : 'color:var(--muted);font-size:12.5px;';
-  let html = `<tr><td style="padding-left:${indent}px;${estilo}">${nodo.nombre}</td><td class="num" style="${nivel === 1 ? 'font-weight:600;' : ''}">${fmtNeg(nodo.total)}</td></tr>`;
-  nodo.hijos.forEach(h => { html += filaArbolBalanceHtml(h, nivel + 1); });
+  const abierto = STATE_balanceDetalleAbierto === nodo.id;
+  let html = `<tr class="balance-subcuenta-row" data-subcuenta="${nodo.id}" style="cursor:pointer;"><td style="padding-left:${indent}px;${estilo}">${abierto?'▾':'▸'} ${nodo.nombre}</td><td class="num" style="${nivel === 1 ? 'font-weight:600;' : ''}">${fmtNeg(nodo.total)}</td></tr>`;
+  if (abierto) html += detalleAbiertoHtml;
+  nodo.hijos.forEach(h => { html += filaArbolBalanceHtml(h, nivel + 1, detalleAbiertoHtml); });
   return html;
+}
+
+let STATE_balanceHastaYm = '';
+let STATE_balanceDetalleAbierto = null;
+
+async function getDetallePolizasSubcuenta(businessId, subcuentaId, hastaFecha) {
+  const { data: lineas } = await sb.from('fz_polizas_lineas').select('*').eq('business_id', businessId).eq('cuenta_tipo', 'subcuenta').eq('subcuenta_id', subcuentaId);
+  if (!lineas || !lineas.length) return [];
+  const polizaIds = [...new Set(lineas.map(l => l.poliza_id))];
+  const { data: polizas } = await sb.from('fz_polizas').select('id,fecha,numero,concepto').in('id', polizaIds);
+  const polizaMap = Object.fromEntries((polizas || []).map(p => [p.id, p]));
+  const filas = [];
+  lineas.forEach(l => {
+    const p = polizaMap[l.poliza_id];
+    if (!p) return;
+    if (hastaFecha && p.fecha > hastaFecha) return;
+    const monto = (Number(l.cargo) || 0) - (Number(l.abono) || 0);
+    if (monto) filas.push({ fecha: p.fecha, proveedor: `Póliza #${p.numero ?? ''}`, concepto: l.descripcion || p.concepto || '—', importe: monto, pago: 'Póliza de diario', origen: { tipo: 'poliza', id: p.id, fecha: p.fecha } });
+  });
+  return filas.sort((a,b) => a.fecha.localeCompare(b.fecha));
 }
 
 async function renderBalanceGeneral() {
@@ -3851,7 +3880,7 @@ async function renderBalanceGeneral() {
     loadSubcuentas(b.id), loadCuentasMayor(b.id),
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', b.id).eq('activo', true),
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', b.id).eq('activo', true),
-    sb.from('fz_proveedores').select('importe,importe_pagado,estatus').eq('business_id', b.id),
+    sb.from('fz_proveedores').select('id,fecha,importe,importe_pagado,estatus').eq('business_id', b.id),
     sb.from('fz_conceptos').select('*').eq('business_id', b.id).eq('categoria', 'efectivo'),
     sb.from('fz_conceptos').select('*').eq('business_id', b.id).in('categoria', ['tarjetas','bancos']),
   ]);
@@ -3860,36 +3889,40 @@ async function renderBalanceGeneral() {
   const conceptosEfectivo = conceptosEfvoQ.data || [];
   const conceptosTarjetas = conceptosTarjQ.data || [];
 
+  const hastaYm = STATE_balanceHastaYm || STATE.currentMonth;
+  const hastaFecha = monthBounds(hastaYm).end;
+  const esHoy = hastaYm === STATE.currentMonth && hastaFecha >= todayStr();
+
   let totalEfectivo = 0;
   const detalleEfectivo = [];
   for (const m of monedas) {
-    const saldo = await computeMonedaSaldo(b.id, m, conceptosEfectivo);
+    const saldo = await computeMonedaSaldo(b.id, m, conceptosEfectivo, hastaFecha);
     const pesoEquiv = saldo * (Number(m.tc_reporte) || 1);
     totalEfectivo += pesoEquiv;
-    if (Math.abs(pesoEquiv) > 0.004) detalleEfectivo.push({ nombre: m.nombre, monto: pesoEquiv });
+    if (Math.abs(pesoEquiv) > 0.004) detalleEfectivo.push({ id: m.id, nombre: m.nombre, monto: pesoEquiv });
   }
   let totalBancos = 0;
   const detalleBancos = [];
   for (const c of cuentasBanco) {
-    const saldo = await computeBancoSaldo(b.id, c, conceptosTarjetas);
+    const saldo = await computeBancoSaldo(b.id, c, conceptosTarjetas, hastaFecha);
     totalBancos += saldo;
-    if (Math.abs(saldo) > 0.004) detalleBancos.push({ nombre: c.nombre, monto: saldo });
+    if (Math.abs(saldo) > 0.004) detalleBancos.push({ id: c.id, nombre: c.nombre, monto: saldo });
   }
 
   const otrosActivos = [];
   for (const m of mayores.filter(m => m.tipo === 'activo')) {
-    const r = await computeSaldoCuentaMayorPolizas(b.id, m.id, subcuentas, 'debe');
+    const r = await computeSaldoCuentaMayorPolizas(b.id, m.id, subcuentas, 'debe', hastaFecha);
     if (Math.abs(r.total) > 0.004) otrosActivos.push({ nombre: m.nombre, subs: r.subs, total: r.total });
   }
   const totalOtrosActivos = otrosActivos.reduce((s,x)=>s+x.total,0);
   const totalActivo = totalEfectivo + totalBancos + totalOtrosActivos;
 
-  const prov = provQ.data || [];
+  const prov = (provQ.data || []).filter(p => p.fecha <= hastaFecha);
   const proveedoresPendiente = prov.filter(p => p.estatus === 'Pendiente' || p.estatus === 'Parcial').reduce((s,p)=>s+(Number(p.importe)-Number(p.importe_pagado||0)),0);
 
   const otrosPasivos = [];
   for (const m of mayores.filter(m => m.tipo === 'pasivo')) {
-    const r = await computeSaldoCuentaMayorPolizas(b.id, m.id, subcuentas, 'haber');
+    const r = await computeSaldoCuentaMayorPolizas(b.id, m.id, subcuentas, 'haber', hastaFecha);
     if (Math.abs(r.total) > 0.004) otrosPasivos.push({ nombre: m.nombre, subs: r.subs, total: r.total });
   }
   const totalOtrosPasivos = otrosPasivos.reduce((s,x)=>s+x.total,0);
@@ -3897,18 +3930,35 @@ async function renderBalanceGeneral() {
 
   const cuentasCapital = [];
   for (const m of mayores.filter(m => m.tipo === 'capital')) {
-    const r = await computeSaldoCuentaMayorPolizas(b.id, m.id, subcuentas, 'haber');
+    const r = await computeSaldoCuentaMayorPolizas(b.id, m.id, subcuentas, 'haber', hastaFecha);
     if (Math.abs(r.total) > 0.004) cuentasCapital.push({ nombre: m.nombre, subs: r.subs, total: r.total });
   }
   const totalCapitalCuentas = cuentasCapital.reduce((s,x)=>s+x.total,0);
-  const utilidadAcumulada = await computeUtilidadAcumulada(b.id, STATE.currentMonth);
+  const utilidadAcumulada = await computeUtilidadAcumulada(b.id, hastaYm);
   const totalCapital = totalCapitalCuentas + utilidadAcumulada;
 
   const totalPasivoCapital = totalPasivo + totalCapital;
   const diferenciaCuadre = totalActivo - totalPasivoCapital;
   const cuadra = Math.abs(diferenciaCuadre) < 1;
 
+  // Si hay una subcuenta con el detalle desplegado, traer sus movimientos de una vez
+  let detalleAbiertoHtml = '';
+  if (STATE_balanceDetalleAbierto) {
+    const filasDetalle = await getDetallePolizasSubcuenta(b.id, STATE_balanceDetalleAbierto, hastaFecha);
+    detalleAbiertoHtml = detalleSubcuentaHtml(filasDetalle, 2);
+  }
+  const filaArbolBalanceConDetalle = (nodo, nivel) => filaArbolBalanceHtml(nodo, nivel, detalleAbiertoHtml);
+
   el.innerHTML = `
+    <div class="grid-3" style="margin-bottom:12px;max-width:340px;">
+      <div class="field" style="margin-bottom:0;">
+        <label>Ver balance al cierre de</label>
+        <input type="month" id="balanceHastaMes" value="${hastaYm}">
+      </div>
+      <div class="field" style="margin-bottom:0;display:flex;align-items:flex-end;">
+        ${!esHoy ? `<button class="btn btn-ghost btn-sm" id="balanceHastaHoy">✕ Ver a hoy</button>` : ''}
+      </div>
+    </div>
     <div class="kpi-grid">
       <div class="kpi"><div class="label">Total Activo</div><div class="value num">${fmt(totalActivo)}</div></div>
       <div class="kpi"><div class="label">Total Pasivo</div><div class="value num red">${fmt(totalPasivo)}</div></div>
@@ -3916,34 +3966,34 @@ async function renderBalanceGeneral() {
       <div class="kpi"><div class="label">¿Cuadra?</div><div class="value num ${cuadra?'green':'red'}">${cuadra ? '✓ Sí' : fmt(diferenciaCuadre)}</div></div>
     </div>
     <div class="card">
-      <div class="card-head"><h3>Balance General — ${b.name}</h3><span class="hint">Al día de hoy · ${todayStr()}</span></div>
+      <div class="card-head"><h3>Balance General — ${b.name}</h3><span class="hint">${esHoy ? 'Al día de hoy · ' + todayStr() : 'Al cierre de ' + MESES_LARGO[Number(hastaYm.slice(5,7))-1] + ' ' + hastaYm.slice(0,4)}</span></div>
       <table>
         <tbody>
           <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">ACTIVO</td></tr>
           <tr><td style="padding-left:22px;font-weight:600;">Efectivo y equivalentes</td><td class="num" style="font-weight:600;">${fmtNeg(totalEfectivo)}</td></tr>
-          ${detalleEfectivo.map(d => `<tr><td style="padding-left:40px;color:var(--muted);font-size:12.5px;">${d.nombre}</td><td class="num">${fmtNeg(d.monto)}</td></tr>`).join('')}
+          ${detalleEfectivo.map(d => `<tr class="balance-link-efectivo" data-id="${d.id}" style="cursor:pointer;"><td style="padding-left:40px;color:var(--muted);font-size:12.5px;">${d.nombre} ↗</td><td class="num">${fmtNeg(d.monto)}</td></tr>`).join('')}
           <tr><td style="padding-left:22px;font-weight:600;">Bancos</td><td class="num" style="font-weight:600;">${fmtNeg(totalBancos)}</td></tr>
-          ${detalleBancos.map(d => `<tr><td style="padding-left:40px;color:var(--muted);font-size:12.5px;">${d.nombre}</td><td class="num">${fmtNeg(d.monto)}</td></tr>`).join('')}
+          ${detalleBancos.map(d => `<tr class="balance-link-banco" data-id="${d.id}" style="cursor:pointer;"><td style="padding-left:40px;color:var(--muted);font-size:12.5px;">${d.nombre} ↗</td><td class="num">${fmtNeg(d.monto)}</td></tr>`).join('')}
           ${otrosActivos.map(m => `
             <tr><td style="padding-left:22px;font-weight:600;">${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.total)}</td></tr>
-            ${m.subs.map(s => filaArbolBalanceHtml(s, 1)).join('')}
+            ${m.subs.map(s => filaArbolBalanceConDetalle(s, 1)).join('')}
           `).join('')}
           <tr class="total-row"><td>Total Activo</td><td class="num">${fmtNeg(totalActivo)}</td></tr>
 
           <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">PASIVO</td></tr>
-          <tr><td style="padding-left:22px;font-weight:600;">Proveedores por pagar</td><td class="num" style="font-weight:600;">${fmtNeg(proveedoresPendiente)}</td></tr>
+          <tr class="balance-link-proveedores" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">Proveedores por pagar ↗</td><td class="num" style="font-weight:600;">${fmtNeg(proveedoresPendiente)}</td></tr>
           ${otrosPasivos.map(m => `
             <tr><td style="padding-left:22px;font-weight:600;">${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.total)}</td></tr>
-            ${m.subs.map(s => filaArbolBalanceHtml(s, 1)).join('')}
+            ${m.subs.map(s => filaArbolBalanceConDetalle(s, 1)).join('')}
           `).join('')}
           <tr class="total-row"><td>Total Pasivo</td><td class="num">${fmtNeg(totalPasivo)}</td></tr>
 
           <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">CAPITAL</td></tr>
           ${cuentasCapital.map(m => `
             <tr><td style="padding-left:22px;font-weight:600;">${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.total)}</td></tr>
-            ${m.subs.map(s => filaArbolBalanceHtml(s, 1)).join('')}
+            ${m.subs.map(s => filaArbolBalanceConDetalle(s, 1)).join('')}
           `).join('')}
-          <tr><td style="padding-left:22px;">Utilidad acumulada del ejercicio ${STATE.currentMonth.slice(0,4)}</td><td class="num">${fmtSigno(utilidadAcumulada)}</td></tr>
+          <tr><td style="padding-left:22px;">Utilidad acumulada del ejercicio ${hastaYm.slice(0,4)}</td><td class="num">${fmtSigno(utilidadAcumulada)}</td></tr>
           <tr class="total-row"><td>Total Capital</td><td class="num">${fmtSigno(totalCapital)}</td></tr>
 
           <tr class="total-row" style="border-top:2px solid var(--navy-1);"><td>Total Pasivo + Capital</td><td class="num">${fmtNeg(totalPasivoCapital)}</td></tr>
@@ -3952,6 +4002,28 @@ async function renderBalanceGeneral() {
       <p style="font-size:11.5px;color:var(--muted);margin-top:12px;">Efectivo, Bancos y Proveedores se calculan en automático desde sus módulos. Las demás cuentas (Activos fijos, Acreedores, Capital, etc.) se alimentan desde Pólizas de Diario — usa el Catálogo de Cuentas para crearlas.</p>
     </div>
   `;
+  document.getElementById('balanceHastaMes').addEventListener('change', (e) => { STATE_balanceHastaYm = e.target.value; renderBalanceGeneral(); });
+  const hoyBtn = document.getElementById('balanceHastaHoy');
+  if (hoyBtn) hoyBtn.addEventListener('click', () => { STATE_balanceHastaYm = ''; renderBalanceGeneral(); });
+  el.querySelectorAll('.balance-subcuenta-row').forEach(tr => tr.addEventListener('click', () => {
+    STATE_balanceDetalleAbierto = STATE_balanceDetalleAbierto === tr.dataset.subcuenta ? null : tr.dataset.subcuenta;
+    renderBalanceGeneral();
+  }));
+  el.querySelectorAll('.abrir-origen-btn').forEach(btn => btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const origen = JSON.parse(btn.dataset.origen.replace(/&apos;/g, "'"));
+    abrirOrigenDesdeDetalle(origen, b.id);
+  }));
+  el.querySelectorAll('.balance-link-efectivo').forEach(tr => tr.addEventListener('click', () => {
+    STATE_monedaAbierta = tr.dataset.id;
+    irASeccion('efectivo');
+  }));
+  el.querySelectorAll('.balance-link-banco').forEach(tr => tr.addEventListener('click', () => {
+    STATE_bancoCuentaAbierta = tr.dataset.id;
+    irASeccion('bancos');
+  }));
+  const provLink = el.querySelector('.balance-link-proveedores');
+  if (provLink) provLink.addEventListener('click', () => irASeccion('proveedores'));
   window.scrollTo(0, scrollY);
 }
 
