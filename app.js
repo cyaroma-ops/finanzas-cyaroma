@@ -3574,7 +3574,7 @@ async function renderProveedores() {
         <table>
           <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Importe</th><th>Desglose</th><th>Estatus</th><th>Fecha pago</th><th>Pagado desde</th><th>Adjunto</th><th></th></tr></thead>
           <tbody>
-            ${rows.map(p => provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntosProv[p.id])).join('') || `<tr><td colspan="9" class="empty">Sin registros.</td></tr>`}
+            ${rows.map(p => provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntosProv[p.id], all)).join('') || `<tr><td colspan="9" class="empty">Sin registros.</td></tr>`}
           </tbody>
         </table>
       </div>
@@ -3660,8 +3660,88 @@ async function renderProveedores() {
   }));
   el.querySelectorAll('.prov-desglosar').forEach(btn => btn.addEventListener('click', () => openDesgloseModal(b.id, btn.dataset.id, renderProveedores)));
   wireAdjuntosHandlers(el, 'fz_proveedores', b.id, renderProveedores);
+  el.querySelectorAll('.prov-ver-pagos').forEach(btn => btn.addEventListener('click', () => verPagosFactura(btn.dataset.id, b.id)));
+  el.querySelectorAll('.prov-ver-cuenta').forEach(btn => btn.addEventListener('click', () => {
+    const factura = all.find(f => f.id === btn.dataset.id);
+    if (factura) verCuentaProveedor(factura, all, b.id);
+  }));
   window.scrollTo(0, scrollY);
 }
+
+async function verPagosFactura(facturaId, businessId) {
+  const { data: factura } = await sb.from('fz_proveedores').select('*').eq('id', facturaId).single();
+  if (!factura) return;
+  document.getElementById('modalPagosFactura').classList.add('show');
+  const info = document.getElementById('pagosFacturaInfo');
+  const list = document.getElementById('pagosFacturaList');
+  info.textContent = `${factura.proveedor || '(sin proveedor)'} · Factura ${factura.factura || 's/f'} · Total ${fmt(factura.importe)} · Pagado ${fmt(factura.importe_pagado||0)}`;
+  list.innerHTML = `<p class="empty">Cargando…</p>`;
+
+  const { data: lineasPago } = await sb.from('fz_polizas_lineas').select('*').eq('business_id', businessId).eq('cuenta_tipo', 'proveedor').eq('proveedor_factura_id', facturaId);
+  const polizaIds = [...new Set((lineasPago || []).map(l => l.poliza_id))];
+  const { data: polizasInfo } = polizaIds.length ? await sb.from('fz_polizas').select('id,fecha,numero').in('id', polizaIds) : { data: [] };
+  const polizaMap = Object.fromEntries((polizasInfo || []).map(p => [p.id, p]));
+
+  const pagos = (lineasPago || []).map(l => {
+    const p = polizaMap[l.poliza_id];
+    return { fecha: p?.fecha || '', monto: Number(l.cargo) || 0, label: `Póliza #${p?.numero ?? ''}`, origen: p ? { tipo: 'poliza', id: p.id, fecha: p.fecha } : null };
+  });
+  if (!pagos.length && factura.pagado_desde_tipo && Number(factura.importe_pagado) > 0) {
+    pagos.push({ fecha: factura.fecha_pago || '', monto: Number(factura.importe_pagado) || 0, label: `Pago directo — ${factura.pagado_desde || ''}`, origen: null });
+  }
+  pagos.sort((a,b) => a.fecha.localeCompare(b.fecha));
+
+  list.innerHTML = pagos.length ? pagos.map(pg => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 4px;border-bottom:1px solid var(--line);font-size:13px;">
+      <div><div>${pg.label}</div><div style="color:var(--muted);font-size:11.5px;">${fechaCorta(pg.fecha)}</div></div>
+      <div style="display:flex;align-items:center;gap:8px;"><strong>${fmt(pg.monto)}</strong>${pg.origen ? `<button class="btn btn-ghost btn-sm pagos-abrir-origen" data-origen='${JSON.stringify(pg.origen).replace(/'/g,'&apos;')}' style="font-size:11px;padding:3px 8px;">Abrir ↗</button>` : ''}</div>
+    </div>`).join('') : `<p class="empty" style="padding:10px 0;">No se encontró el detalle de los pagos.</p>`;
+  list.querySelectorAll('.pagos-abrir-origen').forEach(btn => btn.addEventListener('click', () => {
+    const origen = JSON.parse(btn.dataset.origen.replace(/&apos;/g, "'"));
+    document.getElementById('modalPagosFactura').classList.remove('show');
+    abrirOrigenDesdeDetalle(origen, businessId);
+  }));
+}
+document.getElementById('cerrarModalPagosFactura').addEventListener('click', () => {
+  document.getElementById('modalPagosFactura').classList.remove('show');
+});
+
+function verCuentaProveedor(factura, todasFacturas, businessId) {
+  const facturasProveedor = factura.proveedor_id
+    ? todasFacturas.filter(f => f.proveedor_id === factura.proveedor_id)
+    : todasFacturas.filter(f => f.proveedor === factura.proveedor);
+  const totalFacturado = facturasProveedor.reduce((s,f) => s + (Number(f.importe)||0), 0);
+  const totalPagado = facturasProveedor.reduce((s,f) => s + (Number(f.importe_pagado)||0), 0);
+  const saldoPendiente = totalFacturado - totalPagado;
+
+  document.getElementById('cuentaProveedorTitulo').textContent = `Cuenta de ${factura.proveedor || '(sin proveedor)'}`;
+  document.getElementById('cuentaProveedorResumen').innerHTML = `
+    <div class="kpi"><div class="label">Total facturado</div><div class="value num">${fmt(totalFacturado)}</div></div>
+    <div class="kpi"><div class="label">Total pagado</div><div class="value num green">${fmt(totalPagado)}</div></div>
+    <div class="kpi"><div class="label">Saldo pendiente</div><div class="value num ${saldoPendiente>0.004?'red':'green'}">${fmt(saldoPendiente)}</div></div>
+  `;
+  const orden = [...facturasProveedor].sort((a,b) => b.fecha.localeCompare(a.fecha));
+  document.getElementById('cuentaProveedorList').innerHTML = orden.map(f => {
+    const pendiente = Number(f.importe) - Number(f.importe_pagado||0);
+    return `<tr>
+      <td>${fechaCorta(f.fecha)}</td>
+      <td>${f.factura || 's/f'}</td>
+      <td class="num">${fmt(f.importe)}</td>
+      <td class="num">${fmt(f.importe_pagado||0)}</td>
+      <td class="num">${fmtNeg(pendiente)}</td>
+      <td><span class="badge ${f.estatus==='Pagado'?'pag':'pend'}">${f.estatus}</span></td>
+      <td>${Number(f.importe_pagado)>0 ? `<button class="btn btn-ghost btn-sm cuentaprov-ver-pagos" data-id="${f.id}" style="font-size:11px;padding:3px 8px;">Ver pagos</button>` : ''}</td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="7" class="empty">Sin facturas.</td></tr>`;
+  document.querySelectorAll('.cuentaprov-ver-pagos').forEach(btn => btn.addEventListener('click', () => {
+    document.getElementById('modalCuentaProveedor').classList.remove('show');
+    verPagosFactura(btn.dataset.id, businessId);
+  }));
+  document.getElementById('modalCuentaProveedor').classList.add('show');
+}
+document.getElementById('cerrarModalCuentaProveedor').addEventListener('click', () => {
+  document.getElementById('modalCuentaProveedor').classList.remove('show');
+});
 
 async function syncPagoProveedor(businessId, facturaId) {
   const { data: factura, error: eFactura } = await sb.from('fz_proveedores').select('*').eq('id', facturaId).single();
@@ -3702,21 +3782,25 @@ async function syncPagoProveedor(businessId, facturaId) {
   }
 }
 
-function provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntos) {
+function provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntos, todasFacturas) {
   const desgloseTotal = desgloseLineas(p.desglose).reduce((s,l)=>s+(Number(l.monto)||0),0);
   const desgloseOk = Math.abs(desgloseTotal - (Number(p.importe)||0)) < 1 && desgloseTotal > 0;
   const esCredito = Number(p.importe) < 0;
   const saldoPendiente = Number(p.importe) - Number(p.importe_pagado || 0);
   return `<tr style="${esCredito?'background:#f2fbf5;':''}">
     <td><input class="cell prov-cell" type="date" value="${p.fecha}" data-id="${p.id}" data-field="fecha"></td>
-    <td><select class="cell prov-cell" data-id="${p.id}" data-field="proveedor_id" style="min-width:220px;">
-      <option value="">${p.proveedor || '— elegir —'}</option>
-      ${catalogo.map(c => `<option value="${c.id}" ${p.proveedor_id===c.id?'selected':''}>${c.razon_social ? c.razon_social + ' — ' : ''}${c.nombre_comercial || c.nombre}</option>`).join('')}
-    </select></td>
+    <td>
+      <select class="cell prov-cell" data-id="${p.id}" data-field="proveedor_id" style="min-width:220px;">
+        <option value="">${p.proveedor || '— elegir —'}</option>
+        ${catalogo.map(c => `<option value="${c.id}" ${p.proveedor_id===c.id?'selected':''}>${c.razon_social ? c.razon_social + ' — ' : ''}${c.nombre_comercial || c.nombre}</option>`).join('')}
+      </select>
+      ${p.proveedor ? `<button class="btn btn-ghost btn-sm prov-ver-cuenta" data-id="${p.id}" style="font-size:10.5px;padding:2px 6px;margin-top:2px;">Ver cuenta del proveedor</button>` : ''}
+    </td>
     <td><input class="cell prov-cell" type="text" value="${p.factura||''}" data-id="${p.id}" data-field="factura"></td>
     <td>
       <input class="cell prov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(p.importe)}" data-id="${p.id}" data-field="importe">
       ${esCredito ? `<div style="font-size:10.5px;color:var(--green);margin-top:2px;">crédito a favor</div>` : (Number(p.importe_pagado)>0 && p.estatus!=='Pagado' ? `<div style="font-size:10.5px;color:var(--muted);margin-top:2px;">pagado ${fmt(p.importe_pagado)} · pendiente ${fmt(saldoPendiente)}</div>` : '')}
+      ${Number(p.importe_pagado) > 0 ? `<button class="btn btn-ghost btn-sm prov-ver-pagos" data-id="${p.id}" style="font-size:10.5px;padding:2px 6px;margin-top:2px;">Ver pagos aplicados</button>` : ''}
     </td>
     <td><button class="btn btn-ghost btn-sm prov-desglosar" data-id="${p.id}" style="color:${desgloseOk?'var(--green)':(desgloseTotal>0?'var(--red)':'var(--muted)')};">${desgloseTotal>0?fmt(desgloseTotal):'Desglosar'}</button></td>
     <td><select class="cell prov-cell" data-id="${p.id}" data-field="estatus">
