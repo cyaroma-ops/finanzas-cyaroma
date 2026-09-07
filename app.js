@@ -623,7 +623,7 @@ function setupNav() {
   document.getElementById('sidebarOverlay').addEventListener('click', cerrarMenuMovil);
 }
 
-const SECCIONES_IMPRIMIBLES = ['efectivo', 'bancos', 'pl', 'flujo', 'balance'];
+const SECCIONES_IMPRIMIBLES = ['efectivo', 'bancos', 'pl', 'flujo', 'balance', 'proveedores'];
 
 function updateTopbar() {
   const meta = SECTION_META[STATE.currentSection];
@@ -645,9 +645,14 @@ function updateTopbar() {
     }
     printBtn.onclick = () => {
       document.body.dataset.printSection = STATE.currentSection;
-      const tituloImpresion = STATE.currentSection === 'pl'
-        ? 'Estado de Resultados' + (b ? ' — ' + b.name : '')
-        : titulo;
+      let tituloImpresion = titulo;
+      if (STATE.currentSection === 'pl') {
+        tituloImpresion = 'Estado de Resultados' + (b ? ' — ' + b.name : '');
+      } else if (STATE.currentSection === 'proveedores') {
+        if (STATE_provVista === 'directorio') tituloImpresion = 'Directorio de Proveedores — Saldos Pendientes' + (b ? ' · ' + b.name : '');
+        else if (STATE_provVista === 'detalle') tituloImpresion = `Estado de Cuenta — ${STATE_provDetalleNombre}` + (b ? ' · ' + b.name : '');
+        else tituloImpresion = 'Cuentas por Pagar — Facturas' + (b ? ' · ' + b.name : '');
+      }
       const mesLegible = MESES_LARGO[Number(STATE.currentMonth.slice(5,7)) - 1] + ' ' + STATE.currentMonth.slice(0,4);
       document.getElementById('printTitle').textContent = tituloImpresion;
       document.getElementById('printSub').textContent = `${STATE.nombreUsuario ? STATE.nombreUsuario + ' · ' : ''}${meta.showMonth ? mesLegible + ' · ' : ''}Impreso el ${new Date().toLocaleDateString('es-MX', { year:'numeric', month:'long', day:'numeric' })}`;
@@ -3494,6 +3499,7 @@ let STATE_provExpandido = null;
 
 let STATE_provVista = 'directorio'; // 'facturas' | 'directorio' | 'detalle'
 let STATE_provDetalleKey = null;
+let STATE_provDetalleNombre = '';
 
 function claveProveedor(f) {
   return f.proveedor_id ? `id:${f.proveedor_id}` : `name:${f.proveedor || '(sin proveedor)'}`;
@@ -3826,6 +3832,7 @@ async function renderProveedorDetalle(el, b) {
   const { data: all } = await sb.from('fz_proveedores').select('*').eq('business_id', b.id);
   const facturas = (all || []).filter(f => claveProveedor(f) === key);
   const nombre = facturas[0]?.proveedor || '(sin proveedor)';
+  STATE_provDetalleNombre = nombre;
   const totalFacturado = facturas.reduce((s,f) => s + (Number(f.importe)||0), 0);
   const totalPagado = facturas.reduce((s,f) => s + (Number(f.importe_pagado)||0), 0);
   const pendiente = totalFacturado - totalPagado;
