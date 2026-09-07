@@ -252,6 +252,7 @@ tr.total-row td{font-weight:800;background:#f7f9fc;color:var(--navy-1);border-to
 .table-wrap.scroll-sticky table thead th{position:sticky;top:0;background:#f7f9fc;z-index:4;}
 .table-wrap.scroll-sticky table tfoot td,.table-wrap.scroll-sticky table tfoot th{position:sticky;bottom:0;z-index:4;}
 input.cell,select.cell{width:100%;min-width:80px;border:1px solid transparent;background:transparent;padding:5px 6px;border-radius:6px;font-family:'Inter';font-size:13px;}
+input.linea-cuenta-buscar:focus{position:relative;z-index:5;min-width:340px;max-width:420px;background:#fff;box-shadow:0 3px 12px rgba(0,0,0,.18);}
 input.cell:hover,select.cell:hover{border-color:var(--line);}
 input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);background:#fff;}
 .row-del{color:var(--muted);cursor:pointer;background:none;border:none;font-size:15px;}
@@ -816,6 +817,35 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
     <p style="font-size:11px;color:var(--muted);margin-top:8px;">Puedes seleccionar varios archivos a la vez (PDF, JPG o PNG, hasta 5 MB cada uno).</p>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="cerrarModalAdjuntos" style="width:100%;">Cerrar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: pagos aplicados a una factura -->
+<div class="modal-bg" id="modalPagosFactura">
+  <div class="modal" style="width:min(460px,92vw);">
+    <h3>Pagos aplicados</h3>
+    <div id="pagosFacturaInfo" style="font-size:13px;color:var(--muted);margin-bottom:12px;"></div>
+    <div id="pagosFacturaList" style="max-height:320px;overflow-y:auto;"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="cerrarModalPagosFactura" style="width:100%;">Cerrar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: cuenta del proveedor (historial completo) -->
+<div class="modal-bg" id="modalCuentaProveedor">
+  <div class="modal" style="width:min(760px,94vw);">
+    <h3 id="cuentaProveedorTitulo">Cuenta del proveedor</h3>
+    <div id="cuentaProveedorResumen" class="kpi-grid" style="margin-bottom:14px;"></div>
+    <div class="table-wrap" style="max-height:400px;overflow-y:auto;">
+      <table>
+        <thead><tr><th>Fecha</th><th>Factura</th><th>Importe</th><th>Pagado</th><th>Pendiente</th><th>Estatus</th><th></th></tr></thead>
+        <tbody id="cuentaProveedorList"></tbody>
+      </table>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="cerrarModalCuentaProveedor" style="width:100%;">Cerrar</button>
     </div>
   </div>
 </div>
