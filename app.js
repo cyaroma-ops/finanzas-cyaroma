@@ -3791,8 +3791,12 @@ async function computeSaldoCuentaMayorPolizas(businessId, cuentaMayorId, subcuen
   // signoNormal 'haber' (Pasivo/Capital): Abono aumenta, Cargo disminuye.
   const subs = subcuentas.filter(s => s.cuenta_mayor_id === cuentaMayorId);
   if (!subs.length) return { subs: [], total: 0 };
-  const { data: lineasRaw } = await sb.from('fz_polizas_lineas').select('cargo,abono,subcuenta_id,poliza_id').eq('business_id', businessId).eq('cuenta_tipo', 'subcuenta').in('subcuenta_id', subs.map(s => s.id));
-  let lineas = lineasRaw || [];
+  const subIds = new Set(subs.map(s => s.id));
+  const [lineasQ, facturasQ] = await Promise.all([
+    sb.from('fz_polizas_lineas').select('cargo,abono,subcuenta_id,poliza_id').eq('business_id', businessId).eq('cuenta_tipo', 'subcuenta').in('subcuenta_id', subs.map(s => s.id)),
+    sb.from('fz_proveedores').select('fecha,desglose').eq('business_id', businessId),
+  ]);
+  let lineas = lineasQ.data || [];
   if (hastaFecha && lineas.length) {
     const polizaIds = [...new Set(lineas.map(l => l.poliza_id))];
     const { data: polizas } = await sb.from('fz_polizas').select('id,fecha').in('id', polizaIds).lte('fecha', hastaFecha);
@@ -3803,6 +3807,17 @@ async function computeSaldoCuentaMayorPolizas(businessId, cuentaMayorId, subcuen
   lineas.forEach(l => {
     const neto = signoNormal === 'debe' ? (Number(l.cargo) || 0) - (Number(l.abono) || 0) : (Number(l.abono) || 0) - (Number(l.cargo) || 0);
     porSub[l.subcuenta_id] = (porSub[l.subcuenta_id] || 0) + neto;
+  });
+  // Facturas de Proveedores desglosadas contra alguna de estas subcuentas también cuentan
+  // (ej. una compra que se clasificó como Activo en vez de Gasto) — antes solo se veían
+  // en Proveedores/P&L, nunca llegaban al Balance General.
+  (facturasQ.data || []).filter(f => !hastaFecha || f.fecha <= hastaFecha).forEach(f => {
+    desgloseLineas(f.desglose).forEach(linea => {
+      if (subIds.has(linea.subcuenta_id) && Number(linea.monto)) {
+        const monto = Number(linea.monto);
+        porSub[linea.subcuenta_id] = (porSub[linea.subcuenta_id] || 0) + (signoNormal === 'debe' ? monto : -monto);
+      }
+    });
   });
   const raices = subcuentasRaiz(cuentaMayorId, subcuentas).map(s => construirArbolSubcuenta(s.id, subcuentas, porSub)).filter(s => Math.abs(s.total) > 0.004);
   return { subs: raices, total: raices.reduce((s,x)=>s+x.total,0) };
@@ -3854,18 +3869,30 @@ let STATE_balanceHastaYm = '';
 let STATE_balanceDetalleAbierto = null;
 
 async function getDetallePolizasSubcuenta(businessId, subcuentaId, hastaFecha) {
-  const { data: lineas } = await sb.from('fz_polizas_lineas').select('*').eq('business_id', businessId).eq('cuenta_tipo', 'subcuenta').eq('subcuenta_id', subcuentaId);
-  if (!lineas || !lineas.length) return [];
-  const polizaIds = [...new Set(lineas.map(l => l.poliza_id))];
-  const { data: polizas } = await sb.from('fz_polizas').select('id,fecha,numero,concepto').in('id', polizaIds);
-  const polizaMap = Object.fromEntries((polizas || []).map(p => [p.id, p]));
+  const [lineasQ, facturasQ] = await Promise.all([
+    sb.from('fz_polizas_lineas').select('*').eq('business_id', businessId).eq('cuenta_tipo', 'subcuenta').eq('subcuenta_id', subcuentaId),
+    sb.from('fz_proveedores').select('*').eq('business_id', businessId),
+  ]);
+  const lineas = lineasQ.data || [];
   const filas = [];
-  lineas.forEach(l => {
-    const p = polizaMap[l.poliza_id];
-    if (!p) return;
-    if (hastaFecha && p.fecha > hastaFecha) return;
-    const monto = (Number(l.cargo) || 0) - (Number(l.abono) || 0);
-    if (monto) filas.push({ fecha: p.fecha, proveedor: `Póliza #${p.numero ?? ''}`, concepto: l.descripcion || p.concepto || '—', importe: monto, pago: 'Póliza de diario', origen: { tipo: 'poliza', id: p.id, fecha: p.fecha } });
+  if (lineas.length) {
+    const polizaIds = [...new Set(lineas.map(l => l.poliza_id))];
+    const { data: polizas } = await sb.from('fz_polizas').select('id,fecha,numero,concepto').in('id', polizaIds);
+    const polizaMap = Object.fromEntries((polizas || []).map(p => [p.id, p]));
+    lineas.forEach(l => {
+      const p = polizaMap[l.poliza_id];
+      if (!p) return;
+      if (hastaFecha && p.fecha > hastaFecha) return;
+      const monto = (Number(l.cargo) || 0) - (Number(l.abono) || 0);
+      if (monto) filas.push({ fecha: p.fecha, proveedor: `Póliza #${p.numero ?? ''}`, concepto: l.descripcion || p.concepto || '—', importe: monto, pago: 'Póliza de diario', origen: { tipo: 'poliza', id: p.id, fecha: p.fecha } });
+    });
+  }
+  (facturasQ.data || []).filter(f => !hastaFecha || f.fecha <= hastaFecha).forEach(f => {
+    desgloseLineas(f.desglose).forEach(linea => {
+      if (linea.subcuenta_id === subcuentaId && Number(linea.monto)) {
+        filas.push({ fecha: f.fecha, proveedor: f.proveedor || '(sin proveedor)', concepto: linea.descripcion || f.factura || '(factura)', importe: Number(linea.monto), pago: 'Factura de proveedor', origen: { tipo: 'proveedor', id: f.id, fecha: f.fecha } });
+      }
+    });
   });
   return filas.sort((a,b) => a.fecha.localeCompare(b.fecha));
 }
