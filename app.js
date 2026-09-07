@@ -3572,9 +3572,9 @@ async function renderProveedores() {
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Importe</th><th>Desglose</th><th>Estatus</th><th>Fecha pago</th><th>Pagado desde</th><th>Adjunto</th><th></th></tr></thead>
+          <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Importe</th><th>Desglose</th><th>Estatus</th><th>Fecha pago</th><th>Pagado desde</th><th>Adjunto</th><th>Acciones</th><th></th></tr></thead>
           <tbody>
-            ${rows.map(p => provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntosProv[p.id], all)).join('') || `<tr><td colspan="9" class="empty">Sin registros.</td></tr>`}
+            ${rows.map(p => provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntosProv[p.id], all)).join('') || `<tr><td colspan="10" class="empty">Sin registros.</td></tr>`}
           </tbody>
         </table>
       </div>
@@ -3796,13 +3796,11 @@ function provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntos, todasFactur
         <option value="">${p.proveedor || '— elegir —'}</option>
         ${catalogo.map(c => `<option value="${c.id}" ${p.proveedor_id===c.id?'selected':''}>${c.razon_social ? c.razon_social + ' — ' : ''}${c.nombre_comercial || c.nombre}</option>`).join('')}
       </select>
-      ${p.proveedor ? `<button class="btn btn-ghost btn-sm prov-ver-cuenta" data-id="${p.id}" style="font-size:10.5px;padding:2px 6px;margin-top:2px;">Ver cuenta del proveedor</button>` : ''}
     </td>
     <td><input class="cell prov-cell" type="text" value="${p.factura||''}" data-id="${p.id}" data-field="factura"></td>
     <td>
       <input class="cell prov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(p.importe)}" data-id="${p.id}" data-field="importe">
-      ${esCredito ? `<div style="font-size:10.5px;color:var(--green);margin-top:2px;">crédito a favor</div>` : (Number(p.importe_pagado)>0 && p.estatus!=='Pagado' ? `<div style="font-size:10.5px;color:var(--muted);margin-top:2px;">pagado ${fmt(p.importe_pagado)} · pendiente ${fmt(saldoPendiente)}</div>` : '')}
-      ${Number(p.importe_pagado) > 0 ? `<button class="btn btn-ghost btn-sm prov-ver-pagos" data-id="${p.id}" style="font-size:10.5px;padding:2px 6px;margin-top:2px;">Ver pagos aplicados</button>` : ''}
+      ${esCredito ? `<div style="font-size:10.5px;color:var(--green);margin-top:2px;">crédito a favor</div>` : (Number(p.importe_pagado)>0 && p.estatus!=='Pagado' ? `<div style="font-size:10.5px;color:var(--muted);margin-top:2px;white-space:nowrap;">pagado ${fmt(p.importe_pagado)} · pendiente ${fmt(saldoPendiente)}</div>` : '')}
     </td>
     <td><button class="btn btn-ghost btn-sm prov-desglosar" data-id="${p.id}" style="color:${desgloseOk?'var(--green)':(desgloseTotal>0?'var(--red)':'var(--muted)')};">${desgloseTotal>0?fmt(desgloseTotal):'Desglosar'}</button></td>
     <td><select class="cell prov-cell" data-id="${p.id}" data-field="estatus">
@@ -3816,6 +3814,10 @@ function provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntos, todasFactur
       ${opcionesPagoDesde.map(o => `<option value="${o.value}" ${(p.pagado_desde_tipo && (p.pagado_desde_tipo+':'+p.pagado_desde_cuenta_id)===o.value)?'selected':''}>${o.label}</option>`).join('')}
     </select></td>
     <td>${adjuntosCellHtml(conteoAdjuntos, p.id)}</td>
+    <td style="white-space:nowrap;">
+      ${p.proveedor ? `<button class="btn btn-ghost btn-sm prov-ver-cuenta" data-id="${p.id}" style="font-size:11px;padding:4px 8px;display:block;width:100%;margin-bottom:4px;">Cuenta del proveedor</button>` : ''}
+      ${Number(p.importe_pagado) > 0 ? `<button class="btn btn-ghost btn-sm prov-ver-pagos" data-id="${p.id}" style="font-size:11px;padding:4px 8px;display:block;width:100%;">Pagos aplicados</button>` : ''}
+    </td>
     <td><button class="row-del prov-del" data-id="${p.id}">✕</button></td>
   </tr>`;
 }
