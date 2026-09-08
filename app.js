@@ -11,7 +11,7 @@ const STATE = {
   currentBusinessId: null,
   currentSection: 'dashboard',
   currentMonth: new Date().toISOString().slice(0, 7), // YYYY-MM
-  esPropietario: false,
+  esAdministrador: false,
   negociosPermitidos: null, // null = sin restricción (propietario); array de ids = restringido
 };
 
@@ -284,10 +284,10 @@ async function checkAcceso(email) {
   if (error) { toast('Error verificando acceso: ' + error.message, 'error'); return { autorizado: false }; }
   const row = data?.[0];
   if (!row || row.activo === false) return { autorizado: false };
-  STATE.esPropietario = !!row.es_propietario;
+  STATE.esAdministrador = !!row.es_administrador;
   STATE.nombreUsuario = row.nombre || null;
   STATE.rolUsuario = row.rol || null;
-  if (!STATE.esPropietario) {
+  if (!STATE.esAdministrador) {
     const { data: permisos } = await sb.from('fz_usuario_negocios').select('business_id').ilike('email', email);
     STATE.negociosPermitidos = (permisos || []).map(p => p.business_id);
   } else {
@@ -310,7 +310,7 @@ async function boot() {
   document.getElementById('app').style.display = 'block';
   document.getElementById('userEmail').textContent = STATE.user.email;
   document.getElementById('sidebarUserName').textContent = STATE.nombreUsuario || STATE.user.email.split('@')[0];
-  document.getElementById('sidebarUserRole').textContent = etiquetaRol(STATE.esPropietario, STATE.rolUsuario);
+  document.getElementById('sidebarUserRole').textContent = etiquetaRol(STATE.esAdministrador, STATE.rolUsuario);
   document.getElementById('monthPicker').value = STATE.currentMonth;
 
   await loadBusinesses();
@@ -353,9 +353,9 @@ async function openUsuariosModal() {
   document.getElementById('saveUsuario').onclick = async () => {
     const email = document.getElementById('newUsuarioEmail').value.trim().toLowerCase();
     const nombre = document.getElementById('newUsuarioNombre').value.trim();
-    const esPropietario = document.getElementById('newUsuarioPropietario').checked;
+    const esAdministrador = document.getElementById('newUsuarioPropietario').checked;
     if (!email) { toast('Escribe un correo.', 'error'); return; }
-    const { error } = await sb.from('fz_usuarios_autorizados').insert({ email, nombre: nombre || null, es_propietario: esPropietario });
+    const { error } = await sb.from('fz_usuarios_autorizados').insert({ email, nombre: nombre || null, es_administrador: esAdministrador });
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     document.getElementById('newUsuarioEmail').value = '';
     document.getElementById('newUsuarioNombre').value = '';
@@ -370,7 +370,7 @@ async function renderUsuariosList() {
   if (!usuarios.length) { box.innerHTML = `<div class="empty" style="padding:16px;">Sin usuarios autorizados todavía.</div>`; return; }
 
   const bloques = await Promise.all(usuarios.map(async u => {
-    const negociosDe = u.es_propietario ? [] : await loadUsuarioNegocios(u.email);
+    const negociosDe = u.es_administrador ? [] : await loadUsuarioNegocios(u.email);
     const editando = STATE_usuarioEditando.has(u.id);
     return `
     <div style="padding:14px 6px;border-bottom:1px solid var(--line);">
@@ -379,7 +379,7 @@ async function renderUsuariosList() {
           <strong style="font-size:14.5px;">${u.nombre || u.email}</strong>${u.email.toLowerCase()===STATE.user.email.toLowerCase()?' <span style="color:var(--muted);font-size:11px;">(tú)</span>':''}
           ${u.nombre ? `<div style="color:var(--muted);font-size:12px;margin-top:2px;">${u.email}</div>` : ''}
           <div style="margin-top:5px;display:flex;gap:6px;flex-wrap:wrap;">
-            <span class="badge ${u.es_propietario?'pag':''}" ${!u.es_propietario?'style="background:#eef1f6;color:var(--muted);"':''}>${etiquetaRol(u.es_propietario, u.rol)}</span>
+            <span class="badge ${u.es_administrador?'pag':''}" ${!u.es_administrador?'style="background:#eef1f6;color:var(--muted);"':''}>${etiquetaRol(u.es_administrador, u.rol)}</span>
             <span class="badge ${u.activo!==false?'pag':'pend'}">${u.activo!==false?'Activo':'Inactivo'}</span>
           </div>
         </div>
@@ -390,15 +390,15 @@ async function renderUsuariosList() {
       ${editando ? `
         <div style="margin-top:10px;padding:12px 14px;background:#fff8ec;border:1px solid #f0e0bd;border-radius:8px;">
           <div style="font-size:11px;color:var(--muted);margin-bottom:10px;">⚠ Estos cambios afectan qué puede ver y hacer esta persona en el sistema.</div>
-          <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:${u.es_propietario?'0':'12px'};">
+          <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:${u.es_administrador?'0':'12px'};">
             <label style="display:flex;align-items:center;gap:5px;font-size:12.5px;cursor:pointer;">
-              <input type="checkbox" class="usuario-propietario" data-id="${u.id}" ${u.es_propietario?'checked':''}> Es propietario (ve todos los negocios)
+              <input type="checkbox" class="usuario-propietario" data-id="${u.id}" ${u.es_administrador?'checked':''}> Es administrador (ve todos los negocios)
             </label>
             <label style="display:flex;align-items:center;gap:5px;font-size:12.5px;cursor:pointer;">
               <input type="checkbox" class="usuario-activo" data-id="${u.id}" ${u.activo!==false?'checked':''}> Activo (puede entrar)
             </label>
           </div>
-          ${!u.es_propietario ? `
+          ${!u.es_administrador ? `
             <div style="margin-bottom:12px;">
               <label style="font-size:11.5px;color:var(--muted);display:block;margin-bottom:5px;">Rol (solo para identificarlo, no cambia lo que puede ver o hacer):</label>
               <select class="cell usuario-rol" data-id="${u.id}" style="max-width:200px;">
@@ -430,8 +430,8 @@ async function renderUsuariosList() {
     renderUsuariosList();
   }));
   box.querySelectorAll('.usuario-propietario').forEach(chk => chk.addEventListener('change', async () => {
-    if (!confirm(chk.checked ? '¿Convertir a esta persona en propietario? Podrá ver TODOS los negocios y el dashboard consolidado.' : '¿Quitarle el rol de propietario a esta persona?')) { chk.checked = !chk.checked; return; }
-    await sb.from('fz_usuarios_autorizados').update({ es_propietario: chk.checked }).eq('id', chk.dataset.id);
+    if (!confirm(chk.checked ? '¿Convertir a esta persona en administrador? Podrá ver TODOS los negocios y el dashboard consolidado.' : '¿Quitarle el rol de administrador a esta persona?')) { chk.checked = !chk.checked; return; }
+    await sb.from('fz_usuarios_autorizados').update({ es_administrador: chk.checked }).eq('id', chk.dataset.id);
     renderUsuariosList();
   }));
   box.querySelectorAll('.usuario-activo').forEach(chk => chk.addEventListener('change', async () => {
@@ -460,7 +460,7 @@ async function loadBusinesses() {
   const { data, error } = await sb.from('businesses').select('*').order('name');
   if (error) { toast('Error cargando negocios: ' + error.message, 'error'); return; }
   let todos = data || [];
-  if (!STATE.esPropietario && Array.isArray(STATE.negociosPermitidos)) {
+  if (!STATE.esAdministrador && Array.isArray(STATE.negociosPermitidos)) {
     todos = todos.filter(b => STATE.negociosPermitidos.includes(b.id));
   }
   STATE.businesses = todos;
@@ -665,7 +665,7 @@ function updateTopbar() {
   const titulo = meta.title + (meta.needsBiz && b ? ' — ' + b.name : '');
   document.getElementById('pageTitle').textContent = titulo;
   document.getElementById('pageSub').textContent = STATE.currentSection === 'dashboard'
-    ? (STATE.esPropietario ? 'Vista consolidada de todos los negocios' : (STATE.businesses.length > 1 ? 'Vista consolidada de tus negocios' : 'Tu negocio'))
+    ? (STATE.esAdministrador ? 'Vista consolidada de todos los negocios' : (STATE.businesses.length > 1 ? 'Vista consolidada de tus negocios' : 'Tu negocio'))
     : meta.sub;
   document.getElementById('monthPicker').style.display = meta.showMonth ? 'block' : 'none';
 
@@ -1669,10 +1669,10 @@ async function renderConfiguracion() {
   el.innerHTML = `
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;">
       ${tarjetaConfigHtml('cfgCatalogo', 'Catálogo de Cuentas', b ? `Cuenta mayor, subcuentas y su estructura contable para ${b.name}.` : 'Selecciona un negocio para configurar su catálogo.')}
-      ${STATE.esPropietario ? tarjetaConfigHtml('cfgNegocios', 'Negocios (todos)', 'Alta, edición y respaldo de cada negocio del grupo.') : ''}
+      ${STATE.esAdministrador ? tarjetaConfigHtml('cfgNegocios', 'Negocios (todos)', 'Alta, edición y respaldo de cada negocio del grupo.') : ''}
       ${tarjetaConfigHtml('cfgAuditoria', 'Auditoría', b ? `Quién creó, editó o eliminó cada registro en ${b.name}.` : 'Selecciona un negocio para ver su auditoría.')}
-      ${STATE.esPropietario ? tarjetaConfigHtml('cfgUsuarios', 'Usuarios autorizados', 'Quién puede entrar a Finanzas y a qué negocios.') : ''}
-      ${STATE.esPropietario ? tarjetaConfigHtml('cfgMfa', 'Autenticación de dos pasos', 'Protege tu cuenta con un código adicional al iniciar sesión.') : ''}
+      ${STATE.esAdministrador ? tarjetaConfigHtml('cfgUsuarios', 'Usuarios autorizados', 'Quién puede entrar a Finanzas y a qué negocios.') : ''}
+      ${STATE.esAdministrador ? tarjetaConfigHtml('cfgMfa', 'Autenticación de dos pasos', 'Protege tu cuenta con un código adicional al iniciar sesión.') : ''}
     </div>
   `;
   const ir = (idBtn, seccion) => { const e = document.getElementById(idBtn); if (e) e.addEventListener('click', () => irASeccion(seccion)); };
@@ -2104,8 +2104,8 @@ async function actualizarSelectSubcuentaPadre(businessId) {
   sel.innerHTML = `<option value="">— nivel superior —</option>` + construirNivel(null, 0).join('');
 }
 const ROL_LABEL = { propietario: 'Propietario', socio: 'Socio', gerencia: 'Gerencia' };
-function etiquetaRol(esPropietario, rol) {
-  if (esPropietario) return 'Administrador';
+function etiquetaRol(esAdministrador, rol) {
+  if (esAdministrador) return 'Administrador';
   return ROL_LABEL[rol] || 'Gerencia';
 }
 const TIPO_CUENTA_LABEL = { activo: 'Activo', pasivo: 'Pasivo', capital: 'Capital', ingreso: 'Ingreso', costo: 'Costo de Ventas', gasto: 'Gasto' };
