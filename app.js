@@ -1556,6 +1556,67 @@ let STATE_audFiltroAccion = '';
 /* ============================================================
    NEGOCIOS — alta y perfil (nombre comercial + razón social)
    ============================================================ */
+const TABLAS_RESPALDO = [
+  { nombre: 'Ventas', tabla: 'fz_ventas' },
+  { nombre: 'Bancos_Cuentas', tabla: 'fz_bancos_cuentas' },
+  { nombre: 'Bancos_Movimientos', tabla: 'fz_bancos_mov' },
+  { nombre: 'Efectivo_Monedas', tabla: 'fz_efectivo_monedas' },
+  { nombre: 'Efectivo_Movimientos', tabla: 'fz_efectivo_mov' },
+  { nombre: 'Proveedores_Facturas', tabla: 'fz_proveedores' },
+  { nombre: 'Proveedores_Pagos', tabla: 'fz_pagos_aplicados' },
+  { nombre: 'Polizas', tabla: 'fz_polizas' },
+  { nombre: 'Polizas_Lineas', tabla: 'fz_polizas_lineas' },
+  { nombre: 'Catalogo_CuentasMayor', tabla: 'fz_cuentas_mayor' },
+  { nombre: 'Catalogo_Subcuentas', tabla: 'fz_subcuentas' },
+  { nombre: 'Conceptos_Venta', tabla: 'fz_conceptos_venta' },
+  { nombre: 'Conceptos_EfvoBancos', tabla: 'fz_conceptos' },
+  { nombre: 'PL_AjustesManuales', tabla: 'fz_pl_gastos' },
+];
+
+async function obtenerDatosRespaldo(businessId) {
+  const datos = {};
+  for (const t of TABLAS_RESPALDO) {
+    const { data, error } = await sb.from(t.tabla).select('*').eq('business_id', businessId);
+    if (error) { console.error('Error respaldando ' + t.tabla, error); datos[t.nombre] = []; }
+    else datos[t.nombre] = data || [];
+  }
+  return datos;
+}
+function aplanarFila(fila) {
+  const plano = {};
+  Object.entries(fila).forEach(([k, v]) => {
+    plano[k] = (v && typeof v === 'object') ? JSON.stringify(v) : v;
+  });
+  return plano;
+}
+function descargarArchivo(blob, nombreArchivo) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = nombreArchivo;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+async function descargarRespaldoExcel(businessId, nombreNegocio) {
+  toast('Generando respaldo, un momento…');
+  const datos = await obtenerDatosRespaldo(businessId);
+  const wb = XLSX.utils.book_new();
+  Object.entries(datos).forEach(([nombreHoja, filas]) => {
+    const ws = filas.length ? XLSX.utils.json_to_sheet(filas.map(aplanarFila)) : XLSX.utils.aoa_to_sheet([['(sin datos)']]);
+    XLSX.utils.book_append_sheet(wb, ws, nombreHoja.slice(0, 31));
+  });
+  const nombreArchivo = `Respaldo ${nombreNegocio} - ${todayStr()}.xlsx`;
+  XLSX.writeFile(wb, nombreArchivo);
+  registrarAuditoria(businessId, 'exportar', 'Negocios', `Descargó respaldo en Excel de "${nombreNegocio}"`);
+}
+async function descargarRespaldoJSON(businessId, nombreNegocio) {
+  toast('Generando respaldo, un momento…');
+  const datos = await obtenerDatosRespaldo(businessId);
+  const paquete = { negocio: nombreNegocio, business_id: businessId, generado: new Date().toISOString(), datos };
+  const blob = new Blob([JSON.stringify(paquete, null, 2)], { type: 'application/json' });
+  descargarArchivo(blob, `Respaldo ${nombreNegocio} - ${todayStr()}.json`);
+  registrarAuditoria(businessId, 'exportar', 'Negocios', `Descargó respaldo en JSON de "${nombreNegocio}"`);
+}
+
 async function renderNegocios() {
   const el = document.getElementById('sec-negocios');
   const negocios = STATE.businesses || [];
@@ -1566,16 +1627,21 @@ async function renderNegocios() {
         <h3>Negocios del grupo</h3>
         <button class="btn btn-gold btn-sm" id="negociosAddBtn">+ Agregar negocio</button>
       </div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">El respaldo descarga toda la información de ese negocio (Ventas, Bancos, Efectivo, Proveedores, Pólizas, Catálogo de Cuentas) — cada negocio se descarga por separado.</p>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Nombre comercial</th><th>Razón social</th><th>Estatus</th><th></th></tr></thead>
+          <thead><tr><th>Nombre comercial</th><th>Razón social</th><th>Estatus</th><th>Respaldo</th><th></th></tr></thead>
           <tbody>
             ${negocios.length ? negocios.map(n => `<tr>
               <td>${n.name}</td>
               <td>${n.razon_social || '<span style="color:var(--muted);">— sin capturar —</span>'}</td>
               <td>${n.active !== false ? '<span class="badge pag">Activo</span>' : '<span class="badge pend">Inactivo</span>'}</td>
+              <td style="white-space:nowrap;">
+                <button class="btn btn-ghost btn-sm negocio-respaldo-excel" data-id="${n.id}" data-nombre="${(n.name||'').replace(/"/g,'&quot;')}">Excel</button>
+                <button class="btn btn-ghost btn-sm negocio-respaldo-json" data-id="${n.id}" data-nombre="${(n.name||'').replace(/"/g,'&quot;')}">JSON</button>
+              </td>
               <td><button class="btn btn-ghost btn-sm negocio-editar" data-id="${n.id}">Editar</button></td>
-            </tr>`).join('') : `<tr><td colspan="4" class="empty">Aún no hay negocios registrados.</td></tr>`}
+            </tr>`).join('') : `<tr><td colspan="5" class="empty">Aún no hay negocios registrados.</td></tr>`}
           </tbody>
         </table>
       </div>
@@ -1590,6 +1656,8 @@ async function renderNegocios() {
     const negocio = negocios.find(n => n.id === btn.dataset.id);
     if (negocio) abrirEditarNegocio(negocio);
   }));
+  el.querySelectorAll('.negocio-respaldo-excel').forEach(btn => btn.addEventListener('click', () => descargarRespaldoExcel(btn.dataset.id, btn.dataset.nombre)));
+  el.querySelectorAll('.negocio-respaldo-json').forEach(btn => btn.addEventListener('click', () => descargarRespaldoJSON(btn.dataset.id, btn.dataset.nombre)));
 }
 
 async function renderAuditoria() {
