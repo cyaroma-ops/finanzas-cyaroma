@@ -286,6 +286,7 @@ async function checkAcceso(email) {
   if (!row || row.activo === false) return { autorizado: false };
   STATE.esPropietario = !!row.es_propietario;
   STATE.nombreUsuario = row.nombre || null;
+  STATE.rolUsuario = row.rol || null;
   if (!STATE.esPropietario) {
     const { data: permisos } = await sb.from('fz_usuario_negocios').select('business_id').ilike('email', email);
     STATE.negociosPermitidos = (permisos || []).map(p => p.business_id);
@@ -309,7 +310,7 @@ async function boot() {
   document.getElementById('app').style.display = 'block';
   document.getElementById('userEmail').textContent = STATE.user.email;
   document.getElementById('sidebarUserName').textContent = STATE.nombreUsuario || STATE.user.email.split('@')[0];
-  document.getElementById('sidebarUserRole').textContent = STATE.esPropietario ? 'Administrador' : 'Colaborador';
+  document.getElementById('sidebarUserRole').textContent = etiquetaRol(STATE.esPropietario, STATE.rolUsuario);
   document.getElementById('monthPicker').value = STATE.currentMonth;
 
   await loadBusinesses();
@@ -378,7 +379,7 @@ async function renderUsuariosList() {
           <strong style="font-size:14.5px;">${u.nombre || u.email}</strong>${u.email.toLowerCase()===STATE.user.email.toLowerCase()?' <span style="color:var(--muted);font-size:11px;">(tú)</span>':''}
           ${u.nombre ? `<div style="color:var(--muted);font-size:12px;margin-top:2px;">${u.email}</div>` : ''}
           <div style="margin-top:5px;display:flex;gap:6px;flex-wrap:wrap;">
-            <span class="badge ${u.es_propietario?'pag':''}" ${!u.es_propietario?'style="background:#eef1f6;color:var(--muted);"':''}>${u.es_propietario?'Propietario':'Colaborador'}</span>
+            <span class="badge ${u.es_propietario?'pag':''}" ${!u.es_propietario?'style="background:#eef1f6;color:var(--muted);"':''}>${etiquetaRol(u.es_propietario, u.rol)}</span>
             <span class="badge ${u.activo!==false?'pag':'pend'}">${u.activo!==false?'Activo':'Inactivo'}</span>
           </div>
         </div>
@@ -398,6 +399,14 @@ async function renderUsuariosList() {
             </label>
           </div>
           ${!u.es_propietario ? `
+            <div style="margin-bottom:12px;">
+              <label style="font-size:11.5px;color:var(--muted);display:block;margin-bottom:5px;">Rol (solo para identificarlo, no cambia lo que puede ver o hacer):</label>
+              <select class="cell usuario-rol" data-id="${u.id}" style="max-width:200px;">
+                <option value="propietario" ${u.rol==='propietario'?'selected':''}>Propietario</option>
+                <option value="socio" ${u.rol==='socio'?'selected':''}>Socio</option>
+                <option value="gerencia" ${(!u.rol||u.rol==='gerencia')?'selected':''}>Gerencia</option>
+              </select>
+            </div>
             <div style="font-size:11.5px;color:var(--muted);margin-bottom:8px;">Negocios que puede ver:</div>
             <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px 16px;margin-bottom:12px;">
               ${todosNegocios.map(n => `
@@ -414,6 +423,10 @@ async function renderUsuariosList() {
   box.querySelectorAll('.usuario-editar-btn').forEach(btn => btn.addEventListener('click', () => {
     if (STATE_usuarioEditando.has(btn.dataset.id)) STATE_usuarioEditando.delete(btn.dataset.id);
     else STATE_usuarioEditando.add(btn.dataset.id);
+    renderUsuariosList();
+  }));
+  box.querySelectorAll('.usuario-rol').forEach(sel => sel.addEventListener('change', async () => {
+    await sb.from('fz_usuarios_autorizados').update({ rol: sel.value }).eq('id', sel.dataset.id);
     renderUsuariosList();
   }));
   box.querySelectorAll('.usuario-propietario').forEach(chk => chk.addEventListener('change', async () => {
@@ -2089,6 +2102,11 @@ async function actualizarSelectSubcuentaPadre(businessId) {
   const construirNivel = (padreId, nivel) => subcuentas.filter(s => s.cuenta_mayor_id === mayorId && (s.subcuenta_padre_id || null) === padreId)
     .flatMap(s => [`<option value="${s.id}">${'—'.repeat(nivel)} ${s.nombre}</option>`, ...construirNivel(s.id, nivel + 1)]);
   sel.innerHTML = `<option value="">— nivel superior —</option>` + construirNivel(null, 0).join('');
+}
+const ROL_LABEL = { propietario: 'Propietario', socio: 'Socio', gerencia: 'Gerencia' };
+function etiquetaRol(esPropietario, rol) {
+  if (esPropietario) return 'Administrador';
+  return ROL_LABEL[rol] || 'Gerencia';
 }
 const TIPO_CUENTA_LABEL = { activo: 'Activo', pasivo: 'Pasivo', capital: 'Capital', ingreso: 'Ingreso', costo: 'Costo de Ventas', gasto: 'Gasto' };
 async function renderCuentasList(businessId) {
