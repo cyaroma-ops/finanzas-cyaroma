@@ -308,6 +308,8 @@ async function boot() {
   document.getElementById('loginScreen').style.display = 'none';
   document.getElementById('app').style.display = 'block';
   document.getElementById('userEmail').textContent = STATE.user.email;
+  document.getElementById('sidebarUserName').textContent = STATE.nombreUsuario || STATE.user.email.split('@')[0];
+  document.getElementById('sidebarUserRole').textContent = STATE.esPropietario ? 'Administrador' : 'Colaborador';
   document.getElementById('monthPicker').value = STATE.currentMonth;
 
   await loadBusinesses();
@@ -315,11 +317,6 @@ async function boot() {
   setupBizControls();
   setupUsuariosControls();
   setupMfaControls();
-  if (!STATE.esPropietario) {
-    document.getElementById('openUsuariosBtn').style.display = 'none';
-    document.getElementById('openMfaBtn').style.display = 'none';
-    document.querySelector('.nav-item[data-section="negocios"]').style.display = 'none';
-  }
 
   document.getElementById('monthPicker').addEventListener('change', (e) => {
     STATE.currentMonth = e.target.value;
@@ -332,7 +329,8 @@ async function boot() {
 
 /* ---------- USUARIOS AUTORIZADOS ---------- */
 function setupUsuariosControls() {
-  document.getElementById('openUsuariosBtn').addEventListener('click', openUsuariosModal);
+  // El botón de abrir este modal ahora vive en Configuración (ver renderConfiguracion),
+  // que llama a openUsuariosModal() directamente.
 }
 async function loadUsuariosAutorizados() {
   const { data, error } = await sb.from('fz_usuarios_autorizados').select('*').order('email');
@@ -508,10 +506,6 @@ function abrirEditarNegocio(negocio) {
 
 /* ---------- Autenticación de dos pasos (2FA / MFA) ---------- */
 function setupMfaControls() {
-  document.getElementById('openMfaBtn').addEventListener('click', async () => {
-    document.getElementById('modalMfa').classList.add('show');
-    await renderModalMfa();
-  });
   document.getElementById('cancelMfaModal').addEventListener('click', () => {
     document.getElementById('modalMfa').classList.remove('show');
   });
@@ -586,7 +580,17 @@ const SECTION_META = {
   catalogo: { title: 'Catálogo de Cuentas', sub: 'Estructura contable: cuenta mayor › subcuenta › sub-subcuenta', showMonth: false, needsBiz: true },
   auditoria: { title: 'Auditoría', sub: 'Quién creó, editó o eliminó cada registro', showMonth: false, needsBiz: true },
   negocios: { title: 'Negocios', sub: 'Alta y perfil de cada negocio del grupo', showMonth: false, needsBiz: false },
+  configuracion: { title: 'Configuración', sub: '', showMonth: false, needsBiz: false },
 };
+// Estas viven "dentro" de Configuración: ya no tienen su propio ítem en el menú principal,
+// pero conservan su sección y su función de render tal cual, solo cambia cómo se llega ahí.
+const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios'];
+function marcarNavActivo(seccion) {
+  document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+  const seccionNav = SECCIONES_EN_CONFIGURACION.includes(seccion) ? 'configuracion' : seccion;
+  const item = document.querySelector(`.nav-item[data-section="${seccionNav}"]`);
+  if (item) item.classList.add('active');
+}
 
 function cerrarMenuMovil() {
   document.querySelector('.sidebar').classList.remove('open');
@@ -597,8 +601,7 @@ function setupNav() {
     item.addEventListener('click', () => {
       STATE.currentSection = item.dataset.section;
       localStorage.setItem('finanzas_ultima_seccion', item.dataset.section);
-      document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
-      item.classList.add('active');
+      marcarNavActivo(item.dataset.section);
       document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
       document.getElementById('sec-' + STATE.currentSection).classList.add('active');
       updateTopbar();
@@ -611,8 +614,7 @@ function setupNav() {
   const guardada = localStorage.getItem('finanzas_ultima_seccion');
   const seccionInicial = (guardada && SECTION_META[guardada]) ? guardada : 'ventas';
   STATE.currentSection = seccionInicial;
-  document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
-  document.querySelector(`.nav-item[data-section="${seccionInicial}"]`).classList.add('active');
+  marcarNavActivo(seccionInicial);
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
   document.getElementById('sec-' + seccionInicial).classList.add('active');
 
@@ -680,6 +682,7 @@ async function renderCurrentSection() {
   if (s === 'catalogo') return renderCatalogoCuentas();
   if (s === 'auditoria') return renderAuditoria();
   if (s === 'negocios') return renderNegocios();
+  if (s === 'configuracion') return renderConfiguracion();
 }
 
 /* ============================================================
@@ -1617,6 +1620,42 @@ async function descargarRespaldoJSON(businessId, nombreNegocio) {
   registrarAuditoria(businessId, 'exportar', 'Negocios', `Descargó respaldo en JSON de "${nombreNegocio}"`);
 }
 
+function agregarBotonVolverConfig(el) {
+  el.insertAdjacentHTML('afterbegin', `<button class="btn btn-ghost btn-sm volver-config-btn" style="margin-bottom:14px;">← Configuración</button>`);
+  const btn = el.querySelector('.volver-config-btn');
+  if (btn) btn.addEventListener('click', () => irASeccion('configuracion'));
+}
+function tarjetaConfigHtml(id, icono, titulo, descripcion) {
+  return `<div class="config-card" id="${id}" style="cursor:pointer;border:1.5px solid var(--line);border-radius:10px;padding:16px;display:flex;gap:14px;align-items:flex-start;">
+    <div style="font-size:22px;line-height:1;">${icono}</div>
+    <div><strong style="color:var(--navy-1);">${titulo}</strong><p style="font-size:12.5px;color:var(--muted);margin-top:4px;">${descripcion}</p></div>
+  </div>`;
+}
+async function renderConfiguracion() {
+  const el = document.getElementById('sec-configuracion');
+  const b = biz();
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;">
+      ${tarjetaConfigHtml('cfgCatalogo', '📒', 'Catálogo de Cuentas', b ? `Cuenta mayor, subcuentas y su estructura contable para ${b.name}.` : 'Selecciona un negocio para configurar su catálogo.')}
+      ${STATE.esPropietario ? tarjetaConfigHtml('cfgNegocios', '🏢', 'Negocios (todos)', 'Alta, edición y respaldo de cada negocio del grupo.') : ''}
+      ${tarjetaConfigHtml('cfgAuditoria', '🔍', 'Auditoría', b ? `Quién creó, editó o eliminó cada registro en ${b.name}.` : 'Selecciona un negocio para ver su auditoría.')}
+      ${STATE.esPropietario ? tarjetaConfigHtml('cfgUsuarios', '👥', 'Usuarios autorizados', 'Quién puede entrar a Finanzas y a qué negocios.') : ''}
+      ${STATE.esPropietario ? tarjetaConfigHtml('cfgMfa', '🔒', 'Autenticación de dos pasos', 'Protege tu cuenta con un código adicional al iniciar sesión.') : ''}
+    </div>
+  `;
+  const ir = (idBtn, seccion) => { const e = document.getElementById(idBtn); if (e) e.addEventListener('click', () => irASeccion(seccion)); };
+  ir('cfgCatalogo', 'catalogo');
+  ir('cfgNegocios', 'negocios');
+  ir('cfgAuditoria', 'auditoria');
+  const usuariosBtn = document.getElementById('cfgUsuarios');
+  if (usuariosBtn) usuariosBtn.addEventListener('click', openUsuariosModal);
+  const mfaBtn = document.getElementById('cfgMfa');
+  if (mfaBtn) mfaBtn.addEventListener('click', async () => {
+    document.getElementById('modalMfa').classList.add('show');
+    await renderModalMfa();
+  });
+}
+
 async function renderNegocios() {
   const el = document.getElementById('sec-negocios');
   const negocios = STATE.businesses || [];
@@ -1647,6 +1686,7 @@ async function renderNegocios() {
       </div>
     </div>
   `;
+  agregarBotonVolverConfig(el);
 
   document.getElementById('negociosAddBtn').addEventListener('click', () => {
     document.getElementById('newBizName').value = '';
@@ -1729,6 +1769,7 @@ async function renderAuditoria() {
       </div>
     </div>
   `;
+  agregarBotonVolverConfig(el);
 
   document.getElementById('audBuscar').addEventListener('input', (e) => { STATE_audFiltroTexto = e.target.value; renderAuditoria(); });
   document.getElementById('audUsuario').addEventListener('change', (e) => { STATE_audFiltroUsuario = e.target.value; renderAuditoria(); });
@@ -1827,6 +1868,7 @@ async function renderCatalogoCuentas() {
       </div>`;
     }).join('') || `<div class="empty">Aún no has creado cuentas mayor de Activo, Pasivo, Capital, Ingreso o Gasto. Usa el formulario de arriba.</div>`}
   `;
+  agregarBotonVolverConfig(el);
 
   const filaSubHtml = (s, nivel) => {
     const editando = STATE_ccEditando.has(s.id);
@@ -4526,9 +4568,7 @@ function detalleSubcuentaHtml(filas, colspan) {
 async function irASeccion(nombreSeccion) {
   STATE.currentSection = nombreSeccion;
   localStorage.setItem('finanzas_ultima_seccion', nombreSeccion);
-  document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
-  const item = document.querySelector(`.nav-item[data-section="${nombreSeccion}"]`);
-  if (item) item.classList.add('active');
+  marcarNavActivo(nombreSeccion);
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
   const sec = document.getElementById('sec-' + nombreSeccion);
   if (sec) sec.classList.add('active');
