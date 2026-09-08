@@ -370,11 +370,11 @@ async function renderUsuariosList() {
   const bloques = await Promise.all(usuarios.map(async u => {
     const negociosDe = u.es_propietario ? [] : await loadUsuarioNegocios(u.email);
     return `
-    <div style="padding:10px 4px;border-bottom:1px solid var(--line);">
+    <div style="padding:14px 6px;border-bottom:1px solid var(--line);">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
         <div style="min-width:0;">
-          <strong>${u.email}</strong>${u.email.toLowerCase()===STATE.user.email.toLowerCase()?' <span style="color:var(--muted);font-size:11px;">(tú)</span>':''}
-          ${u.nombre ? `<div style="color:var(--muted);font-size:12px;">${u.nombre}</div>` : ''}
+          <strong style="font-size:14.5px;">${u.nombre || u.email}</strong>${u.email.toLowerCase()===STATE.user.email.toLowerCase()?' <span style="color:var(--muted);font-size:11px;">(tú)</span>':''}
+          ${u.nombre ? `<div style="color:var(--muted);font-size:12px;margin-top:2px;">${u.email}</div>` : ''}
         </div>
         <div style="display:flex;align-items:center;gap:10px;flex-shrink:0;">
           <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer;">
@@ -387,15 +387,15 @@ async function renderUsuariosList() {
         </div>
       </div>
       ${!u.es_propietario ? `
-        <div style="margin-top:8px;padding:8px 10px;background:#f7f9fc;border-radius:8px;">
-          <div style="font-size:11.5px;color:var(--muted);margin-bottom:6px;">Negocios que puede ver:</div>
-          <div style="display:flex;flex-wrap:wrap;gap:10px;">
+        <div style="margin-top:10px;padding:12px 14px;background:#f7f9fc;border-radius:8px;">
+          <div style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Negocios que puede ver:</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px 16px;">
             ${todosNegocios.map(n => `
-              <label style="display:flex;align-items:center;gap:5px;font-size:12.5px;cursor:pointer;">
+              <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer;">
                 <input type="checkbox" class="usuario-negocio" data-email="${u.email}" data-negocio="${n.id}" ${negociosDe.includes(n.id)?'checked':''}> ${n.name}
               </label>`).join('') || '<span style="font-size:12px;color:var(--muted);">Aún no hay negocios creados.</span>'}
           </div>
-        </div>` : `<div style="margin-top:6px;font-size:11.5px;color:var(--green);">Ve todos los negocios y el dashboard consolidado.</div>`}
+        </div>` : `<div style="margin-top:8px;font-size:11.5px;color:var(--green);">Ve todos los negocios y el dashboard consolidado.</div>`}
     </div>`;
   }));
   box.innerHTML = bloques.join('');
@@ -1625,10 +1625,10 @@ function agregarBotonVolverConfig(el) {
   const btn = el.querySelector('.volver-config-btn');
   if (btn) btn.addEventListener('click', () => irASeccion('configuracion'));
 }
-function tarjetaConfigHtml(id, icono, titulo, descripcion) {
-  return `<div class="config-card" id="${id}" style="cursor:pointer;border:1.5px solid var(--line);border-radius:10px;padding:16px;display:flex;gap:14px;align-items:flex-start;">
-    <div style="font-size:22px;line-height:1;">${icono}</div>
-    <div><strong style="color:var(--navy-1);">${titulo}</strong><p style="font-size:12.5px;color:var(--muted);margin-top:4px;">${descripcion}</p></div>
+function tarjetaConfigHtml(id, titulo, descripcion) {
+  return `<div class="config-card" id="${id}" style="cursor:pointer;border:1.5px solid var(--line);border-radius:10px;padding:18px;">
+    <strong style="color:var(--navy-1);font-size:14.5px;">${titulo}</strong>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:6px;">${descripcion}</p>
   </div>`;
 }
 async function renderConfiguracion() {
@@ -1636,11 +1636,11 @@ async function renderConfiguracion() {
   const b = biz();
   el.innerHTML = `
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;">
-      ${tarjetaConfigHtml('cfgCatalogo', '📒', 'Catálogo de Cuentas', b ? `Cuenta mayor, subcuentas y su estructura contable para ${b.name}.` : 'Selecciona un negocio para configurar su catálogo.')}
-      ${STATE.esPropietario ? tarjetaConfigHtml('cfgNegocios', '🏢', 'Negocios (todos)', 'Alta, edición y respaldo de cada negocio del grupo.') : ''}
-      ${tarjetaConfigHtml('cfgAuditoria', '🔍', 'Auditoría', b ? `Quién creó, editó o eliminó cada registro en ${b.name}.` : 'Selecciona un negocio para ver su auditoría.')}
-      ${STATE.esPropietario ? tarjetaConfigHtml('cfgUsuarios', '👥', 'Usuarios autorizados', 'Quién puede entrar a Finanzas y a qué negocios.') : ''}
-      ${STATE.esPropietario ? tarjetaConfigHtml('cfgMfa', '🔒', 'Autenticación de dos pasos', 'Protege tu cuenta con un código adicional al iniciar sesión.') : ''}
+      ${tarjetaConfigHtml('cfgCatalogo', 'Catálogo de Cuentas', b ? `Cuenta mayor, subcuentas y su estructura contable para ${b.name}.` : 'Selecciona un negocio para configurar su catálogo.')}
+      ${STATE.esPropietario ? tarjetaConfigHtml('cfgNegocios', 'Negocios (todos)', 'Alta, edición y respaldo de cada negocio del grupo.') : ''}
+      ${tarjetaConfigHtml('cfgAuditoria', 'Auditoría', b ? `Quién creó, editó o eliminó cada registro en ${b.name}.` : 'Selecciona un negocio para ver su auditoría.')}
+      ${STATE.esPropietario ? tarjetaConfigHtml('cfgUsuarios', 'Usuarios autorizados', 'Quién puede entrar a Finanzas y a qué negocios.') : ''}
+      ${STATE.esPropietario ? tarjetaConfigHtml('cfgMfa', 'Autenticación de dos pasos', 'Protege tu cuenta con un código adicional al iniciar sesión.') : ''}
     </div>
   `;
   const ir = (idBtn, seccion) => { const e = document.getElementById(idBtn); if (e) e.addEventListener('click', () => irASeccion(seccion)); };
