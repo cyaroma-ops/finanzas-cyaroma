@@ -362,6 +362,7 @@ async function openUsuariosModal() {
     renderUsuariosList();
   };
 }
+let STATE_usuarioEditando = new Set();
 async function renderUsuariosList() {
   const [usuarios, todosNegocios] = await Promise.all([loadUsuariosAutorizados(), loadTodosNegociosSinFiltro()]);
   const box = document.getElementById('usuariosList');
@@ -369,38 +370,54 @@ async function renderUsuariosList() {
 
   const bloques = await Promise.all(usuarios.map(async u => {
     const negociosDe = u.es_propietario ? [] : await loadUsuarioNegocios(u.email);
+    const editando = STATE_usuarioEditando.has(u.id);
     return `
     <div style="padding:14px 6px;border-bottom:1px solid var(--line);">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
         <div style="min-width:0;">
           <strong style="font-size:14.5px;">${u.nombre || u.email}</strong>${u.email.toLowerCase()===STATE.user.email.toLowerCase()?' <span style="color:var(--muted);font-size:11px;">(tú)</span>':''}
           ${u.nombre ? `<div style="color:var(--muted);font-size:12px;margin-top:2px;">${u.email}</div>` : ''}
+          <div style="margin-top:5px;display:flex;gap:6px;flex-wrap:wrap;">
+            <span class="badge ${u.es_propietario?'pag':''}" ${!u.es_propietario?'style="background:#eef1f6;color:var(--muted);"':''}>${u.es_propietario?'Propietario':'Colaborador'}</span>
+            <span class="badge ${u.activo!==false?'pag':'pend'}">${u.activo!==false?'Activo':'Inactivo'}</span>
+          </div>
         </div>
-        <div style="display:flex;align-items:center;gap:10px;flex-shrink:0;">
-          <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer;">
-            <input type="checkbox" class="usuario-propietario" data-id="${u.id}" ${u.es_propietario?'checked':''}> Propietario
-          </label>
-          <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer;">
-            <input type="checkbox" class="usuario-activo" data-id="${u.id}" ${u.activo!==false?'checked':''}> Activo
-          </label>
-          <button class="row-del usuario-del" data-id="${u.id}" style="font-size:15px;">✕</button>
+        <div style="flex-shrink:0;">
+          <button class="btn btn-ghost btn-sm usuario-editar-btn" data-id="${u.id}">${editando?'Listo':'Editar'}</button>
         </div>
       </div>
-      ${!u.es_propietario ? `
-        <div style="margin-top:10px;padding:12px 14px;background:#f7f9fc;border-radius:8px;">
-          <div style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Negocios que puede ver:</div>
-          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px 16px;">
-            ${todosNegocios.map(n => `
-              <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer;">
-                <input type="checkbox" class="usuario-negocio" data-email="${u.email}" data-negocio="${n.id}" ${negociosDe.includes(n.id)?'checked':''}> ${n.name}
-              </label>`).join('') || '<span style="font-size:12px;color:var(--muted);">Aún no hay negocios creados.</span>'}
+      ${editando ? `
+        <div style="margin-top:10px;padding:12px 14px;background:#fff8ec;border:1px solid #f0e0bd;border-radius:8px;">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:10px;">⚠ Estos cambios afectan qué puede ver y hacer esta persona en el sistema.</div>
+          <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:${u.es_propietario?'0':'12px'};">
+            <label style="display:flex;align-items:center;gap:5px;font-size:12.5px;cursor:pointer;">
+              <input type="checkbox" class="usuario-propietario" data-id="${u.id}" ${u.es_propietario?'checked':''}> Es propietario (ve todos los negocios)
+            </label>
+            <label style="display:flex;align-items:center;gap:5px;font-size:12.5px;cursor:pointer;">
+              <input type="checkbox" class="usuario-activo" data-id="${u.id}" ${u.activo!==false?'checked':''}> Activo (puede entrar)
+            </label>
           </div>
-        </div>` : `<div style="margin-top:8px;font-size:11.5px;color:var(--green);">Ve todos los negocios y el dashboard consolidado.</div>`}
+          ${!u.es_propietario ? `
+            <div style="font-size:11.5px;color:var(--muted);margin-bottom:8px;">Negocios que puede ver:</div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px 16px;margin-bottom:12px;">
+              ${todosNegocios.map(n => `
+                <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer;">
+                  <input type="checkbox" class="usuario-negocio" data-email="${u.email}" data-negocio="${n.id}" ${negociosDe.includes(n.id)?'checked':''}> ${n.name}
+                </label>`).join('') || '<span style="font-size:12px;color:var(--muted);">Aún no hay negocios creados.</span>'}
+            </div>` : ''}
+          <button class="btn btn-ghost btn-sm usuario-del" data-id="${u.id}" style="color:var(--red);">Quitar acceso a este usuario</button>
+        </div>` : ''}
     </div>`;
   }));
   box.innerHTML = bloques.join('');
 
+  box.querySelectorAll('.usuario-editar-btn').forEach(btn => btn.addEventListener('click', () => {
+    if (STATE_usuarioEditando.has(btn.dataset.id)) STATE_usuarioEditando.delete(btn.dataset.id);
+    else STATE_usuarioEditando.add(btn.dataset.id);
+    renderUsuariosList();
+  }));
   box.querySelectorAll('.usuario-propietario').forEach(chk => chk.addEventListener('change', async () => {
+    if (!confirm(chk.checked ? '¿Convertir a esta persona en propietario? Podrá ver TODOS los negocios y el dashboard consolidado.' : '¿Quitarle el rol de propietario a esta persona?')) { chk.checked = !chk.checked; return; }
     await sb.from('fz_usuarios_autorizados').update({ es_propietario: chk.checked }).eq('id', chk.dataset.id);
     renderUsuariosList();
   }));
@@ -418,7 +435,9 @@ async function renderUsuariosList() {
   }));
   box.querySelectorAll('.usuario-del').forEach(btn => btn.addEventListener('click', async () => {
     if (usuarios.length <= 1) { toast('Debe quedar al menos un usuario autorizado.', 'error'); return; }
+    if (!confirm('¿Seguro que quieres quitarle el acceso a este usuario? Ya no podrá entrar a Finanzas.')) return;
     await sb.from('fz_usuarios_autorizados').delete().eq('id', btn.dataset.id);
+    STATE_usuarioEditando.delete(btn.dataset.id);
     renderUsuariosList();
   }));
 }
