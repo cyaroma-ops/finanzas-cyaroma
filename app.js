@@ -310,7 +310,9 @@ async function boot() {
   document.getElementById('app').style.display = 'block';
   document.getElementById('userEmail').textContent = STATE.user.email;
   document.getElementById('sidebarUserName').textContent = STATE.nombreUsuario || STATE.user.email.split('@')[0];
-  document.getElementById('sidebarUserRole').textContent = etiquetaRol(STATE.esAdministrador, STATE.rolUsuario);
+  const rolEl = document.getElementById('sidebarUserRole');
+  rolEl.textContent = STATE.esAdministrador ? 'Administrador' : '';
+  rolEl.style.display = STATE.esAdministrador ? '' : 'none';
   document.getElementById('monthPicker').value = STATE.currentMonth;
 
   await loadBusinesses();
