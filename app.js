@@ -5538,3 +5538,18 @@ function cerrarModalPolizaConfirmando() {
   renderPolizas();
 }
 
+/* ============================================================
+   CERRAR CUALQUIER MODAL CON ESC
+   ============================================================ */
+function botonCerrarModal(modal) {
+  return modal.querySelector('button[id^="close" i], button[id^="cerrar" i]')
+    || modal.querySelector('.poliza-cerrar-x')
+    || modal.querySelector('button[id^="cancel" i]');
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const modalAbierto = document.querySelector('.modal-bg.show');
+  if (!modalAbierto) return;
+  const btn = botonCerrarModal(modalAbierto);
+  if (btn) btn.click();
+});
