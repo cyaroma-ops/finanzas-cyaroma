@@ -4159,8 +4159,7 @@ async function renderProveedores() {
   `;
 
   document.getElementById('addProvBtn').addEventListener('click', async () => {
-    await sb.from('fz_proveedores').insert({ business_id: b.id, fecha: todayStr(), proveedor: catalogo[0]?.nombre || 'Nuevo proveedor', proveedor_id: catalogo[0]?.id || null, importe: 0, estatus: 'Pendiente' });
-    renderProveedores();
+    await openModalFacturaProveedor(null, b.id, catalogo, opcionesPagoDesde);
   });
   document.getElementById('openProveedoresCatBtn').addEventListener('click', () => openProveedoresCatModal(b.id, renderProveedores));
   document.getElementById('openCuentasBtnProv').addEventListener('click', () => openCuentasModal(b.id, renderProveedores));
@@ -4227,6 +4226,18 @@ async function renderProveedores() {
       renderProveedores();
     });
   });
+  el.querySelectorAll('.prov-menu-btn').forEach(btn => btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const dropdown = el.querySelector(`.prov-menu-dropdown[data-menu="${btn.dataset.id}"]`);
+    const abierto = dropdown.style.display === 'block';
+    el.querySelectorAll('.prov-menu-dropdown').forEach(d => d.style.display = 'none');
+    dropdown.style.display = abierto ? 'none' : 'block';
+  }));
+  document.addEventListener('click', () => el.querySelectorAll('.prov-menu-dropdown').forEach(d => d.style.display = 'none'));
+  el.querySelectorAll('.prov-editar').forEach(btn => btn.addEventListener('click', async () => {
+    const info = all.find(x => x.id === btn.dataset.id);
+    if (info) await openModalFacturaProveedor(info, b.id, catalogo, opcionesPagoDesde);
+  }));
   el.querySelectorAll('.prov-del').forEach(btn => btn.addEventListener('click', async () => {
     if (!confirm('¿Eliminar este registro? Esta acción no se puede deshacer.')) return;
     const info = all.find(x => x.id === btn.dataset.id);
@@ -5838,6 +5849,135 @@ async function syncPagoProveedor(businessId, facturaId) {
   }
 }
 
+let STATE_provArchivosPendientes = [];
+let STATE_facturaProveedorEditandoId = null;
+function renderFpAdjuntoPendiente() {
+  const box = document.getElementById('fpAdjuntoCell');
+  const pendientes = STATE_provArchivosPendientes;
+  box.innerHTML = `<span style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;">
+    ${pendientes.map((f, i) => `<span style="font-size:12px;color:var(--navy-1);background:#f7f9fc;border-radius:5px;padding:2px 6px;">${f.name} <button class="quitar-fp-adjunto-pendiente" data-idx="${i}" style="border:none;background:none;color:var(--red);cursor:pointer;">✕</button></span>`).join('')}
+    <label style="font-size:12px;color:var(--navy-3);text-decoration:underline;cursor:pointer;">${pendientes.length?'+ Agregar otro':'Adjuntar'} (se sube al guardar)<input type="file" accept=".pdf,.jpg,.jpeg,.png" class="fp-adjunto-pendiente-input" style="display:none;"></label>
+  </span>`;
+  const input = box.querySelector('.fp-adjunto-pendiente-input');
+  if (input) input.addEventListener('change', () => {
+    const file = input.files[0];
+    if (!file) return;
+    const ext = (file.name.split('.').pop() || '').toLowerCase();
+    if (!ADJUNTOS_EXT_PERMITIDAS.includes(ext)) { toast('Solo se permiten archivos PDF, JPG o PNG.', 'error'); return; }
+    if (file.size > ADJUNTOS_MAX_MB * 1024 * 1024) { toast(`El archivo pesa más de ${ADJUNTOS_MAX_MB} MB.`, 'error'); return; }
+    STATE_provArchivosPendientes.push(file);
+    renderFpAdjuntoPendiente();
+  });
+  box.querySelectorAll('.quitar-fp-adjunto-pendiente').forEach(btn => btn.addEventListener('click', () => {
+    STATE_provArchivosPendientes.splice(Number(btn.dataset.idx), 1);
+    renderFpAdjuntoPendiente();
+  }));
+}
+
+async function openModalFacturaProveedor(factura, businessId, catalogo, opcionesPagoDesde) {
+  STATE_facturaProveedorEditandoId = factura ? factura.id : null;
+  document.getElementById('modalFacturaProveedorTitulo').textContent = factura ? 'Editar factura de proveedor' : 'Nueva factura de proveedor';
+  const selProv = document.getElementById('fpProveedor');
+  selProv.innerHTML = `<option value="">${factura?.proveedor || '— elegir —'}</option>` +
+    catalogo.map(c => `<option value="${c.id}" ${factura?.proveedor_id===c.id?'selected':''}>${c.razon_social ? c.razon_social + ' — ' : ''}${c.nombre_comercial || c.nombre}</option>`).join('');
+  document.getElementById('fpFactura').value = factura?.factura || '';
+  document.getElementById('fpFecha').value = factura?.fecha || todayStr();
+  document.getElementById('fpImporte').value = fmtInputVal(factura?.importe || 0);
+  document.getElementById('fpEstatus').value = factura?.estatus || 'Pendiente';
+  document.getElementById('fpFechaPago').value = factura?.fecha_pago || '';
+  const selPagado = document.getElementById('fpPagadoDesde');
+  const valorPagadoDesde = factura?.pagado_desde_tipo ? (factura.pagado_desde_tipo + ':' + factura.pagado_desde_cuenta_id) : '';
+  selPagado.innerHTML = `<option value="">— sin especificar —</option>` +
+    opcionesPagoDesde.map(o => `<option value="${o.value}" ${valorPagadoDesde===o.value?'selected':''}>${o.label}</option>`).join('');
+  document.getElementById('deleteFacturaProveedor').style.display = factura ? '' : 'none';
+
+  document.getElementById('fpDesgloseWrap').style.display = factura ? '' : 'none';
+  if (factura) {
+    const desgloseTotal = desgloseLineas(factura.desglose).reduce((s,l)=>s+(Number(l.monto)||0),0);
+    document.getElementById('fpDesglosarBtn').textContent = desgloseTotal > 0 ? `Desglosado: ${fmt(desgloseTotal)}` : 'Desglosar';
+  }
+
+  if (factura) {
+    const conteo = await contarAdjuntosPorRegistro('fz_proveedores', [factura.id]);
+    document.getElementById('fpAdjuntoCell').innerHTML = adjuntosCellHtml(conteo[factura.id], factura.id);
+    wireAdjuntosHandlers(document.getElementById('fpAdjuntoCell'), 'fz_proveedores', businessId, () => {});
+  } else {
+    STATE_provArchivosPendientes = [];
+    renderFpAdjuntoPendiente();
+  }
+
+  document.getElementById('modalFacturaProveedor').classList.add('show');
+}
+document.getElementById('closeFacturaProveedor').addEventListener('click', () => {
+  document.getElementById('modalFacturaProveedor').classList.remove('show');
+});
+document.getElementById('fpDesglosarBtn').addEventListener('click', () => {
+  const b = biz();
+  if (!b || !STATE_facturaProveedorEditandoId) return;
+  openDesgloseModal(b.id, STATE_facturaProveedorEditandoId, () => {});
+});
+document.getElementById('saveFacturaProveedor').addEventListener('click', async () => {
+  const b = biz();
+  if (!b) return;
+  const proveedor_id = document.getElementById('fpProveedor').value || null;
+  const catOption = document.getElementById('fpProveedor').selectedOptions[0];
+  let proveedorTexto = proveedor_id ? catOption.textContent : (catOption?.textContent || 'Nuevo proveedor');
+  if (!proveedor_id && proveedorTexto === '— elegir —') proveedorTexto = 'Nuevo proveedor';
+  const payload = {
+    business_id: b.id,
+    proveedor_id,
+    proveedor: proveedorTexto,
+    factura: document.getElementById('fpFactura').value.trim() || null,
+    fecha: document.getElementById('fpFecha').value || todayStr(),
+    importe: leerMonto(document.getElementById('fpImporte').value) || 0,
+    estatus: document.getElementById('fpEstatus').value,
+    fecha_pago: document.getElementById('fpFechaPago').value || null,
+  };
+  const pagadoDesde = document.getElementById('fpPagadoDesde').value;
+  if (pagadoDesde) {
+    const [tipo, cuentaId] = pagadoDesde.split(':');
+    payload.pagado_desde_tipo = tipo;
+    payload.pagado_desde_cuenta_id = cuentaId;
+  } else {
+    payload.pagado_desde_tipo = null;
+    payload.pagado_desde_cuenta_id = null;
+  }
+
+  const idEditando = STATE_facturaProveedorEditandoId;
+  let facturaId = idEditando;
+  if (idEditando) {
+    const { error } = await sb.from('fz_proveedores').update(payload).eq('id', idEditando);
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+  } else {
+    const { data, error } = await sb.from('fz_proveedores').insert(payload).select().single();
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    facturaId = data.id;
+    for (const file of STATE_provArchivosPendientes) {
+      const subido = await subirAdjunto('fz_proveedores', facturaId, b.id, file);
+      if (subido) await sb.from('fz_adjuntos').insert({ business_id: b.id, tabla: 'fz_proveedores', registro_id: facturaId, archivo_path: subido.path, archivo_nombre: subido.nombre });
+    }
+    STATE_provArchivosPendientes = [];
+  }
+
+  registrarAuditoria(b.id, idEditando ? 'editar' : 'crear', 'Proveedores', `${payload.proveedor} · factura ${payload.factura||'s/f'} · ${fmt(payload.importe)}`);
+  document.getElementById('modalFacturaProveedor').classList.remove('show');
+  STATE_facturaProveedorEditandoId = null;
+  toast(idEditando ? 'Factura actualizada.' : 'Factura agregada.');
+  renderProveedores();
+});
+document.getElementById('deleteFacturaProveedor').addEventListener('click', async () => {
+  const b = biz();
+  if (!b || !STATE_facturaProveedorEditandoId) return;
+  if (!confirm('¿Eliminar esta factura? Esta acción no se puede deshacer.')) return;
+  const { data: info } = await sb.from('fz_proveedores').select('proveedor,factura,importe').eq('id', STATE_facturaProveedorEditandoId).single();
+  const { error } = await sb.from('fz_proveedores').delete().eq('id', STATE_facturaProveedorEditandoId);
+  if (error) { toast('No se pudo eliminar: ' + error.message, 'error'); return; }
+  registrarAuditoria(b.id, 'eliminar', 'Proveedores', `${info?.proveedor||'(sin proveedor)'} · factura ${info?.factura||'s/f'} · ${fmt(info?.importe||0)}`);
+  document.getElementById('modalFacturaProveedor').classList.remove('show');
+  STATE_facturaProveedorEditandoId = null;
+  renderProveedores();
+});
+
 function provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntos, todasFacturas) {
   const desgloseTotal = desgloseLineas(p.desglose).reduce((s,l)=>s+(Number(l.monto)||0),0);
   const desgloseOk = Math.abs(desgloseTotal - (Number(p.importe)||0)) < 1 && desgloseTotal > 0;
@@ -5868,7 +6008,13 @@ function provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntos, todasFactur
       ${opcionesPagoDesde.map(o => `<option value="${o.value}" ${(p.pagado_desde_tipo && (p.pagado_desde_tipo+':'+p.pagado_desde_cuenta_id)===o.value)?'selected':''}>${o.label}</option>`).join('')}
     </select></td>
     <td>${adjuntosCellHtml(conteoAdjuntos, p.id)}</td>
-    <td><button class="row-del prov-del" data-id="${p.id}">✕</button></td>
+    <td style="position:relative;">
+      <button class="btn btn-ghost btn-sm prov-menu-btn" data-id="${p.id}" style="padding:5px 12px;">⋯</button>
+      <div class="prov-menu-dropdown" data-menu="${p.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:130px;overflow:hidden;">
+        <button class="prov-editar" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Editar factura</button>
+        <button class="prov-del" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>
+      </div>
+    </td>
   </tr>`;
 }
 

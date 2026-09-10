@@ -1053,6 +1053,66 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   </div>
 </div>
 
+<!-- Modal: Factura de proveedor -->
+<div class="modal-bg" id="modalFacturaProveedor">
+  <div class="modal" style="width:min(680px,96vw);max-height:90vh;overflow-y:auto;">
+    <h3 id="modalFacturaProveedorTitulo">Nueva factura de proveedor</h3>
+    <div class="grid-2">
+      <div class="field">
+        <label>Proveedor</label>
+        <select id="fpProveedor"></select>
+      </div>
+      <div class="field">
+        <label>No. de factura</label>
+        <input type="text" id="fpFactura" placeholder="Ej. A-4512">
+      </div>
+    </div>
+    <div class="grid-2">
+      <div class="field">
+        <label>Fecha</label>
+        <input type="date" id="fpFecha">
+      </div>
+      <div class="field">
+        <label>Importe</label>
+        <input type="text" inputmode="decimal" id="fpImporte" placeholder="0.00">
+      </div>
+    </div>
+    <div class="grid-3">
+      <div class="field">
+        <label>Estatus</label>
+        <select id="fpEstatus">
+          <option>Pendiente</option>
+          <option>Parcial</option>
+          <option>Pagado</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Fecha de pago</label>
+        <input type="date" id="fpFechaPago">
+      </div>
+      <div class="field">
+        <label>Pagado desde</label>
+        <select id="fpPagadoDesde">
+          <option value="">— sin especificar —</option>
+        </select>
+      </div>
+    </div>
+    <div class="field" id="fpDesgloseWrap" style="display:none;">
+      <label>Desglose (clasificación contable)</label>
+      <button class="btn btn-ghost btn-sm" id="fpDesglosarBtn" style="width:100%;text-align:left;">Desglosar</button>
+    </div>
+    <div class="field" id="fpAdjuntoWrap">
+      <label>Adjunto</label>
+      <div id="fpAdjuntoCell"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="closeFacturaProveedor">Cancelar</button>
+      <button class="btn btn-ghost" id="deleteFacturaProveedor" style="display:none;color:var(--red);">Eliminar</button>
+      <button class="btn btn-gold" id="saveFacturaProveedor">Guardar</button>
+    </div>
+  </div>
+</div>
+
 <!-- Modal: elegir factura para registrar un pago (desde "+ Nueva transacción") -->
 <div class="modal-bg" id="modalElegirFacturaCobro">
   <div class="modal" style="width:min(560px,94vw);max-height:88vh;overflow-y:auto;">
