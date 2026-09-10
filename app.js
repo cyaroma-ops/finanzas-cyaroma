@@ -3072,29 +3072,30 @@ function wireEntradaCellHandlers(container, table, onChange, facturasClientesPen
   }));
 }
 
-async function openMovimientoModal(contexto) {
+async function openMovimientoModal(contexto, movimientoExistente) {
   const modal = document.getElementById('modalMovimiento');
-  document.getElementById('movFecha').value = todayStr();
-  document.getElementById('movCampo1').value = '';
-  document.getElementById('movConcepto').value = '';
-  document.getElementById('movReferencia').value = '';
-  document.getElementById('movDescripcion').value = '';
-  document.getElementById('movCargos').value = 0;
-  document.getElementById('movDepositos').value = 0;
-  document.getElementById('movTipoSalida').value = 'otro';
+  document.getElementById('modalMovimientoTitulo').textContent = movimientoExistente ? 'Editar movimiento' : 'Agregar movimiento';
+  document.getElementById('movFecha').value = movimientoExistente?.fecha || todayStr();
+  document.getElementById('movCampo1').value = movimientoExistente?.proveedor || '';
+  document.getElementById('movConcepto').value = movimientoExistente?.concepto || '';
+  document.getElementById('movReferencia').value = movimientoExistente?.referencia || '';
+  document.getElementById('movDescripcion').value = movimientoExistente?.descripcion || '';
+  document.getElementById('movCargos').value = movimientoExistente?.cargos || 0;
+  document.getElementById('movDepositos').value = movimientoExistente?.depositos || 0;
   document.getElementById('movSubcuentaWrap').style.display = 'none';
   document.getElementById('movFacturasWrap').style.display = 'none';
   document.getElementById('movFacturasClienteWrap').style.display = 'none';
+  document.getElementById('deleteMovimiento').style.display = movimientoExistente ? '' : 'none';
 
   if (contexto.tipo === 'efectivo') {
-    document.getElementById('movLabel1').textContent = 'Proveedor / Concepto';
+    document.getElementById('movLabel1').textContent = 'Proveedor';
     document.getElementById('movCampo1').placeholder = 'Ej. Distribuidora de Bebidas';
     document.getElementById('movConceptoWrap').style.display = 'none';
     document.getElementById('movReferenciaWrap').style.display = 'none';
   } else {
-    document.getElementById('movLabel1').textContent = 'Concepto';
-    document.getElementById('movCampo1').placeholder = 'Ej. Pago de servicio';
-    document.getElementById('movConceptoWrap').style.display = 'none';
+    document.getElementById('movLabel1').textContent = 'Proveedor';
+    document.getElementById('movCampo1').placeholder = 'Ej. Distribuidora de Bebidas';
+    document.getElementById('movConceptoWrap').style.display = 'block';
     document.getElementById('movReferenciaWrap').style.display = 'block';
   }
 
@@ -3111,9 +3112,10 @@ async function openMovimientoModal(contexto) {
   const origenCorto = contexto.tipo === 'efectivo' ? 'Caja — ' + (cuentaInfo?.nombre || '') : 'Banco — ' + (cuentaInfo?.nombre || '');
 
   document.getElementById('movSubcuenta').innerHTML = `<option value="">— elegir subcuenta —</option>` +
-    opcionesSubcuentaHtml(subcuentas, mayores, null);
+    opcionesSubcuentaHtml(subcuentas, mayores, movimientoExistente?.subcuenta_id || null);
 
-  const pendientes = facturasPend.filter(f => f.estatus !== 'Pagado');
+  const idsProvYaVinculados = movimientoExistente ? facturaIdsDe(movimientoExistente) : [];
+  const pendientes = facturasPend.filter(f => f.estatus !== 'Pagado' || idsProvYaVinculados.includes(f.id));
   const porProveedor = {};
   pendientes.forEach(f => { const key = f.proveedor || '(sin proveedor)'; (porProveedor[key] = porProveedor[key] || []).push(f); });
   Object.values(porProveedor).forEach(lista => lista.sort((a,b) => a.fecha.localeCompare(b.fecha)));
@@ -3127,7 +3129,7 @@ async function openMovimientoModal(contexto) {
         const esCredito = Number(f.importe) < 0;
         return `
         <label style="display:flex;align-items:center;gap:8px;padding:4px 2px;font-size:12.5px;cursor:pointer;">
-          <input type="checkbox" class="mov-factura-check" value="${f.id}" data-importe="${saldo}">
+          <input type="checkbox" class="mov-factura-check" value="${f.id}" data-importe="${saldo}" ${idsProvYaVinculados.includes(f.id)?'checked':''}>
           <span>${f.fecha} · ${f.factura||'s/f'} · ${esCredito?`<span style="color:var(--green);">crédito ${fmt(saldo)}</span>`:fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}</span>
         </label>`;
       }).join('')}
@@ -3167,7 +3169,8 @@ async function openMovimientoModal(contexto) {
   actualizarResumenMovFacturas();
 
   // Espejo, del lado de clientes: facturas pendientes de cobro
-  const pendientesCliente = facturasClientesPend.filter(f => f.estatus !== 'Pagado');
+  const idsClienteYaVinculados = movimientoExistente ? facturaIdsClienteDe(movimientoExistente) : [];
+  const pendientesCliente = facturasClientesPend.filter(f => f.estatus !== 'Pagado' || idsClienteYaVinculados.includes(f.id));
   const porClienteMov = {};
   pendientesCliente.forEach(f => { const key = f.clienteNombre || '(sin cliente)'; (porClienteMov[key] = porClienteMov[key] || []).push(f); });
   Object.values(porClienteMov).forEach(lista => lista.sort((a,b) => a.fecha.localeCompare(b.fecha)));
@@ -3180,7 +3183,7 @@ async function openMovimientoModal(contexto) {
         const saldo = Number(f.total) - Number(f.importe_pagado||0);
         return `
         <label style="display:flex;align-items:center;gap:8px;padding:4px 2px;font-size:12.5px;cursor:pointer;">
-          <input type="checkbox" class="mov-factura-cliente-check" value="${f.id}" data-importe="${saldo}">
+          <input type="checkbox" class="mov-factura-cliente-check" value="${f.id}" data-importe="${saldo}" ${idsClienteYaVinculados.includes(f.id)?'checked':''}>
           <span>${f.fecha} · Factura #${f.folio} · ${fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}</span>
         </label>`;
       }).join('')}
@@ -3221,6 +3224,10 @@ async function openMovimientoModal(contexto) {
 
   // El tipo disponible depende de si se capturó Cargo (sale) o Depósito (entra) —
   // "Gasto"/"Pago a proveedor" solo aplican a cargos; "Cobro de cliente" solo a depósitos.
+  const tipoInicial = movimientoExistente
+    ? (movimientoExistente.tipo_entrada === 'cliente' ? 'cliente' : (movimientoExistente.tipo_salida || 'otro'))
+    : 'otro';
+  document.getElementById('movTipoSalida').value = tipoInicial;
   const actualizarOpcionesTipo = () => {
     const esDeposito = (Number(document.getElementById('movDepositos').value) || 0) > (Number(document.getElementById('movCargos').value) || 0);
     const sel = document.getElementById('movTipoSalida');
@@ -3243,6 +3250,18 @@ async function openMovimientoModal(contexto) {
   };
   document.getElementById('movTipoSalida').onchange = actualizarVisibilidadDetalle;
   document.getElementById('movTipoSalida').oninput = actualizarVisibilidadDetalle;
+  actualizarVisibilidadDetalle();
+
+  const movAdjuntoWrap = document.getElementById('movAdjuntoWrap');
+  const tablaAdjunto = contexto.tipo === 'efectivo' ? 'fz_efectivo_mov' : 'fz_bancos_mov';
+  if (movimientoExistente) {
+    movAdjuntoWrap.style.display = '';
+    const conteo = await contarAdjuntosPorRegistro(tablaAdjunto, [movimientoExistente.id]);
+    document.getElementById('movAdjuntoCell').innerHTML = adjuntosCellHtml(conteo[movimientoExistente.id], movimientoExistente.id);
+    wireAdjuntosHandlers(document.getElementById('movAdjuntoCell'), tablaAdjunto, contexto.businessId, () => {});
+  } else {
+    movAdjuntoWrap.style.display = 'none';
+  }
 
   modal.classList.add('show');
   document.getElementById('closeMovimiento').onclick = () => modal.classList.remove('show');
@@ -3264,17 +3283,26 @@ async function openMovimientoModal(contexto) {
       payload = { business_id: contexto.businessId, moneda_id: contexto.refId, fecha, proveedor: document.getElementById('movCampo1').value || null, descripcion, cargos, depositos, tipo_salida: tipoSalida, tipo_entrada: tipoEntrada };
     } else {
       table = 'fz_bancos_mov';
-      payload = { business_id: contexto.businessId, cuenta_id: contexto.refId, fecha, concepto: document.getElementById('movCampo1').value || null, referencia: document.getElementById('movReferencia').value || null, descripcion, cargos, depositos, tipo_salida: tipoSalida, tipo_entrada: tipoEntrada };
+      payload = { business_id: contexto.businessId, cuenta_id: contexto.refId, fecha, proveedor: document.getElementById('movCampo1').value || null, concepto: document.getElementById('movConcepto').value || null, referencia: document.getElementById('movReferencia').value || null, descripcion, cargos, depositos, tipo_salida: tipoSalida, tipo_entrada: tipoEntrada };
     }
-    if (tipoElegido === 'gasto') payload.subcuenta_id = document.getElementById('movSubcuenta').value || null;
-    if (tipoElegido === 'proveedor') payload.proveedor_factura_ids = [];
-    if (esClasifCliente) payload.cliente_factura_ids = [];
+    payload.subcuenta_id = tipoElegido === 'gasto' ? (document.getElementById('movSubcuenta').value || null) : null;
 
-    const { data: nuevoMov, error } = await sb.from(table).insert(payload).select().single();
-    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    const movId = movimientoExistente ? movimientoExistente.id : null;
+    let nuevoMov;
+    if (movId) {
+      const { error } = await sb.from(table).update(payload).eq('id', movId);
+      if (error) { toast('Error: ' + error.message, 'error'); return; }
+      nuevoMov = { id: movId };
+    } else {
+      const { data, error } = await sb.from(table).insert(payload).select().single();
+      if (error) { toast('Error: ' + error.message, 'error'); return; }
+      nuevoMov = data;
+    }
 
+    // Al editar, siempre revisamos ambos lados (aunque no haya nada nuevo que aplicar) para
+    // revertir correctamente si el movimiento cambió de clasificación o dejó de tener facturas.
     let creadoCredito = false;
-    if (tipoElegido === 'proveedor' && idsFacturas.length) {
+    if (movId || tipoElegido === 'proveedor') {
       const montoDisponible = cargos > 0 ? cargos : depositos;
       const resultado = await aplicarPagoFacturas(idsFacturas, montoDisponible, fecha, contexto.businessId, {
         pagado_desde: origenCorto,
@@ -3284,19 +3312,28 @@ async function openMovimientoModal(contexto) {
       });
       creadoCredito = resultado.creadoCredito;
       await sb.from(table).update({ proveedor_factura_ids: resultado.idsAfectados, proveedor_factura_id: resultado.idsAfectados[0] || null }).eq('id', nuevoMov.id);
-      toast(`${idsFacturas.length} factura(s) procesada(s)${creadoCredito ? ' · se generó un crédito a favor' : ''}.`);
+      if (idsFacturas.length) toast(`${idsFacturas.length} factura(s) procesada(s)${creadoCredito ? ' · se generó un crédito a favor' : ''}.`);
     }
-    if (esClasifCliente && idsFacturasCliente.length) {
+    if (movId || esClasifCliente) {
       const resultado = await aplicarCobroFacturas(idsFacturasCliente, depositos, fecha, contexto.businessId, {
         origen_tabla: table, origen_id: nuevoMov.id,
       });
-      await sb.from(table).update({ cliente_factura_ids: resultado.idsAfectados, cliente_factura_id: resultado.idsAfectados[0] || null }).eq('id', nuevoMov.id);
       if (resultado.idsAfectados.length) toast(`${resultado.idsAfectados.length} factura(s) cobrada(s).`);
+      await sb.from(table).update({ cliente_factura_ids: resultado.idsAfectados, cliente_factura_id: resultado.idsAfectados[0] || null }).eq('id', nuevoMov.id);
     }
 
+    registrarAuditoria(contexto.businessId, movId ? 'editar' : 'crear', contexto.tipo === 'efectivo' ? 'Efectivo' : 'Bancos', `Movimiento ${fecha} · ${descripcion||payload.proveedor||''} · ${fmt(cargos>0?cargos:depositos)}`);
     modal.classList.remove('show');
-    toast('Movimiento agregado.');
+    toast(movId ? 'Movimiento actualizado.' : 'Movimiento agregado.');
     if (contexto.onDone) contexto.onDone();
+  };
+  document.getElementById('deleteMovimiento').onclick = async () => {
+    if (!movimientoExistente) return;
+    const table = contexto.tipo === 'efectivo' ? 'fz_efectivo_mov' : 'fz_bancos_mov';
+    await confirmarYEliminarMovimiento(table, { ...movimientoExistente, business_id: contexto.businessId }, () => {
+      modal.classList.remove('show');
+      if (contexto.onDone) contexto.onDone();
+    });
   };
 }
 
@@ -3674,7 +3711,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
         <td class="num">${fmtNum(r.cargos)}</td>
         <td class="num">${fmtNum(r.depositos)}</td>
         <td class="num" style="font-weight:700;">${fmtNum(saldo)}</td>
-        <td>—</td><td></td><td></td>
+        <td></td>
       </tr>`;
     }
     return `<tr>
@@ -3684,8 +3721,6 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
       <td><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(r.cargos)}" data-id="${r.id}" data-field="cargos"></td>
       <td><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(r.depositos)}" data-id="${r.id}" data-field="depositos"></td>
       <td class="num" style="font-weight:700;">${fmtNum(saldo)}</td>
-      ${Number(r.depositos) > 0 ? entradaCellsHtml(r, facturasClientesPend, 'mov') : salidaCellsHtml(r, subcuentas, mayores, facturasPend, 'mov', traspasoCtx)}
-      <td>${adjuntosCellHtml(conteoAdjuntosEfvo[r.id], r.id)}</td>
       <td style="position:relative;">
         <button class="btn btn-ghost btn-sm mov-menu-btn" data-id="${r.id}" style="padding:5px 12px;">⋯</button>
         <div class="mov-menu-dropdown" data-menu="${r.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:120px;overflow:hidden;">
@@ -3714,7 +3749,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Fecha</th><th>Proveedor / Concepto</th><th>Descripción</th><th>Cargos</th><th>Depósitos</th><th>Saldo</th><th>Tipo de salida</th><th>Detalle</th><th>Adjunto</th><th></th></tr></thead>
+        <thead><tr><th>Fecha</th><th>Proveedor</th><th>Descripción</th><th>Cargos</th><th>Depósitos</th><th>Saldo</th><th></th></tr></thead>
         <tbody>${rowsHtml || `<tr><td colspan="10" class="empty">Sin movimientos todavía.</td></tr>`}</tbody>
         <tfoot><tr class="total-row"><td colspan="3">Total ${STATE.currentMonth}</td><td class="num">${fmtNum(totalCargosMes)}</td><td class="num">${fmtNum(totalDepositosMes)}</td><td colspan="5"></td></tr></tfoot>
       </table>
@@ -3725,15 +3760,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
   document.getElementById('addMovBtnEfvo').addEventListener('click', () => {
     openMovimientoModal({ tipo: 'efectivo', refId: moneda.id, businessId, onDone: () => renderMonedaLedger({ ...moneda }, businessId, conceptosEfectivo) });
   });
-  wireSalidaCellHandlers(box, 'fz_efectivo_mov', () => renderMonedaLedger(moneda, businessId, conceptosEfectivo), traspasoCtx, facturasPend, subcuentas, mayores, ledger, 'mov', () => {
-    const restantes = ledger.filter(r => !r.auto && (r.tipo_salida || 'otro') === 'otro' && (Number(r.cargos)||0) > 0);
-    const totalRestante = restantes.reduce((s,r)=>s+(Number(r.cargos)||0),0);
-    const banner = document.getElementById('sinClasificarBannerEfvo');
-    if (banner) banner.innerHTML = sinClasificarBannerHtml(restantes.length, totalRestante);
-  });
-  wireEntradaCellHandlers(box, 'fz_efectivo_mov', () => renderMonedaLedger(moneda, businessId, conceptosEfectivo), facturasClientesPend, ledger, 'mov');
   wireInputsMoneda(box);
-  wireAdjuntosHandlers(box, 'fz_efectivo_mov', businessId, () => renderMonedaLedger(moneda, businessId, conceptosEfectivo));
   box.querySelectorAll('.mov-cell').forEach(inp => {
     inp.addEventListener('change', async () => {
       const field = inp.dataset.field;
@@ -3751,8 +3778,9 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
   }));
   document.addEventListener('click', () => box.querySelectorAll('.mov-menu-dropdown').forEach(d => d.style.display = 'none'));
   box.querySelectorAll('.mov-editar').forEach(btn => btn.addEventListener('click', () => {
-    const celda = box.querySelector(`.mov-cell[data-id="${btn.dataset.id}"]`);
-    if (celda) { celda.focus(); celda.scrollIntoView({ block: 'center' }); }
+    const row = ledger.find(r => r.id === btn.dataset.id);
+    if (!row) return;
+    openMovimientoModal({ tipo: 'efectivo', businessId, refId: moneda.id, onDone: () => renderMonedaLedger(moneda, businessId, conceptosEfectivo) }, row);
   }));
   box.querySelectorAll('.mov-del').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -3882,25 +3910,25 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     if (m.auto) {
       return `<tr style="background:#f7f9fc;">
         <td>${fechaCorta(m.fecha)}</td>
-        <td><em>${m.descripcion}</em> <span style="color:var(--muted);font-size:11px;">· auto</span></td>
+        <td><em>${m.proveedor||''}</em> <span style="color:var(--muted);font-size:11px;">· auto</span></td>
+        <td>${m.descripcion}</td>
         <td>${m.concepto}</td>
         <td>—</td>
         <td class="num">${fmtNum(m.depositos)}</td>
         <td class="num">${fmtNum(m.cargos)}</td>
         <td class="num" style="font-weight:700;">${fmt(saldo)}</td>
-        <td>—</td><td>—</td><td></td><td></td>
+        <td></td>
       </tr>`;
     }
     return `<tr>
       <td><input class="cell mov-cell" type="date" value="${m.fecha}" data-id="${m.id}" data-field="fecha"></td>
+      <td><input class="cell mov-cell" type="text" value="${m.proveedor||''}" data-id="${m.id}" data-field="proveedor"></td>
       <td><input class="cell mov-cell" type="text" value="${m.descripcion||''}" data-id="${m.id}" data-field="descripcion"></td>
       <td><input class="cell mov-cell" type="text" value="${m.concepto||''}" data-id="${m.id}" data-field="concepto"></td>
       <td><input class="cell mov-cell" type="text" value="${m.referencia||''}" data-id="${m.id}" data-field="referencia"></td>
       <td><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(m.depositos)}" data-id="${m.id}" data-field="depositos"></td>
       <td><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(m.cargos)}" data-id="${m.id}" data-field="cargos"></td>
       <td class="num" style="font-weight:700;">${fmt(saldo)}</td>
-      ${Number(m.depositos) > 0 ? entradaCellsHtml(m, facturasClientesPend, 'mov') : salidaCellsHtml(m, subcuentas, mayores, facturasPend, 'mov', traspasoCtx)}
-      <td>${adjuntosCellHtml(conteoAdjuntosBanco[m.id], m.id)}</td>
       <td style="position:relative;">
         <button class="btn btn-ghost btn-sm mov-menu-btn" data-id="${m.id}" style="padding:5px 12px;">⋯</button>
         <div class="mov-menu-dropdown" data-menu="${m.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:120px;overflow:hidden;">
@@ -3929,7 +3957,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Fecha</th><th>Descripción</th><th>Concepto</th><th>Referencia</th><th>Depósitos</th><th>Cargos</th><th>Saldo</th><th>Tipo de salida</th><th>Detalle</th><th>Adjunto</th><th></th></tr></thead>
+        <thead><tr><th>Fecha</th><th>Proveedor</th><th>Descripción</th><th>Concepto</th><th>Referencia</th><th>Depósitos</th><th>Cargos</th><th>Saldo</th><th></th></tr></thead>
         <tbody>${rowsHtml || `<tr><td colspan="11" class="empty">Sin movimientos.</td></tr>`}</tbody>
         <tfoot><tr class="total-row"><td colspan="4">Total ${STATE.currentMonth}</td><td class="num">${fmtNum(totalDepositosMes)}</td><td class="num">${fmtNum(totalCargosMes)}</td><td colspan="5"></td></tr></tfoot>
       </table>
@@ -3940,15 +3968,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
   document.getElementById('addMovBtnBanco').addEventListener('click', () => {
     openMovimientoModal({ tipo: 'banco', refId: cuentaId, businessId, onDone: () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas) });
   });
-  wireSalidaCellHandlers(box, 'fz_bancos_mov', () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas), traspasoCtx, facturasPend, subcuentas, mayores, ledger, 'mov', () => {
-    const restantes = ledger.filter(m => !m.auto && (m.tipo_salida || 'otro') === 'otro' && (Number(m.cargos)||0) > 0);
-    const totalRestante = restantes.reduce((s,m)=>s+(Number(m.cargos)||0),0);
-    const banner = document.getElementById('sinClasificarBannerBanco');
-    if (banner) banner.innerHTML = sinClasificarBannerHtml(restantes.length, totalRestante);
-  });
-  wireEntradaCellHandlers(box, 'fz_bancos_mov', () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas), facturasClientesPend, ledger, 'mov');
   wireInputsMoneda(box);
-  wireAdjuntosHandlers(box, 'fz_bancos_mov', businessId, () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas));
   box.querySelectorAll('.mov-cell').forEach(inp => {
     inp.addEventListener('change', async () => {
       const field = inp.dataset.field;
@@ -3966,8 +3986,9 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
   }));
   document.addEventListener('click', () => box.querySelectorAll('.mov-menu-dropdown').forEach(d => d.style.display = 'none'));
   box.querySelectorAll('.mov-editar').forEach(btn => btn.addEventListener('click', () => {
-    const celda = box.querySelector(`.mov-cell[data-id="${btn.dataset.id}"]`);
-    if (celda) { celda.focus(); celda.scrollIntoView({ block: 'center' }); }
+    const row = ledger.find(r => r.id === btn.dataset.id);
+    if (!row) return;
+    openMovimientoModal({ tipo: 'banco', businessId, refId: cuentaId, onDone: () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas) }, row);
   }));
   box.querySelectorAll('.mov-del').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -7201,10 +7222,11 @@ function polizaCardHtmlBorrador(borrador) {
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Cuenta</th><th>Referencia/Factura</th><th>Descripción</th><th>Cargo</th><th>Abono</th><th></th></tr></thead>
+          <thead><tr><th>Cuenta</th><th>Proveedor</th><th>Referencia/Factura</th><th>Descripción</th><th>Cargo</th><th>Abono</th><th></th></tr></thead>
           <tbody>
             ${lineasPoliza.map(l => `<tr>
               <td><input class="cell linea-cuenta-buscar" list="listaCuentasPoliza" placeholder="Escribe para buscar…" value="${labelDeLinea(l).replace(/"/g,'&quot;')}" title="${labelDeLinea(l).replace(/"/g,'&quot;')}" data-id="${l.id}" data-field="cuenta"></td>
+              <td><input class="cell linea-cell" type="text" value="${l.proveedor || ''}" placeholder="Nombre (opcional)" data-id="${l.id}" data-field="proveedor"></td>
               <td><input class="cell linea-cell" type="text" value="${l.referencia || ''}" data-id="${l.id}" data-field="referencia"></td>
               <td><input class="cell linea-cell" type="text" value="${l.descripcion || ''}" data-id="${l.id}" data-field="descripcion"></td>
               <td><input class="cell linea-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(l.cargo)}" data-id="${l.id}" data-field="cargo"></td>
@@ -7212,7 +7234,7 @@ function polizaCardHtmlBorrador(borrador) {
               <td><button class="row-del linea-del" data-id="${l.id}">✕</button></td>
             </tr>`).join('')}
             <tr class="total-row">
-              <td colspan="3">Totales</td>
+              <td colspan="4">Totales</td>
               <td class="num">${fmt(totalCargo)}</td>
               <td class="num">${fmt(totalAbono)}</td>
               <td></td>
@@ -7274,7 +7296,7 @@ function wireBorradorPolizaHandlers(wrap) {
     }
     else { linea.cuenta_tipo = 'subcuenta'; linea.subcuenta_id = match.id; linea.cuenta_ref_id = null; linea.proveedor_factura_id = null; linea.cliente_factura_id = null; }
     renderizarBorradorPoliza();
-    const siguienteInput = wrap.querySelector(`.linea-cell[data-id="${inp.dataset.id}"][data-field="referencia"]`);
+    const siguienteInput = wrap.querySelector(`.linea-cell[data-id="${inp.dataset.id}"][data-field="proveedor"]`);
     if (siguienteInput) { siguienteInput.focus(); if (siguienteInput.select) siguienteInput.select(); }
   }));
   wrap.querySelectorAll('.linea-cell').forEach(inp => inp.addEventListener('change', () => {
@@ -7412,7 +7434,7 @@ async function guardarBorradorPoliza() {
   let huboError = false;
   const idsFinales = []; // ids reales (ya sea existentes o recién creados) que deben permanecer
   for (const l of borrador.lineas) {
-    const payload = { subcuenta_id: l.subcuenta_id || null, cuenta_tipo: l.cuenta_tipo || 'subcuenta', cuenta_ref_id: l.cuenta_ref_id || null, proveedor_factura_id: l.cuenta_tipo === 'proveedor' ? (l.proveedor_factura_id || null) : null, cliente_factura_id: l.cuenta_tipo === 'cliente' ? (l.cliente_factura_id || null) : null, cargo: Number(l.cargo) || 0, abono: Number(l.abono) || 0, descripcion: l.descripcion || null, referencia: l.referencia || null, orden: l.orden || 0 };
+    const payload = { subcuenta_id: l.subcuenta_id || null, cuenta_tipo: l.cuenta_tipo || 'subcuenta', cuenta_ref_id: l.cuenta_ref_id || null, proveedor_factura_id: l.cuenta_tipo === 'proveedor' ? (l.proveedor_factura_id || null) : null, cliente_factura_id: l.cuenta_tipo === 'cliente' ? (l.cliente_factura_id || null) : null, cargo: Number(l.cargo) || 0, abono: Number(l.abono) || 0, descripcion: l.descripcion || null, referencia: l.referencia || null, proveedor: l.proveedor || null, orden: l.orden || 0 };
     if (String(l.id).startsWith('tmp_')) {
       const { data, error } = await sb.from('fz_polizas_lineas').insert({ business_id: businessId, poliza_id: polizaId, ...payload }).select().single();
       if (error) { toast('Error guardando una línea: ' + error.message, 'error'); huboError = true; }

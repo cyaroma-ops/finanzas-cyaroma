@@ -1266,7 +1266,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 <!-- Modal: agregar movimiento (Bancos o Efectivo) -->
 <div class="modal-bg" id="modalMovimiento">
   <div class="modal" style="width:min(480px,92vw);">
-    <h3>Agregar movimiento</h3>
+    <h3 id="modalMovimientoTitulo">Agregar movimiento</h3>
     <div class="grid-2">
       <div class="field">
         <label>Fecha</label>
@@ -1337,8 +1337,13 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
       </div>
       <div id="movFacturasClienteList" style="max-height:200px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:8px;"></div>
     </div>
+    <div class="field" id="movAdjuntoWrap" style="display:none;">
+      <label>Adjunto</label>
+      <div id="movAdjuntoCell"></div>
+    </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="closeMovimiento">Cancelar</button>
+      <button class="btn btn-ghost" id="deleteMovimiento" style="display:none;color:var(--red);">Eliminar</button>
       <button class="btn btn-gold" id="saveMovimiento">Guardar</button>
     </div>
   </div>
