@@ -43,6 +43,11 @@ const monthBounds = (ym) => {
   return { start, end };
 };
 const todayStr = () => new Date().toISOString().slice(0, 10);
+const sumarDias = (fechaStr, dias) => {
+  const d = new Date(fechaStr + 'T00:00:00');
+  d.setDate(d.getDate() + Number(dias || 0));
+  return d.toISOString().slice(0, 10);
+};
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2));
 function toast(msg, kind) {
   let t = document.getElementById('toastBox');
@@ -4464,25 +4469,34 @@ async function clienteTieneMovimientos(clienteId) {
 let STATE_clienteOrden = 'nombre'; // 'nombre' | 'saldo'
 let STATE_clienteEditandoId = null;
 
-let STATE_clientesVista = 'directorio'; // 'directorio' | 'facturas' | 'detalle'
+let STATE_clientesVista = 'directorio'; // 'directorio' | 'facturas' | 'detalle' | 'ordenes'
 let STATE_clienteDetalleId = null;
 function clientesTabsHtml() {
   return `<div class="tag-row" style="margin-bottom:14px;">
     <div class="tag ${STATE_clientesVista==='directorio'?'active':''}" id="clientesTabDirectorio">Directorio</div>
     <div class="tag ${STATE_clientesVista==='facturas'?'active':''}" id="clientesTabFacturas">Facturas</div>
+    <div class="tag ${STATE_clientesVista==='ordenes'?'active':''}" id="clientesTabOrdenes">Órdenes de venta</div>
   </div>`;
 }
 function wireClientesTabs() {
   document.getElementById('clientesTabDirectorio').addEventListener('click', () => { STATE_clientesVista = 'directorio'; renderClientes(); });
   document.getElementById('clientesTabFacturas').addEventListener('click', () => { STATE_clientesVista = 'facturas'; renderClientes(); });
+  document.getElementById('clientesTabOrdenes').addEventListener('click', () => { STATE_clientesVista = 'ordenes'; renderClientes(); });
 }
 
+const STATE_recurrentesRevisadas = new Set();
 async function renderClientes() {
   const el = document.getElementById('sec-clientes');
   const b = biz();
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
+  if (!STATE_recurrentesRevisadas.has(b.id)) {
+    STATE_recurrentesRevisadas.add(b.id);
+    const generadas = await generarFacturasRecurrentesSiCorresponde(b.id);
+    if (generadas) toast(`${generadas} factura(s) recurrente(s) se generaron automáticamente.`);
+  }
   if (STATE_clientesVista === 'facturas') { await renderFacturasClientes(el, b); return; }
   if (STATE_clientesVista === 'detalle') { await renderClienteDetalle(el, b); return; }
+  if (STATE_clientesVista === 'ordenes') { await renderOrdenesVenta(el, b); return; }
   await renderDirectorioClientes(el, b);
 }
 
@@ -4518,7 +4532,7 @@ async function renderClienteDetalle(el, b) {
                 <td class="num">${fmtNeg(pend)}</td>
                 <td><span class="badge ${f.estatus==='Pagado'?'pag':'pend'}">${f.estatus}</span></td>
                 <td>${ESTATUS_FISCAL_BADGE[f.estatus_fiscal] || ESTATUS_FISCAL_BADGE.no_aplica}</td>
-                <td><button class="btn btn-ghost btn-sm detalle-factura-editar" data-id="${f.id}">Ver / Editar</button></td>
+                ${facturaMenuHtml(f.id)}
               </tr>`;
             }).join('') : `<tr><td colspan="8" class="empty">Este cliente aún no tiene facturas.</td></tr>`}
           </tbody>
@@ -4527,10 +4541,7 @@ async function renderClienteDetalle(el, b) {
     </div>
   `;
   document.getElementById('clienteDetalleVolver').addEventListener('click', () => { STATE_clientesVista = 'directorio'; renderClientes(); });
-  el.querySelectorAll('.detalle-factura-editar').forEach(btn => btn.addEventListener('click', async () => {
-    const { data: f } = await sb.from('fz_facturas_clientes').select('*').eq('id', btn.dataset.id).single();
-    if (f) openModalFactura(f, b.id);
-  }));
+  wireFacturaMenu(el, b.id, () => renderClienteDetalle(el, b));
 }
 
 async function renderDirectorioClientes(el, b) {
@@ -4765,7 +4776,193 @@ document.getElementById('saveModalProducto').addEventListener('click', async () 
   renderProductosList(b.id);
 });
 
+/* ---------- Facturas recurrentes: generación automática ---------- */
+async function generarFacturasRecurrentesSiCorresponde(businessId) {
+  const hoy = todayStr();
+  const { data: recurrentes } = await sb.from('fz_facturas_clientes').select('*').eq('business_id', businessId).eq('es_recurrente', true).lte('proxima_generacion', hoy);
+  if (!recurrentes || !recurrentes.length) return 0;
+  let generadas = 0;
+  for (const orig of recurrentes) {
+    const folio = await siguienteFolio(businessId, 'factura_cliente');
+    const diasVencimiento = orig.fecha_vencimiento ? (new Date(orig.fecha_vencimiento) - new Date(orig.fecha)) / 86400000 : null;
+    const payload = {
+      business_id: businessId, cliente_id: orig.cliente_id, folio, fecha: hoy,
+      fecha_vencimiento: diasVencimiento !== null ? sumarDias(hoy, diasVencimiento) : null,
+      moneda: orig.moneda, tipo_cambio: orig.tipo_cambio,
+      subtotal: orig.subtotal, aplica_iva: orig.aplica_iva, iva_porcentaje: orig.iva_porcentaje, iva_monto: orig.iva_monto, total: orig.total,
+      estatus_fiscal: 'no_aplica', notas: orig.notas, estatus: 'Pendiente', importe_pagado: 0,
+      es_recurrente: false, origen_recurrente_id: orig.id,
+    };
+    const { data: nueva, error } = await sb.from('fz_facturas_clientes').insert(payload).select().single();
+    if (error || !nueva) continue;
+    const { data: lineasOrig } = await sb.from('fz_facturas_clientes_lineas').select('*').eq('factura_id', orig.id);
+    if (lineasOrig && lineasOrig.length) {
+      await sb.from('fz_facturas_clientes_lineas').insert(lineasOrig.map(l => ({
+        factura_id: nueva.id, business_id: businessId, producto_id: l.producto_id, descripcion: l.descripcion,
+        cantidad: l.cantidad, precio_unitario: l.precio_unitario, subcuenta_id: l.subcuenta_id, importe: l.importe, orden: l.orden,
+      })));
+    }
+    await sb.from('fz_facturas_clientes').update({ proxima_generacion: sumarDias(orig.proxima_generacion, orig.frecuencia_dias) }).eq('id', orig.id);
+    registrarAuditoria(businessId, 'crear', 'Facturas de clientes', `Factura #${folio} generada automáticamente (recurrente de la #${orig.folio})`);
+    generadas++;
+  }
+  return generadas;
+}
+
 /* ---------- Facturas de clientes ---------- */
+function facturaMenuHtml(facturaId) {
+  return `<td style="position:relative;">
+    <button class="btn btn-ghost btn-sm factura-menu-btn" data-id="${facturaId}" style="padding:5px 12px;">⋯</button>
+    <div class="factura-menu-dropdown" data-menu="${facturaId}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:160px;overflow:hidden;">
+      <button class="factura-modificar" data-id="${facturaId}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Modificar</button>
+      <button class="factura-cobrar" data-id="${facturaId}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Recibir un pago</button>
+      <button class="factura-pdf" data-id="${facturaId}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Descargar PDF</button>
+      <button class="factura-eliminar" data-id="${facturaId}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>
+    </div>
+  </td>`;
+}
+function wireFacturaMenu(el, businessId, onDone) {
+  el.querySelectorAll('.factura-menu-btn').forEach(btn => btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const dropdown = el.querySelector(`.factura-menu-dropdown[data-menu="${btn.dataset.id}"]`);
+    const abierto = dropdown.style.display === 'block';
+    el.querySelectorAll('.factura-menu-dropdown').forEach(d => d.style.display = 'none');
+    dropdown.style.display = abierto ? 'none' : 'block';
+  }));
+  document.addEventListener('click', () => el.querySelectorAll('.factura-menu-dropdown').forEach(d => d.style.display = 'none'));
+  el.querySelectorAll('.factura-modificar').forEach(btn => btn.addEventListener('click', async () => {
+    const { data: f } = await sb.from('fz_facturas_clientes').select('*').eq('id', btn.dataset.id).single();
+    if (f) openModalFactura(f, businessId);
+  }));
+  el.querySelectorAll('.factura-cobrar').forEach(btn => btn.addEventListener('click', async () => {
+    const { data: f } = await sb.from('fz_facturas_clientes').select('*').eq('id', btn.dataset.id).single();
+    if (f) {
+      await openModalFactura(f, businessId);
+      document.getElementById('facturaCobrosSection').scrollIntoView({ block: 'center', behavior: 'smooth' });
+      document.getElementById('cobroMonto').focus();
+    }
+  }));
+  el.querySelectorAll('.factura-pdf').forEach(btn => btn.addEventListener('click', async () => {
+    await descargarFacturaPDF(btn.dataset.id, businessId);
+  }));
+  el.querySelectorAll('.factura-eliminar').forEach(btn => btn.addEventListener('click', async () => {
+    if (!confirm('¿Desea usted eliminar esta factura? Si tiene cobros aplicados, también se revertirán (incluyendo los movimientos de banco/efectivo que se hayan creado). Esta acción no se puede deshacer.')) return;
+    await eliminarFacturaCliente(btn.dataset.id, businessId);
+    onDone();
+  }));
+}
+async function descargarFacturaPDF(facturaId, businessId) {
+  const [{ data: factura }, { data: lineas }] = await Promise.all([
+    sb.from('fz_facturas_clientes').select('*').eq('id', facturaId).single(),
+    sb.from('fz_facturas_clientes_lineas').select('*').eq('factura_id', facturaId).order('orden'),
+  ]);
+  if (!factura) { toast('No se encontró la factura.', 'error'); return; }
+  const cliente = (await loadClientes(businessId)).find(c => c.id === factura.cliente_id);
+  const negocio = biz();
+
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'pt', format: 'letter' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const margin = 48;
+  const simbolo = factura.moneda === 'USD' ? 'US$' : '$';
+  const fmtPdf = (n) => simbolo + Number(n || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  // Encabezado
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(18); doc.setTextColor(10, 31, 61);
+  doc.text(negocio?.razon_social || negocio?.name || 'Finanzas', margin, 56);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(102, 112, 133);
+  if (negocio?.razon_social && negocio?.name && negocio.razon_social !== negocio.name) doc.text(negocio.name, margin, 72);
+
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(22); doc.setTextColor(185, 138, 46);
+  doc.text('FACTURA', pageW - margin, 56, { align: 'right' });
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(11); doc.setTextColor(26, 43, 69);
+  doc.text(`Folio: #${factura.folio}`, pageW - margin, 74, { align: 'right' });
+  doc.text(`Fecha: ${fechaCorta(factura.fecha)}`, pageW - margin, 90, { align: 'right' });
+  if (factura.fecha_vencimiento) doc.text(`Vence: ${fechaCorta(factura.fecha_vencimiento)}`, pageW - margin, 106, { align: 'right' });
+
+  doc.setDrawColor(223, 228, 234); doc.line(margin, 118, pageW - margin, 118);
+
+  // Datos del cliente
+  let y = 144;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(102, 112, 133);
+  doc.text('FACTURAR A', margin, y);
+  y += 16;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(26, 43, 69);
+  doc.text(cliente?.razon_social || cliente?.nombre_comercial || 'Cliente', margin, y);
+  y += 15;
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(60, 70, 90);
+  if (cliente?.razon_social && cliente?.nombre_comercial && cliente.razon_social !== cliente.nombre_comercial) { doc.text(cliente.nombre_comercial, margin, y); y += 14; }
+  if (cliente?.rfc) { doc.text(`RFC: ${cliente.rfc}`, margin, y); y += 14; }
+  const domicilio = [cliente?.calle, cliente?.numero_exterior, cliente?.colonia, cliente?.municipio, cliente?.estado, cliente?.codigo_postal].filter(Boolean).join(', ');
+  if (domicilio) { doc.text(domicilio, margin, y, { maxWidth: pageW - margin*2 }); y += 14; }
+
+  y += 12;
+
+  // Tabla de líneas
+  const filas = (lineas || []).map(l => [
+    l.descripcion || '',
+    fmtNum(l.cantidad),
+    fmtPdf(l.precio_unitario),
+    fmtPdf(l.importe),
+  ]);
+  doc.autoTable({
+    startY: y,
+    head: [['Descripción', 'Cantidad', 'Precio unit.', 'Importe']],
+    body: filas,
+    margin: { left: margin, right: margin },
+    styles: { font: 'helvetica', fontSize: 10, textColor: [26,43,69], cellPadding: 8 },
+    headStyles: { fillColor: [10,31,61], textColor: [255,255,255], fontStyle: 'bold' },
+    columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' }, 3: { halign: 'right' } },
+    alternateRowStyles: { fillColor: [247,249,252] },
+  });
+
+  let finalY = doc.lastAutoTable.finalY + 20;
+  const totalesX = pageW - margin - 180;
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10.5); doc.setTextColor(60, 70, 90);
+  doc.text('Subtotal', totalesX, finalY); doc.text(fmtPdf(factura.subtotal), pageW - margin, finalY, { align: 'right' });
+  finalY += 16;
+  if (factura.aplica_iva) {
+    doc.text(`IVA (${fmtNum(factura.iva_porcentaje)}%)`, totalesX, finalY); doc.text(fmtPdf(factura.iva_monto), pageW - margin, finalY, { align: 'right' });
+    finalY += 16;
+  }
+  doc.setDrawColor(10,31,61); doc.line(totalesX, finalY, pageW - margin, finalY);
+  finalY += 16;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(10,31,61);
+  doc.text('Total', totalesX, finalY); doc.text(fmtPdf(factura.total), pageW - margin, finalY, { align: 'right' });
+
+  finalY += 30;
+  const pendiente = Number(factura.total) - Number(factura.importe_pagado || 0);
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(10.5);
+  doc.setTextColor(...(factura.estatus === 'Pagado' ? [30,122,61] : [180,60,40]));
+  doc.text(`Estatus: ${factura.estatus}${pendiente > 0.004 ? ' · Pendiente: ' + fmtPdf(pendiente) : ''}`, margin, finalY);
+
+  if (factura.notas) {
+    finalY += 24;
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(102, 112, 133);
+    doc.text('Notas:', margin, finalY);
+    doc.text(factura.notas, margin, finalY + 13, { maxWidth: pageW - margin*2 });
+  }
+
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(150, 158, 171);
+  doc.text('Este documento es un comprobante de control interno y no sustituye, por sí mismo, un CFDI timbrado ante el SAT.', margin, doc.internal.pageSize.getHeight() - 36);
+
+  doc.save(`Factura ${factura.folio} - ${cliente?.nombre_comercial || 'cliente'}.pdf`);
+}
+
+async function eliminarFacturaCliente(facturaId, businessId) {
+  const { data: cobros } = await sb.from('fz_cobros_aplicados').select('*').eq('factura_id', facturaId);
+  for (const c of (cobros || [])) {
+    if (c.origen_tabla !== 'manual' && c.origen_id) {
+      await sb.from(c.origen_tabla).delete().eq('id', c.origen_id);
+    }
+  }
+  await sb.from('fz_cobros_aplicados').delete().eq('factura_id', facturaId);
+  await sb.from('fz_facturas_clientes_lineas').delete().eq('factura_id', facturaId);
+  const { data: f } = await sb.from('fz_facturas_clientes').select('folio').eq('id', facturaId).single();
+  await sb.from('fz_facturas_clientes').delete().eq('id', facturaId);
+  registrarAuditoria(businessId, 'eliminar', 'Facturas de clientes', `Factura #${f?.folio ?? ''} eliminada`);
+}
+
 const ESTATUS_FISCAL_BADGE = {
   no_aplica: '<span style="color:var(--muted);font-size:12px;">— No aplica —</span>',
   pendiente: '<span class="badge pend">Pendiente de facturar</span>',
@@ -4808,7 +5005,7 @@ async function renderFacturasClientes(el, b) {
               <td class="num">${fmt(f.importe_pagado||0)}</td>
               <td><span class="badge ${f.estatus==='Pagado'?'pag':'pend'}">${f.estatus}</span></td>
               <td>${ESTATUS_FISCAL_BADGE[f.estatus_fiscal] || ESTATUS_FISCAL_BADGE.no_aplica}</td>
-              <td><button class="btn btn-ghost btn-sm factura-editar" data-id="${f.id}">Ver / Editar</button></td>
+              ${facturaMenuHtml(f.id)}
             </tr>`).join('') : `<tr><td colspan="8" class="empty">Aún no hay facturas. Usa "+ Nueva factura".</td></tr>`}
           </tbody>
         </table>
@@ -4816,10 +5013,7 @@ async function renderFacturasClientes(el, b) {
     </div>
   `;
   document.getElementById('addFacturaBtn').addEventListener('click', () => openModalFactura(null, b.id));
-  el.querySelectorAll('.factura-editar').forEach(btn => btn.addEventListener('click', async () => {
-    const { data: f } = await sb.from('fz_facturas_clientes').select('*').eq('id', btn.dataset.id).single();
-    if (f) openModalFactura(f, b.id);
-  }));
+  wireFacturaMenu(el, b.id, () => renderFacturasClientes(el, b));
   wireClientesTabs();
   window.scrollTo(0, scrollY);
 }
@@ -5045,6 +5239,12 @@ document.getElementById('saveModalFactura').addEventListener('click', async () =
   const iva_monto = aplica_iva ? subtotal * iva_porcentaje / 100 : 0;
   const es_recurrente = document.getElementById('facturaEsRecurrente').checked;
   const fecha = document.getElementById('facturaFecha').value || todayStr();
+  const frecuencia_dias = es_recurrente ? Number(document.getElementById('facturaFrecuencia').value) : null;
+  let facturaExistente = null;
+  if (STATE_facturaEditandoId) {
+    const { data } = await sb.from('fz_facturas_clientes').select('proxima_generacion').eq('id', STATE_facturaEditandoId).single();
+    facturaExistente = data;
+  }
 
   const payload = {
     business_id: b.id, cliente_id, fecha,
@@ -5055,7 +5255,8 @@ document.getElementById('saveModalFactura').addEventListener('click', async () =
     folio_fiscal: document.getElementById('facturaFolioFiscal').value.trim() || null,
     notas: document.getElementById('facturaNotas').value.trim() || null,
     es_recurrente,
-    frecuencia_dias: es_recurrente ? Number(document.getElementById('facturaFrecuencia').value) : null,
+    frecuencia_dias,
+    proxima_generacion: es_recurrente ? (facturaExistente?.proxima_generacion || sumarDias(fecha, frecuencia_dias)) : null,
   };
 
   let facturaId = STATE_facturaEditandoId;
@@ -5081,6 +5282,246 @@ document.getElementById('saveModalFactura').addEventListener('click', async () =
   registrarAuditoria(b.id, STATE_facturaEditandoId ? 'editar' : 'crear', 'Facturas de clientes', `Factura #${payload.folio ?? ''} — ${cliente?.nombre_comercial || ''}`);
   document.getElementById('modalFactura').classList.remove('show');
   STATE_facturaEditandoId = null;
+  renderClientes();
+});
+
+/* ---------- Órdenes de venta ---------- */
+async function renderOrdenesVenta(el, b) {
+  const scrollY = window.scrollY;
+  const [{ data: ordenes }, clientes] = await Promise.all([
+    sb.from('fz_ordenes_venta').select('*').eq('business_id', b.id).order('folio', { ascending: false }),
+    loadClientes(b.id),
+  ]);
+  const nombreCliente = (id) => clientes.find(c => c.id === id)?.nombre_comercial || '(cliente eliminado)';
+  const ESTATUS_ORDEN_BADGE = {
+    Pendiente: '<span class="badge pend">Pendiente</span>',
+    Convertida: '<span class="badge pag">Convertida a factura</span>',
+    Cancelada: '<span style="color:var(--muted);font-size:12px;">Cancelada</span>',
+  };
+
+  el.innerHTML = `
+    ${clientesTabsHtml()}
+    <div class="card">
+      <div class="card-head">
+        <h3>Órdenes de venta</h3>
+        <button class="btn btn-gold btn-sm" id="addOrdenBtn">+ Nueva orden</button>
+      </div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Se crean primero como orden; cuando el cliente confirma (entrega/cobro), se convierten en Factura con un clic.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Folio</th><th>Fecha</th><th>Cliente</th><th>Total</th><th>Estatus</th><th></th></tr></thead>
+          <tbody>
+            ${(ordenes||[]).length ? ordenes.map(o => `<tr>
+              <td>#${o.folio}</td>
+              <td>${fechaCorta(o.fecha)}</td>
+              <td>${nombreCliente(o.cliente_id)}</td>
+              <td class="num" style="font-weight:700;">${o.moneda==='USD'?'US':''}${fmt(o.total)}</td>
+              <td>${ESTATUS_ORDEN_BADGE[o.estatus] || o.estatus}</td>
+              <td><button class="btn btn-ghost btn-sm orden-ver" data-id="${o.id}">Ver / Editar</button></td>
+            </tr>`).join('') : `<tr><td colspan="6" class="empty">Aún no hay órdenes de venta. Usa "+ Nueva orden".</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  document.getElementById('addOrdenBtn').addEventListener('click', () => openModalOrden(null, b.id));
+  el.querySelectorAll('.orden-ver').forEach(btn => btn.addEventListener('click', async () => {
+    const { data: o } = await sb.from('fz_ordenes_venta').select('*').eq('id', btn.dataset.id).single();
+    if (o) openModalOrden(o, b.id);
+  }));
+  wireClientesTabs();
+  window.scrollTo(0, scrollY);
+}
+
+let STATE_ordenLineas = [];
+let STATE_ordenEditandoId = null;
+let STATE_ordenCatalogos = { clientes: [], productos: [] };
+
+async function openModalOrden(orden, businessId) {
+  STATE_ordenEditandoId = orden ? orden.id : null;
+  const [clientes, productos] = await Promise.all([loadClientes(businessId), loadProductosServicios(businessId)]);
+  STATE_ordenCatalogos = { clientes, productos };
+
+  document.getElementById('modalOrdenTitulo').textContent = orden ? `Orden de venta #${orden.folio}` : 'Nueva orden de venta';
+  const selCliente = document.getElementById('ordenCliente');
+  selCliente.innerHTML = clientes.map(c => `<option value="${c.id}" ${orden?.cliente_id===c.id?'selected':''}>${c.razon_social || c.nombre_comercial}</option>`).join('') || '<option value="">— crea un cliente primero —</option>';
+  const actualizarNombreComercial = () => {
+    const c = clientes.find(x => x.id === selCliente.value);
+    document.getElementById('ordenNombreComercial').value = c?.nombre_comercial || '';
+  };
+  selCliente.onchange = actualizarNombreComercial;
+  actualizarNombreComercial();
+  document.getElementById('ordenFecha').value = orden?.fecha || todayStr();
+  document.getElementById('ordenAplicaIva').checked = orden ? !!orden.aplica_iva : true;
+  document.getElementById('ordenIvaPorcentaje').value = orden?.iva_porcentaje ?? 16;
+  document.getElementById('ordenNotas').value = orden?.notas || '';
+
+  const esConvertida = orden?.estatus === 'Convertida';
+  document.getElementById('convertirOrdenBtn').style.display = (orden && !esConvertida) ? '' : 'none';
+  document.getElementById('saveModalOrden').style.display = esConvertida ? 'none' : '';
+  const aviso = document.getElementById('ordenConvertidaAviso');
+  if (esConvertida) { aviso.style.display = ''; aviso.textContent = '✓ Esta orden ya fue convertida en factura — solo lectura.'; }
+  else aviso.style.display = 'none';
+  ['ordenCliente','ordenFecha','ordenAplicaIva','ordenIvaPorcentaje','ordenNotas','ordenAgregarLinea'].forEach(id => {
+    document.getElementById(id).disabled = esConvertida;
+  });
+
+  if (orden) {
+    const { data: lineas } = await sb.from('fz_ordenes_venta_lineas').select('*').eq('orden_id', orden.id).order('orden');
+    STATE_ordenLineas = (lineas || []).map(l => ({ ...l, _tmpId: l.id }));
+  } else {
+    STATE_ordenLineas = [{ _tmpId: 'tmp_' + Date.now(), producto_id: null, descripcion: '', cantidad: 1, precio_unitario: 0, subcuenta_id: null }];
+  }
+  renderOrdenLineas(esConvertida);
+  document.getElementById('modalOrden').classList.add('show');
+}
+
+function renderOrdenLineas(soloLectura) {
+  const body = document.getElementById('ordenLineasBody');
+  const { productos } = STATE_ordenCatalogos;
+  body.innerHTML = STATE_ordenLineas.map((l, idx) => `
+    <tr>
+      <td>
+        <select class="cell orden-linea-producto" data-idx="${idx}" style="min-width:160px;" ${soloLectura?'disabled':''}>
+          <option value="">— manual —</option>
+          ${productos.map(p => `<option value="${p.id}" ${l.producto_id===p.id?'selected':''}>${p.nombre}</option>`).join('')}
+        </select>
+      </td>
+      <td><input class="cell orden-linea-desc" data-idx="${idx}" type="text" value="${(l.descripcion||'').replace(/"/g,'&quot;')}" placeholder="Descripción" ${soloLectura?'disabled':''}></td>
+      <td><input class="cell orden-linea-cant" data-idx="${idx}" type="text" inputmode="decimal" value="${l.cantidad||1}" ${soloLectura?'disabled':''}></td>
+      <td><input class="cell orden-linea-precio" data-idx="${idx}" type="text" inputmode="decimal" value="${fmtInputVal(l.precio_unitario||0)}" ${soloLectura?'disabled':''}></td>
+      <td class="num">${fmt((Number(l.cantidad)||0) * (Number(l.precio_unitario)||0))}</td>
+      <td>${soloLectura?'':`<button class="row-del orden-linea-del" data-idx="${idx}">✕</button>`}</td>
+    </tr>`).join('');
+
+  body.querySelectorAll('.orden-linea-producto').forEach(sel => sel.addEventListener('change', () => {
+    const idx = Number(sel.dataset.idx);
+    const p = productos.find(x => x.id === sel.value);
+    if (p) {
+      STATE_ordenLineas[idx].producto_id = p.id;
+      STATE_ordenLineas[idx].descripcion = p.nombre + (p.descripcion ? ' — ' + p.descripcion : '');
+      STATE_ordenLineas[idx].precio_unitario = Number(p.precio) || 0;
+      STATE_ordenLineas[idx].subcuenta_id = p.subcuenta_id;
+    } else {
+      STATE_ordenLineas[idx].producto_id = null;
+      STATE_ordenLineas[idx].subcuenta_id = null;
+    }
+    renderOrdenLineas(soloLectura);
+    actualizarTotalesOrden();
+  }));
+  body.querySelectorAll('.orden-linea-desc').forEach(inp => inp.addEventListener('input', () => {
+    STATE_ordenLineas[Number(inp.dataset.idx)].descripcion = inp.value;
+  }));
+  body.querySelectorAll('.orden-linea-cant').forEach(inp => inp.addEventListener('input', () => {
+    STATE_ordenLineas[Number(inp.dataset.idx)].cantidad = leerMonto(inp.value) || 0;
+    renderOrdenLineas(soloLectura);
+    actualizarTotalesOrden();
+  }));
+  body.querySelectorAll('.orden-linea-precio').forEach(inp => inp.addEventListener('input', () => {
+    STATE_ordenLineas[Number(inp.dataset.idx)].precio_unitario = leerMonto(inp.value) || 0;
+    renderOrdenLineas(soloLectura);
+    actualizarTotalesOrden();
+  }));
+  body.querySelectorAll('.orden-linea-del').forEach(btn => btn.addEventListener('click', () => {
+    STATE_ordenLineas.splice(Number(btn.dataset.idx), 1);
+    renderOrdenLineas(soloLectura);
+    actualizarTotalesOrden();
+  }));
+  actualizarTotalesOrden();
+}
+document.getElementById('ordenAgregarLinea').addEventListener('click', () => {
+  STATE_ordenLineas.push({ _tmpId: 'tmp_' + Date.now() + Math.random(), producto_id: null, descripcion: '', cantidad: 1, precio_unitario: 0, subcuenta_id: null });
+  renderOrdenLineas(false);
+});
+function actualizarTotalesOrden() {
+  const subtotal = STATE_ordenLineas.reduce((s, l) => s + (Number(l.cantidad)||0) * (Number(l.precio_unitario)||0), 0);
+  const aplicaIva = document.getElementById('ordenAplicaIva').checked;
+  const ivaPct = Number(document.getElementById('ordenIvaPorcentaje').value) || 0;
+  const ivaMonto = aplicaIva ? subtotal * ivaPct / 100 : 0;
+  document.getElementById('ordenSubtotalTxt').textContent = fmt(subtotal);
+  document.getElementById('ordenIvaTxt').textContent = fmt(ivaMonto);
+  document.getElementById('ordenTotalTxt').textContent = fmt(subtotal + ivaMonto);
+}
+document.getElementById('ordenAplicaIva').addEventListener('change', actualizarTotalesOrden);
+document.getElementById('ordenIvaPorcentaje').addEventListener('input', actualizarTotalesOrden);
+document.getElementById('closeModalOrden').addEventListener('click', () => {
+  document.getElementById('modalOrden').classList.remove('show');
+});
+document.getElementById('saveModalOrden').addEventListener('click', async () => {
+  const b = biz();
+  if (!b) return;
+  const cliente_id = document.getElementById('ordenCliente').value;
+  if (!cliente_id) { toast('Elige un cliente.', 'error'); return; }
+  const lineasValidas = STATE_ordenLineas.filter(l => (l.descripcion||'').trim() && Number(l.cantidad) > 0);
+  if (!lineasValidas.length) { toast('Agrega al menos una línea con descripción y cantidad.', 'error'); return; }
+
+  const cliente = STATE_ordenCatalogos.clientes.find(c => c.id === cliente_id);
+  const subtotal = lineasValidas.reduce((s, l) => s + (Number(l.cantidad)||0) * (Number(l.precio_unitario)||0), 0);
+  const aplica_iva = document.getElementById('ordenAplicaIva').checked;
+  const iva_porcentaje = Number(document.getElementById('ordenIvaPorcentaje').value) || 0;
+  const iva_monto = aplica_iva ? subtotal * iva_porcentaje / 100 : 0;
+  const fecha = document.getElementById('ordenFecha').value || todayStr();
+
+  const payload = {
+    business_id: b.id, cliente_id, fecha,
+    moneda: cliente?.moneda || 'MXN', tipo_cambio: cliente?.tipo_cambio || 1,
+    subtotal, aplica_iva, iva_porcentaje, iva_monto, total: subtotal + iva_monto,
+    notas: document.getElementById('ordenNotas').value.trim() || null,
+  };
+
+  let ordenId = STATE_ordenEditandoId;
+  if (ordenId) {
+    const { error } = await sb.from('fz_ordenes_venta').update(payload).eq('id', ordenId);
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    await sb.from('fz_ordenes_venta_lineas').delete().eq('orden_id', ordenId);
+  } else {
+    payload.folio = await siguienteFolio(b.id, 'orden_venta');
+    payload.estatus = 'Pendiente';
+    const { data, error } = await sb.from('fz_ordenes_venta').insert(payload).select().single();
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    ordenId = data.id;
+  }
+  const lineasPayload = lineasValidas.map((l, i) => ({
+    orden_id: ordenId, business_id: b.id, producto_id: l.producto_id || null,
+    descripcion: l.descripcion, cantidad: Number(l.cantidad) || 0, precio_unitario: Number(l.precio_unitario) || 0,
+    subcuenta_id: l.subcuenta_id || null, importe: (Number(l.cantidad)||0) * (Number(l.precio_unitario)||0), orden: i,
+  }));
+  const { error: errLineas } = await sb.from('fz_ordenes_venta_lineas').insert(lineasPayload);
+  if (errLineas) { toast('Error guardando las líneas: ' + errLineas.message, 'error'); return; }
+
+  registrarAuditoria(b.id, STATE_ordenEditandoId ? 'editar' : 'crear', 'Órdenes de venta', `Orden #${payload.folio ?? ''} — ${cliente?.nombre_comercial || ''}`);
+  document.getElementById('modalOrden').classList.remove('show');
+  STATE_ordenEditandoId = null;
+  renderClientes();
+});
+document.getElementById('convertirOrdenBtn').addEventListener('click', async () => {
+  const b = biz();
+  if (!b || !STATE_ordenEditandoId) return;
+  if (!confirm('¿Convertir esta orden en Factura? Se creará una nueva factura con estos mismos datos, y la orden quedará marcada como Convertida.')) return;
+  const { data: orden } = await sb.from('fz_ordenes_venta').select('*').eq('id', STATE_ordenEditandoId).single();
+  const { data: lineasOrden } = await sb.from('fz_ordenes_venta_lineas').select('*').eq('orden_id', STATE_ordenEditandoId);
+  if (!orden) return;
+
+  const folio = await siguienteFolio(b.id, 'factura_cliente');
+  const payload = {
+    business_id: b.id, cliente_id: orden.cliente_id, folio, fecha: todayStr(),
+    moneda: orden.moneda, tipo_cambio: orden.tipo_cambio,
+    subtotal: orden.subtotal, aplica_iva: orden.aplica_iva, iva_porcentaje: orden.iva_porcentaje, iva_monto: orden.iva_monto, total: orden.total,
+    estatus_fiscal: 'no_aplica', notas: orden.notas, estatus: 'Pendiente', importe_pagado: 0,
+  };
+  const { data: nuevaFactura, error } = await sb.from('fz_facturas_clientes').insert(payload).select().single();
+  if (error) { toast('Error al crear la factura: ' + error.message, 'error'); return; }
+  if (lineasOrden && lineasOrden.length) {
+    await sb.from('fz_facturas_clientes_lineas').insert(lineasOrden.map(l => ({
+      factura_id: nuevaFactura.id, business_id: b.id, producto_id: l.producto_id, descripcion: l.descripcion,
+      cantidad: l.cantidad, precio_unitario: l.precio_unitario, subcuenta_id: l.subcuenta_id, importe: l.importe, orden: l.orden,
+    })));
+  }
+  await sb.from('fz_ordenes_venta').update({ estatus: 'Convertida', factura_id: nuevaFactura.id }).eq('id', STATE_ordenEditandoId);
+  registrarAuditoria(b.id, 'crear', 'Facturas de clientes', `Factura #${folio} generada al convertir la Orden #${orden.folio}`);
+  toast(`Convertida — se creó la Factura #${folio}.`);
+  document.getElementById('modalOrden').classList.remove('show');
+  STATE_ordenEditandoId = null;
   renderClientes();
 });
 
@@ -6447,7 +6888,12 @@ async function openPolizaModal(polizaId, businessId) {
   const idsYaVinculados = base.lineas.filter(l => l.cuenta_tipo === 'proveedor' && l.proveedor_factura_id).map(l => l.proveedor_factura_id);
   const { data: facturasData } = await sb.from('fz_proveedores').select('id,proveedor,factura,importe,importe_pagado,estatus').eq('business_id', businessId);
   const facturasPendientes = (facturasData || []).filter(f => f.estatus === 'Pendiente' || f.estatus === 'Parcial' || idsYaVinculados.includes(f.id));
-  const catalogos = { subcuentas, mayores, cuentasBanco: cuentasBancoQ.data || [], monedasEfectivo: monedasQ.data || [], facturasPendientes };
+
+  const idsClienteYaVinculados = base.lineas.filter(l => l.cuenta_tipo === 'cliente' && l.cliente_factura_id).map(l => l.cliente_factura_id);
+  const todasFacturasClientes = await loadFacturasClientesPendConNombre(businessId);
+  const facturasClientesPendientes = todasFacturasClientes.filter(f => f.estatus === 'Pendiente' || f.estatus === 'Parcial' || idsClienteYaVinculados.includes(f.id));
+
+  const catalogos = { subcuentas, mayores, cuentasBanco: cuentasBancoQ.data || [], monedasEfectivo: monedasQ.data || [], facturasPendientes, facturasClientesPendientes };
   STATE_polizaBorrador = { ...base, catalogos };
   STATE_polizaBorrador.original = JSON.stringify({ poliza: STATE_polizaBorrador.poliza, lineas: STATE_polizaBorrador.lineas });
   if (polizaId) {
@@ -6506,6 +6952,7 @@ function polizaCardHtmlBorrador(borrador) {
       (l.cuenta_tipo === 'banco' && it.tipo === 'banco' && it.id === l.cuenta_ref_id) ||
       (l.cuenta_tipo === 'efectivo' && it.tipo === 'efectivo' && it.id === l.cuenta_ref_id) ||
       (l.cuenta_tipo === 'proveedor' && it.tipo === 'proveedor' && it.id === l.proveedor_factura_id) ||
+      (l.cuenta_tipo === 'cliente' && it.tipo === 'cliente' && it.id === l.cliente_factura_id) ||
       ((!l.cuenta_tipo || l.cuenta_tipo === 'subcuenta') && it.tipo === 'sub' && it.id === l.subcuenta_id)
     );
     return match ? match.label : '';
@@ -6582,6 +7029,10 @@ function catalogoCuentasUnificado(catalogos) {
     const saldo = Number(f.importe) - (Number(f.importe_pagado) || 0);
     items.push({ label: `Pagar: ${f.proveedor} — Factura ${f.factura || 's/f'} (${fmt(saldo)} pendiente)`, tipo: 'proveedor', id: f.id });
   });
+  (catalogos.facturasClientesPendientes || []).forEach(f => {
+    const saldo = Number(f.total) - (Number(f.importe_pagado) || 0);
+    items.push({ label: `Cobrar: ${f.clienteNombre} — Factura #${f.folio} (${fmt(saldo)} pendiente)`, tipo: 'cliente', id: f.id });
+  });
   return items;
 }
 
@@ -6595,17 +7046,22 @@ function wireBorradorPolizaHandlers(wrap) {
     if (!linea) return;
     const catalogoItems = catalogoCuentasUnificado(STATE_polizaBorrador.catalogos);
     const texto = inp.value.trim();
-    if (!texto) { linea.cuenta_tipo = 'subcuenta'; linea.subcuenta_id = null; linea.cuenta_ref_id = null; linea.proveedor_factura_id = null; renderizarBorradorPoliza(); return; }
+    if (!texto) { linea.cuenta_tipo = 'subcuenta'; linea.subcuenta_id = null; linea.cuenta_ref_id = null; linea.proveedor_factura_id = null; linea.cliente_factura_id = null; renderizarBorradorPoliza(); return; }
     const match = catalogoItems.find(it => it.label === texto);
     if (!match) { toast('No se encontró esa cuenta. Elige una de la lista que aparece al escribir.', 'error'); renderizarBorradorPoliza(); return; }
-    if (match.tipo === 'banco') { linea.cuenta_tipo = 'banco'; linea.cuenta_ref_id = match.id; linea.subcuenta_id = null; linea.proveedor_factura_id = null; }
-    else if (match.tipo === 'efectivo') { linea.cuenta_tipo = 'efectivo'; linea.cuenta_ref_id = match.id; linea.subcuenta_id = null; linea.proveedor_factura_id = null; }
+    if (match.tipo === 'banco') { linea.cuenta_tipo = 'banco'; linea.cuenta_ref_id = match.id; linea.subcuenta_id = null; linea.proveedor_factura_id = null; linea.cliente_factura_id = null; }
+    else if (match.tipo === 'efectivo') { linea.cuenta_tipo = 'efectivo'; linea.cuenta_ref_id = match.id; linea.subcuenta_id = null; linea.proveedor_factura_id = null; linea.cliente_factura_id = null; }
     else if (match.tipo === 'proveedor') {
-      linea.cuenta_tipo = 'proveedor'; linea.proveedor_factura_id = match.id; linea.subcuenta_id = null; linea.cuenta_ref_id = null;
+      linea.cuenta_tipo = 'proveedor'; linea.proveedor_factura_id = match.id; linea.subcuenta_id = null; linea.cuenta_ref_id = null; linea.cliente_factura_id = null;
       const factura = (STATE_polizaBorrador.catalogos.facturasPendientes || []).find(f => f.id === match.id);
       if (factura && !Number(linea.cargo)) linea.cargo = Number(factura.importe) - (Number(factura.importe_pagado) || 0);
     }
-    else { linea.cuenta_tipo = 'subcuenta'; linea.subcuenta_id = match.id; linea.cuenta_ref_id = null; linea.proveedor_factura_id = null; }
+    else if (match.tipo === 'cliente') {
+      linea.cuenta_tipo = 'cliente'; linea.cliente_factura_id = match.id; linea.subcuenta_id = null; linea.cuenta_ref_id = null; linea.proveedor_factura_id = null;
+      const factura = (STATE_polizaBorrador.catalogos.facturasClientesPendientes || []).find(f => f.id === match.id);
+      if (factura && !Number(linea.abono)) linea.abono = Number(factura.total) - (Number(factura.importe_pagado) || 0);
+    }
+    else { linea.cuenta_tipo = 'subcuenta'; linea.subcuenta_id = match.id; linea.cuenta_ref_id = null; linea.proveedor_factura_id = null; linea.cliente_factura_id = null; }
     renderizarBorradorPoliza();
   }));
   wrap.querySelectorAll('.linea-cell').forEach(inp => inp.addEventListener('change', () => {
@@ -6635,8 +7091,10 @@ function wireBorradorPolizaHandlers(wrap) {
     const businessId = STATE_polizaBorrador.businessId;
     const p = STATE_polizaBorrador.poliza;
     const facturasVinculadas = STATE_polizaBorrador.lineas.filter(l => l.cuenta_tipo === 'proveedor' && l.proveedor_factura_id).map(l => l.proveedor_factura_id);
+    const facturasClienteVinculadas = STATE_polizaBorrador.lineas.filter(l => l.cuenta_tipo === 'cliente' && l.cliente_factura_id).map(l => l.cliente_factura_id);
     await sb.from('fz_polizas').delete().eq('id', p.id);
     for (const facturaId of [...new Set(facturasVinculadas)]) await sincronizarPagoDesdePolizas(businessId, facturaId);
+    for (const facturaId of [...new Set(facturasClienteVinculadas)]) await sincronizarCobroDesdePolizas(businessId, facturaId);
     registrarAuditoria(businessId, 'eliminar', 'Pólizas', `Póliza #${p.numero ?? '—'} (${p.fecha || ''}) — ${p.concepto || 'sin concepto'}`);
     STATE_polizaBorrador = null;
     document.getElementById('modalPoliza').classList.remove('show');
@@ -6691,6 +7149,25 @@ async function sincronizarPagoDesdePolizas(businessId, facturaId) {
   await sb.from('fz_proveedores').update(payload).eq('id', facturaId);
 }
 
+async function sincronizarCobroDesdePolizas(businessId, facturaId) {
+  const { data: factura } = await sb.from('fz_facturas_clientes').select('*').eq('id', facturaId).single();
+  if (!factura) return;
+  const { data: lineasCobro } = await sb.from('fz_polizas_lineas').select('abono').eq('business_id', businessId).eq('cuenta_tipo', 'cliente').eq('cliente_factura_id', facturaId);
+  const cobradoPorPolizasAhora = (lineasCobro || []).reduce((s,l) => s + (Number(l.abono) || 0), 0);
+  const cobradoPorPolizasAntes = Number(factura.cobrado_por_polizas) || 0;
+  const delta = cobradoPorPolizasAhora - cobradoPorPolizasAntes;
+  if (Math.abs(delta) < 0.004) return; // nada cambió, no tocar lo que ya había (evita pisar cobros de Bancos/Efectivo)
+
+  const nuevoImportePagado = Math.max(0, (Number(factura.importe_pagado) || 0) + delta);
+  const nuevoEstatus = nuevoImportePagado >= Number(factura.total) - 0.01 ? 'Pagado'
+    : nuevoImportePagado > 0.004 ? 'Parcial'
+    : 'Pendiente';
+  const payload = { importe_pagado: nuevoImportePagado, cobrado_por_polizas: cobradoPorPolizasAhora, estatus: nuevoEstatus };
+  if (nuevoEstatus === 'Pendiente') { payload.fecha_pago = null; }
+  else if (!factura.fecha_pago) { payload.fecha_pago = todayStr(); }
+  await sb.from('fz_facturas_clientes').update(payload).eq('id', facturaId);
+}
+
 async function guardarBorradorPoliza() {
   const borrador = STATE_polizaBorrador;
   const businessId = borrador.businessId;
@@ -6722,7 +7199,7 @@ async function guardarBorradorPoliza() {
   let huboError = false;
   const idsFinales = []; // ids reales (ya sea existentes o recién creados) que deben permanecer
   for (const l of borrador.lineas) {
-    const payload = { subcuenta_id: l.subcuenta_id || null, cuenta_tipo: l.cuenta_tipo || 'subcuenta', cuenta_ref_id: l.cuenta_ref_id || null, proveedor_factura_id: l.cuenta_tipo === 'proveedor' ? (l.proveedor_factura_id || null) : null, cargo: Number(l.cargo) || 0, abono: Number(l.abono) || 0, descripcion: l.descripcion || null, referencia: l.referencia || null, orden: l.orden || 0 };
+    const payload = { subcuenta_id: l.subcuenta_id || null, cuenta_tipo: l.cuenta_tipo || 'subcuenta', cuenta_ref_id: l.cuenta_ref_id || null, proveedor_factura_id: l.cuenta_tipo === 'proveedor' ? (l.proveedor_factura_id || null) : null, cliente_factura_id: l.cuenta_tipo === 'cliente' ? (l.cliente_factura_id || null) : null, cargo: Number(l.cargo) || 0, abono: Number(l.abono) || 0, descripcion: l.descripcion || null, referencia: l.referencia || null, orden: l.orden || 0 };
     if (String(l.id).startsWith('tmp_')) {
       const { data, error } = await sb.from('fz_polizas_lineas').insert({ business_id: businessId, poliza_id: polizaId, ...payload }).select().single();
       if (error) { toast('Error guardando una línea: ' + error.message, 'error'); huboError = true; }
@@ -6748,6 +7225,11 @@ async function guardarBorradorPoliza() {
   const facturasActuales = borrador.lineas.filter(l => l.cuenta_tipo === 'proveedor' && l.proveedor_factura_id).map(l => l.proveedor_factura_id);
   const facturasASincronizar = [...new Set([...facturasOriginal, ...facturasActuales])];
   for (const facturaId of facturasASincronizar) await sincronizarPagoDesdePolizas(businessId, facturaId);
+
+  const facturasClienteOriginal = borrador.esNueva ? [] : JSON.parse(borrador.original).lineas.filter(l => l.cuenta_tipo === 'cliente' && l.cliente_factura_id).map(l => l.cliente_factura_id);
+  const facturasClienteActuales = borrador.lineas.filter(l => l.cuenta_tipo === 'cliente' && l.cliente_factura_id).map(l => l.cliente_factura_id);
+  const facturasClienteASincronizar = [...new Set([...facturasClienteOriginal, ...facturasClienteActuales])];
+  for (const facturaId of facturasClienteASincronizar) await sincronizarCobroDesdePolizas(businessId, facturaId);
 
   registrarAuditoria(businessId, borrador.esNueva ? 'crear' : 'editar', 'Pólizas', `Póliza #${borrador.poliza.numero ?? '—'} (${borrador.poliza.fecha || ''}) — ${borrador.poliza.concepto || 'sin concepto'}`);
   STATE_polizaBorrador = null;

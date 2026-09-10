@@ -12,6 +12,8 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style id="printOrientationStyle">@media print { @page { size: landscape; margin: 12mm 12mm 20mm 12mm; @bottom-center { content: "Página " counter(page) " de " counter(pages); font-size: 9px; color: #999; } } }</style>
 <style>
@@ -1046,6 +1048,62 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
     <div class="modal-actions">
       <button class="btn btn-ghost" id="closeModalFactura">Cancelar</button>
       <button class="btn btn-gold" id="saveModalFactura">Guardar factura</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Orden de venta -->
+<div class="modal-bg" id="modalOrden">
+  <div class="modal" style="width:min(920px,97vw);max-height:92vh;overflow-y:auto;">
+    <h3 id="modalOrdenTitulo">Nueva orden de venta</h3>
+    <div class="grid-3">
+      <div class="field">
+        <label>Cliente (Razón social)</label>
+        <select id="ordenCliente"></select>
+      </div>
+      <div class="field">
+        <label>Nombre comercial</label>
+        <input type="text" id="ordenNombreComercial" readonly style="background:#f2f4f8;color:var(--muted);">
+      </div>
+      <div class="field">
+        <label>Fecha</label>
+        <input type="date" id="ordenFecha">
+      </div>
+    </div>
+
+    <div class="table-wrap" style="margin:14px 0;">
+      <table>
+        <colgroup>
+          <col style="width:180px;"><col><col style="width:90px;"><col style="width:120px;"><col style="width:120px;"><col style="width:40px;">
+        </colgroup>
+        <thead><tr><th>Producto/Servicio</th><th>Descripción</th><th>Cantidad</th><th>Precio unit.</th><th>Importe</th><th></th></tr></thead>
+        <tbody id="ordenLineasBody"></tbody>
+      </table>
+    </div>
+    <button class="btn btn-ghost btn-sm" id="ordenAgregarLinea" style="margin-bottom:12px;">+ Agregar línea</button>
+
+    <div style="display:flex;justify-content:flex-end;">
+      <div style="width:min(320px,100%);">
+        <div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0;"><span>Subtotal</span><strong id="ordenSubtotalTxt">$0.00</strong></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;padding:4px 0;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="ordenAplicaIva" checked> Aplica IVA (<input type="text" id="ordenIvaPorcentaje" value="16" style="width:34px;border:1px solid var(--line);border-radius:5px;text-align:center;">%)</label>
+          <strong id="ordenIvaTxt">$0.00</strong>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:15px;padding:8px 0;border-top:1.5px solid var(--navy-1);margin-top:4px;"><span>Total</span><strong id="ordenTotalTxt">$0.00</strong></div>
+      </div>
+    </div>
+
+    <div class="field" style="margin-top:12px;">
+      <label>Notas (opcional)</label>
+      <input type="text" id="ordenNotas" placeholder="Referencia, condiciones, etc.">
+    </div>
+
+    <div id="ordenConvertidaAviso" style="display:none;background:#eef8f0;border:1px solid #bfe3c8;border-radius:8px;padding:10px 14px;font-size:13px;color:#1e7a3d;margin-top:10px;"></div>
+
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="closeModalOrden">Cancelar</button>
+      <button class="btn btn-gold" id="convertirOrdenBtn" style="display:none;">Convertir a Factura</button>
+      <button class="btn btn-gold" id="saveModalOrden">Guardar orden</button>
     </div>
   </div>
 </div>
