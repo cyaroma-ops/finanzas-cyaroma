@@ -4828,32 +4828,89 @@ async function generarFacturasRecurrentesSiCorresponde(businessId) {
 
 async function abrirElegirFacturaCobro(businessId) {
   const pendientes = (await loadFacturasClientesPendConNombre(businessId)).filter(f => f.estatus !== 'Pagado');
+  const [cuentasBancoQ, monedasQ] = await Promise.all([
+    sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
+    sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
+  ]);
+  const selCuenta = document.getElementById('elegirFacturaCobroCuenta');
+  selCuenta.innerHTML = `<option value="manual">Ingreso directo (sin registrar en Banco/Efectivo)</option>`
+    + (cuentasBancoQ.data||[]).map(c => `<option value="banco:${c.id}">Banco — ${c.nombre}</option>`).join('')
+    + (monedasQ.data||[]).map(m => `<option value="efectivo:${m.id}">Efectivo — ${m.nombre}</option>`).join('');
+  document.getElementById('elegirFacturaCobroFecha').value = todayStr();
+  document.getElementById('elegirFacturaCobroMonto').value = '';
+
   const box = document.getElementById('elegirFacturaCobroList');
   const buscar = document.getElementById('elegirFacturaCobroBuscar');
+  const porCliente = {};
+  pendientes.forEach(f => { (porCliente[f.clienteNombre] = porCliente[f.clienteNombre] || []).push(f); });
+  Object.values(porCliente).forEach(lista => lista.sort((a,b) => a.fecha.localeCompare(b.fecha)));
+  const nombresCliente = Object.keys(porCliente).sort((a,b)=>a.localeCompare(b));
+
+  const actualizarResumen = () => {
+    const marcadas = Array.from(box.querySelectorAll('.efc-check:checked'));
+    const totalSeleccionado = marcadas.reduce((s,c) => s + (Number(c.dataset.importe) || 0), 0);
+    const montoIngresado = leerMonto(document.getElementById('elegirFacturaCobroMonto').value) || 0;
+    const diferencia = montoIngresado - totalSeleccionado;
+    const cuadra = Math.abs(diferencia) < 0.01;
+    document.getElementById('elegirFacturaCobroResumen').innerHTML = `
+      <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Monto a aplicar</span><strong>${fmt(montoIngresado)}</strong></div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Total seleccionado (${marcadas.length})</span><strong>${fmt(totalSeleccionado)}</strong></div>
+      <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--muted)'};font-weight:700;"><span>${cuadra?'✓ Cuadra exacto':(diferencia>0?'Sobrará sin asignar':'Quedará pendiente/parcial')}</span><span>${cuadra?'':fmt(Math.abs(diferencia))}</span></div>
+    `;
+  };
+
   const renderLista = () => {
     const texto = buscar.value.trim().toLowerCase();
-    const filtradas = pendientes.filter(f => !texto || f.clienteNombre.toLowerCase().includes(texto) || String(f.folio).includes(texto));
-    box.innerHTML = filtradas.length ? filtradas.map(f => {
-      const saldo = Number(f.total) - Number(f.importe_pagado||0);
-      return `<div class="elegir-factura-cobro-item" data-id="${f.id}" style="display:flex;justify-content:space-between;align-items:center;padding:9px 4px;border-bottom:1px solid var(--line);cursor:pointer;">
-        <span><strong>${f.clienteNombre}</strong> — Factura #${f.folio}${f.estatus==='Parcial'?' (parcial)':''}</span>
-        <span style="font-weight:700;">${fmt(saldo)}</span>
+    box.innerHTML = nombresCliente.map(cli => {
+      const facturasCli = porCliente[cli].filter(f => !texto || cli.toLowerCase().includes(texto) || String(f.folio).includes(texto));
+      if (!facturasCli.length) return '';
+      return `<div style="margin-bottom:10px;">
+        <div style="font-weight:700;font-size:12.5px;color:var(--navy-1);margin-bottom:4px;">${cli}</div>
+        ${facturasCli.map(f => {
+          const saldo = Number(f.total) - Number(f.importe_pagado||0);
+          return `<label style="display:flex;align-items:center;gap:8px;padding:5px 4px;border-bottom:1px solid var(--line);font-size:13px;cursor:pointer;">
+            <input type="checkbox" class="efc-check" value="${f.id}" data-importe="${saldo}">
+            <span>${f.fecha} · Factura #${f.folio}${f.estatus==='Parcial'?' (parcial)':''} · ${fmt(saldo)}</span>
+          </label>`;
+        }).join('')}
       </div>`;
-    }).join('') : `<div class="empty" style="padding:14px;">No hay facturas pendientes de cobro.</div>`;
-    box.querySelectorAll('.elegir-factura-cobro-item').forEach(item => item.addEventListener('click', async () => {
-      const { data: f } = await sb.from('fz_facturas_clientes').select('*').eq('id', item.dataset.id).single();
-      if (!f) return;
-      document.getElementById('modalElegirFacturaCobro').classList.remove('show');
-      await openModalFactura(f, businessId);
-      document.getElementById('facturaCobrosSection').scrollIntoView({ block: 'center', behavior: 'smooth' });
-      document.getElementById('cobroMonto').focus();
-    }));
+    }).join('') || `<div class="empty" style="padding:14px;">No hay facturas pendientes de cobro.</div>`;
+    box.querySelectorAll('.efc-check').forEach(chk => chk.addEventListener('change', actualizarResumen));
+    actualizarResumen();
   };
   buscar.value = '';
   buscar.oninput = renderLista;
+  document.getElementById('elegirFacturaCobroMonto').oninput = actualizarResumen;
   renderLista();
   document.getElementById('modalElegirFacturaCobro').classList.add('show');
 }
+document.getElementById('aplicarElegirFacturaCobro').addEventListener('click', async () => {
+  const b = biz();
+  if (!b) return;
+  const idsSeleccionados = Array.from(document.querySelectorAll('.efc-check:checked')).map(c => c.value);
+  if (!idsSeleccionados.length) { toast('Marca al menos una factura.', 'error'); return; }
+  const monto = leerMonto(document.getElementById('elegirFacturaCobroMonto').value);
+  if (!monto || monto <= 0) { toast('Escribe el monto a aplicar.', 'error'); return; }
+  const fecha = document.getElementById('elegirFacturaCobroFecha').value || todayStr();
+  const destino = document.getElementById('elegirFacturaCobroCuenta').value;
+
+  let origen_tabla = 'manual', origen_id = null;
+  if (destino !== 'manual') {
+    const [tipo, refId] = destino.split(':');
+    const tabla = tipo === 'banco' ? 'fz_bancos_mov' : 'fz_efectivo_mov';
+    const payload = tipo === 'banco'
+      ? { business_id: b.id, cuenta_id: refId, fecha, concepto: 'Cobro a clientes', descripcion: '', depositos: monto, cargos: 0, tipo_entrada: 'cliente' }
+      : { business_id: b.id, moneda_id: refId, fecha, proveedor: '', descripcion: 'Cobro a clientes', depositos: monto, cargos: 0, tipo_entrada: 'cliente' };
+    const { data: mov, error } = await sb.from(tabla).insert(payload).select().single();
+    if (error) { toast('Error creando el movimiento: ' + error.message, 'error'); return; }
+    origen_tabla = tabla; origen_id = mov.id;
+  }
+
+  const resultado = await aplicarCobroFacturas(idsSeleccionados, monto, fecha, b.id, { origen_tabla, origen_id });
+  if (origen_id) await sb.from(origen_tabla).update({ cliente_factura_ids: resultado.idsAfectados, cliente_factura_id: resultado.idsAfectados[0] || null }).eq('id', origen_id);
+  if (resultado.idsAfectados.length) toast(`${resultado.idsAfectados.length} factura(s) actualizada(s).`);
+  document.getElementById('modalElegirFacturaCobro').classList.remove('show');
+});
 document.getElementById('closeElegirFacturaCobro').addEventListener('click', () => {
   document.getElementById('modalElegirFacturaCobro').classList.remove('show');
 });
@@ -5001,6 +5058,101 @@ async function descargarFacturaPDF(facturaId, businessId) {
   doc.text('Este documento es un comprobante de control interno y no sustituye, por sí mismo, un CFDI timbrado ante el SAT.', margin, doc.internal.pageSize.getHeight() - 36);
 
   doc.save(`Factura ${factura.folio} - ${cliente?.nombre_comercial || 'cliente'}.pdf`);
+}
+
+async function descargarOrdenPDF(ordenId, businessId) {
+  const [{ data: orden }, { data: lineas }] = await Promise.all([
+    sb.from('fz_ordenes_venta').select('*').eq('id', ordenId).single(),
+    sb.from('fz_ordenes_venta_lineas').select('*').eq('orden_id', ordenId).order('orden'),
+  ]);
+  if (!orden) { toast('No se encontró la orden.', 'error'); return; }
+  const [cliente, productos] = await Promise.all([
+    loadClientes(businessId).then(cs => cs.find(c => c.id === orden.cliente_id)),
+    loadProductosServicios(businessId),
+  ]);
+  const nombreProducto = (id) => productos.find(p => p.id === id)?.nombre || '';
+  const negocio = biz();
+
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'pt', format: 'letter' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const margin = 48;
+  const simbolo = orden.moneda === 'USD' ? 'US$' : '$';
+  const fmtPdf = (n) => simbolo + Number(n || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(18); doc.setTextColor(10, 31, 61);
+  doc.text(negocio?.razon_social || negocio?.name || 'Finanzas', margin, 56);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(102, 112, 133);
+  if (negocio?.razon_social && negocio?.name && negocio.razon_social !== negocio.name) doc.text(negocio.name, margin, 72);
+
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(22); doc.setTextColor(185, 138, 46);
+  doc.text('ORDEN DE VENTA', pageW - margin, 56, { align: 'right' });
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(11); doc.setTextColor(26, 43, 69);
+  doc.text(`Folio: #${orden.folio}`, pageW - margin, 74, { align: 'right' });
+  doc.text(`Fecha: ${fechaCorta(orden.fecha)}`, pageW - margin, 90, { align: 'right' });
+
+  doc.setDrawColor(223, 228, 234); doc.line(margin, 118, pageW - margin, 118);
+
+  let y = 144;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(102, 112, 133);
+  doc.text('CLIENTE', margin, y);
+  y += 16;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(26, 43, 69);
+  doc.text(cliente?.razon_social || cliente?.nombre_comercial || 'Cliente', margin, y);
+  y += 15;
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(60, 70, 90);
+  if (cliente?.razon_social && cliente?.nombre_comercial && cliente.razon_social !== cliente.nombre_comercial) { doc.text(cliente.nombre_comercial, margin, y); y += 14; }
+  if (cliente?.rfc) { doc.text(`RFC: ${cliente.rfc}`, margin, y); y += 14; }
+
+  y += 12;
+
+  const filas = (lineas || []).map(l => [
+    nombreProducto(l.producto_id) || '—',
+    l.descripcion || '',
+    fmtNum(l.cantidad),
+    fmtPdf(l.precio_unitario),
+    fmtPdf(l.importe),
+  ]);
+  doc.autoTable({
+    startY: y,
+    head: [['Producto/Servicio', 'Descripción', 'Cantidad', 'Precio unit.', 'Importe']],
+    body: filas,
+    margin: { left: margin, right: margin },
+    styles: { font: 'helvetica', fontSize: 10, textColor: [26,43,69], cellPadding: 8 },
+    headStyles: { fillColor: [10,31,61], textColor: [255,255,255], fontStyle: 'bold' },
+    columnStyles: { 0: { cellWidth: 110 }, 2: { halign: 'right', cellWidth: 60 }, 3: { halign: 'right', cellWidth: 80 }, 4: { halign: 'right', cellWidth: 80 } },
+    alternateRowStyles: { fillColor: [247,249,252] },
+  });
+
+  let finalY = doc.lastAutoTable.finalY + 20;
+  const totalesX = pageW - margin - 180;
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10.5); doc.setTextColor(60, 70, 90);
+  doc.text('Subtotal', totalesX, finalY); doc.text(fmtPdf(orden.subtotal), pageW - margin, finalY, { align: 'right' });
+  finalY += 16;
+  if (orden.aplica_iva) {
+    doc.text(`IVA (${fmtNum(orden.iva_porcentaje)}%)`, totalesX, finalY); doc.text(fmtPdf(orden.iva_monto), pageW - margin, finalY, { align: 'right' });
+    finalY += 16;
+  }
+  doc.setDrawColor(10,31,61); doc.line(totalesX, finalY, pageW - margin, finalY);
+  finalY += 16;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(10,31,61);
+  doc.text('Total', totalesX, finalY); doc.text(fmtPdf(orden.total), pageW - margin, finalY, { align: 'right' });
+
+  finalY += 30;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(10.5); doc.setTextColor(102, 112, 133);
+  doc.text(`Estatus: ${orden.estatus}`, margin, finalY);
+
+  if (orden.notas) {
+    finalY += 24;
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(102, 112, 133);
+    doc.text('Notas:', margin, finalY);
+    doc.text(orden.notas, margin, finalY + 13, { maxWidth: pageW - margin*2 });
+  }
+
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(150, 158, 171);
+  doc.text('Este documento es una orden de venta — un compromiso previo a la factura, no un comprobante fiscal.', margin, doc.internal.pageSize.getHeight() - 36);
+
+  doc.save(`Orden ${orden.folio} - ${cliente?.nombre_comercial || 'cliente'}.pdf`);
 }
 
 async function eliminarFacturaCliente(facturaId, businessId) {
@@ -5412,6 +5564,7 @@ async function openModalOrden(orden, businessId) {
 
   const esConvertida = orden?.estatus === 'Convertida';
   document.getElementById('convertirOrdenBtn').style.display = (orden && !esConvertida) ? '' : 'none';
+  document.getElementById('descargarOrdenPdfBtn').style.display = orden ? '' : 'none';
   document.getElementById('saveModalOrden').style.display = esConvertida ? 'none' : '';
   const aviso = document.getElementById('ordenConvertidaAviso');
   if (esConvertida) { aviso.style.display = ''; aviso.textContent = '✓ Esta orden ya fue convertida en factura — solo lectura.'; }
@@ -5547,6 +5700,10 @@ document.getElementById('saveModalOrden').addEventListener('click', async () => 
   document.getElementById('modalOrden').classList.remove('show');
   STATE_ordenEditandoId = null;
   renderClientes();
+});
+document.getElementById('descargarOrdenPdfBtn').addEventListener('click', async () => {
+  const b = biz();
+  if (b && STATE_ordenEditandoId) await descargarOrdenPDF(STATE_ordenEditandoId, b.id);
 });
 document.getElementById('convertirOrdenBtn').addEventListener('click', async () => {
   const b = biz();
