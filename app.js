@@ -4364,6 +4364,11 @@ document.getElementById('saveModalProducto').addEventListener('click', async () 
 });
 
 /* ---------- Facturas de clientes ---------- */
+const ESTATUS_FISCAL_BADGE = {
+  no_aplica: '<span style="color:var(--muted);font-size:12px;">— No aplica —</span>',
+  pendiente: '<span class="badge pend">Pendiente de facturar</span>',
+  facturada: '<span class="badge pag">Ya facturada</span>',
+};
 async function siguienteFolio(businessId, tipo) {
   const { data } = await sb.from('fz_folios_contador').select('siguiente').eq('business_id', businessId).eq('tipo', tipo).maybeSingle();
   if (data) {
@@ -4400,7 +4405,7 @@ async function renderFacturasClientes(el, b) {
               <td class="num" style="font-weight:700;">${f.moneda==='USD'?'US':''}${fmt(f.total)}</td>
               <td class="num">${fmt(f.importe_pagado||0)}</td>
               <td><span class="badge ${f.estatus==='Pagado'?'pag':'pend'}">${f.estatus}</span></td>
-              <td>${f.se_factura_fiscalmente ? '<span class="badge pag">Sí</span>' : '<span class="badge pend">No</span>'}</td>
+              <td>${ESTATUS_FISCAL_BADGE[f.estatus_fiscal] || ESTATUS_FISCAL_BADGE.no_aplica}</td>
               <td><button class="btn btn-ghost btn-sm factura-editar" data-id="${f.id}">Ver / Editar</button></td>
             </tr>`).join('') : `<tr><td colspan="8" class="empty">Aún no hay facturas. Usa "+ Nueva factura".</td></tr>`}
           </tbody>
@@ -4430,17 +4435,23 @@ async function openModalFactura(factura, businessId) {
 
   document.getElementById('modalFacturaTitulo').textContent = factura ? `Factura #${factura.folio}` : 'Nueva factura';
   const selCliente = document.getElementById('facturaCliente');
-  selCliente.innerHTML = clientes.map(c => `<option value="${c.id}" ${factura?.cliente_id===c.id?'selected':''}>${c.nombre_comercial}</option>`).join('') || '<option value="">— crea un cliente primero —</option>';
+  selCliente.innerHTML = clientes.map(c => `<option value="${c.id}" ${factura?.cliente_id===c.id?'selected':''}>${c.razon_social || c.nombre_comercial}</option>`).join('') || '<option value="">— crea un cliente primero —</option>';
+  const actualizarNombreComercial = () => {
+    const c = clientes.find(x => x.id === selCliente.value);
+    document.getElementById('facturaNombreComercial').value = c?.nombre_comercial || '';
+  };
+  selCliente.onchange = actualizarNombreComercial;
+  actualizarNombreComercial();
   document.getElementById('facturaFecha').value = factura?.fecha || todayStr();
   document.getElementById('facturaVencimiento').value = factura?.fecha_vencimiento || '';
   document.getElementById('facturaAplicaIva').checked = factura ? !!factura.aplica_iva : true;
   document.getElementById('facturaIvaPorcentaje').value = factura?.iva_porcentaje ?? 16;
-  document.getElementById('facturaSeFactura').checked = !!factura?.se_factura_fiscalmente;
+  document.getElementById('facturaEstatusFiscal').value = factura?.estatus_fiscal || 'no_aplica';
   document.getElementById('facturaFolioFiscal').value = factura?.folio_fiscal || '';
-  document.getElementById('facturaFolioFiscal').style.display = factura?.se_factura_fiscalmente ? '' : 'none';
+  document.getElementById('facturaFolioFiscalWrap').style.display = factura?.estatus_fiscal === 'facturada' ? '' : 'none';
   document.getElementById('facturaEsRecurrente').checked = !!factura?.es_recurrente;
   document.getElementById('facturaFrecuencia').value = factura?.frecuencia_dias || 30;
-  document.getElementById('facturaFrecuencia').style.display = factura?.es_recurrente ? '' : 'none';
+  document.getElementById('facturaFrecuenciaWrap').style.display = factura?.es_recurrente ? '' : 'none';
   document.getElementById('facturaNotas').value = factura?.notas || '';
 
   if (factura) {
@@ -4521,11 +4532,11 @@ function actualizarTotalesFactura() {
 }
 document.getElementById('facturaAplicaIva').addEventListener('change', actualizarTotalesFactura);
 document.getElementById('facturaIvaPorcentaje').addEventListener('input', actualizarTotalesFactura);
-document.getElementById('facturaSeFactura').addEventListener('change', (e) => {
-  document.getElementById('facturaFolioFiscal').style.display = e.target.checked ? '' : 'none';
+document.getElementById('facturaEstatusFiscal').addEventListener('change', (e) => {
+  document.getElementById('facturaFolioFiscalWrap').style.display = e.target.value === 'facturada' ? '' : 'none';
 });
 document.getElementById('facturaEsRecurrente').addEventListener('change', (e) => {
-  document.getElementById('facturaFrecuencia').style.display = e.target.checked ? '' : 'none';
+  document.getElementById('facturaFrecuenciaWrap').style.display = e.target.checked ? '' : 'none';
 });
 document.getElementById('closeModalFactura').addEventListener('click', () => {
   document.getElementById('modalFactura').classList.remove('show');
@@ -4551,7 +4562,7 @@ document.getElementById('saveModalFactura').addEventListener('click', async () =
     fecha_vencimiento: document.getElementById('facturaVencimiento').value || null,
     moneda: cliente?.moneda || 'MXN', tipo_cambio: cliente?.tipo_cambio || 1,
     subtotal, aplica_iva, iva_porcentaje, iva_monto: iva_monto, total: subtotal + iva_monto,
-    se_factura_fiscalmente: document.getElementById('facturaSeFactura').checked,
+    estatus_fiscal: document.getElementById('facturaEstatusFiscal').value,
     folio_fiscal: document.getElementById('facturaFolioFiscal').value.trim() || null,
     notas: document.getElementById('facturaNotas').value.trim() || null,
     es_recurrente,
