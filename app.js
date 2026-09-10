@@ -3072,6 +3072,29 @@ function wireEntradaCellHandlers(container, table, onChange, facturasClientesPen
   }));
 }
 
+let STATE_movArchivosPendientes = [];
+function renderMovAdjuntoPendiente() {
+  const box = document.getElementById('movAdjuntoCell');
+  const pendientes = STATE_movArchivosPendientes;
+  box.innerHTML = `<span style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;">
+    ${pendientes.map((f, i) => `<span style="font-size:12px;color:var(--navy-1);background:#f7f9fc;border-radius:5px;padding:2px 6px;">${f.name} <button class="quitar-mov-adjunto-pendiente" data-idx="${i}" style="border:none;background:none;color:var(--red);cursor:pointer;">✕</button></span>`).join('')}
+    <label style="font-size:12px;color:var(--navy-3);text-decoration:underline;cursor:pointer;">${pendientes.length?'+ Agregar otro':'Adjuntar'} (se sube al guardar)<input type="file" accept=".pdf,.jpg,.jpeg,.png" class="mov-adjunto-pendiente-input" style="display:none;"></label>
+  </span>`;
+  const input = box.querySelector('.mov-adjunto-pendiente-input');
+  if (input) input.addEventListener('change', () => {
+    const file = input.files[0];
+    if (!file) return;
+    const ext = (file.name.split('.').pop() || '').toLowerCase();
+    if (!ADJUNTOS_EXT_PERMITIDAS.includes(ext)) { toast('Solo se permiten archivos PDF, JPG o PNG.', 'error'); return; }
+    if (file.size > ADJUNTOS_MAX_MB * 1024 * 1024) { toast(`El archivo pesa más de ${ADJUNTOS_MAX_MB} MB.`, 'error'); return; }
+    STATE_movArchivosPendientes.push(file);
+    renderMovAdjuntoPendiente();
+  });
+  box.querySelectorAll('.quitar-mov-adjunto-pendiente').forEach(btn => btn.addEventListener('click', () => {
+    STATE_movArchivosPendientes.splice(Number(btn.dataset.idx), 1);
+    renderMovAdjuntoPendiente();
+  }));
+}
 async function openMovimientoModal(contexto, movimientoExistente) {
   const modal = document.getElementById('modalMovimiento');
   document.getElementById('modalMovimientoTitulo').textContent = movimientoExistente ? 'Editar movimiento' : 'Agregar movimiento';
@@ -3254,13 +3277,14 @@ async function openMovimientoModal(contexto, movimientoExistente) {
 
   const movAdjuntoWrap = document.getElementById('movAdjuntoWrap');
   const tablaAdjunto = contexto.tipo === 'efectivo' ? 'fz_efectivo_mov' : 'fz_bancos_mov';
+  movAdjuntoWrap.style.display = '';
   if (movimientoExistente) {
-    movAdjuntoWrap.style.display = '';
     const conteo = await contarAdjuntosPorRegistro(tablaAdjunto, [movimientoExistente.id]);
     document.getElementById('movAdjuntoCell').innerHTML = adjuntosCellHtml(conteo[movimientoExistente.id], movimientoExistente.id);
     wireAdjuntosHandlers(document.getElementById('movAdjuntoCell'), tablaAdjunto, contexto.businessId, () => {});
   } else {
-    movAdjuntoWrap.style.display = 'none';
+    STATE_movArchivosPendientes = [];
+    renderMovAdjuntoPendiente();
   }
 
   modal.classList.add('show');
@@ -3297,6 +3321,11 @@ async function openMovimientoModal(contexto, movimientoExistente) {
       const { data, error } = await sb.from(table).insert(payload).select().single();
       if (error) { toast('Error: ' + error.message, 'error'); return; }
       nuevoMov = data;
+      for (const file of STATE_movArchivosPendientes) {
+        const subido = await subirAdjunto(table, nuevoMov.id, contexto.businessId, file);
+        if (subido) await sb.from('fz_adjuntos').insert({ business_id: contexto.businessId, tabla: table, registro_id: nuevoMov.id, archivo_path: subido.path, archivo_nombre: subido.nombre });
+      }
+      STATE_movArchivosPendientes = [];
     }
 
     // Al editar, siempre revisamos ambos lados (aunque no haya nada nuevo que aplicar) para
@@ -3912,8 +3941,6 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
         <td>${fechaCorta(m.fecha)}</td>
         <td><em>${m.proveedor||''}</em> <span style="color:var(--muted);font-size:11px;">· auto</span></td>
         <td>${m.descripcion}</td>
-        <td>${m.concepto}</td>
-        <td>—</td>
         <td class="num">${fmtNum(m.depositos)}</td>
         <td class="num">${fmtNum(m.cargos)}</td>
         <td class="num" style="font-weight:700;">${fmt(saldo)}</td>
@@ -3924,8 +3951,6 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
       <td><input class="cell mov-cell" type="date" value="${m.fecha}" data-id="${m.id}" data-field="fecha"></td>
       <td><input class="cell mov-cell" type="text" value="${m.proveedor||''}" data-id="${m.id}" data-field="proveedor"></td>
       <td><input class="cell mov-cell" type="text" value="${m.descripcion||''}" data-id="${m.id}" data-field="descripcion"></td>
-      <td><input class="cell mov-cell" type="text" value="${m.concepto||''}" data-id="${m.id}" data-field="concepto"></td>
-      <td><input class="cell mov-cell" type="text" value="${m.referencia||''}" data-id="${m.id}" data-field="referencia"></td>
       <td><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(m.depositos)}" data-id="${m.id}" data-field="depositos"></td>
       <td><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(m.cargos)}" data-id="${m.id}" data-field="cargos"></td>
       <td class="num" style="font-weight:700;">${fmt(saldo)}</td>
@@ -3957,7 +3982,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Fecha</th><th>Proveedor</th><th>Descripción</th><th>Concepto</th><th>Referencia</th><th>Depósitos</th><th>Cargos</th><th>Saldo</th><th></th></tr></thead>
+        <thead><tr><th>Fecha</th><th>Proveedor</th><th>Descripción</th><th>Depósitos</th><th>Cargos</th><th>Saldo</th><th></th></tr></thead>
         <tbody>${rowsHtml || `<tr><td colspan="11" class="empty">Sin movimientos.</td></tr>`}</tbody>
         <tfoot><tr class="total-row"><td colspan="4">Total ${STATE.currentMonth}</td><td class="num">${fmtNum(totalDepositosMes)}</td><td class="num">${fmtNum(totalCargosMes)}</td><td colspan="5"></td></tr></tfoot>
       </table>
