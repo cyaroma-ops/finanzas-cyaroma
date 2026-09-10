@@ -1052,6 +1052,21 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   </div>
 </div>
 
+<!-- Modal: elegir factura para registrar un pago (desde "+ Nueva transacción") -->
+<div class="modal-bg" id="modalElegirFacturaCobro">
+  <div class="modal" style="width:min(480px,92vw);">
+    <h3>Registrar un pago</h3>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:12px;">Elige la factura a la que quieres aplicar el cobro.</p>
+    <div class="field" style="margin-bottom:12px;">
+      <input type="text" id="elegirFacturaCobroBuscar" placeholder="🔎 Buscar cliente o folio…">
+    </div>
+    <div id="elegirFacturaCobroList" style="max-height:340px;overflow-y:auto;"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="closeElegirFacturaCobro">Cerrar</button>
+    </div>
+  </div>
+</div>
+
 <!-- Modal: Orden de venta -->
 <div class="modal-bg" id="modalOrden">
   <div class="modal" style="width:min(920px,97vw);max-height:92vh;overflow-y:auto;">

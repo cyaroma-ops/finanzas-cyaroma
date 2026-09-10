@@ -4582,8 +4582,16 @@ async function renderDirectorioClientes(el, b) {
       <div class="card-head">
         <h3>Clientes</h3>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <div style="position:relative;">
+            <button class="btn btn-gold btn-sm" id="nuevaTransaccionBtn">+ Nueva transacción</button>
+            <div id="nuevaTransaccionDropdown" style="display:none;position:absolute;left:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:180px;overflow:hidden;">
+              <button class="nt-factura" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;">🧾 Factura</button>
+              <button class="nt-orden" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">📝 Orden de venta</button>
+              <button class="nt-pago" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">💵 Registrar un pago</button>
+            </div>
+          </div>
           <button class="btn btn-ghost btn-sm" id="openProductosBtn">⚙ Productos y Servicios</button>
-          <button class="btn btn-gold btn-sm" id="addClienteBtn">+ Agregar cliente</button>
+          <button class="btn btn-ghost btn-sm" id="addClienteBtn">+ Agregar cliente</button>
         </div>
       </div>
       <div class="tag-row" style="margin-bottom:12px;">
@@ -4618,6 +4626,15 @@ async function renderDirectorioClientes(el, b) {
   document.getElementById('clienteOrdenSaldo').addEventListener('click', () => { STATE_clienteOrden = 'saldo'; renderClientes(); });
   document.getElementById('addClienteBtn').addEventListener('click', () => openModalCliente(null));
   document.getElementById('openProductosBtn').addEventListener('click', () => openModalProductos(b.id));
+  document.getElementById('nuevaTransaccionBtn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const dd = document.getElementById('nuevaTransaccionDropdown');
+    dd.style.display = dd.style.display === 'block' ? 'none' : 'block';
+  });
+  document.addEventListener('click', () => { const dd = document.getElementById('nuevaTransaccionDropdown'); if (dd) dd.style.display = 'none'; });
+  el.querySelector('.nt-factura').addEventListener('click', () => openModalFactura(null, b.id));
+  el.querySelector('.nt-orden').addEventListener('click', () => openModalOrden(null, b.id));
+  el.querySelector('.nt-pago').addEventListener('click', () => abrirElegirFacturaCobro(b.id));
   el.querySelectorAll('.cliente-fila').forEach(tr => tr.addEventListener('click', (e) => {
     if (e.target.closest('.cliente-menu-btn') || e.target.closest('.cliente-menu-dropdown')) return;
     STATE_clienteDetalleId = tr.dataset.id;
@@ -4809,6 +4826,38 @@ async function generarFacturasRecurrentesSiCorresponde(businessId) {
   return generadas;
 }
 
+async function abrirElegirFacturaCobro(businessId) {
+  const pendientes = (await loadFacturasClientesPendConNombre(businessId)).filter(f => f.estatus !== 'Pagado');
+  const box = document.getElementById('elegirFacturaCobroList');
+  const buscar = document.getElementById('elegirFacturaCobroBuscar');
+  const renderLista = () => {
+    const texto = buscar.value.trim().toLowerCase();
+    const filtradas = pendientes.filter(f => !texto || f.clienteNombre.toLowerCase().includes(texto) || String(f.folio).includes(texto));
+    box.innerHTML = filtradas.length ? filtradas.map(f => {
+      const saldo = Number(f.total) - Number(f.importe_pagado||0);
+      return `<div class="elegir-factura-cobro-item" data-id="${f.id}" style="display:flex;justify-content:space-between;align-items:center;padding:9px 4px;border-bottom:1px solid var(--line);cursor:pointer;">
+        <span><strong>${f.clienteNombre}</strong> — Factura #${f.folio}${f.estatus==='Parcial'?' (parcial)':''}</span>
+        <span style="font-weight:700;">${fmt(saldo)}</span>
+      </div>`;
+    }).join('') : `<div class="empty" style="padding:14px;">No hay facturas pendientes de cobro.</div>`;
+    box.querySelectorAll('.elegir-factura-cobro-item').forEach(item => item.addEventListener('click', async () => {
+      const { data: f } = await sb.from('fz_facturas_clientes').select('*').eq('id', item.dataset.id).single();
+      if (!f) return;
+      document.getElementById('modalElegirFacturaCobro').classList.remove('show');
+      await openModalFactura(f, businessId);
+      document.getElementById('facturaCobrosSection').scrollIntoView({ block: 'center', behavior: 'smooth' });
+      document.getElementById('cobroMonto').focus();
+    }));
+  };
+  buscar.value = '';
+  buscar.oninput = renderLista;
+  renderLista();
+  document.getElementById('modalElegirFacturaCobro').classList.add('show');
+}
+document.getElementById('closeElegirFacturaCobro').addEventListener('click', () => {
+  document.getElementById('modalElegirFacturaCobro').classList.remove('show');
+});
+
 /* ---------- Facturas de clientes ---------- */
 function facturaMenuHtml(facturaId) {
   return `<td style="position:relative;">
@@ -4857,7 +4906,11 @@ async function descargarFacturaPDF(facturaId, businessId) {
     sb.from('fz_facturas_clientes_lineas').select('*').eq('factura_id', facturaId).order('orden'),
   ]);
   if (!factura) { toast('No se encontró la factura.', 'error'); return; }
-  const cliente = (await loadClientes(businessId)).find(c => c.id === factura.cliente_id);
+  const [cliente, productos] = await Promise.all([
+    loadClientes(businessId).then(cs => cs.find(c => c.id === factura.cliente_id)),
+    loadProductosServicios(businessId),
+  ]);
+  const nombreProducto = (id) => productos.find(p => p.id === id)?.nombre || '';
   const negocio = biz();
 
   const { jsPDF } = window.jspdf;
@@ -4900,6 +4953,7 @@ async function descargarFacturaPDF(facturaId, businessId) {
 
   // Tabla de líneas
   const filas = (lineas || []).map(l => [
+    nombreProducto(l.producto_id) || '—',
     l.descripcion || '',
     fmtNum(l.cantidad),
     fmtPdf(l.precio_unitario),
@@ -4907,12 +4961,12 @@ async function descargarFacturaPDF(facturaId, businessId) {
   ]);
   doc.autoTable({
     startY: y,
-    head: [['Descripción', 'Cantidad', 'Precio unit.', 'Importe']],
+    head: [['Producto/Servicio', 'Descripción', 'Cantidad', 'Precio unit.', 'Importe']],
     body: filas,
     margin: { left: margin, right: margin },
     styles: { font: 'helvetica', fontSize: 10, textColor: [26,43,69], cellPadding: 8 },
     headStyles: { fillColor: [10,31,61], textColor: [255,255,255], fontStyle: 'bold' },
-    columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' }, 3: { halign: 'right' } },
+    columnStyles: { 0: { cellWidth: 110 }, 2: { halign: 'right', cellWidth: 60 }, 3: { halign: 'right', cellWidth: 80 }, 4: { halign: 'right', cellWidth: 80 } },
     alternateRowStyles: { fillColor: [247,249,252] },
   });
 
@@ -5101,7 +5155,7 @@ function renderFacturaLineas() {
     const p = productos.find(x => x.id === sel.value);
     if (p) {
       STATE_facturaLineas[idx].producto_id = p.id;
-      STATE_facturaLineas[idx].descripcion = p.nombre + (p.descripcion ? ' — ' + p.descripcion : '');
+      STATE_facturaLineas[idx].descripcion = p.descripcion || '';
       STATE_facturaLineas[idx].precio_unitario = Number(p.precio) || 0;
       STATE_facturaLineas[idx].subcuenta_id = p.subcuenta_id;
     } else {
@@ -5229,7 +5283,7 @@ document.getElementById('saveModalFactura').addEventListener('click', async () =
   if (!b) return;
   const cliente_id = document.getElementById('facturaCliente').value;
   if (!cliente_id) { toast('Elige un cliente.', 'error'); return; }
-  const lineasValidas = STATE_facturaLineas.filter(l => (l.descripcion||'').trim() && Number(l.cantidad) > 0);
+  const lineasValidas = STATE_facturaLineas.filter(l => ((l.descripcion||'').trim() || l.producto_id) && Number(l.cantidad) > 0);
   if (!lineasValidas.length) { toast('Agrega al menos una línea con descripción y cantidad.', 'error'); return; }
 
   const cliente = STATE_facturaCatalogos.clientes.find(c => c.id === cliente_id);
@@ -5399,7 +5453,7 @@ function renderOrdenLineas(soloLectura) {
     const p = productos.find(x => x.id === sel.value);
     if (p) {
       STATE_ordenLineas[idx].producto_id = p.id;
-      STATE_ordenLineas[idx].descripcion = p.nombre + (p.descripcion ? ' — ' + p.descripcion : '');
+      STATE_ordenLineas[idx].descripcion = p.descripcion || '';
       STATE_ordenLineas[idx].precio_unitario = Number(p.precio) || 0;
       STATE_ordenLineas[idx].subcuenta_id = p.subcuenta_id;
     } else {
@@ -5452,7 +5506,7 @@ document.getElementById('saveModalOrden').addEventListener('click', async () => 
   if (!b) return;
   const cliente_id = document.getElementById('ordenCliente').value;
   if (!cliente_id) { toast('Elige un cliente.', 'error'); return; }
-  const lineasValidas = STATE_ordenLineas.filter(l => (l.descripcion||'').trim() && Number(l.cantidad) > 0);
+  const lineasValidas = STATE_ordenLineas.filter(l => ((l.descripcion||'').trim() || l.producto_id) && Number(l.cantidad) > 0);
   if (!lineasValidas.length) { toast('Agrega al menos una línea con descripción y cantidad.', 'error'); return; }
 
   const cliente = STATE_ordenCatalogos.clientes.find(c => c.id === cliente_id);
