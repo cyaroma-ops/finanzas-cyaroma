@@ -5983,14 +5983,13 @@ function provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntos, todasFactur
   const desgloseOk = Math.abs(desgloseTotal - (Number(p.importe)||0)) < 1 && desgloseTotal > 0;
   const esCredito = Number(p.importe) < 0;
   const saldoPendiente = Number(p.importe) - Number(p.importe_pagado || 0);
+  const catMatch = p.proveedor_id ? catalogo.find(c => c.id === p.proveedor_id) : null;
+  const nombreMostrado = catMatch
+    ? (catMatch.razon_social ? `${catMatch.razon_social}${catMatch.nombre_comercial ? ' — ' + catMatch.nombre_comercial : ''}` : (catMatch.nombre_comercial || catMatch.nombre))
+    : (p.proveedor || '(sin proveedor)');
   return `<tr style="${esCredito?'background:#f2fbf5;':''}">
     <td><input class="cell prov-cell" type="date" value="${p.fecha}" data-id="${p.id}" data-field="fecha"></td>
-    <td>
-      <select class="cell prov-cell" data-id="${p.id}" data-field="proveedor_id" style="min-width:220px;">
-        <option value="">${p.proveedor || '— elegir —'}</option>
-        ${catalogo.map(c => `<option value="${c.id}" ${p.proveedor_id===c.id?'selected':''}>${c.razon_social ? c.razon_social + ' — ' : ''}${c.nombre_comercial || c.nombre}</option>`).join('')}
-      </select>
-    </td>
+    <td>${nombreMostrado}</td>
     <td><input class="cell prov-cell" type="text" value="${p.factura||''}" data-id="${p.id}" data-field="factura"></td>
     <td>
       <input class="cell prov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(p.importe)}" data-id="${p.id}" data-field="importe">
