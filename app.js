@@ -4205,7 +4205,7 @@ async function openModalProductos(businessId) {
   document.getElementById('modalProductos').classList.add('show');
   const subSel = document.getElementById('newProductoSubcuenta');
   const [subcuentas, mayores] = await Promise.all([loadSubcuentas(businessId), loadCuentasMayor(businessId)]);
-  subSel.innerHTML = opcionesSubcuentasIngreso(subcuentas, mayores, null) || '<option value="">— crea primero una cuenta de Ingreso en Catálogo de Cuentas —</option>';
+  subSel.innerHTML = opcionesSubcuentasIngreso(subcuentas, mayores, null) || '<option value="">— crea al menos una subcuenta dentro de tu cuenta mayor de Ingreso —</option>';
 }
 async function renderProductosList(businessId) {
   const productos = await loadProductosServicios(businessId);
