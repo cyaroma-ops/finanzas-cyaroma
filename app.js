@@ -2787,6 +2787,123 @@ async function aplicarPagoFacturas(idsSeleccionados, montoDisponibleInicial, fec
   return { idsAfectados, creadoCredito, sobrante: disponible };
 }
 
+async function aplicarCobroFacturas(idsSeleccionados, montoDisponibleInicial, fecha, businessId, origenInfo) {
+  // Si este movimiento ya tenía un desglose de cobro guardado (se está editando la selección),
+  // primero revertimos esos montos exactos.
+  if (origenInfo.origen_tabla && origenInfo.origen_id) {
+    const { data: previos } = await sb.from('fz_cobros_aplicados').select('*').eq('origen_tabla', origenInfo.origen_tabla).eq('origen_id', origenInfo.origen_id);
+    for (const prev of (previos || [])) {
+      const { data: fPrev } = await sb.from('fz_facturas_clientes').select('total,importe_pagado').eq('id', prev.factura_id).single();
+      if (fPrev) {
+        const nuevoPagado = Math.max(0, Number(fPrev.importe_pagado || 0) - Number(prev.monto || 0));
+        const nuevoEstatus = nuevoPagado <= 0.004 ? 'Pendiente' : (nuevoPagado >= Number(fPrev.total) - 0.01 ? 'Pagado' : 'Parcial');
+        await sb.from('fz_facturas_clientes').update({ importe_pagado: nuevoPagado, estatus: nuevoEstatus }).eq('id', prev.factura_id);
+      }
+    }
+    await sb.from('fz_cobros_aplicados').delete().eq('origen_tabla', origenInfo.origen_tabla).eq('origen_id', origenInfo.origen_id);
+  }
+
+  if (!idsSeleccionados.length) return { idsAfectados: [] };
+  const { data: facturas } = await sb.from('fz_facturas_clientes').select('*').in('id', idsSeleccionados);
+  if (!facturas || !facturas.length) return { idsAfectados: [] };
+
+  let disponible = montoDisponibleInicial;
+  const idsAfectados = [];
+  for (const f of facturas.sort((a,b) => a.fecha.localeCompare(b.fecha))) {
+    if (disponible <= 0.009) break;
+    const saldoPendiente = Number(f.total) - Number(f.importe_pagado || 0);
+    if (saldoPendiente <= 0.009) continue;
+    const aplicar = Math.min(disponible, saldoPendiente);
+    const nuevoPagado = Number(f.importe_pagado || 0) + aplicar;
+    const nuevoEstatus = nuevoPagado >= Number(f.total) - 0.01 ? 'Pagado' : 'Parcial';
+    const { error } = await sb.from('fz_facturas_clientes').update({ importe_pagado: nuevoPagado, estatus: nuevoEstatus, fecha_pago: fecha }).eq('id', f.id);
+    if (error) { toast('Error aplicando cobro a factura #' + f.folio + ': ' + error.message, 'error'); continue; }
+    idsAfectados.push(f.id);
+    disponible -= aplicar;
+    if (origenInfo.origen_tabla && origenInfo.origen_id) {
+      await sb.from('fz_cobros_aplicados').insert({ business_id: businessId, factura_id: f.id, monto: aplicar, origen_tabla: origenInfo.origen_tabla, origen_id: origenInfo.origen_id, fecha });
+    }
+  }
+  return { idsAfectados, sobrante: disponible };
+}
+
+function openFacturasCobroModal(rowId, table, facturasClientesPend, onDone) {
+  (async () => {
+    const { data: row } = await sb.from(table).select('*').eq('id', rowId).single();
+    const idsActuales = new Set(facturaIdsClienteDe(row || {}));
+    const montoMovimiento = Number(row?.depositos) || 0;
+    const opciones = facturasClientesPend.filter(f => f.estatus !== 'Pagado' || idsActuales.has(f.id));
+    const porCliente = {};
+    opciones.forEach(f => {
+      const key = f.clienteNombre || '(sin cliente)';
+      (porCliente[key] = porCliente[key] || []).push(f);
+    });
+    Object.values(porCliente).forEach(lista => lista.sort((a,b) => a.fecha.localeCompare(b.fecha)));
+    const box = document.getElementById('facturasPagoList');
+    const nombresCliente = Object.keys(porCliente).sort((a,b)=>a.localeCompare(b));
+    document.querySelector('#modalFacturasPago h3').textContent = 'Elegir facturas a cobrar';
+    document.querySelector('#modalFacturasPago p').textContent = 'Marca todas las que se cobren con este depósito. Se marcarán como "Pagado" al aplicar.';
+    box.innerHTML = nombresCliente.map(cli => `
+      <div class="factura-provgroup" data-prov="${cli.toLowerCase()}" style="margin-bottom:10px;">
+        <div style="font-weight:700;font-size:12.5px;color:var(--navy-1);margin-bottom:4px;">${cli}</div>
+        ${porCliente[cli].map(f => {
+          const saldo = Number(f.total) - Number(f.importe_pagado||0);
+          return `
+          <label style="display:flex;align-items:center;gap:8px;padding:5px 4px;border-bottom:1px solid var(--line);font-size:13px;cursor:pointer;">
+            <input type="checkbox" class="factura-check" value="${f.id}" data-importe="${saldo}" ${idsActuales.has(f.id)?'checked':''}>
+            <span>${f.fecha} · Factura #${f.folio} · ${fmt(saldo)}${f.estatus==='Parcial'?' (parcial, de '+fmt(f.total)+')':''}${f.estatus==='Pagado'?' (ya pagada)':''}</span>
+          </label>`;
+        }).join('')}
+      </div>`).join('') || `<div class="empty">No hay facturas pendientes de cobro.</div>`;
+
+    const selectProv = document.getElementById('facturasPagoSelectProv');
+    const buscarProv = document.getElementById('facturasPagoBuscarProv');
+    selectProv.innerHTML = `<option value="">— todos los clientes —</option>` + nombresCliente.map(p => `<option value="${p.toLowerCase()}">${p}</option>`).join('');
+    buscarProv.placeholder = '🔎 Buscar cliente…';
+    buscarProv.value = '';
+    const aplicarFiltro = () => {
+      const porTexto = buscarProv.value.trim().toLowerCase();
+      const porSelect = selectProv.value;
+      box.querySelectorAll('.factura-provgroup').forEach(grp => {
+        const nombre = grp.dataset.prov;
+        const pasaTexto = !porTexto || nombre.includes(porTexto);
+        const pasaSelect = !porSelect || nombre === porSelect;
+        grp.style.display = (pasaTexto && pasaSelect) ? '' : 'none';
+      });
+    };
+    buscarProv.oninput = () => { selectProv.value = ''; aplicarFiltro(); };
+    selectProv.onchange = () => { buscarProv.value = ''; aplicarFiltro(); };
+
+    const actualizarResumen = () => {
+      const marcadas = Array.from(box.querySelectorAll('.factura-check:checked'));
+      const totalSeleccionado = marcadas.reduce((s,c) => s + (Number(c.dataset.importe) || 0), 0);
+      const diferencia = montoMovimiento - totalSeleccionado;
+      const cuadra = Math.abs(diferencia) < 0.01;
+      document.getElementById('facturasPagoResumen').innerHTML = `
+        <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Monto del depósito</span><strong>${fmt(montoMovimiento)}</strong></div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Total seleccionado (${marcadas.length})</span><strong>${fmt(totalSeleccionado)}</strong></div>
+        <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--muted)'};font-weight:700;"><span>${cuadra?'✓ Cuadra exacto':(diferencia>0?'Si aplicas, sobrará sin asignar':'Si aplicas, quedará pendiente/parcial')}</span><span>${cuadra?'':fmt(Math.abs(diferencia))}</span></div>
+      `;
+    };
+    box.querySelectorAll('.factura-check').forEach(chk => chk.addEventListener('change', actualizarResumen));
+    actualizarResumen();
+
+    document.getElementById('modalFacturasPago').classList.add('show');
+    document.getElementById('closeFacturasPago').onclick = () => document.getElementById('modalFacturasPago').classList.remove('show');
+    document.getElementById('applyFacturasPago').onclick = async () => {
+      const idsSeleccionados = Array.from(box.querySelectorAll('.factura-check:checked')).map(c => c.value);
+      const { idsAfectados } = await aplicarCobroFacturas(idsSeleccionados, montoMovimiento, row?.fecha || todayStr(), row.business_id, {
+        origen_tabla: table, origen_id: rowId,
+      });
+      const { error: e1 } = await sb.from(table).update({ cliente_factura_ids: idsAfectados, cliente_factura_id: idsAfectados[0] || null }).eq('id', rowId);
+      if (e1) { toast('Error al guardar: ' + e1.message, 'error'); return; }
+      if (idsAfectados.length) toast(`${idsAfectados.length} factura(s) actualizada(s).`);
+      document.getElementById('modalFacturasPago').classList.remove('show');
+      onDone();
+    };
+  })();
+}
+
 function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) {
   (async () => {
     const { data: row } = await sb.from(table).select('*').eq('id', rowId).single();
@@ -2800,6 +2917,8 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
     });
     Object.values(porProveedor).forEach(lista => lista.sort((a,b) => a.fecha.localeCompare(b.fecha)));
     const box = document.getElementById('facturasPagoList');
+    document.querySelector('#modalFacturasPago h3').textContent = 'Elegir facturas a pagar';
+    document.querySelector('#modalFacturasPago p').textContent = 'Marca todas las que se paguen con este movimiento. Se marcarán como "Pagado" al aplicar.';
     const nombresProveedor = Object.keys(porProveedor).sort((a,b)=>a.localeCompare(b));
     box.innerHTML = nombresProveedor.map(prov => `
       <div class="factura-provgroup" data-prov="${prov.toLowerCase()}" style="margin-bottom:10px;">
@@ -2818,6 +2937,7 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
     const selectProv = document.getElementById('facturasPagoSelectProv');
     const buscarProv = document.getElementById('facturasPagoBuscarProv');
     selectProv.innerHTML = `<option value="">— todos los proveedores —</option>` + nombresProveedor.map(p => `<option value="${p.toLowerCase()}">${p}</option>`).join('');
+    buscarProv.placeholder = '🔎 Buscar proveedor…';
     buscarProv.value = '';
     const aplicarFiltroProveedor = () => {
       const porTexto = buscarProv.value.trim().toLowerCase();
@@ -2863,6 +2983,69 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
       onDone();
     };
   })();
+}
+
+async function loadFacturasClientesPendConNombre(businessId) {
+  const [facturasQ, clientesQ] = await Promise.all([
+    sb.from('fz_facturas_clientes').select('id,folio,total,importe_pagado,estatus,fecha,cliente_id').eq('business_id', businessId).order('fecha'),
+    loadClientes(businessId),
+  ]);
+  const nombreCliente = Object.fromEntries(clientesQ.map(c => [c.id, c.razon_social || c.nombre_comercial]));
+  return (facturasQ.data || []).map(f => ({ ...f, clienteNombre: nombreCliente[f.cliente_id] || '(cliente eliminado)' }));
+}
+
+function facturaIdsClienteDe(r) {
+  if (Array.isArray(r.cliente_factura_ids) && r.cliente_factura_ids.length) return r.cliente_factura_ids;
+  if (r.cliente_factura_id) return [r.cliente_factura_id];
+  return [];
+}
+function entradaCellsHtml(r, facturasClientesPend, prefix) {
+  if (r.tipo_salida === 'traspaso') {
+    return `<td data-entrada-tipo-cell="${r.id}"><span style="color:var(--muted);">Traspaso</span></td><td data-entrada-detalle-cell="${r.id}">—</td>`;
+  }
+  const tipo = r.tipo_entrada || 'otro';
+  const tipoSelect = `<select class="cell entrada-tipo" data-id="${r.id}">
+    <option value="otro" ${tipo==='otro'?'selected':''}>Sin clasificar</option>
+    <option value="cliente" ${tipo==='cliente'?'selected':''}>Cobro de cliente</option>
+  </select>`;
+  let detalle = '—';
+  if (tipo === 'cliente') {
+    const idsVinculados = facturaIdsClienteDe(r);
+    detalle = `<button class="btn btn-ghost btn-sm entrada-abrir-facturas" data-id="${r.id}">${idsVinculados.length ? idsVinculados.length + ' factura(s)' : 'Elegir facturas'}</button>`;
+  }
+  return `<td data-entrada-tipo-cell="${r.id}">${tipoSelect}</td><td data-entrada-detalle-cell="${r.id}">${detalle}</td>`;
+}
+function wireEntradaCellHandlers(container, table, onChange, facturasClientesPend, ledger, prefix) {
+  const reemplazarCeldasDeFila = (rowId) => {
+    if (!ledger) { onChange(); return; }
+    const rowObj = ledger.find(x => x.id === rowId);
+    if (!rowObj) { onChange(); return; }
+    const tr = container.querySelector(`[data-entrada-tipo-cell="${rowId}"]`)?.closest('tr');
+    if (!tr) { onChange(); return; }
+    const nuevoHtml = entradaCellsHtml(rowObj, facturasClientesPend, prefix);
+    const tempRow = document.createElement('tr');
+    tempRow.innerHTML = nuevoHtml;
+    const tipoCellVieja = tr.querySelector(`[data-entrada-tipo-cell="${rowId}"]`);
+    const detalleCellVieja = tr.querySelector(`[data-entrada-detalle-cell="${rowId}"]`);
+    const [nuevaTipoCell, nuevaDetalleCell] = Array.from(tempRow.children);
+    if (tipoCellVieja) tipoCellVieja.replaceWith(nuevaTipoCell);
+    if (detalleCellVieja) detalleCellVieja.replaceWith(nuevaDetalleCell);
+    wireEntradaCellHandlers(tr, table, onChange, facturasClientesPend, ledger, prefix);
+    const foco = nuevaDetalleCell.querySelector('select, button');
+    if (foco) foco.focus();
+  };
+  container.querySelectorAll('.entrada-tipo').forEach(sel => sel.addEventListener('change', async () => {
+    const { error } = await sb.from(table).update({ tipo_entrada: sel.value, cliente_factura_id: null, cliente_factura_ids: [] }).eq('id', sel.dataset.id);
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    if (ledger) {
+      const rowObj = ledger.find(x => x.id === sel.dataset.id);
+      if (rowObj) { rowObj.tipo_entrada = sel.value; rowObj.cliente_factura_id = null; rowObj.cliente_factura_ids = []; }
+    }
+    reemplazarCeldasDeFila(sel.dataset.id);
+  }));
+  container.querySelectorAll('.entrada-abrir-facturas').forEach(btn => btn.addEventListener('click', () => {
+    openFacturasCobroModal(btn.dataset.id, table, facturasClientesPend, onChange);
+  }));
 }
 
 async function openMovimientoModal(contexto) {
@@ -3360,13 +3543,14 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
       selEnd: typeof activo.selectionEnd === 'number' ? activo.selectionEnd : null,
     };
   }
-  const [ledgerRes, subcuentas, mayores, facturasPend, cuentasBancoQ, monedasEfectivoQ] = await Promise.all([
+  const [ledgerRes, subcuentas, mayores, facturasPend, cuentasBancoQ, monedasEfectivoQ, facturasClientesPend] = await Promise.all([
     getMonedaLedgerRows(businessId, moneda, conceptosEfectivo, STATE.currentMonth),
     loadSubcuentas(businessId),
     loadCuentasMayor(businessId),
     sb.from('fz_proveedores').select('id,proveedor,factura,importe,importe_pagado,estatus,fecha').eq('business_id', businessId).order('proveedor').order('fecha').limit(5000).then(r => r.data || []),
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
+    loadFacturasClientesPendConNombre(businessId),
   ]);
   const { saldoApertura, rows: ledger } = ledgerRes;
   const traspasoCtx = { cuentasBanco: cuentasBancoQ.data || [], monedasEfectivo: monedasEfectivoQ.data || [], origenTipo: 'efectivo', origenId: moneda.id, origenNombre: 'la caja ' + moneda.nombre, origenCorto: 'Caja — ' + moneda.nombre };
@@ -3392,7 +3576,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
       <td><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(r.cargos)}" data-id="${r.id}" data-field="cargos"></td>
       <td><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(r.depositos)}" data-id="${r.id}" data-field="depositos"></td>
       <td class="num" style="font-weight:700;">${fmtNum(saldo)}</td>
-      ${salidaCellsHtml(r, subcuentas, mayores, facturasPend, 'mov', traspasoCtx)}
+      ${Number(r.depositos) > 0 ? entradaCellsHtml(r, facturasClientesPend, 'mov') : salidaCellsHtml(r, subcuentas, mayores, facturasPend, 'mov', traspasoCtx)}
       <td>${adjuntosCellHtml(conteoAdjuntosEfvo[r.id], r.id)}</td>
       <td><button class="row-del mov-del" data-id="${r.id}">✕</button></td>
     </tr>`;
@@ -3433,6 +3617,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
     const banner = document.getElementById('sinClasificarBannerEfvo');
     if (banner) banner.innerHTML = sinClasificarBannerHtml(restantes.length, totalRestante);
   });
+  wireEntradaCellHandlers(box, 'fz_efectivo_mov', () => renderMonedaLedger(moneda, businessId, conceptosEfectivo), facturasClientesPend, ledger, 'mov');
   wireInputsMoneda(box);
   wireAdjuntosHandlers(box, 'fz_efectivo_mov', businessId, () => renderMonedaLedger(moneda, businessId, conceptosEfectivo));
   box.querySelectorAll('.mov-cell').forEach(inp => {
@@ -3553,13 +3738,14 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     const { data } = await sb.from('fz_conceptos').select('*').eq('business_id', businessId).in('categoria', ['tarjetas','bancos']);
     conceptosTarjetas = data || [];
   }
-  const [ledgerRes, subcuentas, mayores, facturasPend, cuentasBancoQ, monedasEfectivoQ] = await Promise.all([
+  const [ledgerRes, subcuentas, mayores, facturasPend, cuentasBancoQ, monedasEfectivoQ, facturasClientesPend] = await Promise.all([
     getBancoLedgerRows(businessId, cuentaArr, conceptosTarjetas, STATE.currentMonth),
     loadSubcuentas(businessId),
     loadCuentasMayor(businessId),
     sb.from('fz_proveedores').select('id,proveedor,factura,importe,importe_pagado,estatus,fecha').eq('business_id', businessId).order('proveedor').order('fecha').limit(5000).then(r => r.data || []),
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
+    loadFacturasClientesPendConNombre(businessId),
   ]);
   const { saldoApertura, rows: ledger } = ledgerRes;
   const traspasoCtx = { cuentasBanco: cuentasBancoQ.data || [], monedasEfectivo: monedasEfectivoQ.data || [], origenTipo: 'banco', origenId: cuentaId, origenNombre: 'el banco ' + (cuentaArr?.nombre || ''), origenCorto: 'Banco — ' + (cuentaArr?.nombre || '') };
@@ -3587,7 +3773,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
       <td><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(m.depositos)}" data-id="${m.id}" data-field="depositos"></td>
       <td><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(m.cargos)}" data-id="${m.id}" data-field="cargos"></td>
       <td class="num" style="font-weight:700;">${fmt(saldo)}</td>
-      ${salidaCellsHtml(m, subcuentas, mayores, facturasPend, 'mov', traspasoCtx)}
+      ${Number(m.depositos) > 0 ? entradaCellsHtml(m, facturasClientesPend, 'mov') : salidaCellsHtml(m, subcuentas, mayores, facturasPend, 'mov', traspasoCtx)}
       <td>${adjuntosCellHtml(conteoAdjuntosBanco[m.id], m.id)}</td>
       <td><button class="row-del mov-del" data-id="${m.id}">✕</button></td>
     </tr>`;
@@ -3628,6 +3814,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     const banner = document.getElementById('sinClasificarBannerBanco');
     if (banner) banner.innerHTML = sinClasificarBannerHtml(restantes.length, totalRestante);
   });
+  wireEntradaCellHandlers(box, 'fz_bancos_mov', () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas), facturasClientesPend, ledger, 'mov');
   wireInputsMoneda(box);
   wireAdjuntosHandlers(box, 'fz_bancos_mov', businessId, () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas));
   box.querySelectorAll('.mov-cell').forEach(inp => {
