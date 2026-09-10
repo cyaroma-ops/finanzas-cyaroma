@@ -5036,7 +5036,10 @@ async function computeGastosClasificados(businessId, periodo, subcuentas, mayore
 }
 
 async function computeIngresosPoliza(businessId, periodo, subcuentas, mayores) {
-  const lineasPoliza = await getPolizasLineasPeriodo(businessId, periodo);
+  const [lineasPoliza, facturasClientes] = await Promise.all([
+    getPolizasLineasPeriodo(businessId, periodo),
+    sb.from('fz_facturas_clientes').select('id,moneda,tipo_cambio').eq('business_id', businessId).gte('fecha', periodo.start).lte('fecha', periodo.end).then(r => r.data || []),
+  ]);
   const porSubcuenta = {};
   lineasPoliza.forEach(l => {
     if (!l.subcuenta_id) return;
@@ -5046,6 +5049,23 @@ async function computeIngresosPoliza(businessId, periodo, subcuentas, mayores) {
       porSubcuenta[l.subcuenta_id] = (porSubcuenta[l.subcuenta_id] || 0) + ((Number(l.abono)||0) - (Number(l.cargo)||0));
     }
   });
+
+  // Facturas de clientes clasificadas contra una cuenta de Ingreso (el IVA no cuenta como
+  // ingreso propio, solo el importe de cada línea; se convierte a pesos si la factura es en USD).
+  if (facturasClientes.length) {
+    const tcPorFactura = Object.fromEntries(facturasClientes.map(f => [f.id, f.moneda === 'USD' ? (Number(f.tipo_cambio) || 1) : 1]));
+    const { data: lineasFacturas } = await sb.from('fz_facturas_clientes_lineas').select('factura_id,subcuenta_id,importe').in('factura_id', facturasClientes.map(f => f.id));
+    (lineasFacturas || []).forEach(l => {
+      if (!l.subcuenta_id) return;
+      const sub = subcuentas.find(s => s.id === l.subcuenta_id);
+      const mayor = sub && mayores.find(m => m.id === sub.cuenta_mayor_id);
+      if (mayor && mayor.tipo === 'ingreso') {
+        const monto = (Number(l.importe) || 0) * (tcPorFactura[l.factura_id] || 1);
+        porSubcuenta[l.subcuenta_id] = (porSubcuenta[l.subcuenta_id] || 0) + monto;
+      }
+    });
+  }
+
   const porMayor = mayores.filter(m=>m.tipo==='ingreso').map(m => {
     const subs = subcuentasRaiz(m.id, subcuentas)
       .map(s => construirArbolSubcuenta(s.id, subcuentas, porSubcuenta))
@@ -5098,18 +5118,38 @@ async function getDetalleGastoSubcuenta(businessId, periodo, subcuentaId) {
 
 async function getDetalleIngresoSubcuenta(businessId, periodo, subcuentaId) {
   const { start, end } = periodo;
-  const { data: lineasPoliza } = await sb.from('fz_polizas_lineas').select('*').eq('business_id', businessId).eq('subcuenta_id', subcuentaId).eq('cuenta_tipo', 'subcuenta');
-  if (!lineasPoliza || !lineasPoliza.length) return [];
-  const polizaIds = [...new Set(lineasPoliza.map(l => l.poliza_id))];
-  const { data: polizasInfo } = await sb.from('fz_polizas').select('id,fecha,numero,concepto').in('id', polizaIds).gte('fecha', start).lte('fecha', end);
-  const polizaMap = Object.fromEntries((polizasInfo || []).map(p => [p.id, p]));
   const filas = [];
-  lineasPoliza.forEach(l => {
-    const p = polizaMap[l.poliza_id];
-    if (!p) return;
-    const monto = (Number(l.abono) || 0) - (Number(l.cargo) || 0);
-    if (monto) filas.push({ fecha: p.fecha, proveedor: `Póliza #${p.numero ?? ''}`, concepto: l.descripcion || p.concepto || '—', importe: monto, pago: 'Póliza de diario', origen: { tipo: 'poliza', id: p.id, fecha: p.fecha } });
-  });
+
+  const { data: lineasPoliza } = await sb.from('fz_polizas_lineas').select('*').eq('business_id', businessId).eq('subcuenta_id', subcuentaId).eq('cuenta_tipo', 'subcuenta');
+  if (lineasPoliza && lineasPoliza.length) {
+    const polizaIds = [...new Set(lineasPoliza.map(l => l.poliza_id))];
+    const { data: polizasInfo } = await sb.from('fz_polizas').select('id,fecha,numero,concepto').in('id', polizaIds).gte('fecha', start).lte('fecha', end);
+    const polizaMap = Object.fromEntries((polizasInfo || []).map(p => [p.id, p]));
+    lineasPoliza.forEach(l => {
+      const p = polizaMap[l.poliza_id];
+      if (!p) return;
+      const monto = (Number(l.abono) || 0) - (Number(l.cargo) || 0);
+      if (monto) filas.push({ fecha: p.fecha, proveedor: `Póliza #${p.numero ?? ''}`, concepto: l.descripcion || p.concepto || '—', importe: monto, pago: 'Póliza de diario', origen: { tipo: 'poliza', id: p.id, fecha: p.fecha } });
+    });
+  }
+
+  const { data: lineasFactura } = await sb.from('fz_facturas_clientes_lineas').select('*').eq('business_id', businessId).eq('subcuenta_id', subcuentaId);
+  if (lineasFactura && lineasFactura.length) {
+    const facturaIds = [...new Set(lineasFactura.map(l => l.factura_id))];
+    const { data: facturasInfo } = await sb.from('fz_facturas_clientes').select('id,fecha,folio,cliente_id,moneda,tipo_cambio').in('id', facturaIds).gte('fecha', start).lte('fecha', end);
+    const facturaMap = Object.fromEntries((facturasInfo || []).map(f => [f.id, f]));
+    const clienteIds = [...new Set((facturasInfo || []).map(f => f.cliente_id))];
+    const { data: clientesInfo } = clienteIds.length ? await sb.from('fz_clientes').select('id,nombre_comercial').in('id', clienteIds) : { data: [] };
+    const clienteMap = Object.fromEntries((clientesInfo || []).map(c => [c.id, c.nombre_comercial]));
+    lineasFactura.forEach(l => {
+      const f = facturaMap[l.factura_id];
+      if (!f) return;
+      const tc = f.moneda === 'USD' ? (Number(f.tipo_cambio) || 1) : 1;
+      const monto = (Number(l.importe) || 0) * tc;
+      if (monto) filas.push({ fecha: f.fecha, proveedor: `Factura #${f.folio} — ${clienteMap[f.cliente_id] || ''}`, concepto: l.descripcion || '—', importe: monto, pago: 'Factura de cliente', origen: { tipo: 'factura_cliente', id: f.id, fecha: f.fecha } });
+    });
+  }
+
   return filas.sort((a,b) => a.fecha.localeCompare(b.fecha));
 }
 
@@ -5162,6 +5202,11 @@ async function abrirOrigenDesdeDetalle(origen, businessId) {
   if (!origen) return;
   if (origen.tipo === 'poliza') {
     await openPolizaModal(origen.id, businessId);
+    return;
+  }
+  if (origen.tipo === 'factura_cliente') {
+    const { data: f } = await sb.from('fz_facturas_clientes').select('*').eq('id', origen.id).single();
+    if (f) await openModalFactura(f, businessId);
     return;
   }
   if (origen.fecha) STATE.currentMonth = origen.fecha.slice(0, 7);
@@ -5368,7 +5413,7 @@ async function renderPLAnual(el, b) {
   const filaPoliza = mayoresIngreso.map(m => {
     const totalPorMes = datos.map(d => d.iPoliza.porMayor.find(pm=>pm.nombre===m.nombre)?.subtotal || 0);
     if (!totalPorMes.some(v => Math.abs(v) > 0.004)) return '';
-    return filaHtml(m.nombre + ' (póliza)', totalPorMes, { bold:true, bg:true }) + filasSubcuentasPorMayor(m, d => d.iPoliza.porMayor.find(pm=>pm.nombre===m.nombre));
+    return filaHtml(m.nombre + ' (pólizas y facturas)', totalPorMes, { bold:true, bg:true }) + filasSubcuentasPorMayor(m, d => d.iPoliza.porMayor.find(pm=>pm.nombre===m.nombre));
   }).join('');
   const filaTotalIngresos = filaHtml('Total ingresos', datos.map(d=>d.totalIngresosFinal), { total:true });
 
@@ -5555,7 +5600,7 @@ async function renderPL() {
           })() : `<tr><td colspan="2" class="empty">Este negocio no tiene categorías de venta configuradas (ve a Ventas → Configurar categorías de venta).</td></tr>`}
           ${sobranteCaja ? `<tr><td>Sobrante de caja (conciliación de Ventas)</td><td class="num" style="color:var(--green);">${fmt(sobranteCaja)}</td></tr>` : ''}
           ${iPoliza.porMayor.map(m => `
-            <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">${m.nombre} (póliza)</td></tr>
+            <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">${m.nombre} (pólizas y facturas)</td></tr>
             ${m.subs.map(s => filaArbolSubcuentaHtml(s, false, 0, detalleIngresoHtml)).join('')}
           `).join('')}
           <tr class="total-row"><td>Total ingresos</td><td class="num">${fmtNeg(totalIngresosFinal)}</td></tr>
