@@ -1209,7 +1209,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
       </div>
     </div>
     <div class="field">
-      <label>Tipo de salida</label>
+      <label id="movTipoLabel">Tipo de salida</label>
       <select id="movTipoSalida">
         <option value="otro">Sin clasificar</option>
         <option value="gasto">Gasto</option>
@@ -1232,6 +1232,19 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         </select>
       </div>
       <div id="movFacturasList" style="max-height:200px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:8px;"></div>
+    </div>
+    <div class="field" id="movFacturasClienteWrap" style="display:none;">
+      <label>Facturas a cobrar</label>
+      <div id="movFacturasClienteResumen" style="background:#f7f9fc;border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:12.5px;"></div>
+      <div class="field" style="margin-bottom:6px;">
+        <input type="text" id="movFacturasClienteBuscar" placeholder="🔎 Buscar cliente…">
+      </div>
+      <div class="field" style="margin-bottom:8px;">
+        <select id="movFacturasClienteSelect">
+          <option value="">— todos los clientes —</option>
+        </select>
+      </div>
+      <div id="movFacturasClienteList" style="max-height:200px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:8px;"></div>
     </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="closeMovimiento">Cancelar</button>

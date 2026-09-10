@@ -3060,6 +3060,7 @@ async function openMovimientoModal(contexto) {
   document.getElementById('movTipoSalida').value = 'otro';
   document.getElementById('movSubcuentaWrap').style.display = 'none';
   document.getElementById('movFacturasWrap').style.display = 'none';
+  document.getElementById('movFacturasClienteWrap').style.display = 'none';
 
   if (contexto.tipo === 'efectivo') {
     document.getElementById('movLabel1').textContent = 'Proveedor / Concepto';
@@ -3074,13 +3075,14 @@ async function openMovimientoModal(contexto) {
   }
 
   // Datos para clasificar (subcuentas y facturas pendientes) y para el nombre de "pagado desde"
-  const [subcuentas, mayores, facturasPend, cuentaInfo] = await Promise.all([
+  const [subcuentas, mayores, facturasPend, cuentaInfo, facturasClientesPend] = await Promise.all([
     loadSubcuentas(contexto.businessId),
     loadCuentasMayor(contexto.businessId),
     sb.from('fz_proveedores').select('id,proveedor,fecha,factura,importe,importe_pagado,estatus').eq('business_id', contexto.businessId).order('fecha', { ascending: false }).limit(5000).then(r => r.data || []),
     contexto.tipo === 'efectivo'
       ? sb.from('fz_efectivo_monedas').select('nombre').eq('id', contexto.refId).single().then(r => r.data)
       : sb.from('fz_bancos_cuentas').select('nombre').eq('id', contexto.refId).single().then(r => r.data),
+    loadFacturasClientesPendConNombre(contexto.businessId),
   ]);
   const origenCorto = contexto.tipo === 'efectivo' ? 'Caja — ' + (cuentaInfo?.nombre || '') : 'Banco — ' + (cuentaInfo?.nombre || '');
 
@@ -3140,10 +3142,80 @@ async function openMovimientoModal(contexto) {
   document.getElementById('movCargos').oninput = actualizarResumenMovFacturas;
   actualizarResumenMovFacturas();
 
+  // Espejo, del lado de clientes: facturas pendientes de cobro
+  const pendientesCliente = facturasClientesPend.filter(f => f.estatus !== 'Pagado');
+  const porClienteMov = {};
+  pendientesCliente.forEach(f => { const key = f.clienteNombre || '(sin cliente)'; (porClienteMov[key] = porClienteMov[key] || []).push(f); });
+  Object.values(porClienteMov).forEach(lista => lista.sort((a,b) => a.fecha.localeCompare(b.fecha)));
+  const nombresClienteMov = Object.keys(porClienteMov).sort((a,b)=>a.localeCompare(b));
+  const movFacturasClienteBox = document.getElementById('movFacturasClienteList');
+  movFacturasClienteBox.innerHTML = nombresClienteMov.map(cli => `
+    <div class="factura-provgroup" data-prov="${cli.toLowerCase()}" style="margin-bottom:8px;">
+      <div style="font-weight:700;font-size:12px;color:var(--navy-1);">${cli}</div>
+      ${porClienteMov[cli].map(f => {
+        const saldo = Number(f.total) - Number(f.importe_pagado||0);
+        return `
+        <label style="display:flex;align-items:center;gap:8px;padding:4px 2px;font-size:12.5px;cursor:pointer;">
+          <input type="checkbox" class="mov-factura-cliente-check" value="${f.id}" data-importe="${saldo}">
+          <span>${f.fecha} · Factura #${f.folio} · ${fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}</span>
+        </label>`;
+      }).join('')}
+    </div>`).join('') || `<div class="empty" style="padding:8px;">No hay facturas pendientes de cobro.</div>`;
+
+  const movSelectCliente = document.getElementById('movFacturasClienteSelect');
+  const movBuscarCliente = document.getElementById('movFacturasClienteBuscar');
+  movSelectCliente.innerHTML = `<option value="">— todos los clientes —</option>` + nombresClienteMov.map(p => `<option value="${p.toLowerCase()}">${p}</option>`).join('');
+  movBuscarCliente.value = '';
+  const aplicarFiltroClienteMov = () => {
+    const porTexto = movBuscarCliente.value.trim().toLowerCase();
+    const porSelect = movSelectCliente.value;
+    movFacturasClienteBox.querySelectorAll('.factura-provgroup').forEach(grp => {
+      const nombre = grp.dataset.prov;
+      const pasaTexto = !porTexto || nombre.includes(porTexto);
+      const pasaSelect = !porSelect || nombre === porSelect;
+      grp.style.display = (pasaTexto && pasaSelect) ? '' : 'none';
+    });
+  };
+  movBuscarCliente.oninput = () => { movSelectCliente.value = ''; aplicarFiltroClienteMov(); };
+  movSelectCliente.onchange = () => { movBuscarCliente.value = ''; aplicarFiltroClienteMov(); };
+
+  const actualizarResumenMovFacturasCliente = () => {
+    const marcadas = Array.from(document.querySelectorAll('.mov-factura-cliente-check:checked'));
+    const totalSeleccionado = marcadas.reduce((s,c)=>s+(Number(c.dataset.importe)||0),0);
+    const montoMovimiento = Number(document.getElementById('movDepositos').value) || 0;
+    const diferencia = montoMovimiento - totalSeleccionado;
+    const cuadra = Math.abs(diferencia) < 0.01;
+    document.getElementById('movFacturasClienteResumen').innerHTML = `
+      <div style="display:flex;justify-content:space-between;margin-bottom:2px;"><span>Depósito capturado</span><strong>${fmt(montoMovimiento)}</strong></div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:2px;"><span>Total seleccionado (${marcadas.length})</span><strong>${fmt(totalSeleccionado)}</strong></div>
+      <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--muted)'};font-weight:700;"><span>${cuadra?'✓ Cuadra exacto':(diferencia>0?'Sobrará sin asignar':'Quedará pendiente/parcial')}</span><span>${cuadra?'':fmt(Math.abs(diferencia))}</span></div>
+    `;
+  };
+  document.querySelectorAll('.mov-factura-cliente-check').forEach(chk => chk.addEventListener('change', actualizarResumenMovFacturasCliente));
+  document.getElementById('movDepositos').oninput = actualizarResumenMovFacturasCliente;
+  actualizarResumenMovFacturasCliente();
+
+  // El tipo disponible depende de si se capturó Cargo (sale) o Depósito (entra) —
+  // "Gasto"/"Pago a proveedor" solo aplican a cargos; "Cobro de cliente" solo a depósitos.
+  const actualizarOpcionesTipo = () => {
+    const esDeposito = (Number(document.getElementById('movDepositos').value) || 0) > (Number(document.getElementById('movCargos').value) || 0);
+    const sel = document.getElementById('movTipoSalida');
+    const valorActual = sel.value;
+    document.getElementById('movTipoLabel').textContent = esDeposito ? 'Tipo de entrada' : 'Tipo de salida';
+    sel.innerHTML = esDeposito
+      ? `<option value="otro">Sin clasificar</option><option value="cliente">Cobro de cliente</option>`
+      : `<option value="otro">Sin clasificar</option><option value="gasto">Gasto</option><option value="proveedor">Pago a proveedor</option>`;
+    sel.value = ['otro','cliente','gasto','proveedor'].includes(valorActual) && Array.from(sel.options).some(o=>o.value===valorActual) ? valorActual : 'otro';
+  };
+  document.getElementById('movCargos').addEventListener('input', actualizarOpcionesTipo);
+  document.getElementById('movDepositos').addEventListener('input', actualizarOpcionesTipo);
+  actualizarOpcionesTipo();
+
   const actualizarVisibilidadDetalle = () => {
     const val = document.getElementById('movTipoSalida').value;
     document.getElementById('movSubcuentaWrap').style.display = val === 'gasto' ? 'block' : 'none';
     document.getElementById('movFacturasWrap').style.display = val === 'proveedor' ? 'block' : 'none';
+    document.getElementById('movFacturasClienteWrap').style.display = val === 'cliente' ? 'block' : 'none';
   };
   document.getElementById('movTipoSalida').onchange = actualizarVisibilidadDetalle;
   document.getElementById('movTipoSalida').oninput = actualizarVisibilidadDetalle;
@@ -3155,25 +3227,30 @@ async function openMovimientoModal(contexto) {
     const cargos = Number(document.getElementById('movCargos').value) || 0;
     const depositos = Number(document.getElementById('movDepositos').value) || 0;
     const descripcion = document.getElementById('movDescripcion').value || null;
-    const tipoSalida = document.getElementById('movTipoSalida').value;
+    const tipoElegido = document.getElementById('movTipoSalida').value;
     if (!cargos && !depositos) { toast('Escribe un monto en Cargos o Depósitos.', 'error'); return; }
-    const idsFacturas = tipoSalida === 'proveedor' ? Array.from(document.querySelectorAll('.mov-factura-check:checked')).map(c => c.value) : [];
+    const esClasifCliente = tipoElegido === 'cliente';
+    const idsFacturas = tipoElegido === 'proveedor' ? Array.from(document.querySelectorAll('.mov-factura-check:checked')).map(c => c.value) : [];
+    const idsFacturasCliente = esClasifCliente ? Array.from(document.querySelectorAll('.mov-factura-cliente-check:checked')).map(c => c.value) : [];
+    const tipoSalida = esClasifCliente ? 'otro' : tipoElegido;
+    const tipoEntrada = esClasifCliente ? 'cliente' : 'otro';
     let payload, table;
     if (contexto.tipo === 'efectivo') {
       table = 'fz_efectivo_mov';
-      payload = { business_id: contexto.businessId, moneda_id: contexto.refId, fecha, proveedor: document.getElementById('movCampo1').value || null, descripcion, cargos, depositos, tipo_salida: tipoSalida };
+      payload = { business_id: contexto.businessId, moneda_id: contexto.refId, fecha, proveedor: document.getElementById('movCampo1').value || null, descripcion, cargos, depositos, tipo_salida: tipoSalida, tipo_entrada: tipoEntrada };
     } else {
       table = 'fz_bancos_mov';
-      payload = { business_id: contexto.businessId, cuenta_id: contexto.refId, fecha, concepto: document.getElementById('movCampo1').value || null, referencia: document.getElementById('movReferencia').value || null, descripcion, cargos, depositos, tipo_salida: tipoSalida };
+      payload = { business_id: contexto.businessId, cuenta_id: contexto.refId, fecha, concepto: document.getElementById('movCampo1').value || null, referencia: document.getElementById('movReferencia').value || null, descripcion, cargos, depositos, tipo_salida: tipoSalida, tipo_entrada: tipoEntrada };
     }
-    if (tipoSalida === 'gasto') payload.subcuenta_id = document.getElementById('movSubcuenta').value || null;
-    if (tipoSalida === 'proveedor') payload.proveedor_factura_ids = [];
+    if (tipoElegido === 'gasto') payload.subcuenta_id = document.getElementById('movSubcuenta').value || null;
+    if (tipoElegido === 'proveedor') payload.proveedor_factura_ids = [];
+    if (esClasifCliente) payload.cliente_factura_ids = [];
 
     const { data: nuevoMov, error } = await sb.from(table).insert(payload).select().single();
     if (error) { toast('Error: ' + error.message, 'error'); return; }
 
     let creadoCredito = false;
-    if (tipoSalida === 'proveedor' && idsFacturas.length) {
+    if (tipoElegido === 'proveedor' && idsFacturas.length) {
       const montoDisponible = cargos > 0 ? cargos : depositos;
       const resultado = await aplicarPagoFacturas(idsFacturas, montoDisponible, fecha, contexto.businessId, {
         pagado_desde: origenCorto,
@@ -3184,6 +3261,13 @@ async function openMovimientoModal(contexto) {
       creadoCredito = resultado.creadoCredito;
       await sb.from(table).update({ proveedor_factura_ids: resultado.idsAfectados, proveedor_factura_id: resultado.idsAfectados[0] || null }).eq('id', nuevoMov.id);
       toast(`${idsFacturas.length} factura(s) procesada(s)${creadoCredito ? ' · se generó un crédito a favor' : ''}.`);
+    }
+    if (esClasifCliente && idsFacturasCliente.length) {
+      const resultado = await aplicarCobroFacturas(idsFacturasCliente, depositos, fecha, contexto.businessId, {
+        origen_tabla: table, origen_id: nuevoMov.id,
+      });
+      await sb.from(table).update({ cliente_factura_ids: resultado.idsAfectados, cliente_factura_id: resultado.idsAfectados[0] || null }).eq('id', nuevoMov.id);
+      if (resultado.idsAfectados.length) toast(`${resultado.idsAfectados.length} factura(s) cobrada(s).`);
     }
 
     modal.classList.remove('show');
@@ -3578,7 +3662,13 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
       <td class="num" style="font-weight:700;">${fmtNum(saldo)}</td>
       ${Number(r.depositos) > 0 ? entradaCellsHtml(r, facturasClientesPend, 'mov') : salidaCellsHtml(r, subcuentas, mayores, facturasPend, 'mov', traspasoCtx)}
       <td>${adjuntosCellHtml(conteoAdjuntosEfvo[r.id], r.id)}</td>
-      <td><button class="row-del mov-del" data-id="${r.id}">✕</button></td>
+      <td style="position:relative;">
+        <button class="btn btn-ghost btn-sm mov-menu-btn" data-id="${r.id}" style="padding:5px 12px;">⋯</button>
+        <div class="mov-menu-dropdown" data-menu="${r.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:120px;overflow:hidden;">
+          <button class="mov-editar" data-id="${r.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Editar</button>
+          <button class="mov-del" data-id="${r.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>
+        </div>
+      </td>
     </tr>`;
   }).join('');
 
@@ -3628,6 +3718,18 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
       renderMonedaLedger(moneda, businessId, conceptosEfectivo);
     });
   });
+  box.querySelectorAll('.mov-menu-btn').forEach(btn => btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const dropdown = box.querySelector(`.mov-menu-dropdown[data-menu="${btn.dataset.id}"]`);
+    const abierto = dropdown.style.display === 'block';
+    box.querySelectorAll('.mov-menu-dropdown').forEach(d => d.style.display = 'none');
+    dropdown.style.display = abierto ? 'none' : 'block';
+  }));
+  document.addEventListener('click', () => box.querySelectorAll('.mov-menu-dropdown').forEach(d => d.style.display = 'none'));
+  box.querySelectorAll('.mov-editar').forEach(btn => btn.addEventListener('click', () => {
+    const celda = box.querySelector(`.mov-cell[data-id="${btn.dataset.id}"]`);
+    if (celda) { celda.focus(); celda.scrollIntoView({ block: 'center' }); }
+  }));
   box.querySelectorAll('.mov-del').forEach(btn => {
     btn.addEventListener('click', async () => {
       const row = ledger.find(r => r.id === btn.dataset.id) || {};
@@ -3775,7 +3877,13 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
       <td class="num" style="font-weight:700;">${fmt(saldo)}</td>
       ${Number(m.depositos) > 0 ? entradaCellsHtml(m, facturasClientesPend, 'mov') : salidaCellsHtml(m, subcuentas, mayores, facturasPend, 'mov', traspasoCtx)}
       <td>${adjuntosCellHtml(conteoAdjuntosBanco[m.id], m.id)}</td>
-      <td><button class="row-del mov-del" data-id="${m.id}">✕</button></td>
+      <td style="position:relative;">
+        <button class="btn btn-ghost btn-sm mov-menu-btn" data-id="${m.id}" style="padding:5px 12px;">⋯</button>
+        <div class="mov-menu-dropdown" data-menu="${m.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:120px;overflow:hidden;">
+          <button class="mov-editar" data-id="${m.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Editar</button>
+          <button class="mov-del" data-id="${m.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>
+        </div>
+      </td>
     </tr>`;
   }).join('');
 
@@ -3825,6 +3933,18 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
       renderBancoLedger(cuentaId, businessId, conceptosTarjetas);
     });
   });
+  box.querySelectorAll('.mov-menu-btn').forEach(btn => btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const dropdown = box.querySelector(`.mov-menu-dropdown[data-menu="${btn.dataset.id}"]`);
+    const abierto = dropdown.style.display === 'block';
+    box.querySelectorAll('.mov-menu-dropdown').forEach(d => d.style.display = 'none');
+    dropdown.style.display = abierto ? 'none' : 'block';
+  }));
+  document.addEventListener('click', () => box.querySelectorAll('.mov-menu-dropdown').forEach(d => d.style.display = 'none'));
+  box.querySelectorAll('.mov-editar').forEach(btn => btn.addEventListener('click', () => {
+    const celda = box.querySelector(`.mov-cell[data-id="${btn.dataset.id}"]`);
+    if (celda) { celda.focus(); celda.scrollIntoView({ block: 'center' }); }
+  }));
   box.querySelectorAll('.mov-del').forEach(btn => {
     btn.addEventListener('click', async () => {
       const row = ledger.find(r => r.id === btn.dataset.id) || {};
