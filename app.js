@@ -4299,11 +4299,20 @@ document.getElementById('cerrarModalPagosFactura').addEventListener('click', () 
 
 async function renderDirectorioProveedores(el, b) {
   const scrollY = window.scrollY;
-  const { data: all } = await sb.from('fz_proveedores').select('*').eq('business_id', b.id);
+  const [{ data: all }, { data: catalogo }] = await Promise.all([
+    sb.from('fz_proveedores').select('*').eq('business_id', b.id),
+    sb.from('fz_proveedores_catalogo').select('*').eq('business_id', b.id),
+  ]);
+  const catalogoMap = Object.fromEntries((catalogo || []).map(c => [c.id, c]));
+  const nombreProveedor = (f) => {
+    const c = f.proveedor_id ? catalogoMap[f.proveedor_id] : null;
+    if (c) return c.razon_social ? `${c.razon_social}${c.nombre_comercial ? ' — ' + c.nombre_comercial : ''}` : (c.nombre_comercial || c.nombre || f.proveedor || '(sin proveedor)');
+    return f.proveedor || '(sin proveedor)';
+  };
   const grupos = {};
   (all || []).forEach(f => {
     const key = claveProveedor(f);
-    if (!grupos[key]) grupos[key] = { key, nombre: f.proveedor || '(sin proveedor)', facturado: 0, pagado: 0, cantidad: 0 };
+    if (!grupos[key]) grupos[key] = { key, nombre: nombreProveedor(f), facturado: 0, pagado: 0, cantidad: 0 };
     grupos[key].facturado += Number(f.importe) || 0;
     grupos[key].pagado += Number(f.importe_pagado) || 0;
     grupos[key].cantidad += 1;
@@ -4393,9 +4402,17 @@ async function getTransaccionesProveedor(businessId, facturas) {
 async function renderProveedorDetalle(el, b) {
   const key = STATE_provDetalleKey;
   if (!key) { STATE_provVista = 'directorio'; return renderProveedores(); }
-  const { data: all } = await sb.from('fz_proveedores').select('*').eq('business_id', b.id);
+  const [{ data: all }, { data: catalogo }] = await Promise.all([
+    sb.from('fz_proveedores').select('*').eq('business_id', b.id),
+    sb.from('fz_proveedores_catalogo').select('*').eq('business_id', b.id),
+  ]);
+  const catalogoMap = Object.fromEntries((catalogo || []).map(c => [c.id, c]));
   const facturas = (all || []).filter(f => claveProveedor(f) === key);
-  const nombre = facturas[0]?.proveedor || '(sin proveedor)';
+  const primeraFactura = facturas[0];
+  const catMatch = primeraFactura?.proveedor_id ? catalogoMap[primeraFactura.proveedor_id] : null;
+  const nombre = catMatch
+    ? (catMatch.razon_social ? `${catMatch.razon_social}${catMatch.nombre_comercial ? ' — ' + catMatch.nombre_comercial : ''}` : (catMatch.nombre_comercial || catMatch.nombre || primeraFactura?.proveedor))
+    : (primeraFactura?.proveedor || '(sin proveedor)');
   STATE_provDetalleNombre = nombre;
   const totalFacturado = facturas.reduce((s,f) => s + (Number(f.importe)||0), 0);
   const totalPagado = facturas.reduce((s,f) => s + (Number(f.importe_pagado)||0), 0);
