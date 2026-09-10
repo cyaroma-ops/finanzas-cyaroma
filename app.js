@@ -4585,9 +4585,9 @@ async function renderDirectorioClientes(el, b) {
           <div style="position:relative;">
             <button class="btn btn-gold btn-sm" id="nuevaTransaccionBtn">+ Nueva transacción</button>
             <div id="nuevaTransaccionDropdown" style="display:none;position:absolute;left:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:180px;overflow:hidden;">
-              <button class="nt-factura" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;">🧾 Factura</button>
-              <button class="nt-orden" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">📝 Orden de venta</button>
-              <button class="nt-pago" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">💵 Registrar un pago</button>
+              <button class="nt-factura" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Factura</button>
+              <button class="nt-orden" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Orden de venta</button>
+              <button class="nt-pago" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Registrar un pago</button>
             </div>
           </div>
           <button class="btn btn-ghost btn-sm" id="openProductosBtn">⚙ Productos y Servicios</button>
