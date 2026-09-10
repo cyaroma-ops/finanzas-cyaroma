@@ -607,6 +607,7 @@ const SECTION_META = {
   efectivo: { title: 'Efectivo & Divisas', sub: '', showMonth: true, needsBiz: true },
   bancos: { title: 'Bancos', sub: '', showMonth: true, needsBiz: true },
   proveedores: { title: 'Proveedores', sub: '', showMonth: false, needsBiz: true },
+  clientes: { title: 'Clientes', sub: '', showMonth: false, needsBiz: true },
   pl: { title: 'Estado de Resultados', sub: '', showMonth: true, needsBiz: true },
   flujo: { title: 'Flujo de Efectivo', sub: '', showMonth: false, needsBiz: true },
   polizas: { title: 'Pólizas de Diario', sub: '', showMonth: false, needsBiz: true },
@@ -709,6 +710,7 @@ async function renderCurrentSection() {
   if (s === 'efectivo') return renderEfectivo();
   if (s === 'bancos') return renderBancos();
   if (s === 'proveedores') return renderProveedores();
+  if (s === 'clientes') return renderClientes();
   if (s === 'pl') return renderPL();
   if (s === 'flujo') return renderFlujo();
   if (s === 'polizas') return renderPolizas();
@@ -4065,6 +4067,188 @@ async function renderProveedorDetalle(el, b) {
     verDesglosePago(tabla, origen.id, b.id);
   }));
 }
+
+/* ============================================================
+   CLIENTES (Cuentas por Cobrar) — Etapa 1: Catálogo + Directorio
+   ============================================================ */
+async function loadClientes(businessId) {
+  const { data } = await sb.from('fz_clientes').select('*').eq('business_id', businessId).eq('activo', true);
+  return data || [];
+}
+async function loadProductosServicios(businessId) {
+  const { data } = await sb.from('fz_productos_servicios').select('*').eq('business_id', businessId).eq('activo', true).order('nombre');
+  return data || [];
+}
+// Etapa 1 todavía no tiene Facturas de clientes — el saldo siempre es 0 por ahora.
+// Se conecta de verdad en la Etapa 2/3, sin tener que rehacer esta pantalla.
+async function computeSaldoCliente(clienteId) {
+  return 0;
+}
+
+let STATE_clienteOrden = 'nombre'; // 'nombre' | 'saldo'
+let STATE_clienteEditandoId = null;
+
+async function renderClientes() {
+  const el = document.getElementById('sec-clientes');
+  const b = biz();
+  if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
+  const scrollY = window.scrollY;
+
+  const clientes = await loadClientes(b.id);
+  const conSaldo = await Promise.all(clientes.map(async c => ({ ...c, saldo: await computeSaldoCliente(c.id) })));
+  const ordenados = [...conSaldo].sort((a, b2) => {
+    if (STATE_clienteOrden === 'saldo') return b2.saldo - a.saldo;
+    return (a.nombre_comercial || '').localeCompare(b2.nombre_comercial || '');
+  });
+
+  el.innerHTML = `
+    <div class="card">
+      <div class="card-head">
+        <h3>Clientes</h3>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn btn-ghost btn-sm" id="openProductosBtn">⚙ Productos y Servicios</button>
+          <button class="btn btn-gold btn-sm" id="addClienteBtn">+ Agregar cliente</button>
+        </div>
+      </div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Directorio de clientes — el saldo pendiente (Open Balance) se activa en cuanto tengamos Facturas de clientes.</p>
+      <div class="tag-row" style="margin-bottom:12px;">
+        <div class="tag ${STATE_clienteOrden==='nombre'?'active':''}" id="clienteOrdenNombre">Ordenar por nombre</div>
+        <div class="tag ${STATE_clienteOrden==='saldo'?'active':''}" id="clienteOrdenSaldo">Ordenar por saldo (Open Balance)</div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Razón social</th><th>Nombre comercial</th><th>Teléfono</th><th>Moneda / TC</th><th>Open Balance</th><th></th></tr></thead>
+          <tbody>
+            ${ordenados.length ? ordenados.map(c => `<tr>
+              <td>${c.razon_social || '<span style="color:var(--muted);">—</span>'}</td>
+              <td><strong>${c.nombre_comercial}</strong></td>
+              <td>${c.telefono || '<span style="color:var(--muted);">—</span>'}</td>
+              <td>${c.moneda}${c.moneda==='USD' ? ' · ' + fmtNum(c.tipo_cambio) : ''}</td>
+              <td class="num" style="font-weight:700;">${fmt(c.saldo)}</td>
+              <td style="white-space:nowrap;">
+                <button class="btn btn-ghost btn-sm cliente-editar" data-id="${c.id}">Editar</button>
+                <button class="row-del cliente-del" data-id="${c.id}">✕</button>
+              </td>
+            </tr>`).join('') : `<tr><td colspan="6" class="empty">Aún no tienes clientes registrados. Usa "+ Agregar cliente".</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('clienteOrdenNombre').addEventListener('click', () => { STATE_clienteOrden = 'nombre'; renderClientes(); });
+  document.getElementById('clienteOrdenSaldo').addEventListener('click', () => { STATE_clienteOrden = 'saldo'; renderClientes(); });
+  document.getElementById('addClienteBtn').addEventListener('click', () => openModalCliente(null));
+  document.getElementById('openProductosBtn').addEventListener('click', () => openModalProductos(b.id));
+  el.querySelectorAll('.cliente-editar').forEach(btn => btn.addEventListener('click', () => {
+    const c = clientes.find(x => x.id === btn.dataset.id);
+    if (c) openModalCliente(c);
+  }));
+  el.querySelectorAll('.cliente-del').forEach(btn => btn.addEventListener('click', async () => {
+    if (!confirm('¿Quitar este cliente? Se ocultará del directorio (no se borra su historial).')) return;
+    await sb.from('fz_clientes').update({ activo: false }).eq('id', btn.dataset.id);
+    renderClientes();
+  }));
+  window.scrollTo(0, scrollY);
+}
+
+function openModalCliente(cliente) {
+  STATE_clienteEditandoId = cliente ? cliente.id : null;
+  document.getElementById('modalClienteTitulo').textContent = cliente ? 'Editar cliente' : 'Agregar cliente';
+  document.getElementById('clienteNombreComercial').value = cliente?.nombre_comercial || '';
+  document.getElementById('clienteRazonSocial').value = cliente?.razon_social || '';
+  document.getElementById('clienteDireccion').value = cliente?.direccion || '';
+  document.getElementById('clienteRfc').value = cliente?.rfc || '';
+  document.getElementById('clienteTelefono').value = cliente?.telefono || '';
+  document.getElementById('clienteDatosBancarios').value = cliente?.datos_bancarios || '';
+  document.getElementById('clienteMoneda').value = cliente?.moneda || 'MXN';
+  document.getElementById('clienteTc').value = fmtInputVal(cliente?.tipo_cambio || 1);
+  document.getElementById('clienteTcWrap').style.display = (cliente?.moneda === 'USD') ? '' : 'none';
+  document.getElementById('modalCliente').classList.add('show');
+}
+document.getElementById('clienteMoneda').addEventListener('change', (e) => {
+  document.getElementById('clienteTcWrap').style.display = e.target.value === 'USD' ? '' : 'none';
+});
+document.getElementById('closeModalCliente').addEventListener('click', () => {
+  document.getElementById('modalCliente').classList.remove('show');
+});
+document.getElementById('saveModalCliente').addEventListener('click', async () => {
+  const b = biz();
+  if (!b) return;
+  const nombre_comercial = document.getElementById('clienteNombreComercial').value.trim();
+  if (!nombre_comercial) { toast('Escribe al menos el nombre comercial.', 'error'); return; }
+  const payload = {
+    business_id: b.id,
+    nombre_comercial,
+    razon_social: document.getElementById('clienteRazonSocial').value.trim() || null,
+    direccion: document.getElementById('clienteDireccion').value.trim() || null,
+    rfc: document.getElementById('clienteRfc').value.trim() || null,
+    telefono: document.getElementById('clienteTelefono').value.trim() || null,
+    datos_bancarios: document.getElementById('clienteDatosBancarios').value.trim() || null,
+    moneda: document.getElementById('clienteMoneda').value,
+    tipo_cambio: leerMonto(document.getElementById('clienteTc').value) || 1,
+  };
+  let error;
+  if (STATE_clienteEditandoId) {
+    ({ error } = await sb.from('fz_clientes').update(payload).eq('id', STATE_clienteEditandoId));
+  } else {
+    ({ error } = await sb.from('fz_clientes').insert(payload));
+  }
+  if (error) { toast('Error: ' + error.message, 'error'); return; }
+  registrarAuditoria(b.id, STATE_clienteEditandoId ? 'editar' : 'crear', 'Clientes', nombre_comercial);
+  document.getElementById('modalCliente').classList.remove('show');
+  renderClientes();
+});
+
+async function openModalProductos(businessId) {
+  await renderProductosList(businessId);
+  document.getElementById('modalProductos').classList.add('show');
+  const subSel = document.getElementById('newProductoSubcuenta');
+  const [subcuentas, mayores] = await Promise.all([loadSubcuentas(businessId), loadCuentasMayor(businessId)]);
+  subSel.innerHTML = opcionesSubcuentasIngreso(subcuentas, mayores, null) || '<option value="">— crea primero una cuenta de Ingreso en Catálogo de Cuentas —</option>';
+}
+async function renderProductosList(businessId) {
+  const productos = await loadProductosServicios(businessId);
+  const [subcuentas, mayores] = await Promise.all([loadSubcuentas(businessId), loadCuentasMayor(businessId)]);
+  const nombreSubcuenta = (id) => subcuentas.find(s => s.id === id)?.nombre || '(sin clasificar)';
+  const box = document.getElementById('productosList');
+  box.innerHTML = productos.length ? productos.map(p => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 4px;border-bottom:1px solid var(--line);">
+      <div style="min-width:0;">
+        <strong style="font-size:13.5px;">${p.nombre}</strong>${p.precio ? ` <span style="color:var(--muted);font-size:12px;">— ${fmt(p.precio)}</span>` : ''}
+        <div style="font-size:11.5px;color:var(--muted);margin-top:2px;">${nombreSubcuenta(p.subcuenta_id)}${p.descripcion ? ' · ' + p.descripcion : ''}</div>
+      </div>
+      <button class="row-del producto-del" data-id="${p.id}" style="font-size:15px;flex-shrink:0;">✕</button>
+    </div>`).join('') : `<div class="empty" style="padding:14px;">Aún no tienes productos o servicios dados de alta.</div>`;
+  box.querySelectorAll('.producto-del').forEach(btn => btn.addEventListener('click', async () => {
+    await sb.from('fz_productos_servicios').update({ activo: false }).eq('id', btn.dataset.id);
+    renderProductosList(businessId);
+  }));
+}
+document.getElementById('closeModalProductos').addEventListener('click', () => {
+  document.getElementById('modalProductos').classList.remove('show');
+  renderClientes();
+});
+document.getElementById('saveModalProducto').addEventListener('click', async () => {
+  const b = biz();
+  if (!b) return;
+  const nombre = document.getElementById('newProductoNombre').value.trim();
+  if (!nombre) { toast('Escribe un nombre.', 'error'); return; }
+  const subcuenta_id = document.getElementById('newProductoSubcuenta').value || null;
+  const payload = {
+    business_id: b.id, nombre,
+    descripcion: document.getElementById('newProductoDescripcion').value.trim() || null,
+    precio: leerMonto(document.getElementById('newProductoPrecio').value) || 0,
+    subcuenta_id,
+  };
+  const { error } = await sb.from('fz_productos_servicios').insert(payload);
+  if (error) { toast('Error: ' + error.message, 'error'); return; }
+  document.getElementById('newProductoNombre').value = '';
+  document.getElementById('newProductoPrecio').value = '';
+  document.getElementById('newProductoDescripcion').value = '';
+  registrarAuditoria(b.id, 'crear', 'Productos y Servicios', nombre);
+  renderProductosList(b.id);
+});
 
 async function syncPagoProveedor(businessId, facturaId) {
   const { data: factura, error: eFactura } = await sb.from('fz_proveedores').select('*').eq('id', facturaId).single();

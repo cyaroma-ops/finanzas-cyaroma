@@ -134,12 +134,12 @@ h1,h2,h3,.serif{font-family:'Cormorant Garamond',serif;}
 }
 .field{margin-bottom:14px;text-align:left;}
 .field label{font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:5px;letter-spacing:.3px;}
-.field input,.field select{
+.field input,.field select,.field textarea{
   width:100%;padding:11px 13px;border:1.5px solid var(--line);border-radius:9px;
   font-family:'Inter',sans-serif;font-size:14px;background:#fbfcfe;
   transition:border-color .15s;
 }
-.field input:focus,.field select:focus{outline:none;border-color:var(--navy-3);background:#fff;}
+.field input:focus,.field select:focus,.field textarea:focus{outline:none;border-color:var(--navy-3);background:#fff;}
 .btn{
   display:inline-flex;align-items:center;justify-content:center;gap:6px;
   padding:11px 18px;border-radius:9px;border:none;cursor:pointer;
@@ -480,6 +480,10 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7H4a2 2 0 00-2 2v9a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"/></svg>
           Proveedores
         </div>
+        <div class="nav-item" data-section="clientes">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+          Clientes
+        </div>
         <div class="nav-item" data-section="pl">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><rect x="7" y="12" width="3" height="6"/><rect x="12" y="8" width="3" height="10"/><rect x="17" y="5" width="3" height="13"/></svg>
           Estado de Resultados
@@ -549,6 +553,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <section class="section" id="sec-efectivo"></section>
         <section class="section" id="sec-bancos"></section>
         <section class="section" id="sec-proveedores"></section>
+        <section class="section" id="sec-clientes"></section>
         <section class="section" id="sec-pl"></section>
         <section class="section" id="sec-flujo"></section>
         <section class="section" id="sec-polizas"></section>
@@ -786,6 +791,89 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
       <button class="btn btn-gold" id="saveProveedorCat">+ Agregar proveedor</button>
     </div>
     <p style="font-size:11px;color:var(--muted);margin-top:10px;">El Excel debe tener columnas "Nombre Comercial" y "Razón Social" (una fila por proveedor).</p>
+  </div>
+</div>
+
+<!-- Modal: alta/edición completa de un cliente -->
+<div class="modal-bg" id="modalCliente">
+  <div class="modal" style="width:min(560px,94vw);">
+    <h3 id="modalClienteTitulo">Agregar cliente</h3>
+    <div class="grid-2">
+      <div class="field">
+        <label>Nombre comercial</label>
+        <input type="text" id="clienteNombreComercial" placeholder="Ej. Restaurante El Buen Sabor">
+      </div>
+      <div class="field">
+        <label>Razón social</label>
+        <input type="text" id="clienteRazonSocial" placeholder="Ej. Operadora ABC SA de CV">
+      </div>
+    </div>
+    <div class="field">
+      <label>Dirección</label>
+      <input type="text" id="clienteDireccion" placeholder="Calle, número, colonia, ciudad">
+    </div>
+    <div class="grid-2">
+      <div class="field">
+        <label>RFC</label>
+        <input type="text" id="clienteRfc" placeholder="Ej. ABC010101AB1">
+      </div>
+      <div class="field">
+        <label>Teléfono de contacto</label>
+        <input type="text" id="clienteTelefono" placeholder="Ej. 55 1234 5678">
+      </div>
+    </div>
+    <div class="field">
+      <label>Datos bancarios (para que te paguen)</label>
+      <textarea id="clienteDatosBancarios" rows="2" placeholder="Banco, cuenta, CLABE..."></textarea>
+    </div>
+    <div class="grid-2">
+      <div class="field">
+        <label>Moneda</label>
+        <select id="clienteMoneda">
+          <option value="MXN">Pesos (MXN)</option>
+          <option value="USD">Dólares (USD)</option>
+        </select>
+      </div>
+      <div class="field" id="clienteTcWrap" style="display:none;">
+        <label>Tipo de cambio</label>
+        <input type="text" inputmode="decimal" id="clienteTc" value="1.00">
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="closeModalCliente">Cancelar</button>
+      <button class="btn btn-gold" id="saveModalCliente">Guardar cliente</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: catálogo de Productos y Servicios -->
+<div class="modal-bg" id="modalProductos">
+  <div class="modal" style="width:min(620px,94vw);">
+    <h3>Productos y Servicios</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px;">Da de alta lo que vendes una vez, vinculado a una cuenta de Ingreso — así, al facturar, ya viene clasificado.</p>
+    <div id="productosList" style="max-height:300px;overflow-y:auto;margin-bottom:16px;"></div>
+    <div class="grid-2">
+      <div class="field">
+        <label>Nombre</label>
+        <input type="text" id="newProductoNombre" placeholder="Ej. Servicio de banquete">
+      </div>
+      <div class="field">
+        <label>Precio sugerido (opcional)</label>
+        <input type="text" inputmode="decimal" id="newProductoPrecio" placeholder="0.00">
+      </div>
+    </div>
+    <div class="field">
+      <label>Descripción (opcional)</label>
+      <input type="text" id="newProductoDescripcion" placeholder="Detalle breve">
+    </div>
+    <div class="field">
+      <label>Cuenta de Ingreso a la que se clasifica</label>
+      <select id="newProductoSubcuenta"></select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="closeModalProductos">Cerrar</button>
+      <button class="btn btn-gold" id="saveModalProducto">+ Agregar producto/servicio</button>
+    </div>
   </div>
 </div>
 
