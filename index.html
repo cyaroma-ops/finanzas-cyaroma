@@ -940,6 +940,73 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   </div>
 </div>
 
+<!-- Modal: Factura de cliente -->
+<div class="modal-bg" id="modalFactura">
+  <div class="modal" style="width:min(820px,96vw);max-height:90vh;overflow-y:auto;">
+    <h3 id="modalFacturaTitulo">Nueva factura</h3>
+    <div class="grid-3">
+      <div class="field">
+        <label>Cliente</label>
+        <select id="facturaCliente"></select>
+      </div>
+      <div class="field">
+        <label>Fecha</label>
+        <input type="date" id="facturaFecha">
+      </div>
+      <div class="field">
+        <label>Fecha de vencimiento (opcional)</label>
+        <input type="date" id="facturaVencimiento">
+      </div>
+    </div>
+
+    <div class="table-wrap" style="margin:10px 0;">
+      <table>
+        <thead><tr><th>Producto/Servicio</th><th>Descripción</th><th style="width:80px;">Cantidad</th><th style="width:110px;">Precio unit.</th><th style="width:110px;">Importe</th><th></th></tr></thead>
+        <tbody id="facturaLineasBody"></tbody>
+      </table>
+    </div>
+    <button class="btn btn-ghost btn-sm" id="facturaAgregarLinea" style="margin-bottom:12px;">+ Agregar línea</button>
+
+    <div style="display:flex;justify-content:flex-end;">
+      <div style="width:min(320px,100%);">
+        <div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0;"><span>Subtotal</span><strong id="facturaSubtotalTxt">$0.00</strong></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;padding:4px 0;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="facturaAplicaIva" checked> Aplica IVA (<input type="text" id="facturaIvaPorcentaje" value="16" style="width:34px;border:1px solid var(--line);border-radius:5px;text-align:center;">%)</label>
+          <strong id="facturaIvaTxt">$0.00</strong>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:15px;padding:8px 0;border-top:1.5px solid var(--navy-1);margin-top:4px;"><span>Total</span><strong id="facturaTotalTxt">$0.00</strong></div>
+      </div>
+    </div>
+
+    <div class="grid-2" style="margin-top:10px;">
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="facturaSeFactura"> ¿Se factura fiscalmente?</label>
+        <input type="text" id="facturaFolioFiscal" placeholder="Folio fiscal / UUID (cuando ya se timbre)" style="margin-top:6px;display:none;">
+      </div>
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="facturaEsRecurrente"> Hacer recurrente</label>
+        <select id="facturaFrecuencia" style="margin-top:6px;display:none;">
+          <option value="7">Cada semana</option>
+          <option value="15">Cada 15 días</option>
+          <option value="30" selected>Cada mes</option>
+          <option value="90">Cada 3 meses</option>
+          <option value="365">Cada año</option>
+        </select>
+      </div>
+    </div>
+    <div class="field">
+      <label>Notas (opcional)</label>
+      <input type="text" id="facturaNotas" placeholder="Referencia, condiciones, etc.">
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="closeModalFactura">Cancelar</button>
+      <button class="btn btn-gold" id="saveModalFactura">Guardar factura</button>
+    </div>
+  </div>
+</div>
+
+
 <!-- Modal: desglose de factura -->
 <!-- Panel deslizable: vista previa de adjuntos sin salir de la pantalla -->
 <div id="adjuntoPreviewOverlay" style="display:none;position:fixed;inset:0;background:rgba(10,31,61,.4);z-index:300;"></div>
