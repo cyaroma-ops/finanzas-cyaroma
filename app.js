@@ -4102,6 +4102,17 @@ const ESTADOS_MX = [
   'Quintana Roo','San Luis Potosí','Sinaloa','Sonora','Tabasco','Tamaulipas','Tlaxcala',
   'Veracruz','Yucatán','Zacatecas',
 ];
+const TIPOS_SOCIEDAD = [
+  'Persona Física',
+  'S.A. de C.V. (Sociedad Anónima de Capital Variable)',
+  'S. de R.L. de C.V. (Sociedad de Responsabilidad Limitada de Capital Variable)',
+  'S.A.B. de C.V. (Sociedad Anónima Bursátil de Capital Variable)',
+  'S.C. (Sociedad Civil)',
+  'A.C. (Asociación Civil)',
+  'S.A.P.I. de C.V. (Sociedad Anónima Promotora de Inversión)',
+  'Cooperativa',
+  'Otro',
+];
 
 async function loadClientes(businessId) {
   const { data } = await sb.from('fz_clientes').select('*').eq('business_id', businessId).eq('activo', true);
@@ -4213,6 +4224,8 @@ function openModalCliente(cliente) {
   document.getElementById('modalClienteTitulo').textContent = cliente ? 'Editar cliente' : 'Agregar cliente';
   document.getElementById('clienteNombreComercial').value = cliente?.nombre_comercial || '';
   document.getElementById('clienteRazonSocial').value = cliente?.razon_social || '';
+  const selTipoSoc = document.getElementById('clienteTipoSociedad');
+  selTipoSoc.innerHTML = `<option value="">— sin especificar —</option>` + TIPOS_SOCIEDAD.map(t => `<option value="${t}" ${cliente?.tipo_sociedad===t?'selected':''}>${t}</option>`).join('');
   document.getElementById('clienteRfc').value = cliente?.rfc || '';
   const selRegimen = document.getElementById('clienteRegimenFiscal');
   selRegimen.innerHTML = `<option value="">— sin especificar —</option>` + REGIMENES_FISCALES_SAT.map(r => `<option value="${r.c}" ${cliente?.regimen_fiscal===r.c?'selected':''}>${r.c} — ${r.n}</option>`).join('');
@@ -4226,7 +4239,10 @@ function openModalCliente(cliente) {
   document.getElementById('clienteColonia').value = cliente?.colonia || '';
   document.getElementById('clienteLocalidad').value = cliente?.localidad || '';
   document.getElementById('clienteTelefono').value = cliente?.telefono || '';
-  document.getElementById('clienteDatosBancarios').value = cliente?.datos_bancarios || '';
+  document.getElementById('clienteBancoNombre').value = cliente?.banco_nombre || '';
+  document.getElementById('clienteBancoCuenta').value = cliente?.banco_cuenta || '';
+  document.getElementById('clienteBancoClabe').value = cliente?.banco_clabe || '';
+  document.getElementById('clienteBancoTarjeta').value = cliente?.banco_tarjeta || '';
   document.getElementById('clienteMoneda').value = cliente?.moneda || 'MXN';
   document.getElementById('clienteTc').value = fmtInputVal(cliente?.tipo_cambio || 1);
   document.getElementById('clienteTcWrap').style.display = (cliente?.moneda === 'USD') ? '' : 'none';
@@ -4247,6 +4263,7 @@ document.getElementById('saveModalCliente').addEventListener('click', async () =
     business_id: b.id,
     nombre_comercial,
     razon_social: document.getElementById('clienteRazonSocial').value.trim() || null,
+    tipo_sociedad: document.getElementById('clienteTipoSociedad').value || null,
     rfc: document.getElementById('clienteRfc').value.trim() || null,
     regimen_fiscal: document.getElementById('clienteRegimenFiscal').value || null,
     codigo_postal: document.getElementById('clienteCp').value.trim() || null,
@@ -4258,7 +4275,10 @@ document.getElementById('saveModalCliente').addEventListener('click', async () =
     municipio: document.getElementById('clienteMunicipio').value.trim() || null,
     estado: document.getElementById('clienteEstado').value || null,
     telefono: document.getElementById('clienteTelefono').value.trim() || null,
-    datos_bancarios: document.getElementById('clienteDatosBancarios').value.trim() || null,
+    banco_nombre: document.getElementById('clienteBancoNombre').value.trim() || null,
+    banco_cuenta: document.getElementById('clienteBancoCuenta').value.trim() || null,
+    banco_clabe: document.getElementById('clienteBancoClabe').value.trim() || null,
+    banco_tarjeta: document.getElementById('clienteBancoTarjeta').value.trim() || null,
     moneda: document.getElementById('clienteMoneda').value,
     tipo_cambio: leerMonto(document.getElementById('clienteTc').value) || 1,
   };

@@ -282,6 +282,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 
 .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
 .grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;}
+.grid-4{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;}
 
 @media(max-width:900px){
   .sidebar{position:fixed;left:-260px;z-index:100;transition:left .2s;}
@@ -796,16 +797,20 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 
 <!-- Modal: alta/edición completa de un cliente -->
 <div class="modal-bg" id="modalCliente">
-  <div class="modal" style="width:min(640px,95vw);max-height:88vh;overflow-y:auto;">
+  <div class="modal" style="width:min(880px,96vw);max-height:88vh;overflow-y:auto;">
     <h3 id="modalClienteTitulo">Agregar cliente</h3>
-    <div class="grid-2">
+    <div class="grid-3">
       <div class="field">
         <label>Nombre comercial</label>
         <input type="text" id="clienteNombreComercial" placeholder="Ej. Restaurante El Buen Sabor">
       </div>
       <div class="field">
         <label>Razón social</label>
-        <input type="text" id="clienteRazonSocial" placeholder="Ej. Operadora ABC SA de CV">
+        <input type="text" id="clienteRazonSocial" placeholder="Ej. Operadora ABC">
+      </div>
+      <div class="field">
+        <label>Tipo de sociedad</label>
+        <select id="clienteTipoSociedad"></select>
       </div>
     </div>
     <div class="grid-2">
@@ -814,12 +819,40 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <input type="text" id="clienteRfc" placeholder="Ej. ABC010101AB1">
       </div>
       <div class="field">
-        <label>Régimen Fiscal</label>
+        <label>Régimen Fiscal (SAT)</label>
         <select id="clienteRegimenFiscal"></select>
       </div>
     </div>
 
     <p style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;font-weight:700;margin:14px 0 8px;">Domicilio fiscal (como en la Constancia de Situación Fiscal)</p>
+    <div class="grid-3">
+      <div class="field">
+        <label>Calle</label>
+        <input type="text" id="clienteCalle" placeholder="Nombre de la vialidad">
+      </div>
+      <div class="field">
+        <label>No. Exterior</label>
+        <input type="text" id="clienteNumExt" placeholder="Ej. 123">
+      </div>
+      <div class="field">
+        <label>No. Interior (opcional)</label>
+        <input type="text" id="clienteNumInt" placeholder="Ej. B">
+      </div>
+    </div>
+    <div class="grid-3">
+      <div class="field">
+        <label>Colonia</label>
+        <input type="text" id="clienteColonia" placeholder="Ej. Centro">
+      </div>
+      <div class="field">
+        <label>Localidad (opcional)</label>
+        <input type="text" id="clienteLocalidad" placeholder="Si aplica">
+      </div>
+      <div class="field">
+        <label>Municipio o Alcaldía</label>
+        <input type="text" id="clienteMunicipio" placeholder="Ej. Pachuca de Soto">
+      </div>
+    </div>
     <div class="grid-2">
       <div class="field">
         <label>Código Postal</label>
@@ -830,47 +863,13 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <select id="clienteEstado"></select>
       </div>
     </div>
-    <div class="grid-2">
-      <div class="field">
-        <label>Calle</label>
-        <input type="text" id="clienteCalle" placeholder="Nombre de la vialidad">
-      </div>
-      <div class="field">
-        <label>Municipio o Alcaldía</label>
-        <input type="text" id="clienteMunicipio" placeholder="Ej. Pachuca de Soto">
-      </div>
-    </div>
-    <div class="grid-2">
-      <div class="field">
-        <label>No. Exterior</label>
-        <input type="text" id="clienteNumExt" placeholder="Ej. 123">
-      </div>
-      <div class="field">
-        <label>No. Interior (opcional)</label>
-        <input type="text" id="clienteNumInt" placeholder="Ej. B">
-      </div>
-    </div>
-    <div class="grid-2">
-      <div class="field">
-        <label>Colonia</label>
-        <input type="text" id="clienteColonia" placeholder="Ej. Centro">
-      </div>
-      <div class="field">
-        <label>Localidad (opcional)</label>
-        <input type="text" id="clienteLocalidad" placeholder="Si aplica">
-      </div>
-    </div>
 
-    <p style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;font-weight:700;margin:14px 0 8px;">Otros datos</p>
-    <div class="field">
-      <label>Teléfono de contacto</label>
-      <input type="text" id="clienteTelefono" placeholder="Ej. 55 1234 5678">
-    </div>
-    <div class="field">
-      <label>Datos bancarios (para que te paguen)</label>
-      <textarea id="clienteDatosBancarios" rows="2" placeholder="Banco, cuenta, CLABE..."></textarea>
-    </div>
+    <p style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;font-weight:700;margin:14px 0 8px;">Contacto y datos bancarios</p>
     <div class="grid-2">
+      <div class="field">
+        <label>Teléfono de contacto</label>
+        <input type="text" id="clienteTelefono" placeholder="Ej. 55 1234 5678">
+      </div>
       <div class="field">
         <label>Moneda</label>
         <select id="clienteMoneda">
@@ -878,17 +877,37 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
           <option value="USD">Dólares (USD)</option>
         </select>
       </div>
-      <div class="field" id="clienteTcWrap" style="display:none;">
-        <label>Tipo de cambio</label>
-        <input type="text" inputmode="decimal" id="clienteTc" value="1.00">
+    </div>
+    <div class="field" id="clienteTcWrap" style="display:none;max-width:200px;">
+      <label>Tipo de cambio</label>
+      <input type="text" inputmode="decimal" id="clienteTc" value="1.00">
+    </div>
+    <div class="grid-4">
+      <div class="field">
+        <label>Banco</label>
+        <input type="text" id="clienteBancoNombre" placeholder="Ej. BBVA">
+      </div>
+      <div class="field">
+        <label>Cuenta</label>
+        <input type="text" id="clienteBancoCuenta" placeholder="Núm. de cuenta">
+      </div>
+      <div class="field">
+        <label>Cuenta CLABE</label>
+        <input type="text" id="clienteBancoClabe" placeholder="18 dígitos">
+      </div>
+      <div class="field">
+        <label>Tarjeta</label>
+        <input type="text" id="clienteBancoTarjeta" placeholder="Núm. de tarjeta">
       </div>
     </div>
+
     <div class="modal-actions">
       <button class="btn btn-ghost" id="closeModalCliente">Cancelar</button>
       <button class="btn btn-gold" id="saveModalCliente">Guardar cliente</button>
     </div>
   </div>
 </div>
+
 
 <!-- Modal: catálogo de Productos y Servicios -->
 <div class="modal-bg" id="modalProductos">
