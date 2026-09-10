@@ -4138,7 +4138,8 @@ async function clienteTieneMovimientos(clienteId) {
 let STATE_clienteOrden = 'nombre'; // 'nombre' | 'saldo'
 let STATE_clienteEditandoId = null;
 
-let STATE_clientesVista = 'directorio'; // 'directorio' | 'facturas'
+let STATE_clientesVista = 'directorio'; // 'directorio' | 'facturas' | 'detalle'
+let STATE_clienteDetalleId = null;
 function clientesTabsHtml() {
   return `<div class="tag-row" style="margin-bottom:14px;">
     <div class="tag ${STATE_clientesVista==='directorio'?'active':''}" id="clientesTabDirectorio">Directorio</div>
@@ -4155,7 +4156,55 @@ async function renderClientes() {
   const b = biz();
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
   if (STATE_clientesVista === 'facturas') { await renderFacturasClientes(el, b); return; }
+  if (STATE_clientesVista === 'detalle') { await renderClienteDetalle(el, b); return; }
   await renderDirectorioClientes(el, b);
+}
+
+async function renderClienteDetalle(el, b) {
+  const cliente = (await loadClientes(b.id)).find(c => c.id === STATE_clienteDetalleId);
+  if (!cliente) { STATE_clientesVista = 'directorio'; return renderClientes(); }
+  const { data: facturas } = await sb.from('fz_facturas_clientes').select('*').eq('cliente_id', cliente.id).order('folio', { ascending: false });
+  const lista = facturas || [];
+  const totalFacturado = lista.reduce((s,f)=>s+(Number(f.total)||0),0);
+  const totalPagado = lista.reduce((s,f)=>s+(Number(f.importe_pagado)||0),0);
+  const pendiente = totalFacturado - totalPagado;
+
+  el.innerHTML = `
+    <button class="btn btn-ghost btn-sm" id="clienteDetalleVolver" style="margin-bottom:14px;">← Volver al directorio</button>
+    <div class="kpi-grid" style="margin-bottom:14px;">
+      <div class="kpi"><div class="label">Total facturado</div><div class="value num">${fmt(totalFacturado)}</div></div>
+      <div class="kpi"><div class="label">Total pagado</div><div class="value num green">${fmt(totalPagado)}</div></div>
+      <div class="kpi"><div class="label">Saldo pendiente</div><div class="value num ${pendiente>0.004?'red':'green'}">${fmt(pendiente)}</div></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>${cliente.razon_social || cliente.nombre_comercial}</h3>${cliente.razon_social ? `<span class="hint">${cliente.nombre_comercial}</span>` : ''}</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Folio</th><th>Fecha</th><th>Total</th><th>Pagado</th><th>Pendiente</th><th>Estatus</th><th>Fiscal</th><th></th></tr></thead>
+          <tbody>
+            ${lista.length ? lista.map(f => {
+              const pend = Number(f.total) - Number(f.importe_pagado||0);
+              return `<tr>
+                <td>#${f.folio}</td>
+                <td>${fechaCorta(f.fecha)}</td>
+                <td class="num">${f.moneda==='USD'?'US':''}${fmt(f.total)}</td>
+                <td class="num">${fmt(f.importe_pagado||0)}</td>
+                <td class="num">${fmtNeg(pend)}</td>
+                <td><span class="badge ${f.estatus==='Pagado'?'pag':'pend'}">${f.estatus}</span></td>
+                <td>${ESTATUS_FISCAL_BADGE[f.estatus_fiscal] || ESTATUS_FISCAL_BADGE.no_aplica}</td>
+                <td><button class="btn btn-ghost btn-sm detalle-factura-editar" data-id="${f.id}">Ver / Editar</button></td>
+              </tr>`;
+            }).join('') : `<tr><td colspan="8" class="empty">Este cliente aún no tiene facturas.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  document.getElementById('clienteDetalleVolver').addEventListener('click', () => { STATE_clientesVista = 'directorio'; renderClientes(); });
+  el.querySelectorAll('.detalle-factura-editar').forEach(btn => btn.addEventListener('click', async () => {
+    const { data: f } = await sb.from('fz_facturas_clientes').select('*').eq('id', btn.dataset.id).single();
+    if (f) openModalFactura(f, b.id);
+  }));
 }
 
 async function renderDirectorioClientes(el, b) {
@@ -4187,7 +4236,7 @@ async function renderDirectorioClientes(el, b) {
         <table>
           <thead><tr><th>Razón social</th><th>Nombre comercial</th><th>Teléfono</th><th>Moneda / TC</th><th>Open Balance</th><th></th></tr></thead>
           <tbody>
-            ${ordenados.length ? ordenados.map(c => `<tr>
+            ${ordenados.length ? ordenados.map(c => `<tr class="cliente-fila" data-id="${c.id}" style="cursor:pointer;">
               <td>${c.razon_social || '<span style="color:var(--muted);">—</span>'}</td>
               <td><strong>${c.nombre_comercial}</strong></td>
               <td>${c.telefono || '<span style="color:var(--muted);">—</span>'}</td>
@@ -4211,6 +4260,12 @@ async function renderDirectorioClientes(el, b) {
   document.getElementById('clienteOrdenSaldo').addEventListener('click', () => { STATE_clienteOrden = 'saldo'; renderClientes(); });
   document.getElementById('addClienteBtn').addEventListener('click', () => openModalCliente(null));
   document.getElementById('openProductosBtn').addEventListener('click', () => openModalProductos(b.id));
+  el.querySelectorAll('.cliente-fila').forEach(tr => tr.addEventListener('click', (e) => {
+    if (e.target.closest('.cliente-menu-btn') || e.target.closest('.cliente-menu-dropdown')) return;
+    STATE_clienteDetalleId = tr.dataset.id;
+    STATE_clientesVista = 'detalle';
+    renderClientes();
+  }));
   el.querySelectorAll('.cliente-menu-btn').forEach(btn => btn.addEventListener('click', (e) => {
     e.stopPropagation();
     const dropdown = el.querySelector(`.cliente-menu-dropdown[data-menu="${btn.dataset.id}"]`);
@@ -4876,7 +4931,14 @@ async function renderBalanceGeneral() {
     if (Math.abs(r.total) > 0.004) otrosActivos.push({ nombre: m.nombre, subs: r.subs, total: r.total });
   }
   const totalOtrosActivos = otrosActivos.reduce((s,x)=>s+x.total,0);
-  const totalActivo = totalEfectivo + totalBancos + totalOtrosActivos;
+
+  const { data: facturasClientesData } = await sb.from('fz_facturas_clientes').select('total,importe_pagado,moneda,tipo_cambio').eq('business_id', b.id).lte('fecha', hastaFecha);
+  const cuentasPorCobrar = (facturasClientesData || []).reduce((s,f) => {
+    const tc = f.moneda === 'USD' ? (Number(f.tipo_cambio) || 1) : 1;
+    return s + ((Number(f.total) || 0) - (Number(f.importe_pagado) || 0)) * tc;
+  }, 0);
+
+  const totalActivo = totalEfectivo + totalBancos + totalOtrosActivos + cuentasPorCobrar;
 
   const prov = (provQ.data || []).filter(p => p.fecha <= hastaFecha);
   const proveedoresPendiente = prov.filter(p => p.estatus === 'Pendiente' || p.estatus === 'Parcial').reduce((s,p)=>s+(Number(p.importe)-Number(p.importe_pagado||0)),0);
@@ -4935,6 +4997,7 @@ async function renderBalanceGeneral() {
           ${detalleEfectivo.map(d => `<tr class="balance-link-efectivo" data-id="${d.id}" style="cursor:pointer;"><td style="padding-left:40px;color:var(--muted);font-size:12.5px;">${d.nombre} ↗</td><td class="num">${fmtNeg(d.monto)}</td></tr>`).join('')}
           <tr><td style="padding-left:22px;font-weight:600;">Bancos</td><td class="num" style="font-weight:600;">${fmtNeg(totalBancos)}</td></tr>
           ${detalleBancos.map(d => `<tr class="balance-link-banco" data-id="${d.id}" style="cursor:pointer;"><td style="padding-left:40px;color:var(--muted);font-size:12.5px;">${d.nombre} ↗</td><td class="num">${fmtNeg(d.monto)}</td></tr>`).join('')}
+          <tr class="balance-link-clientes" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">Cuentas por cobrar (Clientes) ↗</td><td class="num" style="font-weight:600;">${fmtNeg(cuentasPorCobrar)}</td></tr>
           ${otrosActivos.map(m => `
             <tr><td style="padding-left:22px;font-weight:600;">${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.total)}</td></tr>
             ${m.subs.map(s => filaArbolBalanceConDetalle(s, 1)).join('')}
@@ -4985,6 +5048,8 @@ async function renderBalanceGeneral() {
   }));
   const provLink = el.querySelector('.balance-link-proveedores');
   if (provLink) provLink.addEventListener('click', () => irASeccion('proveedores'));
+  const clientesLink = el.querySelector('.balance-link-clientes');
+  if (clientesLink) clientesLink.addEventListener('click', () => { STATE_clientesVista = 'directorio'; irASeccion('clientes'); });
   window.scrollTo(0, scrollY);
 }
 
@@ -5070,7 +5135,7 @@ async function computeIngresosPoliza(businessId, periodo, subcuentas, mayores) {
     const subs = subcuentasRaiz(m.id, subcuentas)
       .map(s => construirArbolSubcuenta(s.id, subcuentas, porSubcuenta))
       .filter(s => s.total);
-    return { nombre: m.nombre, subs, subtotal: subs.reduce((s,x)=>s+x.total,0) };
+    return { id: m.id, nombre: m.nombre, subs, subtotal: subs.reduce((s,x)=>s+x.total,0) };
   }).filter(m => m.subtotal);
   return { porMayor, total: porMayor.reduce((s,m)=>s+m.subtotal,0) };
 }
@@ -5394,27 +5459,31 @@ async function renderPLAnual(el, b) {
   conceptosVenta.forEach((c, idx) => {
     const sub = c.subcuenta_vinculada_id ? subcuentas.find(s => s.id === c.subcuenta_vinculada_id) : null;
     const mayor = sub ? mayores.find(m => m.id === sub.cuenta_mayor_id) : null;
-    if (mayor) (gruposIngresoAnual[mayor.id] ||= { nombre: mayor.nombre, items: [] }).items.push({ c, idx });
+    if (mayor) (gruposIngresoAnual[mayor.id] ||= { mayor, items: [] }).items.push({ c, idx });
     else sinGrupoAnual.push({ c, idx });
+  });
+  const mayoresIngreso = mayores.filter(m => m.tipo === 'ingreso');
+  // Se unifican aquí los mayores que solo tienen ingresos por Pólizas/Facturas (sin categoría de
+  // venta vinculada) — antes salían como una sección aparte y duplicada si coincidían de nombre.
+  mayoresIngreso.forEach(m => {
+    const tieneDatos = datos.some(d => d.iPoliza.porMayor.some(pm => pm.id === m.id));
+    if (tieneDatos) (gruposIngresoAnual[m.id] ||= { mayor: m, items: [] });
   });
   const filaIngresoAnualHtml = ({ c, idx }) => filaHtml(
     c.nombre + (c.tipo==='resta'?' (descuento)':''),
     datos.map(d => d.ingresosPorConcepto[idx]),
-    { color: c.tipo==='resta' ? 'var(--red)' : null, indent: Object.keys(gruposIngresoAnual).length > 0 }
+    { color: c.tipo==='resta' ? 'var(--red)' : null, indent: true }
   );
   const filasIngreso = Object.values(gruposIngresoAnual).map(g => {
-    const valoresGrupo = datos.map((d, mesIdx) => g.items.reduce((s, it) => s + (d.ingresosPorConcepto[it.idx] * (it.c.tipo==='resta'?-1:1)), 0));
-    return `<tr style="background:#f7f9fc;"><td colspan="${mesesYm.length + 2}" style="font-weight:700;">${g.nombre}</td></tr>`
+    const valoresVenta = datos.map((d) => g.items.reduce((s, it) => s + (d.ingresosPorConcepto[it.idx] * (it.c.tipo==='resta'?-1:1)), 0));
+    const valoresPoliza = datos.map(d => d.iPoliza.porMayor.find(pm => pm.id === g.mayor.id)?.subtotal || 0);
+    const valoresCombinados = valoresVenta.map((v, i) => v + valoresPoliza[i]);
+    return `<tr style="background:#f7f9fc;"><td colspan="${mesesYm.length + 2}" style="font-weight:700;">${g.mayor.nombre}</td></tr>`
       + g.items.map(filaIngresoAnualHtml).join('')
-      + filaHtml(`Subtotal ${g.nombre}`, valoresGrupo, { italic: true, indentPx: 22 });
+      + filasSubcuentasPorMayor(g.mayor, d => d.iPoliza.porMayor.find(pm => pm.id === g.mayor.id))
+      + filaHtml(`Subtotal ${g.mayor.nombre}`, valoresCombinados, { italic: true, indentPx: 22 });
   }).join('') + sinGrupoAnual.map(filaIngresoAnualHtml).join('');
-  const mayoresIngreso = mayores.filter(m => m.tipo === 'ingreso');
   const filaSobrante = datos.some(d=>d.sobranteCaja) ? filaHtml('Sobrante de caja (conciliación)', datos.map(d=>d.sobranteCaja), { color:'var(--green)' }) : '';
-  const filaPoliza = mayoresIngreso.map(m => {
-    const totalPorMes = datos.map(d => d.iPoliza.porMayor.find(pm=>pm.nombre===m.nombre)?.subtotal || 0);
-    if (!totalPorMes.some(v => Math.abs(v) > 0.004)) return '';
-    return filaHtml(m.nombre + ' (pólizas y facturas)', totalPorMes, { bold:true, bg:true }) + filasSubcuentasPorMayor(m, d => d.iPoliza.porMayor.find(pm=>pm.nombre===m.nombre));
-  }).join('');
   const filaTotalIngresos = filaHtml('Total ingresos', datos.map(d=>d.totalIngresosFinal), { total:true });
 
   const hayMayoresCosto = mayoresCosto.length && datos.some(d => d.gCostos.totalClasificado);
@@ -5470,7 +5539,6 @@ async function renderPLAnual(el, b) {
             <tr style="background:#f7f9fc;"><td colspan="${mesesYm.length + 2}" style="font-weight:700;">Ingresos</td></tr>
             ${filasIngreso}
             ${filaSobrante}
-            ${filaPoliza}
             ${filaTotalIngresos}
             ${hayMayoresCosto ? `
             <tr style="background:#f7f9fc;"><td colspan="${mesesYm.length + 2}" style="font-weight:700;">Costo de Ventas</td></tr>
@@ -5580,29 +5648,32 @@ async function renderPL() {
       <div class="card-head"><h3>Ingresos — ${periodoLabel}</h3><span class="hint">Calculado de Ventas</span></div>
       <table>
         <tbody>
-          ${ingresosPorConcepto.length ? (() => {
+          ${(() => {
             const grupos = {}; const sinGrupo = [];
             ingresosPorConcepto.forEach(i => {
               const concepto = conceptosVenta.find(c => c.id === i.id);
               const sub = concepto?.subcuenta_vinculada_id ? subcuentas.find(s => s.id === concepto.subcuenta_vinculada_id) : null;
               const mayor = sub ? mayores.find(m => m.id === sub.cuenta_mayor_id) : null;
-              if (mayor) { (grupos[mayor.id] ||= { nombre: mayor.nombre, items: [] }).items.push(i); }
+              if (mayor) { (grupos[mayor.id] ||= { id: mayor.id, nombre: mayor.nombre, items: [], iPoliza: null }).items.push(i); }
               else sinGrupo.push(i);
             });
-            const filaIngresoHtml = (i) => `<tr><td${grupos && Object.keys(grupos).length ? ' style="padding-left:22px;color:var(--muted);font-size:12.5px;"' : ''}>${i.nombre}${i.tipo==='resta'?' (descuento)':''}</td><td class="num" style="${i.tipo==='resta'?'color:var(--red);':''}">${i.tipo==='resta'?'-':''}${fmt(i.monto)}</td></tr>`;
+            // Se combinan aquí mismo los ingresos de Pólizas/Facturas que caigan en la misma cuenta mayor
+            // que alguna Categoría de venta — antes salían como una sección aparte y duplicada.
+            iPoliza.porMayor.forEach(m => {
+              (grupos[m.id] ||= { id: m.id, nombre: m.nombre, items: [], iPoliza: null }).iPoliza = m;
+            });
+            const filaIngresoHtml = (i) => `<tr><td style="padding-left:22px;color:var(--muted);font-size:12.5px;">${i.nombre}${i.tipo==='resta'?' (descuento)':''}</td><td class="num" style="${i.tipo==='resta'?'color:var(--red);':''}">${i.tipo==='resta'?'-':''}${fmt(i.monto)}</td></tr>`;
             const gruposHtml = Object.values(grupos).map(g => {
-              const subtotal = g.items.reduce((s,i)=>s+(i.tipo==='resta'?-i.monto:i.monto),0);
+              const subtotalVenta = g.items.reduce((s,i)=>s+(i.tipo==='resta'?-i.monto:i.monto),0);
+              const subtotalPoliza = g.iPoliza ? g.iPoliza.subtotal : 0;
               return `<tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">${g.nombre}</td></tr>`
                 + g.items.map(filaIngresoHtml).join('')
-                + `<tr><td style="padding-left:22px;font-style:italic;color:var(--muted);">Subtotal ${g.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(subtotal)}</td></tr>`;
+                + (g.iPoliza ? g.iPoliza.subs.map(s => filaArbolSubcuentaHtml(s, false, 0, detalleIngresoHtml)).join('') : '')
+                + `<tr><td style="padding-left:22px;font-style:italic;color:var(--muted);">Subtotal ${g.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(subtotalVenta + subtotalPoliza)}</td></tr>`;
             }).join('');
-            return gruposHtml + sinGrupo.map(filaIngresoHtml).join('');
-          })() : `<tr><td colspan="2" class="empty">Este negocio no tiene categorías de venta configuradas (ve a Ventas → Configurar categorías de venta).</td></tr>`}
+            return (ingresosPorConcepto.length ? gruposHtml + sinGrupo.map(filaIngresoHtml).join('') : (Object.keys(grupos).length ? gruposHtml : `<tr><td colspan="2" class="empty">Este negocio no tiene categorías de venta configuradas (ve a Ventas → Configurar categorías de venta).</td></tr>`));
+          })()}
           ${sobranteCaja ? `<tr><td>Sobrante de caja (conciliación de Ventas)</td><td class="num" style="color:var(--green);">${fmt(sobranteCaja)}</td></tr>` : ''}
-          ${iPoliza.porMayor.map(m => `
-            <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">${m.nombre} (pólizas y facturas)</td></tr>
-            ${m.subs.map(s => filaArbolSubcuentaHtml(s, false, 0, detalleIngresoHtml)).join('')}
-          `).join('')}
           <tr class="total-row"><td>Total ingresos</td><td class="num">${fmtNeg(totalIngresosFinal)}</td></tr>
         </tbody>
       </table>
