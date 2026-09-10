@@ -4217,8 +4217,30 @@ async function renderDirectorioClientes(el, b) {
     return (a.nombre_comercial || '').localeCompare(b2.nombre_comercial || '');
   });
 
+  // Resumen general: por cobrar, vencido, cobrado este mes, pendientes de facturar fiscalmente
+  const { data: todasFacturas } = await sb.from('fz_facturas_clientes').select('total,importe_pagado,fecha_vencimiento,fecha_pago,estatus_fiscal,moneda,tipo_cambio').eq('business_id', b.id);
+  const hoy = todayStr();
+  const mesActual = STATE.currentMonth;
+  let totalPorCobrar = 0, totalVencido = 0, cobradoEsteMes = 0, pendientesFiscal = 0;
+  (todasFacturas || []).forEach(f => {
+    const tc = f.moneda === 'USD' ? (Number(f.tipo_cambio) || 1) : 1;
+    const pendiente = ((Number(f.total) || 0) - (Number(f.importe_pagado) || 0)) * tc;
+    if (pendiente > 0.004) {
+      totalPorCobrar += pendiente;
+      if (f.fecha_vencimiento && f.fecha_vencimiento < hoy) totalVencido += pendiente;
+    }
+    if (f.fecha_pago && f.fecha_pago.slice(0,7) === mesActual) cobradoEsteMes += (Number(f.importe_pagado) || 0) * tc;
+    if (f.estatus_fiscal === 'pendiente') pendientesFiscal++;
+  });
+
   el.innerHTML = `
     ${clientesTabsHtml()}
+    <div class="kpi-grid" style="margin-bottom:14px;">
+      <div class="kpi"><div class="label">Total por cobrar</div><div class="value num">${fmt(totalPorCobrar)}</div></div>
+      <div class="kpi"><div class="label">Vencido</div><div class="value num ${totalVencido>0.004?'red':''}">${fmt(totalVencido)}</div></div>
+      <div class="kpi"><div class="label">Cobrado este mes</div><div class="value num green">${fmt(cobradoEsteMes)}</div></div>
+      <div class="kpi"><div class="label">Pendientes de facturar</div><div class="value ${pendientesFiscal>0?'red':''}">${pendientesFiscal}</div></div>
+    </div>
     <div class="card">
       <div class="card-head">
         <h3>Clientes</h3>
@@ -4227,7 +4249,6 @@ async function renderDirectorioClientes(el, b) {
           <button class="btn btn-gold btn-sm" id="addClienteBtn">+ Agregar cliente</button>
         </div>
       </div>
-      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Directorio de clientes — el saldo pendiente (Open Balance) se activa en cuanto tengamos Facturas de clientes.</p>
       <div class="tag-row" style="margin-bottom:12px;">
         <div class="tag ${STATE_clienteOrden==='nombre'?'active':''}" id="clienteOrdenNombre">Ordenar por nombre</div>
         <div class="tag ${STATE_clienteOrden==='saldo'?'active':''}" id="clienteOrdenSaldo">Ordenar por saldo (Open Balance)</div>
