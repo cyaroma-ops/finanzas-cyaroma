@@ -258,7 +258,8 @@ tr.total-row td{font-weight:800;background:#f7f9fc;color:var(--navy-1);border-to
 .table-wrap.scroll-sticky table thead th{position:sticky;top:0;background:#f7f9fc;z-index:4;}
 .table-wrap.scroll-sticky table tfoot td,.table-wrap.scroll-sticky table tfoot th{position:sticky;bottom:0;z-index:4;}
 input.cell,select.cell{width:100%;min-width:80px;border:1px solid transparent;background:transparent;padding:5px 6px;border-radius:6px;font-family:'Inter';font-size:13px;}
-input.linea-cuenta-buscar:focus{position:relative;z-index:5;min-width:340px;max-width:420px;background:#fff;box-shadow:0 3px 12px rgba(0,0,0,.18);}
+input.linea-cuenta-buscar{min-width:220px;}
+input.linea-cuenta-buscar:focus{position:relative;z-index:5;min-width:420px;max-width:520px;background:#fff;box-shadow:0 3px 12px rgba(0,0,0,.18);}
 input.cell:hover,select.cell:hover{border-color:var(--line);}
 input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);background:#fff;}
 .row-del{color:var(--muted);cursor:pointer;background:none;border:none;font-size:15px;}
@@ -1405,7 +1406,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 
 <!-- Modal: captura de póliza de diario (fijo, no se mueve con la lista) -->
 <div class="modal-bg" id="modalPoliza">
-  <div class="modal" style="width:min(780px,96vw);height:min(600px,88vh);max-width:96vw;max-height:92vh;min-width:480px;min-height:320px;overflow:auto;resize:both;">
+  <div class="modal" style="width:min(1180px,97vw);height:min(760px,90vh);max-width:97vw;max-height:94vh;min-width:480px;min-height:320px;overflow:auto;resize:both;">
     <div id="modalPolizaBody"></div>
   </div>
 </div>

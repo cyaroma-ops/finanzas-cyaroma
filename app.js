@@ -7274,6 +7274,8 @@ function wireBorradorPolizaHandlers(wrap) {
     }
     else { linea.cuenta_tipo = 'subcuenta'; linea.subcuenta_id = match.id; linea.cuenta_ref_id = null; linea.proveedor_factura_id = null; linea.cliente_factura_id = null; }
     renderizarBorradorPoliza();
+    const siguienteInput = wrap.querySelector(`.linea-cell[data-id="${inp.dataset.id}"][data-field="referencia"]`);
+    if (siguienteInput) { siguienteInput.focus(); if (siguienteInput.select) siguienteInput.select(); }
   }));
   wrap.querySelectorAll('.linea-cell').forEach(inp => inp.addEventListener('change', () => {
     const linea = STATE_polizaBorrador.lineas.find(l => l.id === inp.dataset.id);
