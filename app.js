@@ -2705,17 +2705,36 @@ async function revertirPagoAFacturas(idsAfectados, montoMovimiento) {
 
 async function confirmarYEliminarMovimiento(table, row, onDone) {
   const idsAfectados = facturaIdsDe(row);
+  const idsAfectadosCliente = facturaIdsClienteDe(row);
   if (row.tipo_salida === 'proveedor' && idsAfectados.length) {
     const ok = confirm(`Este movimiento tiene un pago aplicado a ${idsAfectados.length} factura(s) de Proveedores. Al eliminarlo, se revertirá ese pago (regresarán a Pendiente/Parcial según corresponda). ¿Continuar?`);
     if (!ok) return;
     const montoMovimiento = Number(row.cargos) > 0 ? Number(row.cargos) : Number(row.depositos) || 0;
     await revertirPagoAFacturas(idsAfectados, montoMovimiento);
   }
+  if (row.tipo_entrada === 'cliente' && idsAfectadosCliente.length) {
+    const ok = confirm(`Este movimiento tiene un cobro aplicado a ${idsAfectadosCliente.length} factura(s) de Clientes. Al eliminarlo, se revertirá ese cobro (regresarán a Pendiente/Parcial según corresponda). ¿Continuar?`);
+    if (!ok) return;
+    await revertirCobroPorOrigen(table, row.id);
+  }
   await sb.from(table).delete().eq('id', row.id);
   const modulo = table === 'fz_bancos_mov' ? 'Bancos' : 'Efectivo';
   const monto = Number(row.cargos) > 0 ? Number(row.cargos) : Number(row.depositos) || 0;
-  registrarAuditoria(row.business_id, 'eliminar', modulo, `Movimiento ${row.fecha} · ${row.descripcion||row.proveedor||''} · ${fmt(monto)}${idsAfectados.length?' (revirtió '+idsAfectados.length+' factura(s))':''}`);
+  registrarAuditoria(row.business_id, 'eliminar', modulo, `Movimiento ${row.fecha} · ${row.descripcion||row.proveedor||''} · ${fmt(monto)}${idsAfectados.length?' (revirtió '+idsAfectados.length+' factura(s) de proveedor)':''}${idsAfectadosCliente.length?' (revirtió '+idsAfectadosCliente.length+' factura(s) de cliente)':''}`);
   onDone();
+}
+
+async function revertirCobroPorOrigen(origenTabla, origenId) {
+  const { data: cobros } = await sb.from('fz_cobros_aplicados').select('*').eq('origen_tabla', origenTabla).eq('origen_id', origenId);
+  for (const cobro of (cobros || [])) {
+    const { data: f } = await sb.from('fz_facturas_clientes').select('total,importe_pagado').eq('id', cobro.factura_id).single();
+    if (f) {
+      const nuevoPagado = Math.max(0, Number(f.importe_pagado||0) - Number(cobro.monto||0));
+      const nuevoEstatus = nuevoPagado <= 0.004 ? 'Pendiente' : (nuevoPagado >= Number(f.total) - 0.01 ? 'Pagado' : 'Parcial');
+      await sb.from('fz_facturas_clientes').update({ importe_pagado: nuevoPagado, estatus: nuevoEstatus }).eq('id', cobro.factura_id);
+    }
+  }
+  await sb.from('fz_cobros_aplicados').delete().eq('origen_tabla', origenTabla).eq('origen_id', origenId);
 }
 
 async function aplicarPagoFacturas(idsSeleccionados, montoDisponibleInicial, fechaMov, businessId, origenInfo) {
