@@ -4530,6 +4530,24 @@ async function openModalFactura(factura, businessId) {
   document.getElementById('facturaFrecuenciaWrap').style.display = factura?.es_recurrente ? '' : 'none';
   document.getElementById('facturaNotas').value = factura?.notas || '';
 
+  const cobrosSection = document.getElementById('facturaCobrosSection');
+  if (factura) {
+    cobrosSection.style.display = '';
+    document.getElementById('cobroFecha').value = todayStr();
+    document.getElementById('cobroMonto').value = fmtInputVal(Math.max(0, Number(factura.total) - Number(factura.importe_pagado||0)));
+    const [cuentasBancoQ, monedasQ] = await Promise.all([
+      sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
+      sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
+    ]);
+    const selCuenta = document.getElementById('cobroCuenta');
+    selCuenta.innerHTML = `<option value="manual">Ingreso directo (sin registrar en Banco/Efectivo)</option>`
+      + (cuentasBancoQ.data||[]).map(c => `<option value="banco:${c.id}">Banco — ${c.nombre}</option>`).join('')
+      + (monedasQ.data||[]).map(m => `<option value="efectivo:${m.id}">Efectivo — ${m.nombre}</option>`).join('');
+    await renderCobrosList(businessId, factura.id);
+  } else {
+    cobrosSection.style.display = 'none';
+  }
+
   if (factura) {
     const { data: lineas } = await sb.from('fz_facturas_clientes_lineas').select('*').eq('factura_id', factura.id).order('orden');
     STATE_facturaLineas = (lineas || []).map(l => ({ ...l, _tmpId: l.id }));
@@ -4617,6 +4635,75 @@ document.getElementById('facturaEsRecurrente').addEventListener('change', (e) =>
 document.getElementById('closeModalFactura').addEventListener('click', () => {
   document.getElementById('modalFactura').classList.remove('show');
 });
+async function renderCobrosList(businessId, facturaId) {
+  const { data: cobros } = await sb.from('fz_cobros_aplicados').select('*').eq('factura_id', facturaId).order('fecha');
+  const box = document.getElementById('facturaCobrosList');
+  const etiquetaOrigen = (o) => o === 'fz_bancos_mov' ? 'Banco' : o === 'fz_efectivo_mov' ? 'Efectivo' : 'Directo';
+  box.innerHTML = (cobros && cobros.length) ? cobros.map(c => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line);font-size:13px;">
+      <span>${fechaCorta(c.fecha)} · ${etiquetaOrigen(c.origen_tabla)}</span>
+      <span style="display:flex;align-items:center;gap:10px;"><strong>${fmt(c.monto)}</strong><button class="row-del cobro-del" data-id="${c.id}" style="font-size:14px;">✕</button></span>
+    </div>`).join('') : `<p class="empty" style="padding:6px 0;">Aún no hay cobros registrados para esta factura.</p>`;
+  box.querySelectorAll('.cobro-del').forEach(btn => btn.addEventListener('click', async () => {
+    if (!confirm('¿Quitar este cobro? Esto también revierte el movimiento de banco/efectivo si se creó uno.')) return;
+    await eliminarCobro(businessId, btn.dataset.id, facturaId);
+    await renderCobrosList(businessId, facturaId);
+  }));
+}
+
+async function eliminarCobro(businessId, cobroId, facturaId) {
+  const { data: cobro } = await sb.from('fz_cobros_aplicados').select('*').eq('id', cobroId).single();
+  if (!cobro) return;
+  if (cobro.origen_tabla !== 'manual' && cobro.origen_id) {
+    await sb.from(cobro.origen_tabla).delete().eq('id', cobro.origen_id);
+  }
+  await sb.from('fz_cobros_aplicados').delete().eq('id', cobroId);
+  const { data: f } = await sb.from('fz_facturas_clientes').select('total,importe_pagado').eq('id', facturaId).single();
+  if (f) {
+    const nuevoPagado = Math.max(0, Number(f.importe_pagado||0) - Number(cobro.monto||0));
+    const nuevoEstatus = nuevoPagado <= 0.004 ? 'Pendiente' : (nuevoPagado >= Number(f.total) - 0.01 ? 'Pagado' : 'Parcial');
+    await sb.from('fz_facturas_clientes').update({ importe_pagado: nuevoPagado, estatus: nuevoEstatus }).eq('id', facturaId);
+  }
+}
+
+document.getElementById('registrarCobroBtn').addEventListener('click', async () => {
+  const b = biz();
+  if (!b || !STATE_facturaEditandoId) return;
+  const facturaId = STATE_facturaEditandoId;
+  const fecha = document.getElementById('cobroFecha').value || todayStr();
+  const monto = leerMonto(document.getElementById('cobroMonto').value);
+  if (!monto || monto <= 0) { toast('Escribe un monto válido.', 'error'); return; }
+  const destino = document.getElementById('cobroCuenta').value;
+
+  const { data: factura } = await sb.from('fz_facturas_clientes').select('*').eq('id', facturaId).single();
+  if (!factura) return;
+  const cliente = STATE_facturaCatalogos.clientes.find(c => c.id === factura.cliente_id);
+
+  let origen_tabla = 'manual', origen_id = null;
+  if (destino !== 'manual') {
+    const [tipo, refId] = destino.split(':');
+    const tabla = tipo === 'banco' ? 'fz_bancos_mov' : 'fz_efectivo_mov';
+    const payload = tipo === 'banco'
+      ? { business_id: b.id, cuenta_id: refId, fecha, concepto: `Cobro factura #${factura.folio}`, descripcion: cliente?.nombre_comercial || '', depositos: monto, cargos: 0 }
+      : { business_id: b.id, moneda_id: refId, fecha, proveedor: cliente?.nombre_comercial || '', descripcion: `Cobro factura #${factura.folio}`, depositos: monto, cargos: 0 };
+    const { data: mov, error } = await sb.from(tabla).insert(payload).select().single();
+    if (error) { toast('Error creando el movimiento: ' + error.message, 'error'); return; }
+    origen_tabla = tabla; origen_id = mov.id;
+  }
+
+  const { error: errCobro } = await sb.from('fz_cobros_aplicados').insert({ business_id: b.id, factura_id: facturaId, monto, origen_tabla, origen_id, fecha });
+  if (errCobro) { toast('Error: ' + errCobro.message, 'error'); return; }
+
+  const nuevoPagado = Number(factura.importe_pagado||0) + monto;
+  const nuevoEstatus = nuevoPagado >= Number(factura.total) - 0.01 ? 'Pagado' : 'Parcial';
+  await sb.from('fz_facturas_clientes').update({ importe_pagado: nuevoPagado, estatus: nuevoEstatus, fecha_pago: fecha }).eq('id', facturaId);
+
+  registrarAuditoria(b.id, 'editar', 'Facturas de clientes', `Cobro de ${fmt(monto)} aplicado a factura #${factura.folio}`);
+  toast('Cobro registrado.');
+  document.getElementById('cobroMonto').value = '';
+  await renderCobrosList(b.id, facturaId);
+});
+
 document.getElementById('saveModalFactura').addEventListener('click', async () => {
   const b = biz();
   if (!b) return;

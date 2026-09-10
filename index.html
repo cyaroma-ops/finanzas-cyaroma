@@ -1023,6 +1023,26 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
       <input type="text" id="facturaNotas" placeholder="Referencia, condiciones, etc.">
     </div>
 
+    <div id="facturaCobrosSection" style="display:none;margin-top:14px;border:1.5px solid var(--line);border-radius:10px;padding:14px;">
+      <p style="font-size:12px;font-weight:700;color:var(--navy-1);margin-bottom:10px;">Cobros aplicados</p>
+      <div id="facturaCobrosList" style="margin-bottom:12px;"></div>
+      <div class="grid-3">
+        <div class="field" style="margin-bottom:8px;">
+          <label>Fecha</label>
+          <input type="date" id="cobroFecha">
+        </div>
+        <div class="field" style="margin-bottom:8px;">
+          <label>Monto</label>
+          <input type="text" inputmode="decimal" id="cobroMonto" placeholder="0.00">
+        </div>
+        <div class="field" style="margin-bottom:8px;">
+          <label>Cuenta destino</label>
+          <select id="cobroCuenta"></select>
+        </div>
+      </div>
+      <button class="btn btn-gold btn-sm" id="registrarCobroBtn">+ Registrar cobro</button>
+    </div>
+
     <div class="modal-actions">
       <button class="btn btn-ghost" id="closeModalFactura">Cancelar</button>
       <button class="btn btn-gold" id="saveModalFactura">Guardar factura</button>
