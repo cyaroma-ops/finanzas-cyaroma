@@ -4071,6 +4071,38 @@ async function renderProveedorDetalle(el, b) {
 /* ============================================================
    CLIENTES (Cuentas por Cobrar) — Etapa 1: Catálogo + Directorio
    ============================================================ */
+const REGIMENES_FISCALES_SAT = [
+  { c: '601', n: 'General de Ley Personas Morales' },
+  { c: '603', n: 'Personas Morales con Fines no Lucrativos' },
+  { c: '605', n: 'Sueldos y Salarios e Ingresos Asimilados a Salarios' },
+  { c: '606', n: 'Arrendamiento' },
+  { c: '607', n: 'Régimen de Enajenación o Adquisición de Bienes' },
+  { c: '608', n: 'Demás ingresos' },
+  { c: '610', n: 'Residentes en el Extranjero sin Establecimiento Permanente en México' },
+  { c: '611', n: 'Ingresos por Dividendos (socios y accionistas)' },
+  { c: '612', n: 'Personas Físicas con Actividades Empresariales y Profesionales' },
+  { c: '614', n: 'Ingresos por intereses' },
+  { c: '615', n: 'Régimen de los ingresos por obtención de premios' },
+  { c: '616', n: 'Sin obligaciones fiscales' },
+  { c: '620', n: 'Sociedades Cooperativas de Producción que optan por diferir sus ingresos' },
+  { c: '621', n: 'Incorporación Fiscal' },
+  { c: '622', n: 'Actividades Agrícolas, Ganaderas, Silvícolas y Pesqueras' },
+  { c: '623', n: 'Opcional para Grupos de Sociedades' },
+  { c: '624', n: 'Coordinados' },
+  { c: '625', n: 'Actividades Empresariales con ingresos por Plataformas Tecnológicas' },
+  { c: '626', n: 'Régimen Simplificado de Confianza (RESICO)' },
+  { c: '628', n: 'Hidrocarburos' },
+  { c: '629', n: 'Regímenes Fiscales Preferentes y Empresas Multinacionales' },
+  { c: '630', n: 'Enajenación de acciones en bolsa de valores' },
+];
+const ESTADOS_MX = [
+  'Aguascalientes','Baja California','Baja California Sur','Campeche','Chiapas','Chihuahua',
+  'Ciudad de México','Coahuila','Colima','Durango','Estado de México','Guanajuato','Guerrero',
+  'Hidalgo','Jalisco','Michoacán','Morelos','Nayarit','Nuevo León','Oaxaca','Puebla','Querétaro',
+  'Quintana Roo','San Luis Potosí','Sinaloa','Sonora','Tabasco','Tamaulipas','Tlaxcala',
+  'Veracruz','Yucatán','Zacatecas',
+];
+
 async function loadClientes(businessId) {
   const { data } = await sb.from('fz_clientes').select('*').eq('business_id', businessId).eq('activo', true);
   return data || [];
@@ -4083,6 +4115,13 @@ async function loadProductosServicios(businessId) {
 // Se conecta de verdad en la Etapa 2/3, sin tener que rehacer esta pantalla.
 async function computeSaldoCliente(clienteId) {
   return 0;
+}
+// Antes de dejar eliminar un cliente, hay que confirmar que no tenga facturas u
+// otros movimientos ya registrados. Etapa 1 todavía no tiene Facturas de clientes,
+// así que por ahora esto siempre permite eliminar — se conecta de verdad en la
+// Etapa 2/3 (revisando fz_facturas_clientes u la tabla que se use).
+async function clienteTieneMovimientos(clienteId) {
+  return false;
 }
 
 let STATE_clienteOrden = 'nombre'; // 'nombre' | 'saldo'
@@ -4125,9 +4164,12 @@ async function renderClientes() {
               <td>${c.telefono || '<span style="color:var(--muted);">—</span>'}</td>
               <td>${c.moneda}${c.moneda==='USD' ? ' · ' + fmtNum(c.tipo_cambio) : ''}</td>
               <td class="num" style="font-weight:700;">${fmt(c.saldo)}</td>
-              <td style="white-space:nowrap;">
-                <button class="btn btn-ghost btn-sm cliente-editar" data-id="${c.id}">Editar</button>
-                <button class="row-del cliente-del" data-id="${c.id}">✕</button>
+              <td style="position:relative;">
+                <button class="btn btn-ghost btn-sm cliente-menu-btn" data-id="${c.id}" style="padding:5px 12px;">⋯</button>
+                <div class="cliente-menu-dropdown" data-menu="${c.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:130px;overflow:hidden;">
+                  <button class="cliente-editar" data-id="${c.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Editar</button>
+                  <button class="cliente-del" data-id="${c.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>
+                </div>
               </td>
             </tr>`).join('') : `<tr><td colspan="6" class="empty">Aún no tienes clientes registrados. Usa "+ Agregar cliente".</td></tr>`}
           </tbody>
@@ -4140,13 +4182,27 @@ async function renderClientes() {
   document.getElementById('clienteOrdenSaldo').addEventListener('click', () => { STATE_clienteOrden = 'saldo'; renderClientes(); });
   document.getElementById('addClienteBtn').addEventListener('click', () => openModalCliente(null));
   document.getElementById('openProductosBtn').addEventListener('click', () => openModalProductos(b.id));
+  el.querySelectorAll('.cliente-menu-btn').forEach(btn => btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const dropdown = el.querySelector(`.cliente-menu-dropdown[data-menu="${btn.dataset.id}"]`);
+    const abierto = dropdown.style.display === 'block';
+    el.querySelectorAll('.cliente-menu-dropdown').forEach(d => d.style.display = 'none');
+    dropdown.style.display = abierto ? 'none' : 'block';
+  }));
+  document.addEventListener('click', () => el.querySelectorAll('.cliente-menu-dropdown').forEach(d => d.style.display = 'none'));
   el.querySelectorAll('.cliente-editar').forEach(btn => btn.addEventListener('click', () => {
     const c = clientes.find(x => x.id === btn.dataset.id);
     if (c) openModalCliente(c);
   }));
   el.querySelectorAll('.cliente-del').forEach(btn => btn.addEventListener('click', async () => {
-    if (!confirm('¿Quitar este cliente? Se ocultará del directorio (no se borra su historial).')) return;
-    await sb.from('fz_clientes').update({ activo: false }).eq('id', btn.dataset.id);
+    const tieneMovimientos = await clienteTieneMovimientos(btn.dataset.id);
+    if (tieneMovimientos) {
+      toast('Este cliente ya tiene facturas o movimientos registrados — no se puede eliminar. Puedes desactivarlo en su lugar si ya no lo usas.', 'error');
+      return;
+    }
+    if (!confirm('¿Desea usted eliminar a este cliente? Esta acción no se puede deshacer.')) return;
+    await sb.from('fz_clientes').delete().eq('id', btn.dataset.id);
+    registrarAuditoria(b.id, 'eliminar', 'Clientes', clientes.find(x => x.id === btn.dataset.id)?.nombre_comercial || '');
     renderClientes();
   }));
   window.scrollTo(0, scrollY);
@@ -4157,8 +4213,18 @@ function openModalCliente(cliente) {
   document.getElementById('modalClienteTitulo').textContent = cliente ? 'Editar cliente' : 'Agregar cliente';
   document.getElementById('clienteNombreComercial').value = cliente?.nombre_comercial || '';
   document.getElementById('clienteRazonSocial').value = cliente?.razon_social || '';
-  document.getElementById('clienteDireccion').value = cliente?.direccion || '';
   document.getElementById('clienteRfc').value = cliente?.rfc || '';
+  const selRegimen = document.getElementById('clienteRegimenFiscal');
+  selRegimen.innerHTML = `<option value="">— sin especificar —</option>` + REGIMENES_FISCALES_SAT.map(r => `<option value="${r.c}" ${cliente?.regimen_fiscal===r.c?'selected':''}>${r.c} — ${r.n}</option>`).join('');
+  const selEstado = document.getElementById('clienteEstado');
+  selEstado.innerHTML = `<option value="">— sin especificar —</option>` + ESTADOS_MX.map(e => `<option value="${e}" ${cliente?.estado===e?'selected':''}>${e}</option>`).join('');
+  document.getElementById('clienteCp').value = cliente?.codigo_postal || '';
+  document.getElementById('clienteCalle').value = cliente?.calle || '';
+  document.getElementById('clienteMunicipio').value = cliente?.municipio || '';
+  document.getElementById('clienteNumExt').value = cliente?.numero_exterior || '';
+  document.getElementById('clienteNumInt').value = cliente?.numero_interior || '';
+  document.getElementById('clienteColonia').value = cliente?.colonia || '';
+  document.getElementById('clienteLocalidad').value = cliente?.localidad || '';
   document.getElementById('clienteTelefono').value = cliente?.telefono || '';
   document.getElementById('clienteDatosBancarios').value = cliente?.datos_bancarios || '';
   document.getElementById('clienteMoneda').value = cliente?.moneda || 'MXN';
@@ -4181,8 +4247,16 @@ document.getElementById('saveModalCliente').addEventListener('click', async () =
     business_id: b.id,
     nombre_comercial,
     razon_social: document.getElementById('clienteRazonSocial').value.trim() || null,
-    direccion: document.getElementById('clienteDireccion').value.trim() || null,
     rfc: document.getElementById('clienteRfc').value.trim() || null,
+    regimen_fiscal: document.getElementById('clienteRegimenFiscal').value || null,
+    codigo_postal: document.getElementById('clienteCp').value.trim() || null,
+    calle: document.getElementById('clienteCalle').value.trim() || null,
+    numero_exterior: document.getElementById('clienteNumExt').value.trim() || null,
+    numero_interior: document.getElementById('clienteNumInt').value.trim() || null,
+    colonia: document.getElementById('clienteColonia').value.trim() || null,
+    localidad: document.getElementById('clienteLocalidad').value.trim() || null,
+    municipio: document.getElementById('clienteMunicipio').value.trim() || null,
+    estado: document.getElementById('clienteEstado').value || null,
     telefono: document.getElementById('clienteTelefono').value.trim() || null,
     datos_bancarios: document.getElementById('clienteDatosBancarios').value.trim() || null,
     moneda: document.getElementById('clienteMoneda').value,

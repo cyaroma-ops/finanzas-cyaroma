@@ -796,7 +796,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 
 <!-- Modal: alta/edición completa de un cliente -->
 <div class="modal-bg" id="modalCliente">
-  <div class="modal" style="width:min(560px,94vw);">
+  <div class="modal" style="width:min(640px,95vw);max-height:88vh;overflow-y:auto;">
     <h3 id="modalClienteTitulo">Agregar cliente</h3>
     <div class="grid-2">
       <div class="field">
@@ -808,19 +808,63 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <input type="text" id="clienteRazonSocial" placeholder="Ej. Operadora ABC SA de CV">
       </div>
     </div>
-    <div class="field">
-      <label>Dirección</label>
-      <input type="text" id="clienteDireccion" placeholder="Calle, número, colonia, ciudad">
-    </div>
     <div class="grid-2">
       <div class="field">
         <label>RFC</label>
         <input type="text" id="clienteRfc" placeholder="Ej. ABC010101AB1">
       </div>
       <div class="field">
-        <label>Teléfono de contacto</label>
-        <input type="text" id="clienteTelefono" placeholder="Ej. 55 1234 5678">
+        <label>Régimen Fiscal</label>
+        <select id="clienteRegimenFiscal"></select>
       </div>
+    </div>
+
+    <p style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;font-weight:700;margin:14px 0 8px;">Domicilio fiscal (como en la Constancia de Situación Fiscal)</p>
+    <div class="grid-2">
+      <div class="field">
+        <label>Código Postal</label>
+        <input type="text" id="clienteCp" placeholder="Ej. 42501">
+      </div>
+      <div class="field">
+        <label>Estado (Entidad Federativa)</label>
+        <select id="clienteEstado"></select>
+      </div>
+    </div>
+    <div class="grid-2">
+      <div class="field">
+        <label>Calle</label>
+        <input type="text" id="clienteCalle" placeholder="Nombre de la vialidad">
+      </div>
+      <div class="field">
+        <label>Municipio o Alcaldía</label>
+        <input type="text" id="clienteMunicipio" placeholder="Ej. Pachuca de Soto">
+      </div>
+    </div>
+    <div class="grid-2">
+      <div class="field">
+        <label>No. Exterior</label>
+        <input type="text" id="clienteNumExt" placeholder="Ej. 123">
+      </div>
+      <div class="field">
+        <label>No. Interior (opcional)</label>
+        <input type="text" id="clienteNumInt" placeholder="Ej. B">
+      </div>
+    </div>
+    <div class="grid-2">
+      <div class="field">
+        <label>Colonia</label>
+        <input type="text" id="clienteColonia" placeholder="Ej. Centro">
+      </div>
+      <div class="field">
+        <label>Localidad (opcional)</label>
+        <input type="text" id="clienteLocalidad" placeholder="Si aplica">
+      </div>
+    </div>
+
+    <p style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;font-weight:700;margin:14px 0 8px;">Otros datos</p>
+    <div class="field">
+      <label>Teléfono de contacto</label>
+      <input type="text" id="clienteTelefono" placeholder="Ej. 55 1234 5678">
     </div>
     <div class="field">
       <label>Datos bancarios (para que te paguen)</label>
