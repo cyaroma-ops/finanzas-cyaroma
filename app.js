@@ -6744,6 +6744,7 @@ const fpActualizarIva = () => {
   const ivaMonto = aplicaIva ? subtotal * pct / 100 : 0;
   document.getElementById('fpIvaMonto').value = fmtInputVal(ivaMonto);
   document.getElementById('fpImporte').value = fmtInputVal(subtotal + ivaMonto);
+  if (typeof renderFpDesgloseList === 'function' && document.getElementById('fpDesgloseList')) renderFpDesgloseList();
 };
 document.getElementById('fpSubtotal').addEventListener('input', fpActualizarIva);
 document.getElementById('fpIvaPorcentaje').addEventListener('input', fpActualizarIva);
@@ -6771,7 +6772,10 @@ function nombreSubcuentaFp(id) {
 function renderFpDesgloseList() {
   const box = document.getElementById('fpDesgloseList');
   const total = STATE_fpDesgloseLineas.reduce((s,l)=>s+(Number(l.monto)||0),0);
-  const importe = leerMonto(document.getElementById('fpImporte').value) || 0;
+  const esFiscalConIva = biz()?.modo === 'fiscal_contable' && document.getElementById('fpAplicaIva').checked;
+  const importe = esFiscalConIva
+    ? (leerMonto(document.getElementById('fpSubtotal').value) || 0)
+    : (leerMonto(document.getElementById('fpImporte').value) || 0);
   const cuadra = Math.abs(total - importe) < 0.5;
   box.innerHTML = STATE_fpDesgloseLineas.map((l, i) => `
     <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 2px;border-bottom:1px solid var(--line);font-size:12.5px;">
@@ -6783,9 +6787,10 @@ function renderFpDesgloseList() {
       </span>
     </div>`).join('');
   document.getElementById('fpDesgloseResumen').innerHTML = `
-    <div style="display:flex;justify-content:space-between;"><span>Importe de la factura</span><strong>${fmt(importe)}</strong></div>
+    <div style="display:flex;justify-content:space-between;"><span>${esFiscalConIva ? 'Subtotal (sin IVA)' : 'Importe de la factura'}</span><strong>${fmt(importe)}</strong></div>
     <div style="display:flex;justify-content:space-between;"><span>Total desglosado</span><strong>${fmt(total)}</strong></div>
     <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--muted)'};font-weight:700;"><span>${cuadra?'✓ Cuadra':'Diferencia'}</span><span>${cuadra?'':fmt(Math.abs(total-importe))}</span></div>
+    ${esFiscalConIva ? `<p style="font-size:11px;color:var(--muted);margin-top:4px;">El IVA no se desglosa aquí — va directo a "IVA Acreditable" en el Balance General, aparte del gasto.</p>` : ''}
   `;
   box.querySelectorAll('.fp-desglose-editar').forEach(btn => btn.addEventListener('click', () => {
     const l = STATE_fpDesgloseLineas[Number(btn.dataset.idx)];
@@ -7190,16 +7195,22 @@ async function renderBalanceGeneral() {
   }
   const totalOtrosActivos = otrosActivos.reduce((s,x)=>s+x.total,0);
 
-  const { data: facturasClientesData } = await sb.from('fz_facturas_clientes').select('total,importe_pagado,moneda,tipo_cambio').eq('business_id', b.id).lte('fecha', hastaFecha);
+  const { data: facturasClientesData } = await sb.from('fz_facturas_clientes').select('total,importe_pagado,moneda,tipo_cambio,aplica_iva,iva_monto').eq('business_id', b.id).lte('fecha', hastaFecha);
   const cuentasPorCobrar = (facturasClientesData || []).reduce((s,f) => {
     const tc = f.moneda === 'USD' ? (Number(f.tipo_cambio) || 1) : 1;
     return s + ((Number(f.total) || 0) - (Number(f.importe_pagado) || 0)) * tc;
   }, 0);
 
-  const totalActivo = totalEfectivo + totalBancos + totalOtrosActivos + cuentasPorCobrar;
+  const esFiscalContable = b.modo === 'fiscal_contable';
+  const ivaAcreditable = !esFiscalContable ? 0 : ((await sb.from('fz_proveedores').select('iva_monto').eq('business_id', b.id).eq('aplica_iva', true).lte('fecha', hastaFecha)).data
+    ?.reduce((s,f) => s + (Number(f.iva_monto)||0), 0) || 0);
+
+  const totalActivo = totalEfectivo + totalBancos + totalOtrosActivos + cuentasPorCobrar + ivaAcreditable;
 
   const prov = (provQ.data || []).filter(p => p.fecha <= hastaFecha);
   const proveedoresPendiente = prov.filter(p => p.estatus === 'Pendiente' || p.estatus === 'Parcial').reduce((s,p)=>s+(Number(p.importe)-Number(p.importe_pagado||0)),0);
+
+  const ivaTrasladado = !esFiscalContable ? 0 : (facturasClientesData||[]).filter(f=>f.aplica_iva).reduce((s,f)=>s+(Number(f.iva_monto)||0),0);
 
   const otrosPasivos = [];
   for (const m of mayores.filter(m => m.tipo === 'pasivo')) {
@@ -7207,7 +7218,7 @@ async function renderBalanceGeneral() {
     if (Math.abs(r.total) > 0.004) otrosPasivos.push({ nombre: m.nombre, subs: r.subs, total: r.total });
   }
   const totalOtrosPasivos = otrosPasivos.reduce((s,x)=>s+x.total,0);
-  const totalPasivo = proveedoresPendiente + totalOtrosPasivos;
+  const totalPasivo = proveedoresPendiente + totalOtrosPasivos + ivaTrasladado;
 
   const cuentasCapital = [];
   for (const m of mayores.filter(m => m.tipo === 'capital')) {
@@ -7256,6 +7267,7 @@ async function renderBalanceGeneral() {
           <tr><td style="padding-left:22px;font-weight:600;">Bancos</td><td class="num" style="font-weight:600;">${fmtNeg(totalBancos)}</td></tr>
           ${detalleBancos.map(d => `<tr class="balance-link-banco" data-id="${d.id}" style="cursor:pointer;"><td style="padding-left:40px;color:var(--muted);font-size:12.5px;">${d.nombre} ↗</td><td class="num">${fmtNeg(d.monto)}</td></tr>`).join('')}
           <tr class="balance-link-clientes" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">Cuentas por cobrar (Clientes) ↗</td><td class="num" style="font-weight:600;">${fmtNeg(cuentasPorCobrar)}</td></tr>
+          ${esFiscalContable && Math.abs(ivaAcreditable) > 0.004 ? `<tr><td style="padding-left:22px;font-weight:600;">IVA Acreditable</td><td class="num" style="font-weight:600;">${fmtNeg(ivaAcreditable)}</td></tr>` : ''}
           ${otrosActivos.map(m => `
             <tr><td style="padding-left:22px;font-weight:600;">${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.total)}</td></tr>
             ${m.subs.map(s => filaArbolBalanceConDetalle(s, 1)).join('')}
@@ -7264,6 +7276,7 @@ async function renderBalanceGeneral() {
 
           <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">PASIVO</td></tr>
           <tr class="balance-link-proveedores" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">Proveedores por pagar ↗</td><td class="num" style="font-weight:600;">${fmtNeg(proveedoresPendiente)}</td></tr>
+          ${esFiscalContable && Math.abs(ivaTrasladado) > 0.004 ? `<tr><td style="padding-left:22px;font-weight:600;">IVA Trasladado por pagar</td><td class="num" style="font-weight:600;">${fmtNeg(ivaTrasladado)}</td></tr>` : ''}
           ${otrosPasivos.map(m => `
             <tr><td style="padding-left:22px;font-weight:600;">${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.total)}</td></tr>
             ${m.subs.map(s => filaArbolBalanceConDetalle(s, 1)).join('')}
