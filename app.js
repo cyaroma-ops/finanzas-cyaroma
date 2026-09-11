@@ -7607,6 +7607,21 @@ function wireBorradorPolizaHandlers(wrap) {
     const p = STATE_polizaBorrador.poliza;
     const facturasVinculadas = STATE_polizaBorrador.lineas.filter(l => l.cuenta_tipo === 'proveedor' && l.proveedor_factura_id).map(l => l.proveedor_factura_id);
     const facturasClienteVinculadas = STATE_polizaBorrador.lineas.filter(l => l.cuenta_tipo === 'cliente' && l.cliente_factura_id).map(l => l.cliente_factura_id);
+
+    // Si esta póliza dio origen a alguna factura de proveedor por provisión, se elimina también
+    // (nació de aquí, no tiene por qué quedar huérfana) — salvo que ya tenga pagos aplicados,
+    // en cuyo caso se deja, solo se desvincula el origen para no perder ese historial.
+    const { data: facturasProvenientes } = await sb.from('fz_proveedores').select('id,importe_pagado,proveedor').eq('origen_poliza_id', p.id);
+    for (const fp of (facturasProvenientes || [])) {
+      if (Number(fp.importe_pagado) > 0.004) {
+        await sb.from('fz_proveedores').update({ origen_poliza_id: null }).eq('id', fp.id);
+        toast(`La factura de ${fp.proveedor} ya tiene pagos aplicados — se conservó, solo se desvinculó de esta póliza.`);
+      } else {
+        await sb.from('fz_adjuntos').delete().eq('tabla', 'fz_proveedores').eq('registro_id', fp.id);
+        await sb.from('fz_proveedores').delete().eq('id', fp.id);
+      }
+    }
+
     await sb.from('fz_polizas').delete().eq('id', p.id);
     for (const facturaId of [...new Set(facturasVinculadas)]) await sincronizarPagoDesdePolizas(businessId, facturaId);
     for (const facturaId of [...new Set(facturasClienteVinculadas)]) await sincronizarCobroDesdePolizas(businessId, facturaId);
@@ -7725,7 +7740,7 @@ async function guardarBorradorPoliza() {
       const nombreProv = cat ? (cat.razon_social ? `${cat.razon_social}${cat.nombre_comercial ? ' — ' + cat.nombre_comercial : ''}` : (cat.nombre_comercial || cat.nombre)) : 'Proveedor';
       const { data: nuevaFactura, error: errFact } = await sb.from('fz_proveedores').insert({
         business_id: businessId, proveedor_id: l.proveedor_catalogo_id, proveedor: nombreProv,
-        fecha: borrador.poliza.fecha, importe: montoProvision, estatus: 'Pendiente', factura: null,
+        fecha: borrador.poliza.fecha, importe: montoProvision, estatus: 'Pendiente', factura: null, origen_poliza_id: polizaId,
       }).select().single();
       if (errFact) { toast('Error creando la provisión en Proveedores: ' + errFact.message, 'error'); continue; }
       l.cuenta_tipo = 'proveedor';
