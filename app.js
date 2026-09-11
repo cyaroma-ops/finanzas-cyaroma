@@ -4382,6 +4382,7 @@ async function getTransaccionesProveedor(businessId, facturas) {
   (lineasPago || []).forEach(l => {
     const p = polizaMap[l.poliza_id];
     if (!p) return;
+    if (!(Number(l.cargo) > 0.004)) return; // sin cargo real no es un pago (ej. la línea de abono que originó la provisión)
     transacciones.push({
       fecha: p.fecha, tipo: 'Pago — Póliza de diario', numero: `#${p.numero ?? ''}`, monto: -(Number(l.cargo) || 0),
       origen: { tipo: 'poliza', id: p.id, fecha: p.fecha },
@@ -7729,6 +7730,15 @@ async function guardarBorradorPoliza() {
       if (errFact) { toast('Error creando la provisión en Proveedores: ' + errFact.message, 'error'); continue; }
       l.cuenta_tipo = 'proveedor';
       l.proveedor_factura_id = nuevaFactura.id;
+      // La clasificación contable ya quedó registrada en las otras líneas de esta misma póliza
+      // (ej. el cargo a Comisiones Bancarias) — se copian aquí para que la factura no aparezca
+      // como "pendiente de desglosar" cuando en realidad ya está contabilizada.
+      const desgloseHeredado = borrador.lineas
+        .filter(otra => otra.cuenta_tipo === 'subcuenta' && otra.subcuenta_id && ((Number(otra.cargo)||0) > 0.004 || (Number(otra.abono)||0) > 0.004))
+        .map(otra => ({ subcuenta_id: otra.subcuenta_id, monto: (Number(otra.cargo)||0) || (Number(otra.abono)||0), descripcion: otra.descripcion || null }));
+      if (desgloseHeredado.length) {
+        await sb.from('fz_proveedores').update({ desglose: desgloseHeredado }).eq('id', nuevaFactura.id);
+      }
       registrarAuditoria(businessId, 'crear', 'Proveedores', `${nombreProv} · provisión desde Póliza de Diario · ${fmt(montoProvision)}`);
     }
   }
