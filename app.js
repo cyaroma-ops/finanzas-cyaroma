@@ -641,6 +641,7 @@ const SECTION_META = {
   bancos: { title: 'Bancos', sub: '', showMonth: true, needsBiz: true },
   proveedores: { title: 'Proveedores', sub: '', showMonth: false, needsBiz: true },
   clientes: { title: 'Clientes', sub: '', showMonth: false, needsBiz: true },
+  activosfijos: { title: 'Activos Fijos', sub: '', showMonth: false, needsBiz: true },
   pl: { title: 'Estado de Resultados', sub: '', showMonth: true, needsBiz: true },
   flujo: { title: 'Flujo de Efectivo', sub: '', showMonth: false, needsBiz: true },
   polizas: { title: 'Pólizas de Diario', sub: '', showMonth: false, needsBiz: true },
@@ -652,7 +653,7 @@ const SECTION_META = {
 };
 // Estas viven "dentro" de Configuración: ya no tienen su propio ítem en el menú principal,
 // pero conservan su sección y su función de render tal cual, solo cambia cómo se llega ahí.
-const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios'];
+const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos'];
 function marcarNavActivo(seccion) {
   document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
   const seccionNav = SECCIONES_EN_CONFIGURACION.includes(seccion) ? 'configuracion' : seccion;
@@ -744,6 +745,7 @@ async function renderCurrentSection() {
   if (s === 'bancos') return renderBancos();
   if (s === 'proveedores') return renderProveedores();
   if (s === 'clientes') return renderClientes();
+  if (s === 'activosfijos') return renderActivosFijos();
   if (s === 'pl') return renderPL();
   if (s === 'flujo') return renderFlujo();
   if (s === 'polizas') return renderPolizas();
@@ -1707,6 +1709,221 @@ function tarjetaConfigHtml(id, titulo, descripcion) {
     <p style="font-size:12.5px;color:var(--muted);margin-top:6px;">${descripcion}</p>
   </div>`;
 }
+/* ---------- Activos Fijos y Depreciación ---------- */
+function depreciacionMensualDe(activo) {
+  const base = (Number(activo.costo_adquisicion)||0) - (Number(activo.valor_rescate)||0);
+  return Math.max(0, base * (Number(activo.porcentaje_anual)||0) / 100 / 12);
+}
+async function acumuladoDe(activoId) {
+  const { data } = await sb.from('fz_depreciaciones_generadas').select('monto').eq('activo_fijo_id', activoId);
+  return (data||[]).reduce((s,d)=>s+(Number(d.monto)||0),0);
+}
+
+const STATE_activosDepreciacionRevisada = new Set();
+async function renderActivosFijos() {
+  const el = document.getElementById('sec-activosfijos');
+  const b = biz();
+  if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
+  el.innerHTML = '';
+  agregarBotonVolverConfig(el);
+
+  if (!STATE_activosDepreciacionRevisada.has(b.id)) {
+    STATE_activosDepreciacionRevisada.add(b.id);
+    const generadas = await generarDepreciacionesSiCorresponde(b.id);
+    if (generadas) toast(`${generadas} depreciación(es) mensual(es) generada(s) automáticamente.`);
+  }
+
+  const { data: activos } = await sb.from('fz_activos_fijos').select('*').eq('business_id', b.id).order('fecha_adquisicion');
+  const conAcumulado = await Promise.all((activos||[]).map(async a => ({ ...a, acumulado: await acumuladoDe(a.id) })));
+
+  const contenido = document.createElement('div');
+  contenido.innerHTML = `
+    <div class="card">
+      <div class="card-head">
+        <h3>Activos Fijos</h3>
+        <button class="btn btn-gold btn-sm" id="addActivoFijoBtn">+ Agregar activo</button>
+      </div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">La depreciación mensual se genera sola (línea recta) cada vez que entras a esta pantalla, si ya tocaba — se registra como una Póliza de Diario automática.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Nombre</th><th>Categoría</th><th>Costo</th><th>% anual</th><th>Mensual</th><th>Acumulada</th><th>Valor en libros</th><th>Estatus</th><th></th></tr></thead>
+          <tbody>
+            ${conAcumulado.length ? conAcumulado.map(a => {
+              const mensual = depreciacionMensualDe(a);
+              const valorLibros = (Number(a.costo_adquisicion)||0) - a.acumulado;
+              return `<tr>
+                <td>${a.nombre}</td>
+                <td style="color:var(--muted);font-size:12px;">${a.categoria || '—'}</td>
+                <td class="num">${fmt(a.costo_adquisicion)}</td>
+                <td class="num">${fmtNum(a.porcentaje_anual)}%</td>
+                <td class="num">${fmt(mensual)}</td>
+                <td class="num">${fmt(a.acumulado)}</td>
+                <td class="num" style="font-weight:700;">${fmt(Math.max(0,valorLibros))}</td>
+                <td>${a.activo ? '<span class="badge pag">Activo</span>' : '<span style="color:var(--muted);font-size:12px;">Dado de baja</span>'}</td>
+                <td style="position:relative;">
+                  <button class="btn btn-ghost btn-sm af-menu-btn" data-id="${a.id}" style="padding:5px 12px;">⋯</button>
+                  <div class="af-menu-dropdown" data-menu="${a.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:130px;overflow:hidden;">
+                    <button class="af-editar" data-id="${a.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Editar</button>
+                    <button class="af-eliminar" data-id="${a.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>
+                  </div>
+                </td>
+              </tr>`;
+            }).join('') : `<tr><td colspan="9" class="empty">Aún no tienes activos fijos registrados. Usa "+ Agregar activo".</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  el.appendChild(contenido);
+
+  document.getElementById('addActivoFijoBtn').addEventListener('click', () => openModalActivoFijo(null, b.id));
+  contenido.querySelectorAll('.af-menu-btn').forEach(btn => btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const dropdown = contenido.querySelector(`.af-menu-dropdown[data-menu="${btn.dataset.id}"]`);
+    const abierto = dropdown.style.display === 'block';
+    contenido.querySelectorAll('.af-menu-dropdown').forEach(d => d.style.display = 'none');
+    dropdown.style.display = abierto ? 'none' : 'block';
+  }));
+  document.addEventListener('click', () => contenido.querySelectorAll('.af-menu-dropdown').forEach(d => d.style.display = 'none'));
+  contenido.querySelectorAll('.af-editar').forEach(btn => btn.addEventListener('click', async () => {
+    const { data: a } = await sb.from('fz_activos_fijos').select('*').eq('id', btn.dataset.id).single();
+    if (a) openModalActivoFijo(a, b.id);
+  }));
+  contenido.querySelectorAll('.af-eliminar').forEach(btn => btn.addEventListener('click', async () => {
+    const acumulado = await acumuladoDe(btn.dataset.id);
+    if (acumulado > 0.004) { toast('Este activo ya tiene depreciación generada — mejor "Dar de baja" en vez de eliminarlo, para no perder ese historial.', 'error'); return; }
+    if (!confirm('¿Eliminar este activo fijo? Esta acción no se puede deshacer.')) return;
+    const { error } = await sb.from('fz_activos_fijos').delete().eq('id', btn.dataset.id);
+    if (error) { toast('No se pudo eliminar: ' + error.message, 'error'); return; }
+    registrarAuditoria(b.id, 'eliminar', 'Activos Fijos', `Activo eliminado`);
+    renderActivosFijos();
+  }));
+}
+
+let STATE_activoFijoEditandoId = null;
+async function openModalActivoFijo(activo, businessId) {
+  STATE_activoFijoEditandoId = activo ? activo.id : null;
+  document.getElementById('modalActivoFijoTitulo').textContent = activo ? 'Editar activo fijo' : 'Nuevo activo fijo';
+  document.getElementById('afNombre').value = activo?.nombre || '';
+  const selCat = document.getElementById('afCategoria');
+  selCat.innerHTML = `<option value="">— sin categoría —</option>` + CATEGORIAS_ACTIVO_LISR.map(c => `<option value="${c.nombre}" data-pct="${c.pct ?? ''}" ${activo?.categoria===c.nombre?'selected':''}>${c.nombre}${c.pct!==null?' — '+c.pct+'% anual':''}</option>`).join('');
+  document.getElementById('afFechaAdquisicion').value = activo?.fecha_adquisicion || todayStr();
+  document.getElementById('afCosto').value = fmtInputVal(activo?.costo_adquisicion || 0);
+  document.getElementById('afValorRescate').value = fmtInputVal(activo?.valor_rescate || 0);
+  document.getElementById('afPorcentaje').value = activo?.porcentaje_anual ?? 10;
+
+  const [subcuentas, mayores] = await Promise.all([loadSubcuentas(businessId), loadCuentasMayor(businessId)]);
+  document.getElementById('afCuentaGasto').innerHTML = opcionesSubcuentaHtml(subcuentas, mayores, activo?.cuenta_gasto_id || null) || `<option value="">— crea una subcuenta de Gasto primero —</option>`;
+  document.getElementById('afCuentaDepreciacion').innerHTML = opcionesSubcuentaHtml(subcuentas, mayores, activo?.cuenta_depreciacion_id || null) || `<option value="">— crea una subcuenta primero —</option>`;
+
+  document.getElementById('darDeBajaActivoFijo').style.display = (activo && activo.activo) ? '' : 'none';
+
+  const actualizarCalculo = () => {
+    const costo = leerMonto(document.getElementById('afCosto').value) || 0;
+    const rescate = leerMonto(document.getElementById('afValorRescate').value) || 0;
+    const pct = leerMonto(document.getElementById('afPorcentaje').value) || 0;
+    const mensual = Math.max(0, (costo - rescate) * pct / 100 / 12);
+    document.getElementById('afMensualCalc').value = fmt(mensual);
+  };
+  document.getElementById('afCosto').oninput = actualizarCalculo;
+  document.getElementById('afValorRescate').oninput = actualizarCalculo;
+  document.getElementById('afPorcentaje').oninput = actualizarCalculo;
+  selCat.onchange = () => {
+    const opt = selCat.selectedOptions[0];
+    if (opt && opt.dataset.pct) { document.getElementById('afPorcentaje').value = opt.dataset.pct; }
+    actualizarCalculo();
+  };
+  actualizarCalculo();
+
+  const wrap = document.getElementById('afResumenWrap');
+  if (activo) {
+    const acumulado = await acumuladoDe(activo.id);
+    const valorLibros = (Number(activo.costo_adquisicion)||0) - acumulado;
+    wrap.style.display = '';
+    wrap.innerHTML = `<div style="display:flex;justify-content:space-between;"><span>Depreciación acumulada a la fecha</span><strong>${fmt(acumulado)}</strong></div>
+      <div style="display:flex;justify-content:space-between;margin-top:4px;"><span>Valor en libros</span><strong>${fmt(Math.max(0,valorLibros))}</strong></div>`;
+  } else {
+    wrap.style.display = 'none';
+  }
+
+  document.getElementById('modalActivoFijo').classList.add('show');
+}
+document.getElementById('closeActivoFijo').addEventListener('click', () => {
+  document.getElementById('modalActivoFijo').classList.remove('show');
+});
+document.getElementById('saveActivoFijo').addEventListener('click', async () => {
+  const b = biz();
+  if (!b) return;
+  const nombre = document.getElementById('afNombre').value.trim();
+  if (!nombre) { toast('Escribe el nombre del activo.', 'error'); return; }
+  const payload = {
+    business_id: b.id, nombre,
+    categoria: document.getElementById('afCategoria').value || null,
+    fecha_adquisicion: document.getElementById('afFechaAdquisicion').value || todayStr(),
+    costo_adquisicion: leerMonto(document.getElementById('afCosto').value) || 0,
+    valor_rescate: leerMonto(document.getElementById('afValorRescate').value) || 0,
+    porcentaje_anual: leerMonto(document.getElementById('afPorcentaje').value) || 0,
+    cuenta_gasto_id: document.getElementById('afCuentaGasto').value || null,
+    cuenta_depreciacion_id: document.getElementById('afCuentaDepreciacion').value || null,
+  };
+  let error;
+  if (STATE_activoFijoEditandoId) {
+    ({ error } = await sb.from('fz_activos_fijos').update(payload).eq('id', STATE_activoFijoEditandoId));
+  } else {
+    ({ error } = await sb.from('fz_activos_fijos').insert(payload));
+  }
+  if (error) { toast('Error: ' + error.message, 'error'); return; }
+  registrarAuditoria(b.id, STATE_activoFijoEditandoId ? 'editar' : 'crear', 'Activos Fijos', nombre);
+  document.getElementById('modalActivoFijo').classList.remove('show');
+  STATE_activoFijoEditandoId = null;
+  renderActivosFijos();
+});
+document.getElementById('darDeBajaActivoFijo').addEventListener('click', async () => {
+  const b = biz();
+  if (!b || !STATE_activoFijoEditandoId) return;
+  if (!confirm('¿Dar de baja este activo? Dejará de generar depreciación a partir de hoy, pero conserva su historial.')) return;
+  await sb.from('fz_activos_fijos').update({ activo: false, fecha_baja: todayStr() }).eq('id', STATE_activoFijoEditandoId);
+  registrarAuditoria(b.id, 'editar', 'Activos Fijos', `Activo dado de baja`);
+  document.getElementById('modalActivoFijo').classList.remove('show');
+  STATE_activoFijoEditandoId = null;
+  renderActivosFijos();
+});
+
+// Genera la póliza de depreciación del mes en curso para cada activo activo que aún no la
+// tenga — línea recta, mismo patrón que las facturas recurrentes de Clientes.
+async function generarDepreciacionesSiCorresponde(businessId) {
+  const hoy = todayStr();
+  const periodoActual = hoy.slice(0, 7);
+  const { data: activos } = await sb.from('fz_activos_fijos').select('*').eq('business_id', businessId).eq('activo', true);
+  if (!activos || !activos.length) return 0;
+  let generadas = 0;
+  for (const a of activos) {
+    if (a.fecha_adquisicion > hoy) continue; // aún no se adquiere
+    if (!a.cuenta_gasto_id || !a.cuenta_depreciacion_id) continue; // faltan cuentas, no se puede contabilizar
+    const { data: yaExiste } = await sb.from('fz_depreciaciones_generadas').select('id').eq('activo_fijo_id', a.id).eq('periodo', periodoActual).maybeSingle();
+    if (yaExiste) continue;
+    const acumuladoPrevio = await acumuladoDe(a.id);
+    const base = (Number(a.costo_adquisicion)||0) - (Number(a.valor_rescate)||0);
+    if (acumuladoPrevio >= base - 0.5) continue; // ya se depreció por completo
+    const mensual = Math.min(depreciacionMensualDe(a), base - acumuladoPrevio);
+    if (mensual <= 0.004) continue;
+    if (await periodoEstaCerrado(businessId, hoy)) continue; // no generar en un mes cerrado
+
+    const { data: nuevaPoliza, error: errPoliza } = await sb.from('fz_polizas').insert({
+      business_id: businessId, fecha: hoy, concepto: `Depreciación mensual — ${a.nombre}`,
+    }).select().single();
+    if (errPoliza) continue;
+    await sb.from('fz_polizas_lineas').insert([
+      { poliza_id: nuevaPoliza.id, business_id: businessId, cuenta_tipo: 'subcuenta', subcuenta_id: a.cuenta_gasto_id, cargo: mensual, abono: 0, descripcion: `Depreciación ${a.nombre}`, orden: 0 },
+      { poliza_id: nuevaPoliza.id, business_id: businessId, cuenta_tipo: 'subcuenta', subcuenta_id: a.cuenta_depreciacion_id, cargo: 0, abono: mensual, descripcion: `Depreciación acumulada ${a.nombre}`, orden: 1 },
+    ]);
+    await sb.from('fz_depreciaciones_generadas').insert({ activo_fijo_id: a.id, business_id: businessId, periodo: periodoActual, monto: mensual, poliza_id: nuevaPoliza.id });
+    registrarAuditoria(businessId, 'crear', 'Activos Fijos', `Depreciación de ${periodoActual} generada para ${a.nombre} — ${fmt(mensual)}`);
+    generadas++;
+  }
+  return generadas;
+}
+
 async function abrirModalCierrePeriodo(businessId) {
   document.getElementById('cierrePeriodoMes').value = STATE.currentMonth || todayStr().slice(0,7);
   await renderListaCierres(businessId);
@@ -1755,6 +1972,7 @@ async function renderConfiguracion() {
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgNegocios', 'Negocios (todos)', 'Alta, edición y respaldo de cada negocio del grupo.') : ''}
       ${tarjetaConfigHtml('cfgAuditoria', 'Auditoría', b ? `Quién creó, editó o eliminó cada registro en ${b.name}.` : 'Selecciona un negocio para ver su auditoría.')}
       ${tarjetaConfigHtml('cfgCierre', 'Cierre de periodo', b ? `Bloquea la captura de meses ya cerrados en ${b.name}.` : 'Selecciona un negocio para gestionar sus cierres.')}
+      ${tarjetaConfigHtml('cfgActivosFijos', 'Activos Fijos', b ? `Equipo, mobiliario y su depreciación mensual automática en ${b.name}.` : 'Selecciona un negocio para gestionar sus activos.')}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgUsuarios', 'Usuarios autorizados', 'Quién puede entrar a Finanzas y a qué negocios.') : ''}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgMfa', 'Autenticación de dos pasos', 'Protege tu cuenta con un código adicional al iniciar sesión.') : ''}
     </div>
@@ -1765,6 +1983,7 @@ async function renderConfiguracion() {
   ir('cfgAuditoria', 'auditoria');
   const cierreBtn = document.getElementById('cfgCierre');
   if (cierreBtn) cierreBtn.addEventListener('click', () => { if (b) abrirModalCierrePeriodo(b.id); else toast('Selecciona un negocio primero.', 'error'); });
+  ir('cfgActivosFijos', 'activosfijos');
   const usuariosBtn = document.getElementById('cfgUsuarios');
   if (usuariosBtn) usuariosBtn.addEventListener('click', openUsuariosModal);
   const mfaBtn = document.getElementById('cfgMfa');
@@ -4607,6 +4826,20 @@ const TIPOS_SOCIEDAD = [
   'S.A.P.I. de C.V. (Sociedad Anónima Promotora de Inversión)',
   'Cooperativa',
   'Otro',
+];
+
+// Porcentajes máximos anuales de depreciación según el Art. 34 de la Ley del ISR — son una
+// sugerencia de partida, siempre editable por si el caso particular es distinto.
+const CATEGORIAS_ACTIVO_LISR = [
+  { nombre: 'Construcciones (edificios)', pct: 5 },
+  { nombre: 'Mobiliario y equipo de oficina', pct: 10 },
+  { nombre: 'Equipo de cómputo electrónico', pct: 30 },
+  { nombre: 'Automóviles, camiones y equipo de transporte', pct: 25 },
+  { nombre: 'Maquinaria y equipo (uso general / restaurantes)', pct: 10 },
+  { nombre: 'Equipo de comunicación (teléfonos, radios)', pct: 10 },
+  { nombre: 'Dados, troqueles, moldes, matrices y herramental', pct: 35 },
+  { nombre: 'Embarcaciones', pct: 6 },
+  { nombre: 'Otro (definir % manualmente)', pct: null },
 ];
 
 async function loadClientes(businessId) {

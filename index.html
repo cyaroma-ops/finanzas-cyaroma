@@ -558,6 +558,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <section class="section" id="sec-bancos"></section>
         <section class="section" id="sec-proveedores"></section>
         <section class="section" id="sec-clientes"></section>
+        <section class="section" id="sec-activosfijos"></section>
         <section class="section" id="sec-pl"></section>
         <section class="section" id="sec-flujo"></section>
         <section class="section" id="sec-polizas"></section>
@@ -1137,6 +1138,61 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
       <button class="btn btn-ghost" id="closeFacturaProveedor">Cancelar</button>
       <button class="btn btn-ghost" id="deleteFacturaProveedor" style="display:none;color:var(--red);">Eliminar</button>
       <button class="btn btn-gold" id="saveFacturaProveedor">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Activo Fijo -->
+<div class="modal-bg" id="modalActivoFijo">
+  <div class="modal" style="width:min(680px,96vw);max-height:90vh;overflow-y:auto;">
+    <h3 id="modalActivoFijoTitulo">Nuevo activo fijo</h3>
+    <div class="field">
+      <label>Nombre / descripción</label>
+      <input type="text" id="afNombre" placeholder="Ej. Refrigerador comercial, Laptop administración...">
+    </div>
+    <div class="field">
+      <label>Categoría (sugiere el % anual según la Ley del ISR — editable)</label>
+      <select id="afCategoria"></select>
+    </div>
+    <div class="grid-3">
+      <div class="field">
+        <label>Fecha de adquisición</label>
+        <input type="date" id="afFechaAdquisicion">
+      </div>
+      <div class="field">
+        <label>Costo de adquisición</label>
+        <input type="text" inputmode="decimal" id="afCosto" placeholder="0.00">
+      </div>
+      <div class="field">
+        <label>Valor de rescate (opcional)</label>
+        <input type="text" inputmode="decimal" id="afValorRescate" placeholder="0.00">
+      </div>
+    </div>
+    <div class="grid-2">
+      <div class="field">
+        <label>% de depreciación anual</label>
+        <input type="text" inputmode="decimal" id="afPorcentaje" placeholder="10">
+      </div>
+      <div class="field">
+        <label>Depreciación mensual (calculada)</label>
+        <input type="text" id="afMensualCalc" readonly style="background:#f2f4f8;color:var(--muted);">
+      </div>
+    </div>
+    <div class="grid-2">
+      <div class="field">
+        <label>Subcuenta de Gasto (Estado de Resultados)</label>
+        <select id="afCuentaGasto"></select>
+      </div>
+      <div class="field">
+        <label>Subcuenta de Depreciación Acumulada (Balance)</label>
+        <select id="afCuentaDepreciacion"></select>
+      </div>
+    </div>
+    <div id="afResumenWrap" style="display:none;background:#f7f9fc;border-radius:8px;padding:12px 14px;margin:10px 0;font-size:13px;"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="closeActivoFijo">Cancelar</button>
+      <button class="btn btn-ghost" id="darDeBajaActivoFijo" style="display:none;color:var(--red);">Dar de baja</button>
+      <button class="btn btn-gold" id="saveActivoFijo">Guardar</button>
     </div>
   </div>
 </div>
