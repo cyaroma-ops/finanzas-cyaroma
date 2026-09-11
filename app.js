@@ -5632,7 +5632,7 @@ async function descargarOrdenPDF(ordenId, businessId) {
 }
 
 async function eliminarFacturaProveedorConCascada(facturaId, businessId) {
-  const { data: info } = await sb.from('fz_proveedores').select('proveedor,factura,importe,fecha,origen_poliza_id').eq('id', facturaId).single();
+  const { data: info } = await sb.from('fz_proveedores').select('proveedor,factura,importe,fecha,origen_poliza_id,activo_fijo_id').eq('id', facturaId).single();
   if (!info) return { ok: false };
   if (await bloqueadoPorCierre(businessId, info.fecha)) return { ok: false };
   if (info.origen_poliza_id) {
@@ -5644,8 +5644,16 @@ async function eliminarFacturaProveedorConCascada(facturaId, businessId) {
     );
     return { ok: false };
   }
+  if (info.activo_fijo_id) {
+    const acumulado = await acumuladoDe(info.activo_fijo_id);
+    if (acumulado > 0.004) {
+      toast('Esta factura generó un Activo Fijo que ya tiene depreciación registrada — para no perder ese historial, dalo de baja desde Configuración → Activos Fijos en vez de eliminar la factura.', 'error');
+      return { ok: false };
+    }
+  }
   if (!confirm('¿Eliminar esta factura? Esta acción no se puede deshacer.')) return { ok: false, cancelado: true };
 
+  if (info.activo_fijo_id) await sb.from('fz_activos_fijos').delete().eq('id', info.activo_fijo_id);
   await sb.from('fz_adjuntos').delete().eq('tabla', 'fz_proveedores').eq('registro_id', facturaId);
   const { error } = await sb.from('fz_proveedores').delete().eq('id', facturaId);
   if (error) { toast('No se pudo eliminar: ' + error.message, 'error'); return { ok: false }; }
@@ -6369,6 +6377,30 @@ async function openModalFacturaProveedor(factura, businessId, catalogo, opciones
   limpiarFormFpDesglose();
   renderFpDesgloseList();
 
+  // Sección de Activo Fijo dentro de la misma factura
+  STATE_fpActivoFijoExistente = null;
+  const selAfCat = document.getElementById('fpAfCategoria');
+  selAfCat.innerHTML = `<option value="">— sin categoría —</option>` + CATEGORIAS_ACTIVO_LISR.map(c => `<option value="${c.nombre}" data-pct="${c.pct ?? ''}">${c.nombre}${c.pct!==null?' — '+c.pct+'% anual':''}</option>`).join('');
+  document.getElementById('fpAfCuentaGasto').innerHTML = opcionesSubcuentaHtml(subcuentas, mayores, null) || `<option value="">— crea una subcuenta primero —</option>`;
+  document.getElementById('fpAfCuentaDepreciacion').innerHTML = opcionesSubcuentaHtml(subcuentas, mayores, null) || `<option value="">— crea una subcuenta primero —</option>`;
+  document.getElementById('fpAfNombre').value = '';
+  document.getElementById('fpAfPorcentaje').value = 10;
+  document.getElementById('fpEsActivoFijo').checked = false;
+  document.getElementById('fpActivoFijoCampos').style.display = 'none';
+  if (factura?.activo_fijo_id) {
+    const { data: af } = await sb.from('fz_activos_fijos').select('*').eq('id', factura.activo_fijo_id).single();
+    if (af) {
+      STATE_fpActivoFijoExistente = af;
+      document.getElementById('fpEsActivoFijo').checked = true;
+      document.getElementById('fpActivoFijoCampos').style.display = '';
+      document.getElementById('fpAfNombre').value = af.nombre || '';
+      selAfCat.value = af.categoria || '';
+      document.getElementById('fpAfPorcentaje').value = af.porcentaje_anual ?? 10;
+      document.getElementById('fpAfCuentaGasto').value = af.cuenta_gasto_id || '';
+      document.getElementById('fpAfCuentaDepreciacion').value = af.cuenta_depreciacion_id || '';
+    }
+  }
+
   if (factura) {
     const conteo = await contarAdjuntosPorRegistro('fz_proveedores', [factura.id]);
     document.getElementById('fpAdjuntoCell').innerHTML = adjuntosCellHtml(conteo[factura.id], factura.id);
@@ -6387,6 +6419,18 @@ document.getElementById('closeFacturaProveedor').addEventListener('click', () =>
 let STATE_fpDesgloseLineas = [];
 let STATE_fpDesgloseEditandoIdx = null;
 let STATE_fpDesgloseCatalogos = { subcuentas: [], mayores: [] };
+let STATE_fpActivoFijoExistente = null;
+document.getElementById('fpEsActivoFijo').addEventListener('change', (e) => {
+  document.getElementById('fpActivoFijoCampos').style.display = e.target.checked ? '' : 'none';
+  if (e.target.checked && !document.getElementById('fpAfNombre').value) {
+    const nombreFactura = document.querySelector('#fpProveedor').selectedOptions[0]?.textContent || '';
+    document.getElementById('fpAfNombre').value = nombreFactura;
+  }
+});
+document.getElementById('fpAfCategoria').addEventListener('change', (e) => {
+  const opt = e.target.selectedOptions[0];
+  if (opt && opt.dataset.pct) document.getElementById('fpAfPorcentaje').value = opt.dataset.pct;
+});
 function nombreSubcuentaFp(id) {
   const s = STATE_fpDesgloseCatalogos.subcuentas.find(x => x.id === id);
   return s ? s.nombre : '(cuenta eliminada)';
@@ -6509,6 +6553,38 @@ document.getElementById('saveFacturaProveedor').addEventListener('click', async 
       if (subido) await sb.from('fz_adjuntos').insert({ business_id: b.id, tabla: 'fz_proveedores', registro_id: facturaId, archivo_path: subido.path, archivo_nombre: subido.nombre });
     }
     STATE_provArchivosPendientes = [];
+  }
+
+  // Activo Fijo vinculado a esta factura
+  const esActivoFijo = document.getElementById('fpEsActivoFijo').checked;
+  if (esActivoFijo) {
+    const afPayload = {
+      business_id: b.id,
+      nombre: document.getElementById('fpAfNombre').value.trim() || payload.proveedor,
+      categoria: document.getElementById('fpAfCategoria').value || null,
+      fecha_adquisicion: payload.fecha,
+      costo_adquisicion: payload.importe,
+      porcentaje_anual: leerMonto(document.getElementById('fpAfPorcentaje').value) || 0,
+      cuenta_gasto_id: document.getElementById('fpAfCuentaGasto').value || null,
+      cuenta_depreciacion_id: document.getElementById('fpAfCuentaDepreciacion').value || null,
+    };
+    if (STATE_fpActivoFijoExistente) {
+      await sb.from('fz_activos_fijos').update(afPayload).eq('id', STATE_fpActivoFijoExistente.id);
+    } else {
+      const { data: nuevoAf, error: errAf } = await sb.from('fz_activos_fijos').insert(afPayload).select().single();
+      if (!errAf && nuevoAf) {
+        await sb.from('fz_proveedores').update({ activo_fijo_id: nuevoAf.id }).eq('id', facturaId);
+        registrarAuditoria(b.id, 'crear', 'Activos Fijos', `${afPayload.nombre} — generado desde factura de proveedor`);
+      }
+    }
+  } else if (STATE_fpActivoFijoExistente) {
+    // Se desmarcó: si ya tiene depreciación generada, se conserva (no se pierde el historial),
+    // solo se desvincula de esta factura.
+    const acumulado = await acumuladoDe(STATE_fpActivoFijoExistente.id);
+    if (acumulado <= 0.004) {
+      await sb.from('fz_activos_fijos').delete().eq('id', STATE_fpActivoFijoExistente.id);
+    }
+    await sb.from('fz_proveedores').update({ activo_fijo_id: null }).eq('id', facturaId);
   }
 
   registrarAuditoria(b.id, idEditando ? 'editar' : 'crear', 'Proveedores', `${payload.proveedor} · factura ${payload.factura||'s/f'} · ${fmt(payload.importe)}`);

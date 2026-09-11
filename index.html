@@ -1130,6 +1130,38 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
       <button class="btn btn-ghost btn-sm" id="fpAgregarDesgloseLinea">+ Agregar línea</button>
       <button class="btn btn-ghost btn-sm" id="fpCancelarEdicionDesglose" style="display:none;">Cancelar edición</button>
     </div>
+    <div style="border:1.5px solid var(--line);border-radius:10px;padding:14px;margin-top:12px;">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13.5px;font-weight:600;color:var(--navy-1);">
+        <input type="checkbox" id="fpEsActivoFijo"> ¿Es un activo fijo? (equipo, mobiliario, vehículos... se registra en Activos Fijos con depreciación automática)
+      </label>
+      <div id="fpActivoFijoCampos" style="display:none;margin-top:12px;">
+        <div class="field">
+          <label>Nombre del activo</label>
+          <input type="text" id="fpAfNombre" placeholder="Ej. Refrigerador comercial">
+        </div>
+        <div class="grid-2">
+          <div class="field">
+            <label>Categoría (sugiere el % anual según la Ley del ISR)</label>
+            <select id="fpAfCategoria"></select>
+          </div>
+          <div class="field">
+            <label>% de depreciación anual</label>
+            <input type="text" inputmode="decimal" id="fpAfPorcentaje" placeholder="10">
+          </div>
+        </div>
+        <div class="grid-2">
+          <div class="field">
+            <label>Subcuenta de Gasto (depreciación)</label>
+            <select id="fpAfCuentaGasto"></select>
+          </div>
+          <div class="field">
+            <label>Subcuenta de Depreciación Acumulada</label>
+            <select id="fpAfCuentaDepreciacion"></select>
+          </div>
+        </div>
+        <p style="font-size:11px;color:var(--muted);">El costo de adquisición y la fecha se toman del importe y la fecha de esta misma factura.</p>
+      </div>
+    </div>
     <div class="field" id="fpAdjuntoWrap">
       <label>Adjunto</label>
       <div id="fpAdjuntoCell"></div>
