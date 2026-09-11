@@ -1044,6 +1044,10 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
           <select id="cobroCuenta"></select>
         </div>
       </div>
+      <div class="field" id="cobroTcRealWrap" style="display:none;max-width:260px;margin-bottom:8px;">
+        <label>Tipo de cambio real de hoy (para calcular ganancia/pérdida cambiaria)</label>
+        <input type="text" inputmode="decimal" id="cobroTcReal" placeholder="Ej. 18.50">
+      </div>
       <button class="btn btn-gold btn-sm" id="registrarCobroBtn">+ Registrar cobro</button>
     </div>
 
@@ -1302,6 +1306,10 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <label>Cuenta destino</label>
         <select id="elegirFacturaCobroCuenta"></select>
       </div>
+    </div>
+    <div class="field" id="elegirFacturaCobroTcWrap" style="display:none;max-width:280px;">
+      <label>Tipo de cambio real de hoy (para facturas en USD)</label>
+      <input type="text" inputmode="decimal" id="elegirFacturaCobroTc" placeholder="Ej. 18.50">
     </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="closeElegirFacturaCobro">Cerrar</button>

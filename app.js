@@ -3171,7 +3171,8 @@ async function aplicarCobroFacturas(idsSeleccionados, montoDisponibleInicial, fe
     idsAfectados.push(f.id);
     disponible -= aplicar;
     if (origenInfo.origen_tabla && origenInfo.origen_id) {
-      await sb.from('fz_cobros_aplicados').insert({ business_id: businessId, factura_id: f.id, monto: aplicar, origen_tabla: origenInfo.origen_tabla, origen_id: origenInfo.origen_id, fecha });
+      const tcReal = f.moneda === 'USD' ? (origenInfo.tipo_cambio_real || f.tipo_cambio) : null;
+      await sb.from('fz_cobros_aplicados').insert({ business_id: businessId, factura_id: f.id, monto: aplicar, origen_tabla: origenInfo.origen_tabla, origen_id: origenInfo.origen_id, fecha, tipo_cambio: tcReal });
     }
   }
   return { idsAfectados, sobrante: disponible };
@@ -5339,6 +5340,8 @@ async function abrirElegirFacturaCobro(businessId) {
     + (monedasQ.data||[]).map(m => `<option value="efectivo:${m.id}">Efectivo — ${m.nombre}</option>`).join('');
   document.getElementById('elegirFacturaCobroFecha').value = todayStr();
   document.getElementById('elegirFacturaCobroMonto').value = '';
+  document.getElementById('elegirFacturaCobroTc').value = '';
+  document.getElementById('elegirFacturaCobroTcWrap').style.display = 'none';
 
   const box = document.getElementById('elegirFacturaCobroList');
   const buscar = document.getElementById('elegirFacturaCobroBuscar');
@@ -5358,6 +5361,7 @@ async function abrirElegirFacturaCobro(businessId) {
       <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Total seleccionado (${marcadas.length})</span><strong>${fmt(totalSeleccionado)}</strong></div>
       <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--muted)'};font-weight:700;"><span>${cuadra?'✓ Cuadra exacto':(diferencia>0?'Sobrará sin asignar':'Quedará pendiente/parcial')}</span><span>${cuadra?'':fmt(Math.abs(diferencia))}</span></div>
     `;
+    document.getElementById('elegirFacturaCobroTcWrap').style.display = marcadas.some(c => c.dataset.moneda === 'USD') ? '' : 'none';
   };
 
   const renderLista = () => {
@@ -5370,8 +5374,8 @@ async function abrirElegirFacturaCobro(businessId) {
         ${facturasCli.map(f => {
           const saldo = Number(f.total) - Number(f.importe_pagado||0);
           return `<label style="display:flex;align-items:center;gap:8px;padding:5px 4px;border-bottom:1px solid var(--line);font-size:13px;cursor:pointer;">
-            <input type="checkbox" class="efc-check" value="${f.id}" data-importe="${saldo}">
-            <span>${f.fecha} · Factura #${f.folio}${f.estatus==='Parcial'?' (parcial)':''} · ${fmt(saldo)}</span>
+            <input type="checkbox" class="efc-check" value="${f.id}" data-importe="${saldo}" data-moneda="${f.moneda||'MXN'}" data-tc="${f.tipo_cambio||1}">
+            <span>${f.fecha} · Factura #${f.folio}${f.estatus==='Parcial'?' (parcial)':''} · ${fmt(saldo)}${f.moneda==='USD'?' USD':''}</span>
           </label>`;
         }).join('')}
       </div>`;
@@ -5408,7 +5412,7 @@ document.getElementById('aplicarElegirFacturaCobro').addEventListener('click', a
     origen_tabla = tabla; origen_id = mov.id;
   }
 
-  const resultado = await aplicarCobroFacturas(idsSeleccionados, monto, fecha, b.id, { origen_tabla, origen_id });
+  const resultado = await aplicarCobroFacturas(idsSeleccionados, monto, fecha, b.id, { origen_tabla, origen_id, tipo_cambio_real: leerMonto(document.getElementById('elegirFacturaCobroTc').value) || null });
   if (origen_id) await sb.from(origen_tabla).update({ cliente_factura_ids: resultado.idsAfectados, cliente_factura_id: resultado.idsAfectados[0] || null }).eq('id', origen_id);
   if (resultado.idsAfectados.length) toast(`${resultado.idsAfectados.length} factura(s) actualizada(s).`);
   document.getElementById('modalElegirFacturaCobro').classList.remove('show');
@@ -5806,6 +5810,8 @@ async function openModalFactura(factura, businessId) {
     cobrosSection.style.display = '';
     document.getElementById('cobroFecha').value = todayStr();
     document.getElementById('cobroMonto').value = fmtInputVal(Math.max(0, Number(factura.total) - Number(factura.importe_pagado||0)));
+    document.getElementById('cobroTcRealWrap').style.display = factura.moneda === 'USD' ? '' : 'none';
+    document.getElementById('cobroTcReal').value = factura.moneda === 'USD' ? fmtInputVal(factura.tipo_cambio || 1) : '';
     const [cuentasBancoQ, monedasQ] = await Promise.all([
       sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
       sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
@@ -5963,7 +5969,10 @@ document.getElementById('registrarCobroBtn').addEventListener('click', async () 
     origen_tabla = tabla; origen_id = mov.id;
   }
 
-  const { error: errCobro } = await sb.from('fz_cobros_aplicados').insert({ business_id: b.id, factura_id: facturaId, monto, origen_tabla, origen_id, fecha });
+  const { error: errCobro } = await sb.from('fz_cobros_aplicados').insert({
+    business_id: b.id, factura_id: facturaId, monto, origen_tabla, origen_id, fecha,
+    tipo_cambio: factura.moneda === 'USD' ? (leerMonto(document.getElementById('cobroTcReal').value) || factura.tipo_cambio) : null,
+  });
   if (errCobro) { toast('Error: ' + errCobro.message, 'error'); return; }
 
   const nuevoPagado = Number(factura.importe_pagado||0) + monto;
@@ -6791,7 +6800,8 @@ async function computeUtilidadAcumulada(businessId, hastaYm) {
   const gClas = await computeGastosClasificados(businessId, periodo, subcuentas, mayores);
   const gCostos = await computeGastosClasificados(businessId, periodo, subcuentas, mayores, 'costo');
   const iPoliza = await computeIngresosPoliza(businessId, periodo, subcuentas, mayores);
-  const totalIngresosFinal = totalIngresosVentas + sobranteCaja + iPoliza.total;
+  const gananciaCambiaria = await computeGananciaCambiaria(businessId, periodo);
+  const totalIngresosFinal = totalIngresosVentas + sobranteCaja + iPoliza.total + gananciaCambiaria;
   const gastosTotales = gastosOperativos + gClas.totalClasificado + gClas.sinClasificar + gCostos.totalClasificado + faltanteCaja;
   return totalIngresosFinal - gastosTotales;
 }
@@ -7056,6 +7066,23 @@ async function computeGastosClasificados(businessId, periodo, subcuentas, mayore
 
   const totalClasificado = porMayor.reduce((s,m)=>s+m.subtotal,0);
   return { porMayor, sinClasificar: tipoFiltro==='gasto' ? sinClasificar : 0, totalClasificado, gastosManuales: tipoFiltro==='gasto' ? gastosManuales : [] };
+}
+
+// Ganancia/pérdida cambiaria: automática, sin póliza manual — compara el tipo de cambio de
+// cuando se facturó contra el tipo de cambio real capturado al momento de cobrar (USD).
+async function computeGananciaCambiaria(businessId, periodo) {
+  const { data: cobros } = await sb.from('fz_cobros_aplicados')
+    .select('monto,tipo_cambio,factura_id,fecha')
+    .eq('business_id', businessId).gte('fecha', periodo.start).lte('fecha', periodo.end).not('tipo_cambio', 'is', null);
+  if (!cobros || !cobros.length) return 0;
+  const facturaIds = [...new Set(cobros.map(c => c.factura_id))];
+  const { data: facturas } = await sb.from('fz_facturas_clientes').select('id,tipo_cambio').in('id', facturaIds);
+  const tcOriginalPorFactura = Object.fromEntries((facturas||[]).map(f => [f.id, Number(f.tipo_cambio)||1]));
+  return cobros.reduce((s,c) => {
+    const tcOriginal = tcOriginalPorFactura[c.factura_id] || 1;
+    const tcReal = Number(c.tipo_cambio) || tcOriginal;
+    return s + (Number(c.monto)||0) * (tcReal - tcOriginal);
+  }, 0);
 }
 
 async function computeIngresosPoliza(businessId, periodo, subcuentas, mayores) {
@@ -7382,11 +7409,12 @@ async function renderPLAnual(el, b) {
     const gClas = await computeGastosClasificados(b.id, periodo, subcuentas, mayores);
     const gCostos = await computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'costo');
     const iPoliza = await computeIngresosPoliza(b.id, periodo, subcuentas, mayores);
-    const totalIngresosFinal = totalIngresosVentas + sobranteCaja + iPoliza.total;
+    const gananciaCambiaria = await computeGananciaCambiaria(b.id, periodo);
+    const totalIngresosFinal = totalIngresosVentas + sobranteCaja + iPoliza.total + gananciaCambiaria;
     const utilidadBruta = totalIngresosFinal - gCostos.totalClasificado;
     const gastosTotales = gastosOperativos + gClas.totalClasificado + gClas.sinClasificar + faltanteCaja;
     const utilidad = utilidadBruta - gastosTotales;
-    datos.push({ ym, ingresosPorConcepto, sobranteCaja, iPoliza, iPolizaTotal: iPoliza.total, totalIngresosFinal, gastosOperativos, faltanteCaja, gClas, gCostos, utilidadBruta, gastosTotales, utilidad });
+    datos.push({ ym, ingresosPorConcepto, sobranteCaja, iPoliza, iPolizaTotal: iPoliza.total, gananciaCambiaria, totalIngresosFinal, gastosOperativos, faltanteCaja, gClas, gCostos, utilidadBruta, gastosTotales, utilidad });
   }
 
   const sum = arr => arr.reduce((s,x)=>s+x,0);
@@ -7442,6 +7470,7 @@ async function renderPLAnual(el, b) {
       + filaHtml(`Subtotal ${g.mayor.nombre}`, valoresCombinados, { italic: true, indentPx: 22 });
   }).join('') + sinGrupoAnual.map(filaIngresoAnualHtml).join('');
   const filaSobrante = datos.some(d=>d.sobranteCaja) ? filaHtml('Sobrante de caja (conciliación)', datos.map(d=>d.sobranteCaja), { color:'var(--green)' }) : '';
+  const filaGananciaCambiaria = datos.some(d=>Math.abs(d.gananciaCambiaria)>0.004) ? filaHtml('Ganancia/pérdida cambiaria', datos.map(d=>d.gananciaCambiaria), { perValueColor:true }) : '';
   const filaTotalIngresos = filaHtml('Total ingresos', datos.map(d=>d.totalIngresosFinal), { total:true });
 
   const hayMayoresCosto = mayoresCosto.length && datos.some(d => d.gCostos.totalClasificado);
@@ -7497,6 +7526,7 @@ async function renderPLAnual(el, b) {
             <tr style="background:#f7f9fc;"><td colspan="${mesesYm.length + 2}" style="font-weight:700;">Ingresos</td></tr>
             ${filasIngreso}
             ${filaSobrante}
+            ${filaGananciaCambiaria}
             ${filaTotalIngresos}
             ${hayMayoresCosto ? `
             <tr style="background:#f7f9fc;"><td colspan="${mesesYm.length + 2}" style="font-weight:700;">Costo de Ventas</td></tr>
@@ -7574,7 +7604,8 @@ async function renderPL() {
   const gClas = await computeGastosClasificados(b.id, periodo, subcuentas, mayores);
   const gCostos = await computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'costo');
   const iPoliza = await computeIngresosPoliza(b.id, periodo, subcuentas, mayores);
-  const totalIngresosFinal = totalIngresos + iPoliza.total;
+  const gananciaCambiaria = await computeGananciaCambiaria(b.id, periodo);
+  const totalIngresosFinal = totalIngresos + iPoliza.total + gananciaCambiaria;
   const utilidadBruta = totalIngresosFinal - gCostos.totalClasificado;
   const gastosTotales = gastosOperativos + gClas.totalClasificado + gClas.sinClasificar + faltanteCaja;
   const utilidad = utilidadBruta - gastosTotales;
@@ -7632,6 +7663,7 @@ async function renderPL() {
             return (ingresosPorConcepto.length ? gruposHtml + sinGrupo.map(filaIngresoHtml).join('') : (Object.keys(grupos).length ? gruposHtml : `<tr><td colspan="2" class="empty">Este negocio no tiene categorías de venta configuradas (ve a Ventas → Configurar categorías de venta).</td></tr>`));
           })()}
           ${sobranteCaja ? `<tr><td>Sobrante de caja (conciliación de Ventas)</td><td class="num" style="color:var(--green);">${fmt(sobranteCaja)}</td></tr>` : ''}
+          ${Math.abs(gananciaCambiaria) > 0.004 ? `<tr><td>Ganancia/pérdida cambiaria</td><td class="num" style="color:${gananciaCambiaria>=0?'var(--green)':'var(--red)'};">${fmt(gananciaCambiaria)}</td></tr>` : ''}
           <tr class="total-row"><td>Total ingresos</td><td class="num">${fmtNeg(totalIngresosFinal)}</td></tr>
         </tbody>
       </table>
