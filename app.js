@@ -5891,11 +5891,13 @@ async function openModalFacturaProveedor(factura, businessId, catalogo, opciones
     opcionesPagoDesde.map(o => `<option value="${o.value}" ${valorPagadoDesde===o.value?'selected':''}>${o.label}</option>`).join('');
   document.getElementById('deleteFacturaProveedor').style.display = factura ? '' : 'none';
 
-  document.getElementById('fpDesgloseWrap').style.display = factura ? '' : 'none';
-  if (factura) {
-    const desgloseTotal = desgloseLineas(factura.desglose).reduce((s,l)=>s+(Number(l.monto)||0),0);
-    document.getElementById('fpDesglosarBtn').textContent = desgloseTotal > 0 ? `Desglosado: ${fmt(desgloseTotal)}` : 'Desglosar';
-  }
+  const [subcuentas, mayores] = await Promise.all([loadSubcuentas(businessId), loadCuentasMayor(businessId)]);
+  STATE_fpDesgloseCatalogos = { subcuentas, mayores };
+  document.getElementById('fpDesgloseSubcuenta').innerHTML = opcionesSubcuentaHtml(subcuentas, mayores, null) || `<option value="">— crea subcuentas primero en Catálogo de Cuentas —</option>`;
+  STATE_fpDesgloseLineas = desgloseLineas(factura?.desglose).map(l => ({ ...l }));
+  STATE_fpDesgloseEditandoIdx = null;
+  limpiarFormFpDesglose();
+  renderFpDesgloseList();
 
   if (factura) {
     const conteo = await contarAdjuntosPorRegistro('fz_proveedores', [factura.id]);
@@ -5911,11 +5913,79 @@ async function openModalFacturaProveedor(factura, businessId, catalogo, opciones
 document.getElementById('closeFacturaProveedor').addEventListener('click', () => {
   document.getElementById('modalFacturaProveedor').classList.remove('show');
 });
-document.getElementById('fpDesglosarBtn').addEventListener('click', () => {
-  const b = biz();
-  if (!b || !STATE_facturaProveedorEditandoId) return;
-  openDesgloseModal(b.id, STATE_facturaProveedorEditandoId, () => {});
+
+let STATE_fpDesgloseLineas = [];
+let STATE_fpDesgloseEditandoIdx = null;
+let STATE_fpDesgloseCatalogos = { subcuentas: [], mayores: [] };
+function nombreSubcuentaFp(id) {
+  const s = STATE_fpDesgloseCatalogos.subcuentas.find(x => x.id === id);
+  return s ? s.nombre : '(cuenta eliminada)';
+}
+function renderFpDesgloseList() {
+  const box = document.getElementById('fpDesgloseList');
+  const total = STATE_fpDesgloseLineas.reduce((s,l)=>s+(Number(l.monto)||0),0);
+  const importe = leerMonto(document.getElementById('fpImporte').value) || 0;
+  const cuadra = Math.abs(total - importe) < 0.5;
+  box.innerHTML = STATE_fpDesgloseLineas.map((l, i) => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 2px;border-bottom:1px solid var(--line);font-size:12.5px;">
+      <span>${nombreSubcuentaFp(l.subcuenta_id)}${l.descripcion?' — '+l.descripcion:''}</span>
+      <span style="display:flex;align-items:center;gap:8px;">
+        <strong>${fmt(l.monto)}</strong>
+        <button class="fp-desglose-editar" data-idx="${i}" style="border:none;background:none;color:var(--navy-3);cursor:pointer;font-size:12px;text-decoration:underline;">Editar</button>
+        <button class="fp-desglose-quitar" data-idx="${i}" style="border:none;background:none;color:var(--red);cursor:pointer;">✕</button>
+      </span>
+    </div>`).join('');
+  document.getElementById('fpDesgloseResumen').innerHTML = `
+    <div style="display:flex;justify-content:space-between;"><span>Importe de la factura</span><strong>${fmt(importe)}</strong></div>
+    <div style="display:flex;justify-content:space-between;"><span>Total desglosado</span><strong>${fmt(total)}</strong></div>
+    <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--muted)'};font-weight:700;"><span>${cuadra?'✓ Cuadra':'Diferencia'}</span><span>${cuadra?'':fmt(Math.abs(total-importe))}</span></div>
+  `;
+  box.querySelectorAll('.fp-desglose-editar').forEach(btn => btn.addEventListener('click', () => {
+    const l = STATE_fpDesgloseLineas[Number(btn.dataset.idx)];
+    STATE_fpDesgloseEditandoIdx = Number(btn.dataset.idx);
+    document.getElementById('fpDesgloseSubcuenta').value = l.subcuenta_id;
+    document.getElementById('fpDesgloseImporte').value = l.importe ? fmtInputVal(l.importe) : '';
+    document.getElementById('fpDesgloseIva').value = l.iva ? fmtInputVal(l.iva) : '';
+    document.getElementById('fpDesgloseMonto').value = fmtInputVal(l.monto);
+    document.getElementById('fpDesgloseDescripcion').value = l.descripcion || '';
+    document.getElementById('fpDesgloseEditandoAviso').style.display = '';
+    document.getElementById('fpCancelarEdicionDesglose').style.display = '';
+    document.getElementById('fpAgregarDesgloseLinea').textContent = 'Guardar cambios';
+  }));
+  box.querySelectorAll('.fp-desglose-quitar').forEach(btn => btn.addEventListener('click', () => {
+    STATE_fpDesgloseLineas.splice(Number(btn.dataset.idx), 1);
+    renderFpDesgloseList();
+  }));
+}
+function limpiarFormFpDesglose() {
+  document.getElementById('fpDesgloseImporte').value = '';
+  document.getElementById('fpDesgloseIva').value = '';
+  document.getElementById('fpDesgloseMonto').value = '';
+  document.getElementById('fpDesgloseDescripcion').value = '';
+  document.getElementById('fpDesgloseEditandoAviso').style.display = 'none';
+  document.getElementById('fpCancelarEdicionDesglose').style.display = 'none';
+  document.getElementById('fpAgregarDesgloseLinea').textContent = '+ Agregar línea';
+}
+document.getElementById('fpAgregarDesgloseLinea').addEventListener('click', () => {
+  const subId = document.getElementById('fpDesgloseSubcuenta').value;
+  const importe = leerMonto(document.getElementById('fpDesgloseImporte').value);
+  const iva = leerMonto(document.getElementById('fpDesgloseIva').value);
+  const montoDirecto = leerMonto(document.getElementById('fpDesgloseMonto').value);
+  const monto = montoDirecto || (importe + iva);
+  const descripcion = document.getElementById('fpDesgloseDescripcion').value.trim() || null;
+  if (!subId || !monto) { toast('Selecciona subcuenta y captura un monto (o Importe + IVA).', 'error'); return; }
+  const nuevaLinea = { subcuenta_id: subId, monto, descripcion, importe: importe || null, iva: iva || null };
+  if (STATE_fpDesgloseEditandoIdx !== null) STATE_fpDesgloseLineas[STATE_fpDesgloseEditandoIdx] = nuevaLinea;
+  else STATE_fpDesgloseLineas.push(nuevaLinea);
+  STATE_fpDesgloseEditandoIdx = null;
+  limpiarFormFpDesglose();
+  renderFpDesgloseList();
 });
+document.getElementById('fpCancelarEdicionDesglose').addEventListener('click', () => {
+  STATE_fpDesgloseEditandoIdx = null;
+  limpiarFormFpDesglose();
+});
+document.getElementById('fpImporte').addEventListener('input', renderFpDesgloseList);
 document.getElementById('saveFacturaProveedor').addEventListener('click', async () => {
   const b = biz();
   if (!b) return;
@@ -5932,6 +6002,7 @@ document.getElementById('saveFacturaProveedor').addEventListener('click', async 
     importe: leerMonto(document.getElementById('fpImporte').value) || 0,
     estatus: document.getElementById('fpEstatus').value,
     fecha_pago: document.getElementById('fpFechaPago').value || null,
+    desglose: STATE_fpDesgloseLineas,
   };
   const pagadoDesde = document.getElementById('fpPagadoDesde').value;
   if (pagadoDesde) {

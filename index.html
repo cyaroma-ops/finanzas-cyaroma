@@ -1097,9 +1097,37 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         </select>
       </div>
     </div>
-    <div class="field" id="fpDesgloseWrap" style="display:none;">
+    <div class="field">
       <label>Desglose (clasificación contable)</label>
-      <button class="btn btn-ghost btn-sm" id="fpDesglosarBtn" style="width:100%;text-align:left;">Desglosar</button>
+      <div id="fpDesgloseResumen" style="background:#f7f9fc;border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:12.5px;"></div>
+      <div id="fpDesgloseList" style="margin-bottom:10px;"></div>
+      <div class="grid-3">
+        <div class="field" style="margin-bottom:6px;">
+          <label>Subcuenta</label>
+          <select id="fpDesgloseSubcuenta"></select>
+        </div>
+        <div class="field" style="margin-bottom:6px;">
+          <label>Importe</label>
+          <input type="text" inputmode="decimal" id="fpDesgloseImporte" placeholder="0.00">
+        </div>
+        <div class="field" style="margin-bottom:6px;">
+          <label>IVA (opcional)</label>
+          <input type="text" inputmode="decimal" id="fpDesgloseIva" placeholder="0.00">
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="field" style="margin-bottom:6px;">
+          <label>Monto (si no usas Importe+IVA)</label>
+          <input type="text" inputmode="decimal" id="fpDesgloseMonto" placeholder="0.00">
+        </div>
+        <div class="field" style="margin-bottom:6px;">
+          <label>Descripción (opcional)</label>
+          <input type="text" id="fpDesgloseDescripcion" placeholder="Ej. Consumo de alimentos">
+        </div>
+      </div>
+      <div id="fpDesgloseEditandoAviso" style="display:none;font-size:11.5px;color:var(--gold);margin-bottom:6px;">Editando línea existente…</div>
+      <button class="btn btn-ghost btn-sm" id="fpAgregarDesgloseLinea">+ Agregar línea</button>
+      <button class="btn btn-ghost btn-sm" id="fpCancelarEdicionDesglose" style="display:none;">Cancelar edición</button>
     </div>
     <div class="field" id="fpAdjuntoWrap">
       <label>Adjunto</label>
