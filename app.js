@@ -5985,6 +5985,15 @@ document.getElementById('fpCancelarEdicionDesglose').addEventListener('click', (
   STATE_fpDesgloseEditandoIdx = null;
   limpiarFormFpDesglose();
 });
+const fpSumarImporteIva = () => {
+  const importe = leerMonto(document.getElementById('fpDesgloseImporte').value);
+  const iva = leerMonto(document.getElementById('fpDesgloseIva').value);
+  if (importe || iva) document.getElementById('fpDesgloseMonto').value = fmtInputVal(importe + iva);
+  renderFpDesgloseList();
+};
+document.getElementById('fpDesgloseImporte').addEventListener('input', fpSumarImporteIva);
+document.getElementById('fpDesgloseIva').addEventListener('input', fpSumarImporteIva);
+document.getElementById('fpDesgloseMonto').addEventListener('input', renderFpDesgloseList);
 document.getElementById('fpImporte').addEventListener('input', renderFpDesgloseList);
 document.getElementById('saveFacturaProveedor').addEventListener('click', async () => {
   const b = biz();
@@ -7369,10 +7378,11 @@ function polizaEsBorradorVacio(borrador) {
 }
 
 async function openPolizaModal(polizaId, businessId) {
-  const [subcuentas, mayores, cuentasBancoQ, monedasQ] = await Promise.all([
+  const [subcuentas, mayores, cuentasBancoQ, monedasQ, proveedoresCatalogoQ] = await Promise.all([
     loadSubcuentas(businessId), loadCuentasMayor(businessId),
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
+    sb.from('fz_proveedores_catalogo').select('*').eq('business_id', businessId),
   ]);
   const base = polizaId ? await crearBorradorPolizaExistente(polizaId, businessId) : await crearBorradorPolizaNueva(businessId);
   const idsYaVinculados = base.lineas.filter(l => l.cuenta_tipo === 'proveedor' && l.proveedor_factura_id).map(l => l.proveedor_factura_id);
@@ -7383,7 +7393,7 @@ async function openPolizaModal(polizaId, businessId) {
   const todasFacturasClientes = await loadFacturasClientesPendConNombre(businessId);
   const facturasClientesPendientes = todasFacturasClientes.filter(f => f.estatus === 'Pendiente' || f.estatus === 'Parcial' || idsClienteYaVinculados.includes(f.id));
 
-  const catalogos = { subcuentas, mayores, cuentasBanco: cuentasBancoQ.data || [], monedasEfectivo: monedasQ.data || [], facturasPendientes, facturasClientesPendientes };
+  const catalogos = { subcuentas, mayores, cuentasBanco: cuentasBancoQ.data || [], monedasEfectivo: monedasQ.data || [], facturasPendientes, facturasClientesPendientes, proveedoresCatalogo: proveedoresCatalogoQ.data || [] };
   STATE_polizaBorrador = { ...base, catalogos };
   STATE_polizaBorrador.original = JSON.stringify({ poliza: STATE_polizaBorrador.poliza, lineas: STATE_polizaBorrador.lineas });
   if (polizaId) {
@@ -7443,6 +7453,7 @@ function polizaCardHtmlBorrador(borrador) {
       (l.cuenta_tipo === 'efectivo' && it.tipo === 'efectivo' && it.id === l.cuenta_ref_id) ||
       (l.cuenta_tipo === 'proveedor' && it.tipo === 'proveedor' && it.id === l.proveedor_factura_id) ||
       (l.cuenta_tipo === 'cliente' && it.tipo === 'cliente' && it.id === l.cliente_factura_id) ||
+      (l.cuenta_tipo === 'proveedor_provision' && it.tipo === 'proveedor_provision' && it.id === l.proveedor_catalogo_id) ||
       ((!l.cuenta_tipo || l.cuenta_tipo === 'subcuenta') && it.tipo === 'sub' && it.id === l.subcuenta_id)
     );
     return match ? match.label : '';
@@ -7524,6 +7535,10 @@ function catalogoCuentasUnificado(catalogos) {
     const saldo = Number(f.total) - (Number(f.importe_pagado) || 0);
     items.push({ label: `Cobrar: ${f.clienteNombre} — Factura #${f.folio} (${fmt(saldo)} pendiente)`, tipo: 'cliente', id: f.id });
   });
+  (catalogos.proveedoresCatalogo || []).forEach(c => {
+    const nombre = c.razon_social ? `${c.razon_social} — ${c.nombre_comercial || ''}` : (c.nombre_comercial || c.nombre);
+    items.push({ label: `Provisionar: ${nombre}`, tipo: 'proveedor_provision', id: c.id });
+  });
   return items;
 }
 
@@ -7551,6 +7566,9 @@ function wireBorradorPolizaHandlers(wrap) {
       linea.cuenta_tipo = 'cliente'; linea.cliente_factura_id = match.id; linea.subcuenta_id = null; linea.cuenta_ref_id = null; linea.proveedor_factura_id = null;
       const factura = (STATE_polizaBorrador.catalogos.facturasClientesPendientes || []).find(f => f.id === match.id);
       if (factura && !Number(linea.abono)) linea.abono = Number(factura.total) - (Number(factura.importe_pagado) || 0);
+    }
+    else if (match.tipo === 'proveedor_provision') {
+      linea.cuenta_tipo = 'proveedor_provision'; linea.proveedor_catalogo_id = match.id; linea.subcuenta_id = null; linea.cuenta_ref_id = null; linea.proveedor_factura_id = null; linea.cliente_factura_id = null;
     }
     else { linea.cuenta_tipo = 'subcuenta'; linea.subcuenta_id = match.id; linea.cuenta_ref_id = null; linea.proveedor_factura_id = null; linea.cliente_factura_id = null; }
     renderizarBorradorPoliza();
@@ -7687,6 +7705,28 @@ async function guardarBorradorPoliza() {
   } else {
     const { error } = await sb.from('fz_polizas').update({ fecha: borrador.poliza.fecha, concepto: borrador.poliza.concepto }).eq('id', polizaId);
     if (error) { toast('Error guardando la póliza: ' + error.message, 'error'); return; }
+  }
+
+  // Convertir líneas de "Provisionar" en facturas reales de Proveedores (Cuentas por pagar),
+  // antes de guardar las líneas — de ahí en adelante se comportan como cualquier línea vinculada.
+  for (const l of borrador.lineas) {
+    if (l.cuenta_tipo === 'proveedor_provision' && l.proveedor_catalogo_id) {
+      const montoProvision = Number(l.abono) || 0;
+      if (montoProvision <= 0) {
+        toast('Para provisionar un proveedor, captura el monto en la columna Abono (no Cargo) — representa lo que se le empieza a deber.', 'error');
+        continue;
+      }
+      const cat = (borrador.catalogos.proveedoresCatalogo || []).find(c => c.id === l.proveedor_catalogo_id);
+      const nombreProv = cat ? (cat.razon_social ? `${cat.razon_social}${cat.nombre_comercial ? ' — ' + cat.nombre_comercial : ''}` : (cat.nombre_comercial || cat.nombre)) : 'Proveedor';
+      const { data: nuevaFactura, error: errFact } = await sb.from('fz_proveedores').insert({
+        business_id: businessId, proveedor_id: l.proveedor_catalogo_id, proveedor: nombreProv,
+        fecha: borrador.poliza.fecha, importe: montoProvision, estatus: 'Pendiente', factura: null,
+      }).select().single();
+      if (errFact) { toast('Error creando la provisión en Proveedores: ' + errFact.message, 'error'); continue; }
+      l.cuenta_tipo = 'proveedor';
+      l.proveedor_factura_id = nuevaFactura.id;
+      registrarAuditoria(businessId, 'crear', 'Proveedores', `${nombreProv} · provisión desde Póliza de Diario · ${fmt(montoProvision)}`);
+    }
   }
 
   let huboError = false;
