@@ -1718,6 +1718,22 @@ async function acumuladoDe(activoId) {
   const { data } = await sb.from('fz_depreciaciones_generadas').select('monto').eq('activo_fijo_id', activoId);
   return (data||[]).reduce((s,d)=>s+(Number(d.monto)||0),0);
 }
+// Elimina un activo fijo POR COMPLETO: borra también cada póliza de depreciación que se generó
+// para él (con sus líneas, en cascada) y desvincula la factura de proveedor que lo originó, si
+// aplica. Es para el caso de "me equivoqué, esto nunca debió ser un activo fijo" — a diferencia
+// de "Dar de baja", que conserva el historial porque el activo sí existió de verdad.
+async function eliminarActivoFijoCompleto(activoId, businessId) {
+  const { data: generadas } = await sb.from('fz_depreciaciones_generadas').select('poliza_id').eq('activo_fijo_id', activoId);
+  const polizaIds = [...new Set((generadas||[]).map(g => g.poliza_id).filter(Boolean))];
+  for (const polizaId of polizaIds) {
+    await sb.from('fz_polizas').delete().eq('id', polizaId); // borra sus líneas en cascada
+  }
+  await sb.from('fz_depreciaciones_generadas').delete().eq('activo_fijo_id', activoId);
+  await sb.from('fz_proveedores').update({ activo_fijo_id: null }).eq('activo_fijo_id', activoId);
+  await sb.from('fz_activos_fijos').delete().eq('id', activoId);
+  registrarAuditoria(businessId, 'eliminar', 'Activos Fijos', `Activo eliminado por completo, junto con ${polizaIds.length} póliza(s) de depreciación`);
+  return polizaIds.length;
+}
 
 const STATE_activosDepreciacionRevisada = new Set();
 async function renderActivosFijos() {
@@ -1791,7 +1807,19 @@ async function renderActivosFijos() {
   }));
   contenido.querySelectorAll('.af-eliminar').forEach(btn => btn.addEventListener('click', async () => {
     const acumulado = await acumuladoDe(btn.dataset.id);
-    if (acumulado > 0.004) { toast('Este activo ya tiene depreciación generada — mejor "Dar de baja" en vez de eliminarlo, para no perder ese historial.', 'error'); return; }
+    if (acumulado > 0.004) {
+      const purgar = confirm(
+        'Este activo ya tiene depreciación generada (pólizas de diario reales). Si de verdad fue un error y nunca debió existir, ' +
+        'puedo borrarlo POR COMPLETO junto con todas sus pólizas de depreciación generadas.\n\n' +
+        'Si en cambio el activo sí existió pero ya no lo tienes, cancela esto y usa "Dar de baja" en vez de eliminar, para conservar el historial.\n\n' +
+        '¿Eliminar por completo, incluyendo sus pólizas de depreciación?'
+      );
+      if (!purgar) return;
+      const n = await eliminarActivoFijoCompleto(btn.dataset.id, b.id);
+      toast(`Activo eliminado junto con ${n} póliza(s) de depreciación.`);
+      renderActivosFijos();
+      return;
+    }
     if (!confirm('¿Eliminar este activo fijo? Esta acción no se puede deshacer.')) return;
     const { error } = await sb.from('fz_activos_fijos').delete().eq('id', btn.dataset.id);
     if (error) { toast('No se pudo eliminar: ' + error.message, 'error'); return; }
@@ -5644,16 +5672,27 @@ async function eliminarFacturaProveedorConCascada(facturaId, businessId) {
     );
     return { ok: false };
   }
+  let purgarActivo = false;
   if (info.activo_fijo_id) {
     const acumulado = await acumuladoDe(info.activo_fijo_id);
     if (acumulado > 0.004) {
-      toast('Esta factura generó un Activo Fijo que ya tiene depreciación registrada — para no perder ese historial, dalo de baja desde Configuración → Activos Fijos en vez de eliminar la factura.', 'error');
-      return { ok: false };
+      const purgar = confirm(
+        'Esta factura generó un Activo Fijo que ya tiene depreciación registrada (pólizas de diario reales). ' +
+        'Si de verdad fue un error y nunca debió ser un activo fijo, puedo eliminar la factura Y el activo por completo, ' +
+        'junto con todas sus pólizas de depreciación generadas.\n\n' +
+        'Si el activo sí existió pero ya no aplica, cancela esto y ve a Configuración → Activos Fijos a "Dar de baja" en vez de eliminar.\n\n' +
+        '¿Eliminar todo (factura + activo + sus pólizas de depreciación)?'
+      );
+      if (!purgar) return { ok: false };
+      purgarActivo = true;
     }
   }
   if (!confirm('¿Eliminar esta factura? Esta acción no se puede deshacer.')) return { ok: false, cancelado: true };
 
-  if (info.activo_fijo_id) await sb.from('fz_activos_fijos').delete().eq('id', info.activo_fijo_id);
+  if (info.activo_fijo_id) {
+    if (purgarActivo) await eliminarActivoFijoCompleto(info.activo_fijo_id, businessId);
+    else await sb.from('fz_activos_fijos').delete().eq('id', info.activo_fijo_id);
+  }
   await sb.from('fz_adjuntos').delete().eq('tabla', 'fz_proveedores').eq('registro_id', facturaId);
   const { error } = await sb.from('fz_proveedores').delete().eq('id', facturaId);
   if (error) { toast('No se pudo eliminar: ' + error.message, 'error'); return { ok: false }; }
