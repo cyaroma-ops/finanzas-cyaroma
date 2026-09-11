@@ -7762,8 +7762,13 @@ async function guardarBorradorPoliza() {
       // La clasificación contable ya quedó registrada en las otras líneas de esta misma póliza
       // (ej. el cargo a Comisiones Bancarias) — se copian aquí para que la factura no aparezca
       // como "pendiente de desglosar" cuando en realidad ya está contabilizada.
+      // La clasificación contable de ESTA provisión en particular ya quedó registrada en alguna
+      // otra línea de la misma póliza — se identifica por monto igual (ej. Comisiones $5 ↔
+      // Provisión $5), para no confundirla con otras cuentas de la misma póliza que no tengan
+      // relación (ej. si en la misma póliza también hay un Cargo Bancos $20 aparte).
       const desgloseHeredado = borrador.lineas
-        .filter(otra => otra.cuenta_tipo === 'subcuenta' && otra.subcuenta_id && ((Number(otra.cargo)||0) > 0.004 || (Number(otra.abono)||0) > 0.004))
+        .filter(otra => otra !== l && otra.cuenta_tipo === 'subcuenta' && otra.subcuenta_id)
+        .filter(otra => Math.abs(((Number(otra.cargo)||0) || (Number(otra.abono)||0)) - montoProvision) < 0.01)
         .map(otra => ({ subcuenta_id: otra.subcuenta_id, monto: (Number(otra.cargo)||0) || (Number(otra.abono)||0), descripcion: otra.descripcion || null }));
       if (desgloseHeredado.length) {
         await sb.from('fz_proveedores').update({ desglose: desgloseHeredado }).eq('id', nuevaFactura.id);
