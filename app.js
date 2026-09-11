@@ -185,6 +185,34 @@ document.getElementById('cerrarModalAdjuntos').addEventListener('click', () => {
   STATE_adjuntosModalCtx = null;
 });
 
+/* ---------- Cierre de periodo ---------- */
+function puedeReabrirPeriodo() {
+  return !!STATE.esAdministrador || !!STATE.rolUsuario;
+}
+const STATE_cierresCache = {}; // { 'businessId-YYYY-MM': true|false }
+async function periodoEstaCerrado(businessId, fecha) {
+  if (!fecha) return false;
+  const periodo = fecha.slice(0, 7);
+  const key = `${businessId}-${periodo}`;
+  if (key in STATE_cierresCache) return STATE_cierresCache[key];
+  const { data } = await sb.from('fz_cierres_periodo').select('reabierto').eq('business_id', businessId).eq('periodo', periodo).maybeSingle();
+  const cerrado = !!data && !data.reabierto;
+  STATE_cierresCache[key] = cerrado;
+  return cerrado;
+}
+function invalidarCacheCierres(businessId) {
+  Object.keys(STATE_cierresCache).forEach(k => { if (k.startsWith(businessId + '-')) delete STATE_cierresCache[k]; });
+}
+// Se llama antes de crear/editar/eliminar cualquier registro con fecha — si el mes ya está
+// cerrado, bloquea la acción y explica por qué.
+async function bloqueadoPorCierre(businessId, fecha) {
+  const cerrado = await periodoEstaCerrado(businessId, fecha);
+  if (cerrado) {
+    toast(`El periodo ${fecha.slice(0,7)} ya está cerrado. Pide a un Administrador, Propietario, Socio o Gerencia que lo reabra en Configuración → Cierre de periodo si necesitas corregir algo.`, 'error');
+  }
+  return cerrado;
+}
+
 function biz() {
   return STATE.businesses.find(b => b.id === STATE.currentBusinessId) || null;
 }
@@ -1181,6 +1209,8 @@ async function renderVentas() {
   el.querySelectorAll('.ventas-cell').forEach(inp => {
     inp.addEventListener('change', async () => {
       const id = inp.dataset.id, field = inp.dataset.field;
+      const rowActual = rows.find(r => r.id === id);
+      if (rowActual && await bloqueadoPorCierre(b.id, rowActual.fecha)) { renderVentas(); return; }
       const val = field === 'fecha' ? inp.value : leerMonto(inp.value);
       const { error: e3 } = await sb.from('fz_ventas').update({ [field]: val }).eq('id', id);
       if (e3) { toast('Error guardando: ' + e3.message, 'error'); return; }
@@ -1189,6 +1219,8 @@ async function renderVentas() {
   });
   el.querySelectorAll('.ventas-del').forEach(btn => {
     btn.addEventListener('click', async () => {
+      const rowActual = rows.find(r => r.id === btn.dataset.id);
+      if (rowActual && await bloqueadoPorCierre(b.id, rowActual.fecha)) return;
       await sb.from('fz_ventas').delete().eq('id', btn.dataset.id);
       renderVentas();
     });
@@ -1197,6 +1229,7 @@ async function renderVentas() {
     inp.addEventListener('change', async () => {
       const ventaId = inp.dataset.ventaId, conceptoId = inp.dataset.concepto;
       const row = rows.find(r => r.id === ventaId);
+      if (row && await bloqueadoPorCierre(b.id, row.fecha)) { renderVentas(); return; }
       const vd = { ...(row.venta_data || {}) };
       vd[conceptoId] = leerMonto(inp.value);
       const { error } = await sb.from('fz_ventas').update({ venta_data: vd }).eq('id', ventaId);
@@ -1208,6 +1241,7 @@ async function renderVentas() {
     inp.addEventListener('change', async () => {
       const ventaId = inp.dataset.ventaId, conceptoId = inp.dataset.concepto;
       const row = rows.find(r => r.id === ventaId);
+      if (row && await bloqueadoPorCierre(b.id, row.fecha)) { renderVentas(); return; }
       const sd = { ...(row.sistema_data || {}) };
       sd[conceptoId] = leerMonto(inp.value);
       const { error } = await sb.from('fz_ventas').update({ sistema_data: sd }).eq('id', ventaId);
@@ -1219,6 +1253,7 @@ async function renderVentas() {
     inp.addEventListener('change', async () => {
       const ventaId = inp.dataset.ventaId, conceptoId = inp.dataset.concepto, field = inp.dataset.field;
       const row = rows.find(r => r.id === ventaId);
+      if (row && await bloqueadoPorCierre(b.id, row.fecha)) { renderVentas(); return; }
       const rd = { ...(row.recon_data || {}) };
       const montoVal = leerMonto(inp.value);
       rd[conceptoId] = { ...(rd[conceptoId] || {}), [field]: montoVal };
@@ -1672,6 +1707,45 @@ function tarjetaConfigHtml(id, titulo, descripcion) {
     <p style="font-size:12.5px;color:var(--muted);margin-top:6px;">${descripcion}</p>
   </div>`;
 }
+async function abrirModalCierrePeriodo(businessId) {
+  document.getElementById('cierrePeriodoMes').value = STATE.currentMonth || todayStr().slice(0,7);
+  await renderListaCierres(businessId);
+  document.getElementById('modalCierrePeriodo').classList.add('show');
+}
+async function renderListaCierres(businessId) {
+  const { data: cierres } = await sb.from('fz_cierres_periodo').select('*').eq('business_id', businessId).order('periodo', { ascending: false });
+  const box = document.getElementById('cierrePeriodoLista');
+  box.innerHTML = (cierres && cierres.length) ? cierres.map(c => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 4px;border-bottom:1px solid var(--line);font-size:13px;">
+      <span><strong>${c.periodo}</strong> — ${c.reabierto ? `<span style="color:var(--muted);">Reabierto el ${fechaCorta(c.fecha_reapertura)}</span>` : `<span style="color:var(--green);">Cerrado el ${fechaCorta(c.fecha_cierre)}</span>`}</span>
+      ${!c.reabierto ? `<button class="btn btn-ghost btn-sm reabrir-periodo-btn" data-periodo="${c.periodo}" data-id="${c.id}">Reabrir</button>` : ''}
+    </div>`).join('') : `<p class="empty" style="padding:10px 0;">Aún no has cerrado ningún periodo en este negocio.</p>`;
+  box.querySelectorAll('.reabrir-periodo-btn').forEach(btn => btn.addEventListener('click', async () => {
+    if (!puedeReabrirPeriodo()) { toast('Solo Administrador, Propietario, Socio o Gerencia pueden reabrir un periodo.', 'error'); return; }
+    if (!confirm(`¿Reabrir ${btn.dataset.periodo}? Se podrá volver a editar/capturar en ese mes.`)) return;
+    await sb.from('fz_cierres_periodo').update({ reabierto: true, reabierto_por: STATE.user?.email || null, fecha_reapertura: todayStr() }).eq('id', btn.dataset.id);
+    invalidarCacheCierres(businessId);
+    registrarAuditoria(businessId, 'editar', 'Configuración', `Periodo ${btn.dataset.periodo} reabierto`);
+    renderListaCierres(businessId);
+  }));
+}
+document.getElementById('closeCierrePeriodo').addEventListener('click', () => {
+  document.getElementById('modalCierrePeriodo').classList.remove('show');
+});
+document.getElementById('cerrarPeriodoBtn').addEventListener('click', async () => {
+  const b = biz();
+  if (!b) return;
+  const periodo = document.getElementById('cierrePeriodoMes').value;
+  if (!periodo) { toast('Elige un mes.', 'error'); return; }
+  if (!confirm(`¿Cerrar el periodo ${periodo}? Ya no se podrá crear, editar ni eliminar nada con fecha dentro de ese mes, hasta que alguien lo reabra.`)) return;
+  const { error } = await sb.from('fz_cierres_periodo').upsert({ business_id: b.id, periodo, fecha_cierre: todayStr(), cerrado_por: STATE.user?.email || null, reabierto: false, reabierto_por: null, fecha_reapertura: null }, { onConflict: 'business_id,periodo' });
+  if (error) { toast('Error: ' + error.message, 'error'); return; }
+  invalidarCacheCierres(b.id);
+  registrarAuditoria(b.id, 'crear', 'Configuración', `Periodo ${periodo} cerrado`);
+  toast(`Periodo ${periodo} cerrado.`);
+  renderListaCierres(b.id);
+});
+
 async function renderConfiguracion() {
   const el = document.getElementById('sec-configuracion');
   const b = biz();
@@ -1680,6 +1754,7 @@ async function renderConfiguracion() {
       ${tarjetaConfigHtml('cfgCatalogo', 'Catálogo de Cuentas', b ? `Cuenta mayor, subcuentas y su estructura contable para ${b.name}.` : 'Selecciona un negocio para configurar su catálogo.')}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgNegocios', 'Negocios (todos)', 'Alta, edición y respaldo de cada negocio del grupo.') : ''}
       ${tarjetaConfigHtml('cfgAuditoria', 'Auditoría', b ? `Quién creó, editó o eliminó cada registro en ${b.name}.` : 'Selecciona un negocio para ver su auditoría.')}
+      ${tarjetaConfigHtml('cfgCierre', 'Cierre de periodo', b ? `Bloquea la captura de meses ya cerrados en ${b.name}.` : 'Selecciona un negocio para gestionar sus cierres.')}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgUsuarios', 'Usuarios autorizados', 'Quién puede entrar a Finanzas y a qué negocios.') : ''}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgMfa', 'Autenticación de dos pasos', 'Protege tu cuenta con un código adicional al iniciar sesión.') : ''}
     </div>
@@ -1688,6 +1763,8 @@ async function renderConfiguracion() {
   ir('cfgCatalogo', 'catalogo');
   ir('cfgNegocios', 'negocios');
   ir('cfgAuditoria', 'auditoria');
+  const cierreBtn = document.getElementById('cfgCierre');
+  if (cierreBtn) cierreBtn.addEventListener('click', () => { if (b) abrirModalCierrePeriodo(b.id); else toast('Selecciona un negocio primero.', 'error'); });
   const usuariosBtn = document.getElementById('cfgUsuarios');
   if (usuariosBtn) usuariosBtn.addEventListener('click', openUsuariosModal);
   const mfaBtn = document.getElementById('cfgMfa');
@@ -2640,6 +2717,7 @@ async function openVentaDiaModal(businessId, onDone) {
   document.getElementById('closeVentaDia').onclick = () => document.getElementById('modalVentaDia').classList.remove('show');
   document.getElementById('saveVentaDia').onclick = async () => {
     const fecha = document.getElementById('vdFecha').value || todayStr();
+    if (await bloqueadoPorCierre(businessId, fecha)) return;
     const venta_data = {};
     form.querySelectorAll('.vd-venta').forEach(inp => { venta_data[inp.dataset.id] = leerMonto(inp.value); });
     const recon_data = {};
@@ -2709,6 +2787,7 @@ async function revertirPagoAFacturas(idsAfectados, montoMovimiento) {
 }
 
 async function confirmarYEliminarMovimiento(table, row, onDone) {
+  if (await bloqueadoPorCierre(row.business_id, row.fecha)) return;
   const idsAfectados = facturaIdsDe(row);
   const idsAfectadosCliente = facturaIdsClienteDe(row);
   if (row.tipo_salida === 'proveedor' && idsAfectados.length) {
@@ -3291,6 +3370,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   document.getElementById('closeMovimiento').onclick = () => modal.classList.remove('show');
   document.getElementById('saveMovimiento').onclick = async () => {
     const fecha = document.getElementById('movFecha').value || todayStr();
+    if (await bloqueadoPorCierre(contexto.businessId, fecha)) return;
     const cargos = Number(document.getElementById('movCargos').value) || 0;
     const depositos = Number(document.getElementById('movDepositos').value) || 0;
     const descripcion = document.getElementById('movDescripcion').value || null;
@@ -3792,6 +3872,8 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
   wireInputsMoneda(box);
   box.querySelectorAll('.mov-cell').forEach(inp => {
     inp.addEventListener('change', async () => {
+      const rowActual = ledger.find(r => r.id === inp.dataset.id);
+      if (rowActual && await bloqueadoPorCierre(businessId, rowActual.fecha)) { renderMonedaLedger(moneda, businessId, conceptosEfectivo); return; }
       const field = inp.dataset.field;
       const val = (field === 'fecha' || field === 'proveedor' || field === 'descripcion' || field === 'factura') ? inp.value : leerMonto(inp.value);
       await sb.from('fz_efectivo_mov').update({ [field]: val }).eq('id', inp.dataset.id);
@@ -3945,6 +4027,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
         <td class="num">${fmtNum(m.cargos)}</td>
         <td class="num" style="font-weight:700;">${fmt(saldo)}</td>
         <td></td>
+        <td></td>
       </tr>`;
     }
     return `<tr>
@@ -3954,6 +4037,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
       <td><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(m.depositos)}" data-id="${m.id}" data-field="depositos"></td>
       <td><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(m.cargos)}" data-id="${m.id}" data-field="cargos"></td>
       <td class="num" style="font-weight:700;">${fmt(saldo)}</td>
+      <td style="text-align:center;color:var(--green);" title="${m.conciliado ? 'Conciliado el ' + fechaCorta(m.fecha_conciliacion) : 'Pendiente de conciliar'}">${m.conciliado ? '✓' : ''}</td>
       <td style="position:relative;">
         <button class="btn btn-ghost btn-sm mov-menu-btn" data-id="${m.id}" style="padding:5px 12px;">⋯</button>
         <div class="mov-menu-dropdown" data-menu="${m.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:120px;overflow:hidden;">
@@ -3976,13 +4060,14 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     <div class="card-head" style="margin-top:14px;">
       <span class="hint">Saldo al inicio de ${STATE.currentMonth}: ${fmt(saldoApertura)}</span>
       <div style="display:flex;gap:8px;">
+        <button class="btn btn-ghost btn-sm" id="conciliarBtn">Conciliar</button>
         <button class="btn btn-ghost btn-sm" id="importMovBtn">Importar movimientos (Excel)</button>
         <button class="btn btn-ghost btn-sm" id="addMovBtnBanco">+ Agregar movimiento</button>
       </div>
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Fecha</th><th>Proveedor</th><th>Descripción</th><th>Depósitos</th><th>Cargos</th><th>Saldo</th><th></th></tr></thead>
+        <thead><tr><th>Fecha</th><th>Proveedor</th><th>Descripción</th><th>Depósitos</th><th>Cargos</th><th>Saldo</th><th title="Conciliado">✓</th><th></th></tr></thead>
         <tbody>${rowsHtml || `<tr><td colspan="11" class="empty">Sin movimientos.</td></tr>`}</tbody>
         <tfoot><tr class="total-row"><td colspan="4">Total ${STATE.currentMonth}</td><td class="num">${fmtNum(totalDepositosMes)}</td><td class="num">${fmtNum(totalCargosMes)}</td><td colspan="5"></td></tr></tfoot>
       </table>
@@ -3993,11 +4078,16 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
   document.getElementById('addMovBtnBanco').addEventListener('click', () => {
     openMovimientoModal({ tipo: 'banco', refId: cuentaId, businessId, onDone: () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas) });
   });
+  document.getElementById('conciliarBtn').addEventListener('click', () => {
+    abrirModalConciliacion(cuentaId, businessId, () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas));
+  });
   wireInputsMoneda(box);
   box.querySelectorAll('.mov-cell').forEach(inp => {
     inp.addEventListener('change', async () => {
+      const rowActual = ledger.find(r => r.id === inp.dataset.id);
+      if (rowActual && await bloqueadoPorCierre(businessId, rowActual.fecha)) { renderBancoLedger(cuentaId, businessId, conceptosTarjetas); return; }
       const field = inp.dataset.field;
-      const val = (field === 'fecha' || field === 'descripcion' || field === 'concepto' || field === 'referencia') ? inp.value : leerMonto(inp.value);
+      const val = (field === 'fecha' || field === 'descripcion' || field === 'concepto' || field === 'referencia' || field === 'proveedor') ? inp.value : leerMonto(inp.value);
       await sb.from('fz_bancos_mov').update({ [field]: val }).eq('id', inp.dataset.id);
       renderBancoLedger(cuentaId, businessId, conceptosTarjetas);
     });
@@ -4900,6 +4990,82 @@ async function generarFacturasRecurrentesSiCorresponde(businessId) {
   return generadas;
 }
 
+/* ---------- Conciliación bancaria ---------- */
+async function abrirModalConciliacion(cuentaId, businessId, onDone) {
+  document.getElementById('concFechaCorte').value = todayStr();
+  document.getElementById('concSaldoBanco').value = '';
+  document.getElementById('concLista').innerHTML = '';
+  document.getElementById('concResumen').innerHTML = '';
+
+  const cargarLista = async () => {
+    const fechaCorte = document.getElementById('concFechaCorte').value || todayStr();
+    const { data: todos } = await sb.from('fz_bancos_mov').select('*').eq('cuenta_id', cuentaId).lte('fecha', fechaCorte).order('fecha');
+    const movimientos = todos || [];
+    const saldoLibros = movimientos.reduce((s,m) => s + (Number(m.depositos)||0) - (Number(m.cargos)||0), 0);
+    const pendientes = movimientos.filter(m => !m.conciliado);
+    const yaConciliados = movimientos.filter(m => m.conciliado);
+
+    const box = document.getElementById('concLista');
+    box.innerHTML = pendientes.length ? pendientes.map(m => `
+      <tr>
+        <td><input type="checkbox" class="conc-check" data-id="${m.id}" data-monto="${(Number(m.depositos)||0)-(Number(m.cargos)||0)}"></td>
+        <td>${fechaCorta(m.fecha)}</td>
+        <td>${m.proveedor ? m.proveedor + ' — ' : ''}${m.descripcion || ''}</td>
+        <td class="num">${fmtNum(m.depositos)}</td>
+        <td class="num">${fmtNum(m.cargos)}</td>
+      </tr>`).join('') : `<tr><td colspan="5" class="empty">No hay movimientos pendientes de conciliar hasta esta fecha.</td></tr>`;
+
+    const actualizarResumen = () => {
+      const saldoBanco = leerMonto(document.getElementById('concSaldoBanco').value) || 0;
+      const marcados = Array.from(box.querySelectorAll('.conc-check:checked'));
+      const totalMarcadoAhora = marcados.reduce((s,c) => s + (Number(c.dataset.monto)||0), 0);
+      const saldoYaConciliado = yaConciliados.reduce((s,m) => s + (Number(m.depositos)||0) - (Number(m.cargos)||0), 0);
+      const saldoSegunMarcados = saldoYaConciliado + totalMarcadoAhora;
+      const diferencia = saldoBanco - saldoSegunMarcados;
+      const cuadra = Math.abs(diferencia) < 0.01;
+      document.getElementById('concResumen').innerHTML = `
+        <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Saldo según tus libros (a esta fecha)</span><strong>${fmt(saldoLibros)}</strong></div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Saldo según lo marcado + ya conciliado antes</span><strong>${fmt(saldoSegunMarcados)}</strong></div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Saldo según el banco (el que escribiste)</span><strong>${fmt(saldoBanco)}</strong></div>
+        <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--muted)'};font-weight:700;border-top:1px solid var(--line);padding-top:6px;margin-top:4px;"><span>${cuadra?'✓ Concilia exacto':'Diferencia'}</span><span>${cuadra?'':fmt(Math.abs(diferencia))}</span></div>
+        <p style="font-size:11px;color:var(--muted);margin-top:6px;">Lo que quede sin marcar (${pendientes.length - marcados.length} de ${pendientes.length}) son cheques o depósitos en tránsito — todavía no aparecen en el banco.</p>
+      `;
+    };
+    box.querySelectorAll('.conc-check').forEach(chk => chk.addEventListener('change', actualizarResumen));
+    actualizarResumen();
+    document.getElementById('concMarcarTodos').onchange = (e) => {
+      box.querySelectorAll('.conc-check').forEach(chk => chk.checked = e.target.checked);
+      actualizarResumen();
+    };
+    document.getElementById('concSaldoBanco').oninput = actualizarResumen;
+
+    document.getElementById('cerrarConciliacionBtn').onclick = async () => {
+      const idsMarcados = Array.from(box.querySelectorAll('.conc-check:checked')).map(c => c.dataset.id);
+      if (!idsMarcados.length) { toast('Marca al menos un movimiento que ya aparezca en el banco.', 'error'); return; }
+      const saldoBanco = leerMonto(document.getElementById('concSaldoBanco').value) || 0;
+      const totalMarcadoAhora = Array.from(box.querySelectorAll('.conc-check:checked')).reduce((s,c) => s + (Number(c.dataset.monto)||0), 0);
+      const saldoYaConciliado = yaConciliados.reduce((s,m) => s + (Number(m.depositos)||0) - (Number(m.cargos)||0), 0);
+      const diferencia = saldoBanco - (saldoYaConciliado + totalMarcadoAhora);
+      if (!confirm(`¿Cerrar esta conciliación? Se marcarán ${idsMarcados.length} movimiento(s) como conciliados con fecha ${fechaCorte}.${Math.abs(diferencia) > 0.01 ? ' Ojo: queda una diferencia de ' + fmt(Math.abs(diferencia)) + ' sin explicar.' : ''}`)) return;
+      await sb.from('fz_bancos_mov').update({ conciliado: true, fecha_conciliacion: fechaCorte }).in('id', idsMarcados);
+      await sb.from('fz_conciliaciones_bancarias').insert({
+        business_id: businessId, cuenta_id: cuentaId, fecha_corte: fechaCorte,
+        saldo_banco: saldoBanco, saldo_libros: saldoLibros, diferencia,
+      });
+      registrarAuditoria(businessId, 'editar', 'Bancos', `Conciliación al ${fechaCorte} — ${idsMarcados.length} movimiento(s), saldo banco ${fmt(saldoBanco)}`);
+      toast('Conciliación cerrada.');
+      document.getElementById('modalConciliacion').classList.remove('show');
+      onDone();
+    };
+  };
+  document.getElementById('concFechaCorte').onchange = cargarLista;
+  await cargarLista();
+  document.getElementById('modalConciliacion').classList.add('show');
+}
+document.getElementById('closeConciliacion').addEventListener('click', () => {
+  document.getElementById('modalConciliacion').classList.remove('show');
+});
+
 async function abrirElegirFacturaCobro(businessId) {
   const pendientes = (await loadFacturasClientesPendConNombre(businessId)).filter(f => f.estatus !== 'Pagado');
   const [cuentasBancoQ, monedasQ] = await Promise.all([
@@ -4966,6 +5132,7 @@ document.getElementById('aplicarElegirFacturaCobro').addEventListener('click', a
   const monto = leerMonto(document.getElementById('elegirFacturaCobroMonto').value);
   if (!monto || monto <= 0) { toast('Escribe el monto a aplicar.', 'error'); return; }
   const fecha = document.getElementById('elegirFacturaCobroFecha').value || todayStr();
+  if (await bloqueadoPorCierre(b.id, fecha)) return;
   const destino = document.getElementById('elegirFacturaCobroCuenta').value;
 
   let origen_tabla = 'manual', origen_id = null;
@@ -5026,6 +5193,8 @@ function wireFacturaMenu(el, businessId, onDone) {
     await descargarFacturaPDF(btn.dataset.id, businessId);
   }));
   el.querySelectorAll('.factura-eliminar').forEach(btn => btn.addEventListener('click', async () => {
+    const { data: fInfo } = await sb.from('fz_facturas_clientes').select('fecha').eq('id', btn.dataset.id).single();
+    if (fInfo && await bloqueadoPorCierre(businessId, fInfo.fecha)) return;
     if (!confirm('¿Desea usted eliminar esta factura? Si tiene cobros aplicados, también se revertirán (incluyendo los movimientos de banco/efectivo que se hayan creado). Esta acción no se puede deshacer.')) return;
     await eliminarFacturaCliente(btn.dataset.id, businessId);
     onDone();
@@ -5230,8 +5399,9 @@ async function descargarOrdenPDF(ordenId, businessId) {
 }
 
 async function eliminarFacturaProveedorConCascada(facturaId, businessId) {
-  const { data: info } = await sb.from('fz_proveedores').select('proveedor,factura,importe,origen_poliza_id').eq('id', facturaId).single();
+  const { data: info } = await sb.from('fz_proveedores').select('proveedor,factura,importe,fecha,origen_poliza_id').eq('id', facturaId).single();
   if (!info) return { ok: false };
+  if (await bloqueadoPorCierre(businessId, info.fecha)) return { ok: false };
   if (info.origen_poliza_id) {
     const { data: poliza } = await sb.from('fz_polizas').select('numero,fecha,concepto').eq('id', info.origen_poliza_id).single();
     toast(
@@ -5492,6 +5662,7 @@ document.getElementById('registrarCobroBtn').addEventListener('click', async () 
   if (!b || !STATE_facturaEditandoId) return;
   const facturaId = STATE_facturaEditandoId;
   const fecha = document.getElementById('cobroFecha').value || todayStr();
+  if (await bloqueadoPorCierre(b.id, fecha)) return;
   const monto = leerMonto(document.getElementById('cobroMonto').value);
   if (!monto || monto <= 0) { toast('Escribe un monto válido.', 'error'); return; }
   const destino = document.getElementById('cobroCuenta').value;
@@ -5530,6 +5701,8 @@ document.getElementById('saveModalFactura').addEventListener('click', async () =
   if (!b) return;
   const cliente_id = document.getElementById('facturaCliente').value;
   if (!cliente_id) { toast('Elige un cliente.', 'error'); return; }
+  const fechaFc = document.getElementById('facturaFecha').value || todayStr();
+  if (await bloqueadoPorCierre(b.id, fechaFc)) return;
   const lineasValidas = STATE_facturaLineas.filter(l => ((l.descripcion||'').trim() || l.producto_id) && Number(l.cantidad) > 0);
   if (!lineasValidas.length) { toast('Agrega al menos una línea con descripción y cantidad.', 'error'); return; }
 
@@ -5539,7 +5712,7 @@ document.getElementById('saveModalFactura').addEventListener('click', async () =
   const iva_porcentaje = Number(document.getElementById('facturaIvaPorcentaje').value) || 0;
   const iva_monto = aplica_iva ? subtotal * iva_porcentaje / 100 : 0;
   const es_recurrente = document.getElementById('facturaEsRecurrente').checked;
-  const fecha = document.getElementById('facturaFecha').value || todayStr();
+  const fecha = fechaFc;
   const frecuencia_dias = es_recurrente ? Number(document.getElementById('facturaFrecuencia').value) : null;
   let facturaExistente = null;
   if (STATE_facturaEditandoId) {
@@ -5587,6 +5760,51 @@ document.getElementById('saveModalFactura').addEventListener('click', async () =
 });
 
 /* ---------- Órdenes de venta ---------- */
+function ordenMenuHtml(ordenId) {
+  return `<td style="position:relative;">
+    <button class="btn btn-ghost btn-sm orden-menu-btn" data-id="${ordenId}" style="padding:5px 12px;">⋯</button>
+    <div class="orden-menu-dropdown" data-menu="${ordenId}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:130px;overflow:hidden;">
+      <button class="orden-modificar" data-id="${ordenId}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Modificar</button>
+      <button class="orden-pdf" data-id="${ordenId}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Descargar PDF</button>
+      <button class="orden-eliminar" data-id="${ordenId}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>
+    </div>
+  </td>`;
+}
+function wireOrdenMenu(el, businessId, onDone) {
+  el.querySelectorAll('.orden-menu-btn').forEach(btn => btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const dropdown = el.querySelector(`.orden-menu-dropdown[data-menu="${btn.dataset.id}"]`);
+    const abierto = dropdown.style.display === 'block';
+    el.querySelectorAll('.orden-menu-dropdown').forEach(d => d.style.display = 'none');
+    dropdown.style.display = abierto ? 'none' : 'block';
+  }));
+  document.addEventListener('click', () => el.querySelectorAll('.orden-menu-dropdown').forEach(d => d.style.display = 'none'));
+  el.querySelectorAll('.orden-modificar').forEach(btn => btn.addEventListener('click', async () => {
+    const { data: o } = await sb.from('fz_ordenes_venta').select('*').eq('id', btn.dataset.id).single();
+    if (o) openModalOrden(o, businessId);
+  }));
+  el.querySelectorAll('.orden-pdf').forEach(btn => btn.addEventListener('click', async () => {
+    await descargarOrdenPDF(btn.dataset.id, businessId);
+  }));
+  el.querySelectorAll('.orden-eliminar').forEach(btn => btn.addEventListener('click', async () => {
+    const { data: o } = await sb.from('fz_ordenes_venta').select('estatus,folio,fecha').eq('id', btn.dataset.id).single();
+    if (o && await bloqueadoPorCierre(businessId, o.fecha)) return;
+    const aviso = o?.estatus === 'Convertida'
+      ? '¿Eliminar esta orden de venta? Ya fue convertida en factura — la factura NO se eliminará, solo se pierde el registro de la orden original. Esta acción no se puede deshacer.'
+      : '¿Eliminar esta orden de venta? Esta acción no se puede deshacer.';
+    if (!confirm(aviso)) return;
+    await eliminarOrdenVenta(btn.dataset.id, businessId, o);
+    onDone();
+  }));
+}
+async function eliminarOrdenVenta(ordenId, businessId, infoPrevia) {
+  const info = infoPrevia || (await sb.from('fz_ordenes_venta').select('folio').eq('id', ordenId).single()).data;
+  await sb.from('fz_ordenes_venta_lineas').delete().eq('orden_id', ordenId);
+  const { error } = await sb.from('fz_ordenes_venta').delete().eq('id', ordenId);
+  if (error) { toast('No se pudo eliminar: ' + error.message, 'error'); return; }
+  registrarAuditoria(businessId, 'eliminar', 'Órdenes de venta', `Orden #${info?.folio ?? ''} eliminada`);
+}
+
 async function renderOrdenesVenta(el, b) {
   const scrollY = window.scrollY;
   const [{ data: ordenes }, clientes] = await Promise.all([
@@ -5618,7 +5836,7 @@ async function renderOrdenesVenta(el, b) {
               <td>${nombreCliente(o.cliente_id)}</td>
               <td class="num" style="font-weight:700;">${o.moneda==='USD'?'US':''}${fmt(o.total)}</td>
               <td>${ESTATUS_ORDEN_BADGE[o.estatus] || o.estatus}</td>
-              <td><button class="btn btn-ghost btn-sm orden-ver" data-id="${o.id}">Ver / Editar</button></td>
+              ${ordenMenuHtml(o.id)}
             </tr>`).join('') : `<tr><td colspan="6" class="empty">Aún no hay órdenes de venta. Usa "+ Nueva orden".</td></tr>`}
           </tbody>
         </table>
@@ -5626,10 +5844,7 @@ async function renderOrdenesVenta(el, b) {
     </div>
   `;
   document.getElementById('addOrdenBtn').addEventListener('click', () => openModalOrden(null, b.id));
-  el.querySelectorAll('.orden-ver').forEach(btn => btn.addEventListener('click', async () => {
-    const { data: o } = await sb.from('fz_ordenes_venta').select('*').eq('id', btn.dataset.id).single();
-    if (o) openModalOrden(o, b.id);
-  }));
+  wireOrdenMenu(el, b.id, () => renderOrdenesVenta(el, b));
   wireClientesTabs();
   window.scrollTo(0, scrollY);
 }
@@ -5763,6 +5978,7 @@ document.getElementById('saveModalOrden').addEventListener('click', async () => 
   const iva_porcentaje = Number(document.getElementById('ordenIvaPorcentaje').value) || 0;
   const iva_monto = aplica_iva ? subtotal * iva_porcentaje / 100 : 0;
   const fecha = document.getElementById('ordenFecha').value || todayStr();
+  if (await bloqueadoPorCierre(b.id, fecha)) return;
 
   const payload = {
     business_id: b.id, cliente_id, fecha,
@@ -6019,6 +6235,8 @@ document.getElementById('fpImporte').addEventListener('input', renderFpDesgloseL
 document.getElementById('saveFacturaProveedor').addEventListener('click', async () => {
   const b = biz();
   if (!b) return;
+  const fechaFp = document.getElementById('fpFecha').value || todayStr();
+  if (await bloqueadoPorCierre(b.id, fechaFp)) return;
   const proveedor_id = document.getElementById('fpProveedor').value || null;
   const catOption = document.getElementById('fpProveedor').selectedOptions[0];
   let proveedorTexto = proveedor_id ? catOption.textContent : (catOption?.textContent || 'Nuevo proveedor');
@@ -6028,7 +6246,7 @@ document.getElementById('saveFacturaProveedor').addEventListener('click', async 
     proveedor_id,
     proveedor: proveedorTexto,
     factura: document.getElementById('fpFactura').value.trim() || null,
-    fecha: document.getElementById('fpFecha').value || todayStr(),
+    fecha: fechaFp,
     importe: leerMonto(document.getElementById('fpImporte').value) || 0,
     estatus: document.getElementById('fpEstatus').value,
     fecha_pago: document.getElementById('fpFechaPago').value || null,
@@ -7619,6 +7837,7 @@ function wireBorradorPolizaHandlers(wrap) {
     if (!confirm('¿Estás seguro que deseas eliminar esta póliza? Esta acción no se puede deshacer.')) return;
     const businessId = STATE_polizaBorrador.businessId;
     const p = STATE_polizaBorrador.poliza;
+    if (await bloqueadoPorCierre(businessId, p.fecha)) return;
     const facturasVinculadas = STATE_polizaBorrador.lineas.filter(l => l.cuenta_tipo === 'proveedor' && l.proveedor_factura_id).map(l => l.proveedor_factura_id);
     const facturasClienteVinculadas = STATE_polizaBorrador.lineas.filter(l => l.cuenta_tipo === 'cliente' && l.cliente_factura_id).map(l => l.cliente_factura_id);
 
@@ -7716,6 +7935,8 @@ async function guardarBorradorPoliza() {
   if (document.activeElement && typeof document.activeElement.blur === 'function') document.activeElement.blur();
   const borrador = STATE_polizaBorrador;
   const businessId = borrador.businessId;
+
+  if (!polizaEsBorradorVacio(borrador) && await bloqueadoPorCierre(businessId, borrador.poliza.fecha)) return;
 
   if (polizaEsBorradorVacio(borrador)) {
     if (!borrador.esNueva) await sb.from('fz_polizas').delete().eq('id', borrador.poliza.id);

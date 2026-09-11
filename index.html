@@ -1141,6 +1141,56 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   </div>
 </div>
 
+<!-- Modal: Cierre de periodo -->
+<div class="modal-bg" id="modalCierrePeriodo">
+  <div class="modal" style="width:min(560px,95vw);max-height:88vh;overflow-y:auto;">
+    <h3>Cierre de periodo</h3>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:14px;">Al cerrar un mes, ya no se pueden crear, editar ni eliminar registros con fecha dentro de ese mes (Ventas, Bancos, Efectivo, Proveedores, Clientes, Pólizas). Solo Administrador, Propietario, Socio o Gerencia pueden reabrirlo.</p>
+    <div class="grid-2" style="margin-bottom:14px;">
+      <div class="field">
+        <label>Mes a cerrar</label>
+        <input type="month" id="cierrePeriodoMes">
+      </div>
+      <div class="field" style="display:flex;align-items:flex-end;">
+        <button class="btn btn-gold" id="cerrarPeriodoBtn" style="width:100%;">Cerrar este mes</button>
+      </div>
+    </div>
+    <div id="cierrePeriodoLista"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="closeCierrePeriodo">Cerrar ventana</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Conciliación bancaria -->
+<div class="modal-bg" id="modalConciliacion">
+  <div class="modal" style="width:min(760px,97vw);max-height:92vh;overflow-y:auto;">
+    <h3>Conciliación bancaria</h3>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:14px;">Compara tu registro contra el estado de cuenta real del banco. Marca los movimientos que ya aparecen ahí — lo que quede sin marcar es lo pendiente de reflejarse (cheques en tránsito, depósitos no procesados, etc.).</p>
+    <div class="grid-2">
+      <div class="field">
+        <label>Fecha de corte (según tu estado de cuenta)</label>
+        <input type="date" id="concFechaCorte">
+      </div>
+      <div class="field">
+        <label>Saldo según el banco (de tu estado de cuenta)</label>
+        <input type="text" inputmode="decimal" id="concSaldoBanco" placeholder="0.00">
+      </div>
+    </div>
+    <div id="concResumen" style="background:#f7f9fc;border-radius:8px;padding:12px 14px;margin:10px 0 14px;font-size:13px;"></div>
+    <div class="table-wrap" style="max-height:320px;overflow-y:auto;">
+      <table>
+        <thead><tr><th style="width:36px;"><input type="checkbox" id="concMarcarTodos"></th><th>Fecha</th><th>Descripción</th><th>Depósitos</th><th>Cargos</th></tr></thead>
+        <tbody id="concLista"></tbody>
+      </table>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="closeConciliacion">Cerrar</button>
+      <button class="btn btn-gold" id="cerrarConciliacionBtn">Cerrar conciliación</button>
+    </div>
+  </div>
+</div>
+
 <!-- Modal: elegir factura para registrar un pago (desde "+ Nueva transacción") -->
 <div class="modal-bg" id="modalElegirFacturaCobro">
   <div class="modal" style="width:min(560px,94vw);max-height:88vh;overflow-y:auto;">
