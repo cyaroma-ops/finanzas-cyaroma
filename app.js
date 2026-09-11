@@ -4239,12 +4239,8 @@ async function renderProveedores() {
     if (info) await openModalFacturaProveedor(info, b.id, catalogo, opcionesPagoDesde);
   }));
   el.querySelectorAll('.prov-del').forEach(btn => btn.addEventListener('click', async () => {
-    if (!confirm('¿Eliminar este registro? Esta acción no se puede deshacer.')) return;
-    const info = all.find(x => x.id === btn.dataset.id);
-    const { error } = await sb.from('fz_proveedores').delete().eq('id', btn.dataset.id);
-    if (error) { toast('No se pudo eliminar: ' + error.message, 'error'); return; }
-    registrarAuditoria(b.id, 'eliminar', 'Proveedores', `${info?.proveedor||'(sin proveedor)'} · factura ${info?.factura||'s/f'} · ${fmt(info?.importe||0)}`);
-    renderProveedores();
+    const r = await eliminarFacturaProveedorConCascada(btn.dataset.id, b.id);
+    if (r.ok) renderProveedores();
   }));
   el.querySelectorAll('.prov-desglosar').forEach(btn => btn.addEventListener('click', async () => {
     const info = all.find(x => x.id === btn.dataset.id);
@@ -5233,6 +5229,29 @@ async function descargarOrdenPDF(ordenId, businessId) {
   doc.save(`Orden ${orden.folio} - ${cliente?.nombre_comercial || 'cliente'}.pdf`);
 }
 
+async function eliminarFacturaProveedorConCascada(facturaId, businessId) {
+  const { data: info } = await sb.from('fz_proveedores').select('proveedor,factura,importe,origen_poliza_id').eq('id', facturaId).single();
+  if (!info) return { ok: false };
+  if (info.origen_poliza_id) {
+    const { data: poliza } = await sb.from('fz_polizas').select('numero,fecha,concepto').eq('id', info.origen_poliza_id).single();
+    const seguir = confirm(
+      `Esta factura nació de la Póliza de Diario #${poliza?.numero ?? ''} (${poliza?.fecha || ''}). ` +
+      `Al eliminarla, también se eliminará esa póliza completa (todas sus líneas), ya que sin la provisión ` +
+      `la póliza dejaría de cuadrar. ¿Deseas continuar?`
+    );
+    if (!seguir) return { ok: false, cancelado: true };
+    await sb.from('fz_polizas').delete().eq('id', info.origen_poliza_id); // borra sus líneas en cascada
+    registrarAuditoria(businessId, 'eliminar', 'Pólizas', `Póliza #${poliza?.numero ?? ''} eliminada junto con la factura de ${info.proveedor}`);
+  } else {
+    if (!confirm('¿Eliminar esta factura? Esta acción no se puede deshacer.')) return { ok: false, cancelado: true };
+  }
+  await sb.from('fz_adjuntos').delete().eq('tabla', 'fz_proveedores').eq('registro_id', facturaId);
+  const { error } = await sb.from('fz_proveedores').delete().eq('id', facturaId);
+  if (error) { toast('No se pudo eliminar: ' + error.message, 'error'); return { ok: false }; }
+  registrarAuditoria(businessId, 'eliminar', 'Proveedores', `${info.proveedor||'(sin proveedor)'} · factura ${info.factura||'s/f'} · ${fmt(info.importe||0)}`);
+  return { ok: true };
+}
+
 async function eliminarFacturaCliente(facturaId, businessId) {
   const { data: cobros } = await sb.from('fz_cobros_aplicados').select('*').eq('factura_id', facturaId);
   for (const c of (cobros || [])) {
@@ -6052,11 +6071,8 @@ document.getElementById('saveFacturaProveedor').addEventListener('click', async 
 document.getElementById('deleteFacturaProveedor').addEventListener('click', async () => {
   const b = biz();
   if (!b || !STATE_facturaProveedorEditandoId) return;
-  if (!confirm('¿Eliminar esta factura? Esta acción no se puede deshacer.')) return;
-  const { data: info } = await sb.from('fz_proveedores').select('proveedor,factura,importe').eq('id', STATE_facturaProveedorEditandoId).single();
-  const { error } = await sb.from('fz_proveedores').delete().eq('id', STATE_facturaProveedorEditandoId);
-  if (error) { toast('No se pudo eliminar: ' + error.message, 'error'); return; }
-  registrarAuditoria(b.id, 'eliminar', 'Proveedores', `${info?.proveedor||'(sin proveedor)'} · factura ${info?.factura||'s/f'} · ${fmt(info?.importe||0)}`);
+  const r = await eliminarFacturaProveedorConCascada(STATE_facturaProveedorEditandoId, b.id);
+  if (!r.ok) return;
   document.getElementById('modalFacturaProveedor').classList.remove('show');
   STATE_facturaProveedorEditandoId = null;
   renderProveedores();
