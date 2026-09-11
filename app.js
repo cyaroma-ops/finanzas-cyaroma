@@ -5240,7 +5240,9 @@ async function eliminarFacturaProveedorConCascada(facturaId, businessId) {
       `la póliza dejaría de cuadrar. ¿Deseas continuar?`
     );
     if (!seguir) return { ok: false, cancelado: true };
-    await sb.from('fz_polizas').delete().eq('id', info.origen_poliza_id); // borra sus líneas en cascada
+    const { error: errPoliza, count } = await sb.from('fz_polizas').delete({ count: 'exact' }).eq('id', info.origen_poliza_id);
+    if (errPoliza) { toast('No se pudo eliminar la póliza de origen: ' + errPoliza.message, 'error'); return { ok: false }; }
+    if (!count) { toast('No se encontró o no se pudo eliminar la póliza de origen (revisa permisos) — la factura no se eliminó para no dejar la póliza a medias.', 'error'); return { ok: false }; }
     registrarAuditoria(businessId, 'eliminar', 'Pólizas', `Póliza #${poliza?.numero ?? ''} eliminada junto con la factura de ${info.proveedor}`);
   } else {
     if (!confirm('¿Eliminar esta factura? Esta acción no se puede deshacer.')) return { ok: false, cancelado: true };
