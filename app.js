@@ -7017,7 +7017,7 @@ function provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntos, todasFactur
       <input class="cell prov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(p.importe)}" data-id="${p.id}" data-field="importe">
       ${esCredito ? `<div style="font-size:10.5px;color:var(--green);margin-top:2px;">crédito a favor</div>` : (Number(p.importe_pagado)>0 && p.estatus!=='Pagado' ? `<div style="font-size:10.5px;color:var(--muted);margin-top:2px;white-space:nowrap;">pagado ${fmt(p.importe_pagado)} · pendiente ${fmt(saldoPendiente)}</div>` : '')}
     </td>
-    <td><button class="btn btn-ghost btn-sm prov-desglosar" data-id="${p.id}" style="color:${desgloseOk?'var(--green)':(desgloseTotal>0?'var(--red)':'var(--muted)')};" title="${p.aplica_iva?'No incluye IVA — el IVA ('+fmt(p.iva_monto)+') va aparte, a IVA Acreditable':''}">${desgloseTotal>0?(p.aplica_iva?`${fmt(desgloseTotal)} + IVA ${fmt(p.iva_monto)} = ${fmt(desgloseTotal+(Number(p.iva_monto)||0))}`:fmt(desgloseTotal)):'Desglosar'}</button></td>
+    <td><button class="btn btn-ghost btn-sm prov-desglosar" data-id="${p.id}" style="color:${desgloseOk?'var(--green)':(desgloseTotal>0?'var(--red)':'var(--muted)')};" title="${p.aplica_iva?'No incluye IVA — el IVA ('+fmt(p.iva_monto)+') va aparte, a IVA Acreditable':''}">${desgloseTotal<=0?'Desglosar':(desgloseOk?'✓ Completo':`Falta ${fmt(Math.abs(desgloseTotal-metaDesglose))}`)}</button></td>
     <td><select class="cell prov-cell" data-id="${p.id}" data-field="estatus">
       <option ${p.estatus==='Pendiente'?'selected':''}>Pendiente</option>
       <option ${p.estatus==='Parcial'?'selected':''}>Parcial</option>
