@@ -6746,6 +6746,10 @@ async function openModalFacturaProveedor(factura, businessId, catalogo, opciones
   STATE_fpDesgloseLineas = desgloseLineas(factura?.desglose).map(l => ({ ...l }));
   STATE_fpDesgloseEditandoIdx = null;
   limpiarFormFpDesglose();
+  const ocultarImporteIvaDesglose = biz()?.modo === 'fiscal_contable';
+  document.getElementById('fpDesgloseImporteWrap').style.display = ocultarImporteIvaDesglose ? 'none' : '';
+  document.getElementById('fpDesgloseIvaWrap').style.display = ocultarImporteIvaDesglose ? 'none' : '';
+  document.getElementById('fpDesgloseMontoLabel').textContent = ocultarImporteIvaDesglose ? 'Monto (sin IVA)' : 'Monto (si no usas Importe+IVA)';
   renderFpDesgloseList();
 
   // Sección de Activo Fijo dentro de la misma factura
@@ -6997,7 +7001,8 @@ document.getElementById('deleteFacturaProveedor').addEventListener('click', asyn
 
 function provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntos, todasFacturas) {
   const desgloseTotal = desgloseLineas(p.desglose).reduce((s,l)=>s+(Number(l.monto)||0),0);
-  const desgloseOk = Math.abs(desgloseTotal - (Number(p.importe)||0)) < 1 && desgloseTotal > 0;
+  const metaDesglose = p.aplica_iva ? (Number(p.subtotal)||0) : (Number(p.importe)||0);
+  const desgloseOk = Math.abs(desgloseTotal - metaDesglose) < 1 && desgloseTotal > 0;
   const esCredito = Number(p.importe) < 0;
   const saldoPendiente = Number(p.importe) - Number(p.importe_pagado || 0);
   const catMatch = p.proveedor_id ? catalogo.find(c => c.id === p.proveedor_id) : null;

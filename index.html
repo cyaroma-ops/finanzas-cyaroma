@@ -1146,18 +1146,18 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
           <label>Subcuenta</label>
           <select id="fpDesgloseSubcuenta"></select>
         </div>
-        <div class="field" style="margin-bottom:6px;">
+        <div class="field" id="fpDesgloseImporteWrap" style="margin-bottom:6px;">
           <label>Importe</label>
           <input type="text" inputmode="decimal" id="fpDesgloseImporte" placeholder="0.00">
         </div>
-        <div class="field" style="margin-bottom:6px;">
+        <div class="field" id="fpDesgloseIvaWrap" style="margin-bottom:6px;">
           <label>IVA (opcional)</label>
           <input type="text" inputmode="decimal" id="fpDesgloseIva" placeholder="0.00">
         </div>
       </div>
       <div class="grid-2">
         <div class="field" style="margin-bottom:6px;">
-          <label>Monto (si no usas Importe+IVA)</label>
+          <label id="fpDesgloseMontoLabel">Monto (si no usas Importe+IVA)</label>
           <input type="text" inputmode="decimal" id="fpDesgloseMonto" placeholder="0.00">
         </div>
         <div class="field" style="margin-bottom:6px;">
