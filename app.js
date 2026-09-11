@@ -4246,7 +4246,10 @@ async function renderProveedores() {
     registrarAuditoria(b.id, 'eliminar', 'Proveedores', `${info?.proveedor||'(sin proveedor)'} · factura ${info?.factura||'s/f'} · ${fmt(info?.importe||0)}`);
     renderProveedores();
   }));
-  el.querySelectorAll('.prov-desglosar').forEach(btn => btn.addEventListener('click', () => openDesgloseModal(b.id, btn.dataset.id, renderProveedores)));
+  el.querySelectorAll('.prov-desglosar').forEach(btn => btn.addEventListener('click', async () => {
+    const info = all.find(x => x.id === btn.dataset.id);
+    if (info) await openModalFacturaProveedor(info, b.id, catalogo, opcionesPagoDesde);
+  }));
   wireAdjuntosHandlers(el, 'fz_proveedores', b.id, renderProveedores);
   wireProvTabs(el);
   window.scrollTo(0, scrollY);
@@ -7579,7 +7582,7 @@ function wireBorradorPolizaHandlers(wrap) {
     const linea = STATE_polizaBorrador.lineas.find(l => l.id === inp.dataset.id);
     if (!linea) return;
     const field = inp.dataset.field;
-    linea[field] = (field === 'descripcion' || field === 'referencia') ? (inp.value || '') : leerMonto(inp.value);
+    linea[field] = (field === 'descripcion' || field === 'referencia' || field === 'proveedor') ? (inp.value || '') : leerMonto(inp.value);
     renderizarBorradorPoliza();
   }));
   wrap.querySelectorAll('.linea-del').forEach(btn => btn.addEventListener('click', () => {
@@ -7680,6 +7683,7 @@ async function sincronizarCobroDesdePolizas(businessId, facturaId) {
 }
 
 async function guardarBorradorPoliza() {
+  if (document.activeElement && typeof document.activeElement.blur === 'function') document.activeElement.blur();
   const borrador = STATE_polizaBorrador;
   const businessId = borrador.businessId;
 
