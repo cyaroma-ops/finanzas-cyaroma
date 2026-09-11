@@ -533,7 +533,8 @@ function setupBizControls() {
   document.getElementById('saveBiz').addEventListener('click', async () => {
     const name = document.getElementById('newBizName').value.trim();
     if (!name) { toast('Escribe un nombre.', 'error'); return; }
-    const { data, error } = await sb.from('businesses').insert({ name, active: true }).select().single();
+    const modo = document.getElementById('newBizModo').value;
+    const { data, error } = await sb.from('businesses').insert({ name, active: true, modo }).select().single();
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     document.getElementById('modalBiz').classList.remove('show');
     await loadBusinesses();
@@ -552,8 +553,9 @@ function setupBizControls() {
     const bizId = document.getElementById('modalEditBiz').dataset.bizId;
     const name = document.getElementById('editBizName').value.trim();
     const razon_social = document.getElementById('editBizRazonSocial').value.trim() || null;
+    const modo = document.getElementById('editBizModo').value;
     if (!name) { toast('Escribe el nombre comercial.', 'error'); return; }
-    const { error } = await sb.from('businesses').update({ name, razon_social }).eq('id', bizId);
+    const { error } = await sb.from('businesses').update({ name, razon_social, modo }).eq('id', bizId);
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     document.getElementById('modalEditBiz').classList.remove('show');
     await loadBusinesses();
@@ -567,6 +569,7 @@ function setupBizControls() {
 function abrirEditarNegocio(negocio) {
   document.getElementById('editBizName').value = negocio.name || '';
   document.getElementById('editBizRazonSocial').value = negocio.razon_social || '';
+  document.getElementById('editBizModo').value = negocio.modo || 'financiero';
   document.getElementById('modalEditBiz').dataset.bizId = negocio.id;
   document.getElementById('modalEditBiz').classList.add('show');
 }
@@ -642,6 +645,7 @@ const SECTION_META = {
   proveedores: { title: 'Proveedores', sub: '', showMonth: false, needsBiz: true },
   clientes: { title: 'Clientes', sub: '', showMonth: false, needsBiz: true },
   activosfijos: { title: 'Activos Fijos', sub: '', showMonth: false, needsBiz: true },
+  ivafiscal: { title: 'IVA Acreditable y Trasladado', sub: '', showMonth: false, needsBiz: true },
   pl: { title: 'Estado de Resultados', sub: '', showMonth: true, needsBiz: true },
   flujo: { title: 'Flujo de Efectivo', sub: '', showMonth: false, needsBiz: true },
   polizas: { title: 'Pólizas de Diario', sub: '', showMonth: false, needsBiz: true },
@@ -653,7 +657,7 @@ const SECTION_META = {
 };
 // Estas viven "dentro" de Configuración: ya no tienen su propio ítem en el menú principal,
 // pero conservan su sección y su función de render tal cual, solo cambia cómo se llega ahí.
-const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos'];
+const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos', 'ivafiscal'];
 function marcarNavActivo(seccion) {
   document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
   const seccionNav = SECCIONES_EN_CONFIGURACION.includes(seccion) ? 'configuracion' : seccion;
@@ -746,6 +750,7 @@ async function renderCurrentSection() {
   if (s === 'proveedores') return renderProveedores();
   if (s === 'clientes') return renderClientes();
   if (s === 'activosfijos') return renderActivosFijos();
+  if (s === 'ivafiscal') return renderIvaFiscal();
   if (s === 'pl') return renderPL();
   if (s === 'flujo') return renderFlujo();
   if (s === 'polizas') return renderPolizas();
@@ -1952,6 +1957,88 @@ async function generarDepreciacionesSiCorresponde(businessId) {
   return generadas;
 }
 
+/* ---------- IVA Acreditable (Proveedores) y Trasladado (Clientes) — solo modo Fiscal Contable ---------- */
+async function renderIvaFiscal() {
+  const el = document.getElementById('sec-ivafiscal');
+  const b = biz();
+  if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
+  el.innerHTML = '';
+  agregarBotonVolverConfig(el);
+
+  if (b.modo !== 'fiscal_contable') {
+    el.insertAdjacentHTML('beforeend', `<div class="empty">Este negocio está en modo Financiero — cambia a "Fiscal Contable" en Configuración → Negocios para activar este reporte.</div>`);
+    return;
+  }
+
+  const [{ data: facturasProv }, { data: facturasCli }] = await Promise.all([
+    sb.from('fz_proveedores').select('proveedor,factura,fecha,importe,importe_pagado,aplica_iva,iva_monto,subtotal').eq('business_id', b.id).eq('aplica_iva', true),
+    sb.from('fz_facturas_clientes').select('folio,fecha,cliente_id,total,importe_pagado,aplica_iva,iva_monto').eq('business_id', b.id).eq('aplica_iva', true),
+  ]);
+  const clientesMap = Object.fromEntries((await loadClientes(b.id)).map(c => [c.id, c.nombre_comercial]));
+
+  const acreditableTotal = (facturasProv||[]).reduce((s,f)=>s+(Number(f.iva_monto)||0),0);
+  const acreditablePagado = (facturasProv||[]).reduce((s,f) => {
+    const prop = Number(f.importe) > 0 ? Math.min(1, (Number(f.importe_pagado)||0) / Number(f.importe)) : 0;
+    return s + (Number(f.iva_monto)||0) * prop;
+  }, 0);
+  const acreditablePendiente = acreditableTotal - acreditablePagado;
+
+  const trasladadoTotal = (facturasCli||[]).reduce((s,f)=>s+(Number(f.iva_monto)||0),0);
+  const trasladadoCobrado = (facturasCli||[]).reduce((s,f) => {
+    const prop = Number(f.total) > 0 ? Math.min(1, (Number(f.importe_pagado)||0) / Number(f.total)) : 0;
+    return s + (Number(f.iva_monto)||0) * prop;
+  }, 0);
+  const trasladadoPendiente = trasladadoTotal - trasladadoCobrado;
+
+  const contenido = document.createElement('div');
+  contenido.innerHTML = `
+    <p style="font-size:12px;color:var(--muted);margin-bottom:14px;">El IVA solo se vuelve acreditable (Proveedores) o exigible ante el SAT (Clientes) hasta que la factura está efectivamente pagada o cobrada — por eso cada uno se reparte en "ya" y "pendiente", según cuánto se ha pagado/cobrado de cada factura.</p>
+    <div class="kpi-grid" style="margin-bottom:18px;">
+      <div class="kpi"><div class="label">IVA Acreditable (ya pagado)</div><div class="value num green">${fmt(acreditablePagado)}</div></div>
+      <div class="kpi"><div class="label">IVA Acreditable (pendiente)</div><div class="value num ${acreditablePendiente>0.004?'red':''}">${fmt(acreditablePendiente)}</div></div>
+      <div class="kpi"><div class="label">IVA Trasladado (ya cobrado)</div><div class="value num red">${fmt(trasladadoCobrado)}</div></div>
+      <div class="kpi"><div class="label">IVA Trasladado (pendiente)</div><div class="value num">${fmt(trasladadoPendiente)}</div></div>
+    </div>
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-head"><h3>IVA Acreditable — Facturas de Proveedores</h3></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>IVA total</th><th>IVA ya pagado</th><th>IVA pendiente</th></tr></thead>
+          <tbody>
+            ${(facturasProv||[]).length ? facturasProv.map(f => {
+              const prop = Number(f.importe) > 0 ? Math.min(1, (Number(f.importe_pagado)||0) / Number(f.importe)) : 0;
+              const ivaPagado = (Number(f.iva_monto)||0) * prop;
+              return `<tr>
+                <td>${fechaCorta(f.fecha)}</td><td>${f.proveedor||''}</td><td>${f.factura||'s/f'}</td>
+                <td class="num">${fmt(f.iva_monto)}</td><td class="num">${fmt(ivaPagado)}</td><td class="num">${fmt((Number(f.iva_monto)||0)-ivaPagado)}</td>
+              </tr>`;
+            }).join('') : `<tr><td colspan="6" class="empty">No hay facturas de proveedor con IVA desglosado.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>IVA Trasladado — Facturas de Clientes</h3></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Fecha</th><th>Cliente</th><th>Folio</th><th>IVA total</th><th>IVA ya cobrado</th><th>IVA pendiente</th></tr></thead>
+          <tbody>
+            ${(facturasCli||[]).length ? facturasCli.map(f => {
+              const prop = Number(f.total) > 0 ? Math.min(1, (Number(f.importe_pagado)||0) / Number(f.total)) : 0;
+              const ivaCobrado = (Number(f.iva_monto)||0) * prop;
+              return `<tr>
+                <td>${fechaCorta(f.fecha)}</td><td>${clientesMap[f.cliente_id]||''}</td><td>#${f.folio}</td>
+                <td class="num">${fmt(f.iva_monto)}</td><td class="num">${fmt(ivaCobrado)}</td><td class="num">${fmt((Number(f.iva_monto)||0)-ivaCobrado)}</td>
+              </tr>`;
+            }).join('') : `<tr><td colspan="6" class="empty">No hay facturas de cliente con IVA desglosado.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  el.appendChild(contenido);
+}
+
 async function abrirModalCierrePeriodo(businessId) {
   document.getElementById('cierrePeriodoMes').value = STATE.currentMonth || todayStr().slice(0,7);
   await renderListaCierres(businessId);
@@ -2001,6 +2088,7 @@ async function renderConfiguracion() {
       ${tarjetaConfigHtml('cfgAuditoria', 'Auditoría', b ? `Quién creó, editó o eliminó cada registro en ${b.name}.` : 'Selecciona un negocio para ver su auditoría.')}
       ${tarjetaConfigHtml('cfgCierre', 'Cierre de periodo', b ? `Bloquea la captura de meses ya cerrados en ${b.name}.` : 'Selecciona un negocio para gestionar sus cierres.')}
       ${tarjetaConfigHtml('cfgActivosFijos', 'Activos Fijos', b ? `Equipo, mobiliario y su depreciación mensual automática en ${b.name}.` : 'Selecciona un negocio para gestionar sus activos.')}
+      ${b?.modo === 'fiscal_contable' ? tarjetaConfigHtml('cfgIvaFiscal', 'IVA Acreditable y Trasladado', `Cuánto IVA ya puedes acreditar (pagado) y cuánto ya debes al SAT (cobrado) en ${b.name}.`) : ''}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgUsuarios', 'Usuarios autorizados', 'Quién puede entrar a Finanzas y a qué negocios.') : ''}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgMfa', 'Autenticación de dos pasos', 'Protege tu cuenta con un código adicional al iniciar sesión.') : ''}
     </div>
@@ -2012,6 +2100,7 @@ async function renderConfiguracion() {
   const cierreBtn = document.getElementById('cfgCierre');
   if (cierreBtn) cierreBtn.addEventListener('click', () => { if (b) abrirModalCierrePeriodo(b.id); else toast('Selecciona un negocio primero.', 'error'); });
   ir('cfgActivosFijos', 'activosfijos');
+  ir('cfgIvaFiscal', 'ivafiscal');
   const usuariosBtn = document.getElementById('cfgUsuarios');
   if (usuariosBtn) usuariosBtn.addEventListener('click', openUsuariosModal);
   const mfaBtn = document.getElementById('cfgMfa');
@@ -2142,6 +2231,105 @@ async function renderAuditoria() {
   window.scrollTo(0, scrollY);
 }
 
+// Crea cuentas mayor + subcuentas a partir de una lista plana de filas { mayor, tipo, subcuenta, subcuentaPadre }.
+// Si ya existe una cuenta mayor o subcuenta con ese nombre, no la duplica — solo agrega lo que falte.
+// Se usa tanto para "Subir catálogo (Excel)" como para "Cargar catálogo sugerido".
+async function crearEstructuraCatalogo(businessId, filas) {
+  const mayoresExistentes = await loadCuentasMayor(businessId);
+  const mayorCache = {};
+  mayoresExistentes.forEach(m => { mayorCache[`${m.nombre.trim().toLowerCase()}|${m.tipo}`] = m.id; });
+  const subcuentasExistentes = await loadSubcuentas(businessId);
+  const subCache = {};
+  subcuentasExistentes.forEach(s => { subCache[`${s.cuenta_mayor_id}|${s.nombre.trim().toLowerCase()}`] = s.id; });
+
+  let creadosMayor = 0, creadosSub = 0;
+  const filasNormalizadas = filas.map(f => ({ ...f, subcuenta: (f.subcuenta || f.mayor || '').trim() }));
+
+  // Primera pasada: cuentas mayor + subcuentas sin padre
+  for (const fila of filasNormalizadas) {
+    if (!fila.mayor || !fila.tipo) continue;
+    const keyMayor = `${fila.mayor.trim().toLowerCase()}|${fila.tipo}`;
+    let mayorId = mayorCache[keyMayor];
+    if (!mayorId) {
+      const { data, error } = await sb.from('fz_cuentas_mayor').insert({ business_id: businessId, nombre: fila.mayor.trim(), tipo: fila.tipo, orden: 99 }).select().single();
+      if (!error && data) { mayorId = data.id; mayorCache[keyMayor] = mayorId; creadosMayor++; }
+    }
+    if (!mayorId || fila.subcuentaPadre) continue;
+    const keySub = `${mayorId}|${fila.subcuenta.toLowerCase()}`;
+    if (!subCache[keySub]) {
+      const { data, error } = await sb.from('fz_subcuentas').insert({ business_id: businessId, cuenta_mayor_id: mayorId, nombre: fila.subcuenta, orden: 99 }).select().single();
+      if (!error && data) { subCache[keySub] = data.id; creadosSub++; }
+    }
+  }
+  // Segunda pasada: subcuentas CON padre (para jerarquías de 3 niveles)
+  for (const fila of filasNormalizadas) {
+    if (!fila.subcuentaPadre || !fila.mayor || !fila.tipo) continue;
+    const mayorId = mayorCache[`${fila.mayor.trim().toLowerCase()}|${fila.tipo}`];
+    if (!mayorId) continue;
+    const padreId = subCache[`${mayorId}|${fila.subcuentaPadre.trim().toLowerCase()}`];
+    const keySub = `${mayorId}|${fila.subcuenta.toLowerCase()}`;
+    if (!subCache[keySub]) {
+      const { data, error } = await sb.from('fz_subcuentas').insert({ business_id: businessId, cuenta_mayor_id: mayorId, nombre: fila.subcuenta, subcuenta_padre_id: padreId || null, orden: 99 }).select().single();
+      if (!error && data) { subCache[keySub] = data.id; creadosSub++; }
+    }
+  }
+  return { creadosMayor, creadosSub };
+}
+
+async function descargarCatalogoCuentasExcel(businessId, nombreNegocio) {
+  const [mayores, subcuentas] = await Promise.all([loadCuentasMayor(businessId), loadSubcuentas(businessId)]);
+  const nombreSub = (id) => subcuentas.find(s => s.id === id)?.nombre || '';
+  const filas = [];
+  mayores.forEach(m => {
+    const subsDeEsteMayor = subcuentas.filter(s => s.cuenta_mayor_id === m.id);
+    if (!subsDeEsteMayor.length) { filas.push({ 'Cuenta Mayor': m.nombre, 'Tipo': TIPO_CUENTA_LABEL[m.tipo] || m.tipo, 'Subcuenta': '', 'Subcuenta Padre': '' }); return; }
+    subsDeEsteMayor.forEach(s => {
+      filas.push({ 'Cuenta Mayor': m.nombre, 'Tipo': TIPO_CUENTA_LABEL[m.tipo] || m.tipo, 'Subcuenta': s.nombre, 'Subcuenta Padre': s.subcuenta_padre_id ? nombreSub(s.subcuenta_padre_id) : '' });
+    });
+  });
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(filas.length ? filas : [{ 'Cuenta Mayor': '', 'Tipo': '', 'Subcuenta': '', 'Subcuenta Padre': '' }]);
+  XLSX.utils.book_append_sheet(wb, ws, 'Catalogo de Cuentas');
+  XLSX.writeFile(wb, `Catalogo de Cuentas - ${nombreNegocio} - ${todayStr()}.xlsx`);
+  registrarAuditoria(businessId, 'exportar', 'Catálogo de Cuentas', `Descargó el catálogo de "${nombreNegocio}"`);
+}
+
+function tipoCuentaDesdeTexto(texto) {
+  const t = String(texto || '').trim().toLowerCase();
+  const desdeLabel = Object.fromEntries(Object.entries(TIPO_CUENTA_LABEL).map(([k,v]) => [v.toLowerCase(), k]));
+  return desdeLabel[t] || (['activo','pasivo','capital','ingreso','costo','gasto'].includes(t) ? t : 'gasto');
+}
+function abrirSubirCatalogoCuentas(businessId, onDone) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.xlsx,.xls,.csv';
+  input.onchange = async () => {
+    const file = input.files[0];
+    if (!file) return;
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array' });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+      if (!rows.length) { toast('El archivo no tiene filas.', 'error'); return; }
+      const filas = rows.map(r => ({
+        mayor: String(buscarColumna(r, ['cuenta mayor', 'mayor', 'cuenta']) || '').trim(),
+        tipo: tipoCuentaDesdeTexto(buscarColumna(r, ['tipo'])),
+        subcuenta: String(buscarColumna(r, ['subcuenta']) || '').trim(),
+        subcuentaPadre: String(buscarColumna(r, ['subcuenta padre', 'subcuenta madre', 'padre']) || '').trim() || null,
+      })).filter(f => f.mayor);
+      if (!filas.length) { toast('No se encontró la columna "Cuenta Mayor" en el archivo.', 'error'); return; }
+      const { creadosMayor, creadosSub } = await crearEstructuraCatalogo(businessId, filas);
+      registrarAuditoria(businessId, 'crear', 'Catálogo de Cuentas', `Catálogo subido desde Excel — ${creadosMayor} cuenta(s) mayor y ${creadosSub} subcuenta(s) nueva(s)`);
+      toast(`Catálogo cargado: ${creadosMayor} cuenta(s) mayor y ${creadosSub} subcuenta(s) nueva(s) (lo que ya existía no se duplicó).`);
+      onDone();
+    } catch (e) {
+      toast('Error leyendo el archivo: ' + (e?.message || e), 'error');
+    }
+  };
+  input.click();
+}
+
 async function renderCatalogoCuentas() {
   const el = document.getElementById('sec-catalogo');
   const b = biz();
@@ -2157,6 +2345,15 @@ async function renderCatalogoCuentas() {
   const monedasEfectivo = monedasQ.data || [];
 
   el.innerHTML = `
+    <div class="card" style="margin-bottom:14px;">
+      <div class="card-head"><h3>Importar / Exportar catálogo</h3></div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Si este negocio ya tiene su catálogo armado en otro lado, súbelo desde Excel. Si quieres partir de una base ya lista, carga la propuesta sugerida — ninguna de las dos opciones duplica lo que ya exista.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-ghost btn-sm" id="ccDescargarBtn">Descargar catálogo (Excel)</button>
+        <button class="btn btn-ghost btn-sm" id="ccSubirBtn">Subir catálogo (Excel)</button>
+        <button class="btn btn-ghost btn-sm" id="ccCargarSugeridoBtn">Cargar catálogo sugerido</button>
+      </div>
+    </div>
     <div class="card">
       <div class="card-head"><h3>Nueva cuenta mayor</h3></div>
       <div class="grid-3">
@@ -2309,6 +2506,15 @@ async function renderCatalogoCuentas() {
   document.getElementById('ccNuevaMayorTipo').addEventListener('change', toggleVinculo);
   toggleVinculo();
 
+  document.getElementById('ccDescargarBtn').addEventListener('click', () => descargarCatalogoCuentasExcel(b.id, b.name));
+  document.getElementById('ccSubirBtn').addEventListener('click', () => abrirSubirCatalogoCuentas(b.id, renderCatalogoCuentas));
+  document.getElementById('ccCargarSugeridoBtn').addEventListener('click', async () => {
+    if (!confirm('Esto agrega el catálogo sugerido (estilo SAT, simplificado para restaurantes/servicios) a este negocio. No se duplica lo que ya tengas creado. ¿Continuar?')) return;
+    const { creadosMayor, creadosSub } = await crearEstructuraCatalogo(b.id, CATALOGO_CUENTAS_SUGERIDO);
+    registrarAuditoria(b.id, 'crear', 'Catálogo de Cuentas', `Catálogo sugerido cargado — ${creadosMayor} cuenta(s) mayor y ${creadosSub} subcuenta(s) nueva(s)`);
+    toast(`Catálogo sugerido cargado: ${creadosMayor} cuenta(s) mayor y ${creadosSub} subcuenta(s) nueva(s).`);
+    renderCatalogoCuentas();
+  });
   document.getElementById('ccSaveMayor').addEventListener('click', async () => {
     const nombre = document.getElementById('ccNuevaMayorNombre').value.trim();
     const tipo = document.getElementById('ccNuevaMayorTipo').value;
@@ -4859,6 +5065,63 @@ const TIPOS_SOCIEDAD = [
 
 // Porcentajes máximos anuales de depreciación según el Art. 34 de la Ley del ISR — son una
 // sugerencia de partida, siempre editable por si el caso particular es distinto.
+// Propuesta de catálogo de cuentas estilo SAT, simplificada para restaurantes/servicios —
+// la misma que se revisó y aprobó como documento aparte.
+const CATALOGO_CUENTAS_SUGERIDO = [
+  { mayor: 'Caja y Bancos', tipo: 'activo', subcuenta: 'Caja (Efectivo)' },
+  { mayor: 'Caja y Bancos', tipo: 'activo', subcuenta: 'Bancos' },
+  { mayor: 'Clientes y Cuentas por Cobrar', tipo: 'activo', subcuenta: 'Clientes' },
+  { mayor: 'Clientes y Cuentas por Cobrar', tipo: 'activo', subcuenta: 'IVA acreditable pagado' },
+  { mayor: 'Inventarios', tipo: 'activo', subcuenta: 'Inventario de alimentos y bebidas' },
+  { mayor: 'Activo Fijo', tipo: 'activo', subcuenta: 'Mobiliario y equipo de oficina' },
+  { mayor: 'Activo Fijo', tipo: 'activo', subcuenta: 'Equipo de cómputo' },
+  { mayor: 'Activo Fijo', tipo: 'activo', subcuenta: 'Equipo de transporte' },
+  { mayor: 'Activo Fijo', tipo: 'activo', subcuenta: 'Maquinaria y equipo (cocina/restaurante)' },
+  { mayor: 'Activo Fijo', tipo: 'activo', subcuenta: 'Depreciación acumulada' },
+  { mayor: 'Otros Activos', tipo: 'activo', subcuenta: 'Depósitos en garantía' },
+  { mayor: 'Otros Activos', tipo: 'activo', subcuenta: 'Pagos anticipados' },
+
+  { mayor: 'Proveedores', tipo: 'pasivo', subcuenta: 'Proveedores nacionales' },
+  { mayor: 'Cuentas por Pagar', tipo: 'pasivo', subcuenta: 'Acreedores diversos' },
+  { mayor: 'Cuentas por Pagar', tipo: 'pasivo', subcuenta: 'Sueldos y salarios por pagar' },
+  { mayor: 'Impuestos por Pagar', tipo: 'pasivo', subcuenta: 'IVA trasladado por pagar' },
+  { mayor: 'Impuestos por Pagar', tipo: 'pasivo', subcuenta: 'ISR por pagar' },
+  { mayor: 'Impuestos por Pagar', tipo: 'pasivo', subcuenta: 'Retenciones de ISR por pagar' },
+  { mayor: 'Impuestos por Pagar', tipo: 'pasivo', subcuenta: 'Retenciones de IVA por pagar' },
+  { mayor: 'Impuestos por Pagar', tipo: 'pasivo', subcuenta: 'IMSS / INFONAVIT por pagar' },
+  { mayor: 'Otros Pasivos', tipo: 'pasivo', subcuenta: 'Préstamos por pagar' },
+
+  { mayor: 'Capital Social', tipo: 'capital', subcuenta: 'Capital Social' },
+  { mayor: 'Resultados de Ejercicios Anteriores', tipo: 'capital', subcuenta: 'Resultados de Ejercicios Anteriores' },
+  { mayor: 'Resultado del Ejercicio', tipo: 'capital', subcuenta: 'Resultado del Ejercicio' },
+
+  { mayor: 'Ventas y/o Servicios', tipo: 'ingreso', subcuenta: 'Ventas de Alimentos' },
+  { mayor: 'Ventas y/o Servicios', tipo: 'ingreso', subcuenta: 'Ventas de Bebidas' },
+  { mayor: 'Ventas y/o Servicios', tipo: 'ingreso', subcuenta: 'Otros ingresos operativos' },
+  { mayor: 'Devoluciones y Descuentos sobre Ventas', tipo: 'ingreso', subcuenta: 'Devoluciones y Descuentos sobre Ventas' },
+  { mayor: 'Otros Ingresos', tipo: 'ingreso', subcuenta: 'Ingresos financieros' },
+  { mayor: 'Otros Ingresos', tipo: 'ingreso', subcuenta: 'Ganancia cambiaria' },
+
+  { mayor: 'Costo de Alimentos', tipo: 'costo', subcuenta: 'Costo de Alimentos' },
+  { mayor: 'Costo de Bebidas', tipo: 'costo', subcuenta: 'Costo de Bebidas' },
+  { mayor: 'Costo de Mano de Obra Directa', tipo: 'costo', subcuenta: 'Costo de Mano de Obra Directa' },
+
+  { mayor: 'Gastos de Venta', tipo: 'gasto', subcuenta: 'Publicidad y promoción' },
+  { mayor: 'Gastos de Venta', tipo: 'gasto', subcuenta: 'Comisiones sobre ventas' },
+  { mayor: 'Gastos de Administración', tipo: 'gasto', subcuenta: 'Sueldos y salarios administrativos' },
+  { mayor: 'Gastos de Administración', tipo: 'gasto', subcuenta: 'Renta' },
+  { mayor: 'Gastos de Administración', tipo: 'gasto', subcuenta: 'Servicios (luz, agua, gas, internet, teléfono)' },
+  { mayor: 'Gastos de Administración', tipo: 'gasto', subcuenta: 'Mantenimiento y reparaciones' },
+  { mayor: 'Gastos de Administración', tipo: 'gasto', subcuenta: 'Papelería y artículos de oficina' },
+  { mayor: 'Gastos de Administración', tipo: 'gasto', subcuenta: 'Honorarios profesionales (contabilidad, legal)' },
+  { mayor: 'Gastos de Administración', tipo: 'gasto', subcuenta: 'Seguros' },
+  { mayor: 'Gastos de Administración', tipo: 'gasto', subcuenta: 'Depreciación' },
+  { mayor: 'Gastos de Administración', tipo: 'gasto', subcuenta: 'Otros gastos de administración' },
+  { mayor: 'Gastos Financieros', tipo: 'gasto', subcuenta: 'Comisiones bancarias' },
+  { mayor: 'Gastos Financieros', tipo: 'gasto', subcuenta: 'Intereses pagados' },
+  { mayor: 'Gastos Financieros', tipo: 'gasto', subcuenta: 'Pérdida cambiaria' },
+];
+
 const CATEGORIAS_ACTIVO_LISR = [
   { nombre: 'Construcciones (edificios)', pct: 5 },
   { nombre: 'Mobiliario y equipo de oficina', pct: 10 },
@@ -6411,6 +6674,17 @@ async function openModalFacturaProveedor(factura, businessId, catalogo, opciones
   document.getElementById('fpImporte').value = fmtInputVal(factura?.importe || 0);
   document.getElementById('fpEstatus').value = factura?.estatus || 'Pendiente';
   document.getElementById('fpFechaPago').value = factura?.fecha_pago || '';
+
+  const esFiscalContable = biz()?.modo === 'fiscal_contable';
+  document.getElementById('fpIvaWrap').style.display = esFiscalContable ? '' : 'none';
+  document.getElementById('fpAplicaIva').checked = factura ? !!factura.aplica_iva : true;
+  document.getElementById('fpSubtotal').value = fmtInputVal(factura?.subtotal ?? factura?.importe ?? 0);
+  document.getElementById('fpIvaPorcentaje').value = factura?.iva_porcentaje ?? 16;
+  document.getElementById('fpIvaMonto').value = fmtInputVal(factura?.iva_monto || 0);
+  document.getElementById('fpImporte').readOnly = esFiscalContable;
+  document.getElementById('fpImporte').style.background = esFiscalContable ? '#f2f4f8' : '';
+  document.getElementById('fpImporteLabel').textContent = esFiscalContable ? 'Importe (calculado)' : 'Importe';
+
   const selPagado = document.getElementById('fpPagadoDesde');
   const valorPagadoDesde = factura?.pagado_desde_tipo ? (factura.pagado_desde_tipo + ':' + factura.pagado_desde_cuenta_id) : '';
   selPagado.innerHTML = `<option value="">— sin especificar —</option>` +
@@ -6463,6 +6737,17 @@ async function openModalFacturaProveedor(factura, businessId, catalogo, opciones
 document.getElementById('closeFacturaProveedor').addEventListener('click', () => {
   document.getElementById('modalFacturaProveedor').classList.remove('show');
 });
+const fpActualizarIva = () => {
+  const subtotal = leerMonto(document.getElementById('fpSubtotal').value) || 0;
+  const aplicaIva = document.getElementById('fpAplicaIva').checked;
+  const pct = leerMonto(document.getElementById('fpIvaPorcentaje').value) || 0;
+  const ivaMonto = aplicaIva ? subtotal * pct / 100 : 0;
+  document.getElementById('fpIvaMonto').value = fmtInputVal(ivaMonto);
+  document.getElementById('fpImporte').value = fmtInputVal(subtotal + ivaMonto);
+};
+document.getElementById('fpSubtotal').addEventListener('input', fpActualizarIva);
+document.getElementById('fpIvaPorcentaje').addEventListener('input', fpActualizarIva);
+document.getElementById('fpAplicaIva').addEventListener('change', fpActualizarIva);
 
 let STATE_fpDesgloseLineas = [];
 let STATE_fpDesgloseEditandoIdx = null;
@@ -6566,6 +6851,7 @@ document.getElementById('saveFacturaProveedor').addEventListener('click', async 
   const catOption = document.getElementById('fpProveedor').selectedOptions[0];
   let proveedorTexto = proveedor_id ? catOption.textContent : (catOption?.textContent || 'Nuevo proveedor');
   if (!proveedor_id && proveedorTexto === '— elegir —') proveedorTexto = 'Nuevo proveedor';
+  const esFiscalContable = biz()?.modo === 'fiscal_contable';
   const payload = {
     business_id: b.id,
     proveedor_id,
@@ -6576,6 +6862,10 @@ document.getElementById('saveFacturaProveedor').addEventListener('click', async 
     estatus: document.getElementById('fpEstatus').value,
     fecha_pago: document.getElementById('fpFechaPago').value || null,
     desglose: STATE_fpDesgloseLineas,
+    subtotal: esFiscalContable ? (leerMonto(document.getElementById('fpSubtotal').value) || 0) : null,
+    aplica_iva: esFiscalContable ? document.getElementById('fpAplicaIva').checked : false,
+    iva_porcentaje: esFiscalContable ? (leerMonto(document.getElementById('fpIvaPorcentaje').value) || 0) : null,
+    iva_monto: esFiscalContable ? (leerMonto(document.getElementById('fpIvaMonto').value) || 0) : 0,
   };
   const pagadoDesde = document.getElementById('fpPagadoDesde').value;
   if (pagadoDesde) {

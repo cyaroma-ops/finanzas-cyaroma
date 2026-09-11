@@ -559,6 +559,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <section class="section" id="sec-proveedores"></section>
         <section class="section" id="sec-clientes"></section>
         <section class="section" id="sec-activosfijos"></section>
+        <section class="section" id="sec-ivafiscal"></section>
         <section class="section" id="sec-pl"></section>
         <section class="section" id="sec-flujo"></section>
         <section class="section" id="sec-polizas"></section>
@@ -580,6 +581,13 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
       <label>Nombre del negocio</label>
       <input type="text" id="newBizName" placeholder="Ej. Nuevo Restaurante">
     </div>
+    <div class="field">
+      <label>Tipo de negocio</label>
+      <select id="newBizModo">
+        <option value="financiero">Financiero (control de ingresos/gastos, sin manejo fiscal detallado)</option>
+        <option value="fiscal_contable">Fiscal Contable (además, rastrea IVA acreditable y trasladado)</option>
+      </select>
+    </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="cancelBiz">Cancelar</button>
       <button class="btn btn-gold" id="saveBiz">Guardar</button>
@@ -598,6 +606,13 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
     <div class="field">
       <label>Razón social</label>
       <input type="text" id="editBizRazonSocial" placeholder="Ej. Operadora Charlies S.A. de C.V.">
+    </div>
+    <div class="field">
+      <label>Tipo de negocio</label>
+      <select id="editBizModo">
+        <option value="financiero">Financiero (control de ingresos/gastos, sin manejo fiscal detallado)</option>
+        <option value="fiscal_contable">Fiscal Contable (además, rastrea IVA acreditable y trasladado)</option>
+      </select>
     </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="cancelEditBiz">Cancelar</button>
@@ -1078,9 +1093,29 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <input type="date" id="fpFecha">
       </div>
       <div class="field">
-        <label>Importe</label>
+        <label id="fpImporteLabel">Importe</label>
         <input type="text" inputmode="decimal" id="fpImporte" placeholder="0.00">
       </div>
+    </div>
+    <div id="fpIvaWrap" style="display:none;border:1.5px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:12px;">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;margin-bottom:8px;">
+        <input type="checkbox" id="fpAplicaIva" checked> Esta factura desglosa IVA
+      </label>
+      <div class="grid-3">
+        <div class="field" style="margin-bottom:0;">
+          <label>Subtotal</label>
+          <input type="text" inputmode="decimal" id="fpSubtotal" placeholder="0.00">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>IVA (%)</label>
+          <input type="text" inputmode="decimal" id="fpIvaPorcentaje" value="16">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>IVA (monto)</label>
+          <input type="text" id="fpIvaMonto" readonly style="background:#f2f4f8;color:var(--muted);">
+        </div>
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin-top:8px;">Este negocio es Fiscal Contable — el IVA se clasifica aparte, a la cuenta de IVA Acreditable, y se vuelve utilizable en cuanto pagues esta factura.</p>
     </div>
     <div class="grid-3">
       <div class="field">
