@@ -5232,25 +5232,33 @@ async function descargarOrdenPDF(ordenId, businessId) {
 async function eliminarFacturaProveedorConCascada(facturaId, businessId) {
   const { data: info } = await sb.from('fz_proveedores').select('proveedor,factura,importe,origen_poliza_id').eq('id', facturaId).single();
   if (!info) return { ok: false };
+  let poliza = null;
   if (info.origen_poliza_id) {
-    const { data: poliza } = await sb.from('fz_polizas').select('numero,fecha,concepto').eq('id', info.origen_poliza_id).single();
+    const { data } = await sb.from('fz_polizas').select('numero,fecha,concepto').eq('id', info.origen_poliza_id).single();
+    poliza = data;
     const seguir = confirm(
       `Esta factura nació de la Póliza de Diario #${poliza?.numero ?? ''} (${poliza?.fecha || ''}). ` +
       `Al eliminarla, también se eliminará esa póliza completa (todas sus líneas), ya que sin la provisión ` +
       `la póliza dejaría de cuadrar. ¿Deseas continuar?`
     );
     if (!seguir) return { ok: false, cancelado: true };
-    const { error: errPoliza, count } = await sb.from('fz_polizas').delete({ count: 'exact' }).eq('id', info.origen_poliza_id);
-    if (errPoliza) { toast('No se pudo eliminar la póliza de origen: ' + errPoliza.message, 'error'); return { ok: false }; }
-    if (!count) { toast('No se encontró o no se pudo eliminar la póliza de origen (revisa permisos) — la factura no se eliminó para no dejar la póliza a medias.', 'error'); return { ok: false }; }
-    registrarAuditoria(businessId, 'eliminar', 'Pólizas', `Póliza #${poliza?.numero ?? ''} eliminada junto con la factura de ${info.proveedor}`);
   } else {
     if (!confirm('¿Eliminar esta factura? Esta acción no se puede deshacer.')) return { ok: false, cancelado: true };
   }
+
+  // Primero la factura (así se libera la referencia que "amarra" a la póliza), y hasta
+  // entonces la póliza — en ese orden, para que ninguna quede a medias ni bloqueada.
   await sb.from('fz_adjuntos').delete().eq('tabla', 'fz_proveedores').eq('registro_id', facturaId);
   const { error } = await sb.from('fz_proveedores').delete().eq('id', facturaId);
   if (error) { toast('No se pudo eliminar: ' + error.message, 'error'); return { ok: false }; }
   registrarAuditoria(businessId, 'eliminar', 'Proveedores', `${info.proveedor||'(sin proveedor)'} · factura ${info.factura||'s/f'} · ${fmt(info.importe||0)}`);
+
+  if (info.origen_poliza_id) {
+    const { error: errPoliza, count } = await sb.from('fz_polizas').delete({ count: 'exact' }).eq('id', info.origen_poliza_id);
+    if (errPoliza) { toast('La factura se eliminó, pero no se pudo eliminar la póliza de origen: ' + errPoliza.message, 'error'); return { ok: true }; }
+    if (!count) { toast('La factura se eliminó, pero no se encontró la póliza de origen para eliminarla (revisa Pólizas manualmente).', 'error'); return { ok: true }; }
+    registrarAuditoria(businessId, 'eliminar', 'Pólizas', `Póliza #${poliza?.numero ?? ''} eliminada junto con la factura de ${info.proveedor}`);
+  }
   return { ok: true };
 }
 
