@@ -1970,17 +1970,21 @@ async function renderIvaFiscal() {
     return;
   }
 
-  const [{ data: facturasProv }, { data: facturasCli }] = await Promise.all([
+  const [{ data: facturasProv }, { data: facturasCli }, { data: movsBancos }, { data: movsEfvo }] = await Promise.all([
     sb.from('fz_proveedores').select('proveedor,factura,fecha,importe,importe_pagado,aplica_iva,iva_monto,subtotal').eq('business_id', b.id).eq('aplica_iva', true),
     sb.from('fz_facturas_clientes').select('folio,fecha,cliente_id,total,importe_pagado,aplica_iva,iva_monto').eq('business_id', b.id).eq('aplica_iva', true),
+    sb.from('fz_bancos_mov').select('fecha,proveedor,descripcion,subtotal,iva_monto').eq('business_id', b.id).eq('aplica_iva', true),
+    sb.from('fz_efectivo_mov').select('fecha,proveedor,descripcion,subtotal,iva_monto').eq('business_id', b.id).eq('aplica_iva', true),
   ]);
+  const movsIvaDirectos = [...(movsBancos||[]), ...(movsEfvo||[])];
   const clientesMap = Object.fromEntries((await loadClientes(b.id)).map(c => [c.id, c.nombre_comercial]));
 
-  const acreditableTotal = (facturasProv||[]).reduce((s,f)=>s+(Number(f.iva_monto)||0),0);
+  const ivaDirectosTotal = movsIvaDirectos.reduce((s,m)=>s+(Number(m.iva_monto)||0),0); // siempre "pagado", se registran al momento (ej. comisiones bancarias)
+  const acreditableTotal = (facturasProv||[]).reduce((s,f)=>s+(Number(f.iva_monto)||0),0) + ivaDirectosTotal;
   const acreditablePagado = (facturasProv||[]).reduce((s,f) => {
     const prop = Number(f.importe) > 0 ? Math.min(1, (Number(f.importe_pagado)||0) / Number(f.importe)) : 0;
     return s + (Number(f.iva_monto)||0) * prop;
-  }, 0);
+  }, 0) + ivaDirectosTotal;
   const acreditablePendiente = acreditableTotal - acreditablePagado;
 
   const trasladadoTotal = (facturasCli||[]).reduce((s,f)=>s+(Number(f.iva_monto)||0),0);
@@ -1998,6 +2002,21 @@ async function renderIvaFiscal() {
       <div class="kpi"><div class="label">IVA Acreditable (pendiente)</div><div class="value num ${acreditablePendiente>0.004?'red':''}">${fmt(acreditablePendiente)}</div></div>
       <div class="kpi"><div class="label">IVA Trasladado (ya cobrado)</div><div class="value num red">${fmt(trasladadoCobrado)}</div></div>
       <div class="kpi"><div class="label">IVA Trasladado (pendiente)</div><div class="value num">${fmt(trasladadoPendiente)}</div></div>
+    </div>
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-head"><h3>IVA Acreditable — Comisiones y otros gastos directos (Bancos/Efectivo)</h3></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Fecha</th><th>Concepto</th><th>Subtotal</th><th>IVA</th></tr></thead>
+          <tbody>
+            ${movsIvaDirectos.length ? movsIvaDirectos.map(m => `<tr>
+                <td>${fechaCorta(m.fecha)}</td><td>${m.proveedor || m.descripcion || ''}</td>
+                <td class="num">${fmt(m.subtotal)}</td><td class="num">${fmt(m.iva_monto)}</td>
+              </tr>`).join('') : `<tr><td colspan="4" class="empty">No hay movimientos directos con IVA desglosado.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin-top:8px;">Estos se registran ya pagados al momento de capturarse (ej. comisiones bancarias), así que su IVA cuenta como acreditable de inmediato.</p>
     </div>
     <div class="card" style="margin-bottom:16px;">
       <div class="card-head"><h3>IVA Acreditable — Facturas de Proveedores</h3></div>
@@ -3798,15 +3817,37 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   document.getElementById('movDepositos').addEventListener('input', actualizarOpcionesTipo);
   actualizarOpcionesTipo();
 
+  const esFiscalContableMov = biz()?.modo === 'fiscal_contable';
   const actualizarVisibilidadDetalle = () => {
     const val = document.getElementById('movTipoSalida').value;
     document.getElementById('movSubcuentaWrap').style.display = val === 'gasto' ? 'block' : 'none';
     document.getElementById('movFacturasWrap').style.display = val === 'proveedor' ? 'block' : 'none';
     document.getElementById('movFacturasClienteWrap').style.display = val === 'cliente' ? 'block' : 'none';
+    document.getElementById('movIvaWrap').style.display = (val === 'gasto' && esFiscalContableMov) ? '' : 'none';
   };
   document.getElementById('movTipoSalida').onchange = actualizarVisibilidadDetalle;
   document.getElementById('movTipoSalida').oninput = actualizarVisibilidadDetalle;
   actualizarVisibilidadDetalle();
+
+  document.getElementById('movAplicaIva').checked = movimientoExistente ? !!movimientoExistente.aplica_iva : false;
+  document.getElementById('movIvaCampos').style.display = document.getElementById('movAplicaIva').checked ? '' : 'none';
+  document.getElementById('movSubtotal').value = fmtInputVal(movimientoExistente?.subtotal ?? movimientoExistente?.cargos ?? 0);
+  document.getElementById('movIvaPorcentaje').value = movimientoExistente?.iva_porcentaje ?? 16;
+  document.getElementById('movIvaMonto').value = fmtInputVal(movimientoExistente?.iva_monto || 0);
+  const movActualizarIva = () => {
+    const subtotal = leerMonto(document.getElementById('movSubtotal').value) || 0;
+    const aplicaIva = document.getElementById('movAplicaIva').checked;
+    const pct = leerMonto(document.getElementById('movIvaPorcentaje').value) || 0;
+    const ivaMonto = aplicaIva ? subtotal * pct / 100 : 0;
+    document.getElementById('movIvaMonto').value = fmtInputVal(ivaMonto);
+    if (aplicaIva) document.getElementById('movCargos').value = (subtotal + ivaMonto).toFixed(2);
+  };
+  document.getElementById('movAplicaIva').addEventListener('change', () => {
+    document.getElementById('movIvaCampos').style.display = document.getElementById('movAplicaIva').checked ? '' : 'none';
+    movActualizarIva();
+  });
+  document.getElementById('movSubtotal').addEventListener('input', movActualizarIva);
+  document.getElementById('movIvaPorcentaje').addEventListener('input', movActualizarIva);
 
   const movAdjuntoWrap = document.getElementById('movAdjuntoWrap');
   const tablaAdjunto = contexto.tipo === 'efectivo' ? 'fz_efectivo_mov' : 'fz_bancos_mov';
@@ -3844,6 +3885,14 @@ async function openMovimientoModal(contexto, movimientoExistente) {
       payload = { business_id: contexto.businessId, cuenta_id: contexto.refId, fecha, proveedor: document.getElementById('movCampo1').value || null, concepto: document.getElementById('movConcepto').value || null, referencia: document.getElementById('movReferencia').value || null, descripcion, cargos, depositos, tipo_salida: tipoSalida, tipo_entrada: tipoEntrada };
     }
     payload.subcuenta_id = tipoElegido === 'gasto' ? (document.getElementById('movSubcuenta').value || null) : null;
+    if (tipoElegido === 'gasto' && esFiscalContableMov) {
+      payload.aplica_iva = document.getElementById('movAplicaIva').checked;
+      payload.subtotal = payload.aplica_iva ? (leerMonto(document.getElementById('movSubtotal').value) || 0) : null;
+      payload.iva_porcentaje = payload.aplica_iva ? (leerMonto(document.getElementById('movIvaPorcentaje').value) || 0) : null;
+      payload.iva_monto = payload.aplica_iva ? (leerMonto(document.getElementById('movIvaMonto').value) || 0) : 0;
+    } else {
+      payload.aplica_iva = false; payload.subtotal = null; payload.iva_porcentaje = null; payload.iva_monto = 0;
+    }
 
     const movId = movimientoExistente ? movimientoExistente.id : null;
     let nuevoMov;
@@ -7202,8 +7251,15 @@ async function renderBalanceGeneral() {
   }, 0);
 
   const esFiscalContable = b.modo === 'fiscal_contable';
-  const ivaAcreditable = !esFiscalContable ? 0 : ((await sb.from('fz_proveedores').select('iva_monto').eq('business_id', b.id).eq('aplica_iva', true).lte('fecha', hastaFecha)).data
-    ?.reduce((s,f) => s + (Number(f.iva_monto)||0), 0) || 0);
+  let ivaAcreditable = 0;
+  if (esFiscalContable) {
+    const [ivaProvQ, ivaBancosQ, ivaEfvoQ] = await Promise.all([
+      sb.from('fz_proveedores').select('iva_monto').eq('business_id', b.id).eq('aplica_iva', true).lte('fecha', hastaFecha),
+      sb.from('fz_bancos_mov').select('iva_monto').eq('business_id', b.id).eq('aplica_iva', true).lte('fecha', hastaFecha),
+      sb.from('fz_efectivo_mov').select('iva_monto').eq('business_id', b.id).eq('aplica_iva', true).lte('fecha', hastaFecha),
+    ]);
+    ivaAcreditable = [...(ivaProvQ.data||[]), ...(ivaBancosQ.data||[]), ...(ivaEfvoQ.data||[])].reduce((s,f) => s + (Number(f.iva_monto)||0), 0);
+  }
 
   const totalActivo = totalEfectivo + totalBancos + totalOtrosActivos + cuentasPorCobrar + ivaAcreditable;
 
@@ -7331,8 +7387,8 @@ async function computeGastosClasificados(businessId, periodo, subcuentas, mayore
 
   const [provQ, bancosMovQ, efvoMovQ, plGastosQ, lineasPoliza] = await Promise.all([
     sb.from('fz_proveedores').select('desglose').eq('business_id', businessId).gte('fecha', start).lte('fecha', end),
-    sb.from('fz_bancos_mov').select('cargos,subcuenta_id').eq('business_id', businessId).eq('tipo_salida', 'gasto').gte('fecha', start).lte('fecha', end),
-    sb.from('fz_efectivo_mov').select('cargos,subcuenta_id').eq('business_id', businessId).eq('tipo_salida', 'gasto').gte('fecha', start).lte('fecha', end),
+    sb.from('fz_bancos_mov').select('cargos,subcuenta_id,aplica_iva,subtotal').eq('business_id', businessId).eq('tipo_salida', 'gasto').gte('fecha', start).lte('fecha', end),
+    sb.from('fz_efectivo_mov').select('cargos,subcuenta_id,aplica_iva,subtotal').eq('business_id', businessId).eq('tipo_salida', 'gasto').gte('fecha', start).lte('fecha', end),
     sb.from('fz_pl_gastos').select('*').eq('business_id', businessId).gte('mes', mesStart).lte('mes', mesEnd),
     getPolizasLineasPeriodo(businessId, periodo),
   ]);
@@ -7343,8 +7399,9 @@ async function computeGastosClasificados(businessId, periodo, subcuentas, mayore
     });
   });
   [...(bancosMovQ.data || []), ...(efvoMovQ.data || [])].forEach(m => {
-    if (m.subcuenta_id) porSubcuenta[m.subcuenta_id] = (porSubcuenta[m.subcuenta_id] || 0) + (Number(m.cargos) || 0);
-    else if (tipoFiltro === 'gasto') sinClasificar += Number(m.cargos) || 0;
+    const monto = m.aplica_iva ? (Number(m.subtotal) || 0) : (Number(m.cargos) || 0);
+    if (m.subcuenta_id) porSubcuenta[m.subcuenta_id] = (porSubcuenta[m.subcuenta_id] || 0) + monto;
+    else if (tipoFiltro === 'gasto') sinClasificar += monto;
   });
   const gastosManuales = plGastosQ.data || [];
   gastosManuales.forEach(g => {

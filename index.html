@@ -1580,6 +1580,28 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
       <label>Subcuenta</label>
       <select id="movSubcuenta"></select>
     </div>
+    <div id="movIvaWrap" style="display:none;border:1.5px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:12px;">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;margin-bottom:8px;">
+        <input type="checkbox" id="movAplicaIva"> Este gasto desglosa IVA (ej. comisiones bancarias)
+      </label>
+      <div id="movIvaCampos" style="display:none;">
+        <div class="grid-3">
+          <div class="field" style="margin-bottom:0;">
+            <label>Subtotal</label>
+            <input type="text" inputmode="decimal" id="movSubtotal" placeholder="0.00">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label>IVA (%)</label>
+            <input type="text" inputmode="decimal" id="movIvaPorcentaje" value="16">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label>IVA (monto)</label>
+            <input type="text" id="movIvaMonto" readonly style="background:#f2f4f8;color:var(--muted);">
+          </div>
+        </div>
+        <p style="font-size:11px;color:var(--muted);margin-top:8px;">El Cargo se calcula solo (Subtotal + IVA). El IVA va directo a "IVA Acreditable" en el Balance, aparte de la subcuenta de gasto.</p>
+      </div>
+    </div>
     <div class="field" id="movFacturasWrap" style="display:none;">
       <label>Facturas a pagar</label>
       <div id="movFacturasResumen" style="background:#f7f9fc;border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:12.5px;"></div>
