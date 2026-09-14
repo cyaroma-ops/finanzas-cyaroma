@@ -7617,7 +7617,7 @@ async function computeGananciaCambiaria(businessId, periodo) {
   }, 0);
 }
 
-async function computeIngresosPoliza(businessId, periodo, subcuentas, mayores) {
+async function computeIngresosPoliza(businessId, periodo, subcuentas, mayores, incluirSinMovimiento = false) {
   const [lineasPoliza, facturasClientes] = await Promise.all([
     getPolizasLineasPeriodo(businessId, periodo),
     sb.from('fz_facturas_clientes').select('id,moneda,tipo_cambio').eq('business_id', businessId).gte('fecha', periodo.start).lte('fecha', periodo.end).then(r => r.data || []),
@@ -7651,9 +7651,9 @@ async function computeIngresosPoliza(businessId, periodo, subcuentas, mayores) {
   const porMayor = mayores.filter(m=>m.tipo==='ingreso').map(m => {
     const subs = subcuentasRaiz(m.id, subcuentas)
       .map(s => construirArbolSubcuenta(s.id, subcuentas, porSubcuenta))
-      .filter(s => s.total);
+      .filter(s => incluirSinMovimiento || s.total);
     return { id: m.id, nombre: m.nombre, subs, subtotal: subs.reduce((s,x)=>s+x.total,0) };
-  }).filter(m => m.subtotal);
+  }).filter(m => incluirSinMovimiento || m.subtotal);
   return { porMayor, total: porMayor.reduce((s,m)=>s+m.subtotal,0) };
 }
 
@@ -8153,7 +8153,7 @@ async function renderPL() {
 
   const gClas = await computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'gasto', true);
   const gCostos = await computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'costo', true);
-  const iPoliza = await computeIngresosPoliza(b.id, periodo, subcuentas, mayores);
+  const iPoliza = await computeIngresosPoliza(b.id, periodo, subcuentas, mayores, true);
   const gananciaCambiaria = await computeGananciaCambiaria(b.id, periodo);
   const totalIngresosFinal = totalIngresos + iPoliza.total + gananciaCambiaria;
   const utilidadBruta = totalIngresosFinal - gCostos.totalClasificado;
