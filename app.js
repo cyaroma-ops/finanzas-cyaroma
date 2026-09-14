@@ -664,6 +664,7 @@ const SECTION_META = {
   balanza: { title: 'Balanza de Comprobación', sub: '', showMonth: true, needsBiz: true },
   librodiario: { title: 'Libro Diario', sub: '', showMonth: false, needsBiz: true },
   comparativo: { title: 'Comparativo entre negocios', sub: '', showMonth: true, needsBiz: false },
+  recargos: { title: 'Recargos y Actualización', sub: '', showMonth: false, needsBiz: false },
   pl: { title: 'Estado de Resultados', sub: '', showMonth: true, needsBiz: true },
   flujo: { title: 'Flujo de Efectivo', sub: '', showMonth: false, needsBiz: true },
   polizas: { title: 'Pólizas de Diario', sub: '', showMonth: false, needsBiz: true },
@@ -675,7 +676,7 @@ const SECTION_META = {
 };
 // Estas viven "dentro" de Configuración: ya no tienen su propio ítem en el menú principal,
 // pero conservan su sección y su función de render tal cual, solo cambia cómo se llega ahí.
-const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos', 'ivafiscal', 'balanza', 'librodiario', 'comparativo'];
+const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos', 'ivafiscal', 'balanza', 'librodiario', 'comparativo', 'recargos'];
 function marcarNavActivo(seccion) {
   document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
   const seccionNav = SECCIONES_EN_CONFIGURACION.includes(seccion) ? 'configuracion' : seccion;
@@ -773,6 +774,7 @@ async function renderCurrentSection() {
   if (s === 'balanza') return renderBalanza();
   if (s === 'librodiario') return renderLibroDiario();
   if (s === 'comparativo') return renderComparativo();
+  if (s === 'recargos') return renderRecargos();
   if (s === 'pl') return renderPL();
   if (s === 'flujo') return renderFlujo();
   if (s === 'polizas') return renderPolizas();
@@ -1982,6 +1984,7 @@ async function generarDepreciacionesSiCorresponde(businessId) {
 }
 
 /* ---------- IVA Acreditable (Proveedores) y Trasladado (Clientes) — solo modo Fiscal Contable ---------- */
+let STATE_ivaFiscalVista = 'mes';
 async function renderIvaFiscal() {
   const el = document.getElementById('sec-ivafiscal');
   const b = biz();
@@ -1993,6 +1996,15 @@ async function renderIvaFiscal() {
     el.insertAdjacentHTML('beforeend', `<div class="empty">Este negocio está en modo Financiero — cambia a "Fiscal Contable" en Configuración → Negocios para activar este reporte.</div>`);
     return;
   }
+
+  el.insertAdjacentHTML('beforeend', `<div class="tag-row" style="margin-bottom:14px;">
+    <div class="tag ${STATE_ivaFiscalVista==='mes'?'active':''}" id="ivaFiscalTabMes">Mes</div>
+    <div class="tag ${STATE_ivaFiscalVista==='anual'?'active':''}" id="ivaFiscalTabAnual">Todos los meses</div>
+  </div>`);
+  document.getElementById('ivaFiscalTabMes').addEventListener('click', () => { STATE_ivaFiscalVista = 'mes'; renderIvaFiscal(); });
+  document.getElementById('ivaFiscalTabAnual').addEventListener('click', () => { STATE_ivaFiscalVista = 'anual'; renderIvaFiscal(); });
+
+  if (STATE_ivaFiscalVista === 'anual') { await renderIvaFiscalAnual(el, b); return; }
 
   const { start, end } = monthBounds(STATE.currentMonth);
 
@@ -2188,6 +2200,79 @@ async function renderIvaFiscal() {
   });
 }
 
+// Versión ligera del cálculo de IVA/Retenciones de un mes — solo totales, para la vista "Todos los meses".
+async function computeResumenIvaMesLigero(businessId, periodo) {
+  const { start, end } = periodo;
+  const [{ data: facturasProv }, { data: facturasCli }, { data: movsBancos }, { data: movsEfvo }, { data: facturasRetencion },
+         { data: pagosDelMes }, { data: cobrosDelMes }, { data: todasFacturasProvIva }, { data: todasFacturasCliIva }] = await Promise.all([
+    sb.from('fz_proveedores').select('iva_monto').eq('business_id', businessId).eq('aplica_iva', true).gte('fecha', start).lte('fecha', end),
+    sb.from('fz_facturas_clientes').select('iva_monto').eq('business_id', businessId).eq('aplica_iva', true).gte('fecha', start).lte('fecha', end),
+    sb.from('fz_bancos_mov').select('iva_monto').eq('business_id', businessId).eq('aplica_iva', true).gte('fecha', start).lte('fecha', end),
+    sb.from('fz_efectivo_mov').select('iva_monto').eq('business_id', businessId).eq('aplica_iva', true).gte('fecha', start).lte('fecha', end),
+    sb.from('fz_proveedores').select('retencion_categoria,retencion_isr_monto,retencion_iva_monto').eq('business_id', businessId).eq('aplica_retencion', true).gte('fecha', start).lte('fecha', end),
+    sb.from('fz_pagos_aplicados').select('monto,factura_id').eq('business_id', businessId).gte('fecha', start).lte('fecha', end),
+    sb.from('fz_cobros_aplicados').select('monto,factura_id').eq('business_id', businessId).gte('fecha', start).lte('fecha', end),
+    sb.from('fz_proveedores').select('id,importe,iva_monto').eq('business_id', businessId).eq('aplica_iva', true),
+    sb.from('fz_facturas_clientes').select('id,total,iva_monto').eq('business_id', businessId).eq('aplica_iva', true),
+  ]);
+  const facturasProvMap = Object.fromEntries((todasFacturasProvIva||[]).map(f => [f.id, f]));
+  const facturasCliMap = Object.fromEntries((todasFacturasCliIva||[]).map(f => [f.id, f]));
+  const movsIvaDirectos = [...(movsBancos||[]), ...(movsEfvo||[])];
+  const ivaAcreditablePagado = (pagosDelMes||[]).reduce((s,p) => {
+    const f = facturasProvMap[p.factura_id];
+    if (!f || !Number(f.importe)) return s;
+    return s + Number(f.iva_monto||0) * (Number(p.monto)/Number(f.importe));
+  }, 0) + movsIvaDirectos.reduce((s,m)=>s+(Number(m.iva_monto)||0),0);
+  const ivaTrasladadoCobrado = (cobrosDelMes||[]).reduce((s,c) => {
+    const f = facturasCliMap[c.factura_id];
+    if (!f || !Number(f.total)) return s;
+    return s + Number(f.iva_monto||0) * (Number(c.monto)/Number(f.total));
+  }, 0);
+  const retencionesPorCategoria = {};
+  (facturasRetencion||[]).forEach(f => {
+    const cat = f.retencion_categoria || 'Sin categoría';
+    if (Number(f.retencion_isr_monto) > 0.004) { const k = `ISR|${cat}`; retencionesPorCategoria[k] = (retencionesPorCategoria[k]||0) + Number(f.retencion_isr_monto); }
+    if (Number(f.retencion_iva_monto) > 0.004) { const k = `IVA|${cat}`; retencionesPorCategoria[k] = (retencionesPorCategoria[k]||0) + Number(f.retencion_iva_monto); }
+  });
+  return { ivaTrasladadoCobrado, ivaAcreditablePagado, ivaCargoFavor: ivaTrasladadoCobrado - ivaAcreditablePagado, retencionesPorCategoria };
+}
+
+async function renderIvaFiscalAnual(el, b) {
+  const contenido = document.createElement('div');
+  contenido.innerHTML = `<div class="empty">Calculando los 12 meses…</div>`;
+  el.appendChild(contenido);
+
+  const anio = STATE.currentMonth.slice(0,4);
+  const meses = Array.from({length:12}, (_,i) => `${anio}-${String(i+1).padStart(2,'0')}`);
+  const datos = await Promise.all(meses.map(ym => computeResumenIvaMesLigero(b.id, monthBounds(ym))));
+  const mesesLabel = meses.map(ym => MESES_LARGO[Number(ym.slice(5,7))-1].slice(0,3));
+
+  const clavesRetencion = [...new Set(datos.flatMap(d => Object.keys(d.retencionesPorCategoria)))].sort();
+
+  const filaHtml = (nombre, valores, opts={}) => `<tr class="${opts.total?'total-row':''}"><td>${nombre}</td>${valores.map(v=>`<td class="num" style="${opts.color?'color:'+opts.color+';':''}">${fmt(v)}</td>`).join('')}<td class="num" style="font-weight:700;">${fmt(valores.reduce((s,v)=>s+v,0))}</td></tr>`;
+
+  contenido.innerHTML = `
+    <div class="card">
+      <div class="card-head"><h3>IVA y Retenciones — Todos los meses de ${anio}</h3></div>
+      <div class="table-wrap scroll-sticky">
+        <table class="report-table">
+          <thead><tr><th>Concepto</th>${mesesLabel.map(m=>`<th>${m}</th>`).join('')}<th>Total</th></tr></thead>
+          <tbody>
+            ${filaHtml('IVA Trasladado cobrado', datos.map(d=>d.ivaTrasladadoCobrado), { color:'var(--red)' })}
+            ${filaHtml('IVA Acreditable pagado', datos.map(d=>d.ivaAcreditablePagado), { color:'var(--green)' })}
+            ${filaHtml('IVA a cargo / (a favor)', datos.map(d=>d.ivaCargoFavor), { total:true })}
+            ${clavesRetencion.map(k => {
+              const [tipoImp, cat] = k.split('|');
+              return filaHtml(`Retención ${tipoImp} — ${cat}`, datos.map(d=>d.retencionesPorCategoria[k]||0));
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin-top:10px;">"IVA a cargo/(a favor)" está en negativo cuando es a favor — súmalo con cuidado al leerlo por columna.</p>
+    </div>
+  `;
+}
+
 async function abrirModalCierrePeriodo(businessId) {
   document.getElementById('cierrePeriodoMes').value = STATE.currentMonth || todayStr().slice(0,7);
   await renderListaCierres(businessId);
@@ -2270,6 +2355,168 @@ async function computeSaldosEspecialesBalanza(b, hastaFecha, subcuentas, mayores
 
 /* ---------- Libro Diario ---------- */
 /* ---------- Comparativo entre negocios ---------- */
+/* ---------- Recargos y Actualización (INPC) ---------- */
+async function renderRecargos() {
+  const el = document.getElementById('sec-recargos');
+  el.innerHTML = '';
+  agregarBotonVolverConfig(el);
+
+  const contenido = document.createElement('div');
+  el.appendChild(contenido);
+  await pintarRecargos(contenido);
+}
+
+async function pintarRecargos(contenido) {
+  const [{ data: inpcData }, { data: tasasData }] = await Promise.all([
+    sb.from('fz_inpc_valores').select('*').order('periodo', { ascending: false }),
+    sb.from('fz_recargos_tasas').select('*').order('periodo', { ascending: false }),
+  ]);
+  const inpcMap = Object.fromEntries((inpcData||[]).map(r => [r.periodo, Number(r.valor)]));
+  const tasasMap = Object.fromEntries((tasasData||[]).map(r => [r.periodo, Number(r.tasa)]));
+
+  contenido.innerHTML = `
+    <p style="font-size:12px;color:var(--muted);margin-bottom:14px;max-width:700px;">
+      Cuando un impuesto se paga después de la fecha en que debió pagarse, el SAT exige dos cosas: <b>actualizarlo por inflación</b> (usando el INPC que publica INEGI) y cobrar <b>recargos</b> (intereses moratorios, con una tasa mensual que publica el SAT/LIF cada año). Captura aquí esos valores conforme se publiquen, y usa la calculadora de abajo cuando necesites saber cuánto pagar.
+    </p>
+    <div class="grid-2" style="align-items:flex-start;">
+      <div class="card">
+        <div class="card-head"><h3>Catálogo INPC (INEGI)</h3></div>
+        <div class="grid-2" style="margin-bottom:10px;">
+          <div class="field" style="margin-bottom:0;">
+            <label>Mes</label>
+            <input type="month" id="inpcNuevoMes">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label>Valor INPC</label>
+            <input type="text" inputmode="decimal" id="inpcNuevoValor" placeholder="Ej. 132.850">
+          </div>
+        </div>
+        <button class="btn btn-gold btn-sm" id="inpcAgregarBtn" style="width:100%;margin-bottom:12px;">Guardar valor</button>
+        <div class="table-wrap" style="max-height:260px;overflow-y:auto;">
+          <table class="report-table">
+            <thead><tr><th>Mes</th><th>INPC</th></tr></thead>
+            <tbody>
+              ${(inpcData||[]).length ? inpcData.map(r => `<tr><td>${r.periodo}</td><td class="num">${Number(r.valor).toFixed(4)}</td></tr>`).join('') : `<tr><td colspan="2" class="empty">Aún no has capturado ningún valor.</td></tr>`}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>Catálogo Tasa de Recargos (SAT/LIF)</h3></div>
+        <div class="grid-2" style="margin-bottom:10px;">
+          <div class="field" style="margin-bottom:0;">
+            <label>Mes</label>
+            <input type="month" id="tasaNuevoMes">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label>Tasa mensual (%)</label>
+            <input type="text" inputmode="decimal" id="tasaNuevoValor" placeholder="Ej. 1.47">
+          </div>
+        </div>
+        <button class="btn btn-gold btn-sm" id="tasaAgregarBtn" style="width:100%;margin-bottom:12px;">Guardar valor</button>
+        <div class="table-wrap" style="max-height:260px;overflow-y:auto;">
+          <table class="report-table">
+            <thead><tr><th>Mes</th><th>Tasa %</th></tr></thead>
+            <tbody>
+              ${(tasasData||[]).length ? tasasData.map(r => `<tr><td>${r.periodo}</td><td class="num">${Number(r.tasa).toFixed(2)}%</td></tr>`).join('') : `<tr><td colspan="2" class="empty">Aún no has capturado ningún valor.</td></tr>`}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:16px;">
+      <div class="card-head"><h3>Calculadora de Recargos y Actualización</h3></div>
+      <div class="grid-3" style="margin-bottom:12px;">
+        <div class="field" style="margin-bottom:0;">
+          <label>Monto del impuesto</label>
+          <input type="text" inputmode="decimal" id="calcImpuesto" placeholder="0.00">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Debió pagarse en</label>
+          <input type="month" id="calcMesVencimiento">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Se va a pagar en</label>
+          <input type="month" id="calcMesPago" value="${todayStr().slice(0,7)}">
+        </div>
+      </div>
+      <button class="btn btn-gold btn-sm" id="calcBtn">Calcular</button>
+      <div id="calcResultado" style="margin-top:14px;"></div>
+    </div>
+  `;
+
+  document.getElementById('inpcAgregarBtn').addEventListener('click', async () => {
+    const periodo = document.getElementById('inpcNuevoMes').value;
+    const valor = leerMonto(document.getElementById('inpcNuevoValor').value);
+    if (!periodo || !valor) { toast('Escribe el mes y el valor de INPC.', 'error'); return; }
+    const { error } = await sb.from('fz_inpc_valores').upsert({ periodo, valor }, { onConflict: 'periodo' });
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    toast('Valor de INPC guardado.');
+    await pintarRecargos(contenido);
+  });
+  document.getElementById('tasaAgregarBtn').addEventListener('click', async () => {
+    const periodo = document.getElementById('tasaNuevoMes').value;
+    const tasa = leerMonto(document.getElementById('tasaNuevoValor').value);
+    if (!periodo || !tasa) { toast('Escribe el mes y la tasa.', 'error'); return; }
+    const { error } = await sb.from('fz_recargos_tasas').upsert({ periodo, tasa }, { onConflict: 'periodo' });
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    toast('Tasa de recargos guardada.');
+    await pintarRecargos(contenido);
+  });
+  document.getElementById('calcBtn').addEventListener('click', () => {
+    const impuesto = leerMonto(document.getElementById('calcImpuesto').value) || 0;
+    const mesVenc = document.getElementById('calcMesVencimiento').value;
+    const mesPago = document.getElementById('calcMesPago').value;
+    const resultadoBox = document.getElementById('calcResultado');
+    if (!impuesto || !mesVenc || !mesPago) { toast('Completa los 3 campos.', 'error'); return; }
+    if (mesPago <= mesVenc) { toast('El mes de pago debe ser posterior al mes en que debió pagarse.', 'error'); return; }
+
+    // Factor de actualización = INPC del mes anterior al pago ÷ INPC del mes anterior al vencimiento
+    const mesAnteriorA = (ym) => { const [y,m] = ym.split('-').map(Number); const d = new Date(y, m-2, 1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; };
+    const inpcPago = inpcMap[mesAnteriorA(mesPago)];
+    const inpcVenc = inpcMap[mesAnteriorA(mesVenc)];
+    if (!inpcPago || !inpcVenc) {
+      resultadoBox.innerHTML = `<p style="color:var(--red);font-size:13px;">Falta capturar el INPC de ${!inpcVenc ? mesAnteriorA(mesVenc) : mesAnteriorA(mesPago)} en el catálogo de arriba para poder calcular.</p>`;
+      return;
+    }
+    const factorActualizacion = inpcPago / inpcVenc;
+    const montoActualizado = impuesto * factorActualizacion;
+
+    // Recargos: se suma la tasa de cada mes transcurrido entre el mes siguiente al vencimiento y el mes de pago
+    let mesesFaltantes = [];
+    let tasaAcumulada = 0;
+    let [y,m] = mesVenc.split('-').map(Number);
+    m++; if (m>12) { m=1; y++; }
+    while (`${y}-${String(m).padStart(2,'0')}` <= mesPago) {
+      const ym = `${y}-${String(m).padStart(2,'0')}`;
+      if (tasasMap[ym] === undefined) mesesFaltantes.push(ym);
+      else tasaAcumulada += tasasMap[ym];
+      m++; if (m>12) { m=1; y++; }
+    }
+    if (mesesFaltantes.length) {
+      resultadoBox.innerHTML = `<p style="color:var(--red);font-size:13px;">Falta capturar la tasa de recargos de: ${mesesFaltantes.join(', ')} en el catálogo de arriba para poder calcular.</p>`;
+      return;
+    }
+    const recargos = montoActualizado * tasaAcumulada / 100;
+    const total = montoActualizado + recargos;
+    resultadoBox.innerHTML = `
+      <div class="table-wrap">
+        <table class="report-table">
+          <tbody>
+            <tr><td>Impuesto original</td><td class="num">${fmt(impuesto)}</td></tr>
+            <tr><td>Factor de actualización (INPC ${mesAnteriorA(mesPago)} ÷ INPC ${mesAnteriorA(mesVenc)})</td><td class="num">${factorActualizacion.toFixed(4)}</td></tr>
+            <tr><td>Monto actualizado</td><td class="num" style="font-weight:600;">${fmt(montoActualizado)}</td></tr>
+            <tr><td>Tasa de recargos acumulada (${tasaAcumulada.toFixed(2)}%, ${mesesFaltantes.length===0 ? 'sobre el monto actualizado' : ''})</td><td class="num">${tasaAcumulada.toFixed(2)}%</td></tr>
+            <tr><td>Recargos</td><td class="num">${fmt(recargos)}</td></tr>
+            <tr class="total-row"><td>Total a pagar</td><td class="num">${fmt(total)}</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin-top:8px;">Cálculo de referencia (Art. 17-A y 21 CFF) — confirma con tu declaración antes de pagar.</p>
+    `;
+  });
+}
+
 async function renderComparativo() {
   const el = document.getElementById('sec-comparativo');
   el.innerHTML = '';
@@ -2529,6 +2776,7 @@ async function renderConfiguracion() {
       ${b?.modo === 'fiscal_contable' ? tarjetaConfigHtml('cfgBalanza', 'Balanza de Comprobación', `Saldos iniciales, movimientos y saldos finales de todas las cuentas en ${b.name}.`) : ''}
       ${b ? tarjetaConfigHtml('cfgLibroDiario', 'Libro Diario', `Todos los movimientos de ${b.name} en formato Cargo/Abono, para auditorías o revisión completa por periodo.`) : ''}
       ${tarjetaConfigHtml('cfgComparativo', 'Comparativo entre negocios', 'Ingresos, gastos y utilidad de todos tus negocios, lado a lado, para el mismo mes.')}
+      ${tarjetaConfigHtml('cfgRecargos', 'Recargos y Actualización', 'Calculadora de INPC y recargos para impuestos pagados fuera de tiempo — aplica a cualquier negocio.')}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgUsuarios', 'Usuarios autorizados', 'Quién puede entrar a Finanzas y a qué negocios.') : ''}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgMfa', 'Autenticación de dos pasos', 'Protege tu cuenta con un código adicional al iniciar sesión.') : ''}
     </div>
@@ -2544,6 +2792,7 @@ async function renderConfiguracion() {
   ir('cfgBalanza', 'balanza');
   ir('cfgLibroDiario', 'librodiario');
   ir('cfgComparativo', 'comparativo');
+  ir('cfgRecargos', 'recargos');
   const usuariosBtn = document.getElementById('cfgUsuarios');
   if (usuariosBtn) usuariosBtn.addEventListener('click', openUsuariosModal);
   const mfaBtn = document.getElementById('cfgMfa');
