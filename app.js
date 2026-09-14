@@ -660,7 +660,7 @@ const SECTION_META = {
   proveedores: { title: 'Proveedores', sub: '', showMonth: false, needsBiz: true },
   clientes: { title: 'Clientes', sub: '', showMonth: false, needsBiz: true },
   activosfijos: { title: 'Activos Fijos', sub: '', showMonth: false, needsBiz: true },
-  ivafiscal: { title: 'IVA Acreditable y Trasladado', sub: '', showMonth: false, needsBiz: true },
+  ivafiscal: { title: 'IVA y Retenciones', sub: '', showMonth: false, needsBiz: true },
   balanza: { title: 'Balanza de Comprobación', sub: '', showMonth: true, needsBiz: true },
   librodiario: { title: 'Libro Diario', sub: '', showMonth: false, needsBiz: true },
   comparativo: { title: 'Comparativo entre negocios', sub: '', showMonth: true, needsBiz: false },
@@ -1994,11 +1994,12 @@ async function renderIvaFiscal() {
     return;
   }
 
-  const [{ data: facturasProv }, { data: facturasCli }, { data: movsBancos }, { data: movsEfvo }] = await Promise.all([
+  const [{ data: facturasProv }, { data: facturasCli }, { data: movsBancos }, { data: movsEfvo }, { data: facturasRetencion }] = await Promise.all([
     sb.from('fz_proveedores').select('proveedor,factura,fecha,importe,importe_pagado,aplica_iva,iva_monto,subtotal').eq('business_id', b.id).eq('aplica_iva', true),
     sb.from('fz_facturas_clientes').select('folio,fecha,cliente_id,total,importe_pagado,aplica_iva,iva_monto').eq('business_id', b.id).eq('aplica_iva', true),
     sb.from('fz_bancos_mov').select('fecha,proveedor,descripcion,subtotal,iva_monto').eq('business_id', b.id).eq('aplica_iva', true),
     sb.from('fz_efectivo_mov').select('fecha,proveedor,descripcion,subtotal,iva_monto').eq('business_id', b.id).eq('aplica_iva', true),
+    sb.from('fz_proveedores').select('proveedor,factura,fecha,retencion_categoria,retencion_isr_monto,retencion_iva_monto').eq('business_id', b.id).eq('aplica_retencion', true),
   ]);
   const movsIvaDirectos = [...(movsBancos||[]), ...(movsEfvo||[])];
   const clientesMap = Object.fromEntries((await loadClientes(b.id)).map(c => [c.id, c.nombre_comercial]));
@@ -2078,6 +2079,41 @@ async function renderIvaFiscal() {
         </table>
       </div>
     </div>
+    <div class="card" style="margin-top:16px;">
+      <div class="card-head"><h3>Retenciones de ISR/IVA por categoría</h3></div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Cada categoría se declara y se paga por separado ante el SAT (ej. retención de IVA por Arrendamiento no es lo mismo que por Fletes) — por eso se muestran aparte, no como un solo total.</p>
+      <div class="table-wrap" style="margin-bottom:14px;">
+        <table>
+          <thead><tr><th>Categoría</th><th>ISR retenido</th><th>IVA retenido</th><th>Total retenido</th></tr></thead>
+          <tbody>
+            ${(() => {
+              const porCat = {};
+              (facturasRetencion||[]).forEach(f => {
+                const cat = f.retencion_categoria || 'Sin categoría';
+                if (!porCat[cat]) porCat[cat] = { isr: 0, iva: 0 };
+                porCat[cat].isr += Number(f.retencion_isr_monto)||0;
+                porCat[cat].iva += Number(f.retencion_iva_monto)||0;
+              });
+              const cats = Object.entries(porCat);
+              return cats.length ? cats.map(([cat,v]) => `<tr>
+                <td>${cat}</td><td class="num">${fmt(v.isr)}</td><td class="num">${fmt(v.iva)}</td><td class="num" style="font-weight:600;">${fmt(v.isr+v.iva)}</td>
+              </tr>`).join('') : `<tr><td colspan="4" class="empty">No hay retenciones capturadas.</td></tr>`;
+            })()}
+          </tbody>
+        </table>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Categoría</th><th>ISR retenido</th><th>IVA retenido</th></tr></thead>
+          <tbody>
+            ${(facturasRetencion||[]).length ? facturasRetencion.map(f => `<tr>
+                <td>${fechaCorta(f.fecha)}</td><td>${f.proveedor||''}</td><td>${f.factura||'s/f'}</td><td>${f.retencion_categoria||'Sin categoría'}</td>
+                <td class="num">${fmt(f.retencion_isr_monto)}</td><td class="num">${fmt(f.retencion_iva_monto)}</td>
+              </tr>`).join('') : `<tr><td colspan="6" class="empty">No hay facturas con retenciones.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
   `;
   el.appendChild(contenido);
 }
@@ -2146,14 +2182,20 @@ async function computeSaldosEspecialesBalanza(b, hastaFecha, subcuentas, mayores
   }
   const ivaTrasladado = !esFiscalContable ? 0 : (facturasClientesData||[]).filter(f=>f.aplica_iva).reduce((s,f)=>s+(Number(f.iva_monto)||0),0);
 
-  const { data: provData } = await sb.from('fz_proveedores').select('importe,importe_pagado,estatus,aplica_retencion,retencion_isr_monto,retencion_iva_monto').eq('business_id', b.id).lte('fecha', hastaFecha);
+  const { data: provData } = await sb.from('fz_proveedores').select('importe,importe_pagado,estatus,aplica_retencion,retencion_categoria,retencion_isr_monto,retencion_iva_monto').eq('business_id', b.id).lte('fecha', hastaFecha);
   const proveedoresPendiente = (provData||[]).filter(p => p.estatus === 'Pendiente' || p.estatus === 'Parcial').reduce((s,p)=>s+(Number(p.importe)-Number(p.importe_pagado||0)),0);
-  let retencionesIsr = 0, retencionesIva = 0;
+  const retencionesPorCategoria = {}; // clave "ISR|Honorarios" / "IVA|Fletes..." -> monto — cada categoría se paga por separado ante el SAT
   if (esFiscalContable) {
-    (provData||[]).filter(p => p.aplica_retencion).forEach(p => { retencionesIsr += Number(p.retencion_isr_monto)||0; retencionesIva += Number(p.retencion_iva_monto)||0; });
+    (provData||[]).filter(p => p.aplica_retencion).forEach(p => {
+      const cat = p.retencion_categoria || 'Sin categoría';
+      if (Number(p.retencion_isr_monto) > 0.004) { const k = `ISR|${cat}`; retencionesPorCategoria[k] = (retencionesPorCategoria[k]||0) + Number(p.retencion_isr_monto); }
+      if (Number(p.retencion_iva_monto) > 0.004) { const k = `IVA|${cat}`; retencionesPorCategoria[k] = (retencionesPorCategoria[k]||0) + Number(p.retencion_iva_monto); }
+    });
   }
+  const retencionesIsr = Object.entries(retencionesPorCategoria).filter(([k])=>k.startsWith('ISR|')).reduce((s,[,v])=>s+v,0);
+  const retencionesIva = Object.entries(retencionesPorCategoria).filter(([k])=>k.startsWith('IVA|')).reduce((s,[,v])=>s+v,0);
 
-  return { totalEfectivo, totalBancos, cuentasPorCobrar, ivaAcreditable, proveedoresPendiente, ivaTrasladado, retencionesIsr, retencionesIva };
+  return { totalEfectivo, totalBancos, cuentasPorCobrar, ivaAcreditable, proveedoresPendiente, ivaTrasladado, retencionesIsr, retencionesIva, retencionesPorCategoria };
 }
 
 /* ---------- Libro Diario ---------- */
@@ -2350,6 +2392,11 @@ async function renderBalanza() {
     }
   }
 
+  const clavesRetencion = new Set([...Object.keys(inicialesp.retencionesPorCategoria||{}), ...Object.keys(finalesp.retencionesPorCategoria||{})]);
+  const filasRetencion = [...clavesRetencion].map(k => {
+    const [tipoImp, cat] = k.split('|');
+    return { nombre: `Retención ${tipoImp} — ${cat}`, tipo: 'pasivo', inicial: (inicialesp.retencionesPorCategoria||{})[k]||0, final: (finalesp.retencionesPorCategoria||{})[k]||0 };
+  });
   const filasEspeciales = [
     { nombre: 'Efectivo y equivalentes', tipo: 'activo', inicial: inicialesp.totalEfectivo, final: finalesp.totalEfectivo },
     { nombre: 'Bancos', tipo: 'activo', inicial: inicialesp.totalBancos, final: finalesp.totalBancos },
@@ -2357,8 +2404,7 @@ async function renderBalanza() {
     { nombre: 'IVA Acreditable', tipo: 'activo', inicial: inicialesp.ivaAcreditable, final: finalesp.ivaAcreditable },
     { nombre: 'Proveedores por pagar', tipo: 'pasivo', inicial: inicialesp.proveedoresPendiente, final: finalesp.proveedoresPendiente },
     { nombre: 'IVA Trasladado por pagar', tipo: 'pasivo', inicial: inicialesp.ivaTrasladado, final: finalesp.ivaTrasladado },
-    { nombre: 'Retenciones de ISR por pagar', tipo: 'pasivo', inicial: inicialesp.retencionesIsr, final: finalesp.retencionesIsr },
-    { nombre: 'Retenciones de IVA por pagar', tipo: 'pasivo', inicial: inicialesp.retencionesIva, final: finalesp.retencionesIva },
+    ...filasRetencion,
   ].filter(f => Math.abs(f.inicial) > 0.004 || Math.abs(f.final) > 0.004);
 
   const todasFilas = [...filasEspeciales.map(f=>({...f, especial:true})), ...filasMayor.map(f=>({...f, especial:false}))];
@@ -2409,7 +2455,7 @@ async function renderConfiguracion() {
       ${tarjetaConfigHtml('cfgAuditoria', 'Auditoría', b ? `Quién creó, editó o eliminó cada registro en ${b.name}.` : 'Selecciona un negocio para ver su auditoría.')}
       ${tarjetaConfigHtml('cfgCierre', 'Cierre de periodo', b ? `Bloquea la captura de meses ya cerrados en ${b.name}.` : 'Selecciona un negocio para gestionar sus cierres.')}
       ${tarjetaConfigHtml('cfgActivosFijos', 'Activos Fijos', b ? `Equipo, mobiliario y su depreciación mensual automática en ${b.name}.` : 'Selecciona un negocio para gestionar sus activos.')}
-      ${b?.modo === 'fiscal_contable' ? tarjetaConfigHtml('cfgIvaFiscal', 'IVA Acreditable y Trasladado', `Cuánto IVA ya puedes acreditar (pagado) y cuánto ya debes al SAT (cobrado) en ${b.name}.`) : ''}
+      ${b?.modo === 'fiscal_contable' ? tarjetaConfigHtml('cfgIvaFiscal', 'IVA y Retenciones', `IVA Acreditable/Trasladado y retenciones de ISR/IVA por categoría, en ${b.name}.`) : ''}
       ${b?.modo === 'fiscal_contable' ? tarjetaConfigHtml('cfgBalanza', 'Balanza de Comprobación', `Saldos iniciales, movimientos y saldos finales de todas las cuentas en ${b.name}.`) : ''}
       ${b ? tarjetaConfigHtml('cfgLibroDiario', 'Libro Diario', `Todos los movimientos de ${b.name} en formato Cargo/Abono, para auditorías o revisión completa por periodo.`) : ''}
       ${tarjetaConfigHtml('cfgComparativo', 'Comparativo entre negocios', 'Ingresos, gastos y utilidad de todos tus negocios, lado a lado, para el mismo mes.')}
@@ -7969,11 +8015,17 @@ async function renderBalanceGeneral() {
 
   const ivaTrasladado = !esFiscalContable ? 0 : (facturasClientesData||[]).filter(f=>f.aplica_iva).reduce((s,f)=>s+(Number(f.iva_monto)||0),0);
 
-  let retencionesIsr = 0, retencionesIva = 0;
+  const retencionesPorCategoria = {};
   if (esFiscalContable) {
-    const { data: retData } = await sb.from('fz_proveedores').select('retencion_isr_monto,retencion_iva_monto').eq('business_id', b.id).eq('aplica_retencion', true).lte('fecha', hastaFecha);
-    (retData||[]).forEach(f => { retencionesIsr += Number(f.retencion_isr_monto)||0; retencionesIva += Number(f.retencion_iva_monto)||0; });
+    const { data: retData } = await sb.from('fz_proveedores').select('retencion_categoria,retencion_isr_monto,retencion_iva_monto').eq('business_id', b.id).eq('aplica_retencion', true).lte('fecha', hastaFecha);
+    (retData||[]).forEach(f => {
+      const cat = f.retencion_categoria || 'Sin categoría';
+      if (Number(f.retencion_isr_monto) > 0.004) { const k = `ISR|${cat}`; retencionesPorCategoria[k] = (retencionesPorCategoria[k]||0) + Number(f.retencion_isr_monto); }
+      if (Number(f.retencion_iva_monto) > 0.004) { const k = `IVA|${cat}`; retencionesPorCategoria[k] = (retencionesPorCategoria[k]||0) + Number(f.retencion_iva_monto); }
+    });
   }
+  const retencionesIsr = Object.entries(retencionesPorCategoria).filter(([k])=>k.startsWith('ISR|')).reduce((s,[,v])=>s+v,0);
+  const retencionesIva = Object.entries(retencionesPorCategoria).filter(([k])=>k.startsWith('IVA|')).reduce((s,[,v])=>s+v,0);
 
   const otrosPasivos = [];
   for (const m of mayores.filter(m => m.tipo === 'pasivo')) {
@@ -8041,8 +8093,10 @@ async function renderBalanceGeneral() {
           <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">PASIVO</td></tr>
           <tr class="balance-link-proveedores" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">Proveedores por pagar ↗</td><td class="num" style="font-weight:600;">${fmtNeg(proveedoresPendiente)}</td></tr>
           ${esFiscalContable && Math.abs(ivaTrasladado) > 0.004 ? `<tr><td style="padding-left:22px;font-weight:600;">IVA Trasladado por pagar</td><td class="num" style="font-weight:600;">${fmtNeg(ivaTrasladado)}</td></tr>` : ''}
-          ${esFiscalContable && Math.abs(retencionesIsr) > 0.004 ? `<tr><td style="padding-left:22px;font-weight:600;">Retenciones de ISR por pagar</td><td class="num" style="font-weight:600;">${fmtNeg(retencionesIsr)}</td></tr>` : ''}
-          ${esFiscalContable && Math.abs(retencionesIva) > 0.004 ? `<tr><td style="padding-left:22px;font-weight:600;">Retenciones de IVA por pagar</td><td class="num" style="font-weight:600;">${fmtNeg(retencionesIva)}</td></tr>` : ''}
+          ${Object.entries(retencionesPorCategoria).filter(([,v])=>Math.abs(v)>0.004).map(([k,v]) => {
+            const [tipoImp, cat] = k.split('|');
+            return `<tr><td style="padding-left:22px;font-weight:600;">Retención ${tipoImp} — ${cat}</td><td class="num" style="font-weight:600;">${fmtNeg(v)}</td></tr>`;
+          }).join('')}
           ${otrosPasivos.map(m => `
             <tr class="balance-mayor-row" data-mayor="${m.id}" data-nombre="${m.nombre.replace(/"/g,'&quot;')}" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.total)}</td></tr>
             ${m.subs.map(s => filaArbolBalanceConDetalle(s, 1)).join('')}
