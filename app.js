@@ -2415,6 +2415,7 @@ async function computeSaldosEspecialesBalanza(b, hastaFecha, subcuentas, mayores
 /* ---------- Pagos de Impuestos ---------- */
 const TIPO_IMPUESTO_LABEL = { iva: 'IVA a cargo', isr_provisional: 'ISR Provisional', retencion_isr: 'Retención de ISR', retencion_iva: 'Retención de IVA', otro: 'Otro' };
 let STATE_piEditandoId = null;
+let STATE_piAnio = todayStr().slice(0,4);
 
 async function renderPagosImpuestos() {
   const el = document.getElementById('sec-pagosimpuestos');
@@ -2424,12 +2425,34 @@ async function renderPagosImpuestos() {
   agregarBotonVolverConfig(el);
 
   const contenido = document.createElement('div');
+  contenido.innerHTML = `<div class="empty">Calculando…</div>`;
   el.appendChild(contenido);
+
+  await autoGenerarIvaPagosImpuestos(b, STATE_piAnio);
   await pintarPagosImpuestos(contenido, b);
 }
 
+// Crea solo (nunca duplica) el registro de "IVA a cargo" de cada mes del año elegido que aún no
+// tenga registro — usando el mismo cálculo de IVA y Retenciones. Así no hay que capturarlo a mano.
+async function autoGenerarIvaPagosImpuestos(b, anio) {
+  const { data: existentes } = await sb.from('fz_pagos_impuestos').select('periodo').eq('business_id', b.id).eq('tipo_impuesto', 'iva').like('periodo', `${anio}-%`);
+  const periodosExistentes = new Set((existentes||[]).map(p => p.periodo));
+  const hastaMes = anio === todayStr().slice(0,4) ? Number(todayStr().slice(5,7)) : 12;
+  const nuevos = [];
+  for (let m = 1; m <= hastaMes; m++) {
+    const periodo = `${anio}-${String(m).padStart(2,'0')}`;
+    if (periodosExistentes.has(periodo)) continue;
+    const resumen = await computeResumenIvaMesLigero(b.id, monthBounds(periodo));
+    if (resumen.ivaCargoFavor > 0.004) {
+      let [y,mm] = [Number(anio), m+1]; if (mm>12) { mm=1; y++; }
+      nuevos.push({ business_id: b.id, periodo, tipo_impuesto: 'iva', concepto: null, monto: resumen.ivaCargoFavor, fecha_limite: `${y}-${String(mm).padStart(2,'0')}-17`, fecha_pago: null });
+    }
+  }
+  if (nuevos.length) await sb.from('fz_pagos_impuestos').insert(nuevos);
+}
+
 async function pintarPagosImpuestos(contenido, b) {
-  const { data: pagos } = await sb.from('fz_pagos_impuestos').select('*').eq('business_id', b.id).order('periodo', { ascending: false });
+  const { data: pagos } = await sb.from('fz_pagos_impuestos').select('*').eq('business_id', b.id).like('periodo', `${STATE_piAnio}-%`).order('periodo', { ascending: true });
   const hoy = todayStr();
 
   const estatusDe = (p) => {
@@ -2441,43 +2464,83 @@ async function pintarPagosImpuestos(contenido, b) {
   const totalPendiente = (pagos||[]).filter(p=>!p.fecha_pago).reduce((s,p)=>s+Number(p.monto),0);
   const totalPagado = (pagos||[]).filter(p=>p.fecha_pago).reduce((s,p)=>s+Number(p.total_pagado||p.monto),0);
   const totalRecargosPagados = (pagos||[]).filter(p=>p.fecha_pago && p.recargos).reduce((s,p)=>s+Number(p.recargos||0),0);
+  const anioActual = Number(todayStr().slice(0,4));
+  const anios = Array.from({length:6}, (_,i) => anioActual - 4 + i);
 
   contenido.innerHTML = `
-    <p style="font-size:12px;color:var(--muted);margin-bottom:14px;max-width:700px;">Registra aquí cualquier impuesto federal (IVA, ISR Provisional, Retenciones, u otro) por mes — cuándo vence, cuándo se pagó, y si fue tarde, el sistema calcula la actualización y los recargos usando los catálogos de Recargos y Actualización.</p>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:14px;max-width:700px;">El IVA a cargo de cada mes se agrega solo (viene del cálculo de IVA y Retenciones) — los demás impuestos (ISR Provisional, Retenciones, Otro) los registras con el botón de abajo. Marca la fecha de pago directo en la tabla; si fue tarde, se calculan solos la actualización y los recargos.</p>
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+      <div class="field" style="max-width:160px;margin-bottom:0;">
+        <label>Año</label>
+        <select id="piAnioSel">${anios.map(a=>`<option value="${a}" ${String(a)===STATE_piAnio?'selected':''}>${a}</option>`).join('')}</select>
+      </div>
+      <button class="btn btn-gold btn-sm" id="piNuevoBtn">+ Registrar otro impuesto</button>
+    </div>
     <div class="kpi-grid kpi-grid-compact" style="margin-bottom:14px;">
       <div class="kpi"><div class="label">Pendiente de pagar</div><div class="value num ${totalPendiente>0.004?'red':''}">${fmt(totalPendiente)}</div></div>
       <div class="kpi"><div class="label">Ya pagado</div><div class="value num green">${fmt(totalPagado)}</div></div>
       <div class="kpi"><div class="label">Recargos pagados (histórico)</div><div class="value num ${totalRecargosPagados>0.004?'red':''}">${fmt(totalRecargosPagados)}</div></div>
     </div>
     <div class="card">
-      <div class="card-head">
-        <h3>Impuestos registrados</h3>
-        <button class="btn btn-gold btn-sm" id="piNuevoBtn">+ Registrar impuesto</button>
-      </div>
+      <div class="card-head"><h3>Impuestos de ${STATE_piAnio}</h3></div>
       <div class="table-wrap scroll-sticky">
         <table class="report-table">
-          <thead><tr><th>Periodo</th><th>Tipo</th><th>Concepto</th><th>Monto</th><th>Fecha límite</th><th>Fecha de pago</th><th>Estatus</th><th>Total pagado</th></tr></thead>
+          <thead><tr><th>Periodo</th><th>Tipo</th><th>Concepto</th><th>Monto principal</th><th>Fecha límite</th><th>Fecha de pago</th><th>Estatus</th><th>Actualización</th><th>Recargos</th><th>Total</th><th></th></tr></thead>
           <tbody>
             ${(pagos||[]).length ? pagos.map(p => {
               const est = estatusDe(p);
-              return `<tr class="pi-row" data-id="${p.id}" style="cursor:pointer;">
+              return `<tr>
                 <td>${p.periodo}</td><td>${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]||p.tipo_impuesto}</td><td>${p.concepto||''}</td>
-                <td class="num">${fmt(p.monto)}</td><td>${fechaCorta(p.fecha_limite)}</td><td>${p.fecha_pago?fechaCorta(p.fecha_pago):'—'}</td>
+                <td class="num">${fmt(p.monto)}</td><td>${fechaCorta(p.fecha_limite)}</td>
+                <td><input type="date" class="pi-fecha-pago-input" data-id="${p.id}" value="${p.fecha_pago||''}" style="border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12.5px;"></td>
                 <td style="color:${est.color};font-weight:600;">${est.texto}</td>
-                <td class="num">${p.total_pagado?fmt(p.total_pagado):''}</td>
+                <td class="num">${p.monto_actualizado?fmt(p.monto_actualizado):''}</td>
+                <td class="num">${p.recargos?fmt(p.recargos):''}</td>
+                <td class="num" style="font-weight:600;">${p.total_pagado?fmt(p.total_pagado):''}</td>
+                <td><button class="row-del pi-eliminar" data-id="${p.id}" title="Eliminar">✕</button></td>
               </tr>`;
-            }).join('') : `<tr><td colspan="8" class="empty">Aún no has registrado ningún impuesto.</td></tr>`}
+            }).join('') : `<tr><td colspan="11" class="empty">No hay impuestos registrados en ${STATE_piAnio}.</td></tr>`}
           </tbody>
         </table>
       </div>
     </div>
   `;
 
+  document.getElementById('piAnioSel').addEventListener('change', async (e) => {
+    STATE_piAnio = e.target.value;
+    renderPagosImpuestos();
+  });
   document.getElementById('piNuevoBtn').addEventListener('click', () => abrirModalPagoImpuesto(null, b));
-  contenido.querySelectorAll('.pi-row').forEach(tr => tr.addEventListener('click', () => {
-    const p = (pagos||[]).find(x => x.id === tr.dataset.id);
-    if (p) abrirModalPagoImpuesto(p, b);
+  contenido.querySelectorAll('.pi-fecha-pago-input').forEach(inp => inp.addEventListener('change', async () => {
+    const p = (pagos||[]).find(x => x.id === inp.dataset.id);
+    if (!p) return;
+    await guardarFechaPagoInline(p, inp.value || null, b);
+    await pintarPagosImpuestos(contenido, b);
   }));
+  contenido.querySelectorAll('.pi-eliminar').forEach(btn => btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (!confirm('¿Eliminar este registro de impuesto?')) return;
+    await sb.from('fz_pagos_impuestos').delete().eq('id', btn.dataset.id);
+    registrarAuditoria(b.id, 'eliminar', 'Pagos de Impuestos', 'Registro eliminado');
+    await pintarPagosImpuestos(contenido, b);
+  }));
+}
+
+// Guarda la fecha de pago editada directo en la tabla, calculando recargos/actualización solo si aplica.
+async function guardarFechaPagoInline(p, fechaPago, b) {
+  let monto_actualizado = null, recargos = null, total_pagado = null;
+  if (fechaPago) {
+    if (fechaPago <= p.fecha_limite) {
+      total_pagado = p.monto;
+    } else {
+      const r = await calcularRecargosActualizacion(p.monto, p.fecha_limite.slice(0,7), fechaPago.slice(0,7));
+      if (r.error) { toast(r.error, 'error'); return; }
+      monto_actualizado = r.montoActualizado; recargos = r.recargos; total_pagado = r.total;
+    }
+  }
+  const { error } = await sb.from('fz_pagos_impuestos').update({ fecha_pago: fechaPago, monto_actualizado, recargos, total_pagado }).eq('id', p.id);
+  if (error) { toast('Error: ' + error.message, 'error'); return; }
+  registrarAuditoria(b.id, 'editar', 'Pagos de Impuestos', `${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]} ${p.periodo} — fecha de pago actualizada`);
 }
 
 function abrirModalPagoImpuesto(pago, b) {
