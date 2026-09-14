@@ -2792,6 +2792,7 @@ async function renderCatalogoCuentas() {
     const { error: e2 } = await sb.from('fz_subcuentas').insert({ business_id: b.id, cuenta_mayor_id: nuevaMayor.id, nombre, orden: 0 });
     if (e2) toast('La cuenta mayor se creó, pero hubo un error creando su subcuenta por default: ' + e2.message, 'error');
     else toast('Cuenta mayor creada, ya lista para usarse en Pólizas de Diario.');
+    registrarAuditoria(b.id, 'crear', 'Catálogo de Cuentas', `Cuenta mayor "${nombre}" (${TIPO_CUENTA_LABEL[tipo]||tipo}) creada`);
     renderCatalogoCuentas();
   });
   document.getElementById('ccSaveSub').addEventListener('click', async () => {
@@ -2802,6 +2803,7 @@ async function renderCatalogoCuentas() {
     if (!nombre) { toast('Escribe un nombre.', 'error'); return; }
     const { error } = await sb.from('fz_subcuentas').insert({ business_id: b.id, cuenta_mayor_id, subcuenta_padre_id, nombre, orden: 99 });
     if (error) { toast('Error: ' + error.message, 'error'); return; }
+    registrarAuditoria(b.id, 'crear', 'Catálogo de Cuentas', `Subcuenta "${nombre}" creada`);
     renderCatalogoCuentas();
   });
   el.querySelectorAll('.cc-mayor-editar').forEach(btn => btn.addEventListener('click', () => {
@@ -3334,6 +3336,7 @@ function openImportExcelModal(tipo, businessId, onDone, extra) {
         if (!payload.length) { toast('El archivo no tiene filas.', 'error'); return; }
         const { data: nuevasVentas, error } = await sb.from('fz_ventas').insert(payload).select();
         if (error) { toast('Error al importar: ' + error.message, 'error'); return; }
+        registrarAuditoria(businessId, 'crear', 'Ventas', `${payload.length} día(s) de ventas importados desde Excel`);
         const conceptosPropinas = cRecon.filter(c => c.categoria === 'propinas');
         if (conceptosPropinas.length) {
           for (const v of (nuevasVentas || [])) {
@@ -3461,6 +3464,7 @@ async function openVentaDiaModal(businessId, onDone) {
     }
     const { data: nuevaVenta, error } = await sb.from('fz_ventas').insert(payload).select().single();
     if (error) { toast('Error: ' + error.message, 'error'); return; }
+    registrarAuditoria(businessId, 'crear', 'Ventas', `Día de ventas del ${fecha} agregado`);
     for (const c of porCat.propinas) {
       const monto = Number(recon_data[c.id]?.monto) || 0;
       if (monto) await provisionarPropina(businessId, nuevaVenta.id, c, monto, fecha);
