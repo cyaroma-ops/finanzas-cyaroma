@@ -9284,7 +9284,21 @@ async function sincronizarCobroDesdePolizas(businessId, facturaId) {
   await sb.from('fz_facturas_clientes').update(payload).eq('id', facturaId);
 }
 
+let STATE_polizaGuardando = false;
 async function guardarBorradorPoliza() {
+  if (STATE_polizaGuardando) return; // ya se está guardando, ignora el clic repetido
+  STATE_polizaGuardando = true;
+  const guardarBtnEl = document.querySelector('.poliza-guardar');
+  const textoOriginalBtn = guardarBtnEl ? guardarBtnEl.textContent : '';
+  if (guardarBtnEl) { guardarBtnEl.disabled = true; guardarBtnEl.textContent = 'Guardando…'; }
+  try {
+    await guardarBorradorPolizaInterno();
+  } finally {
+    STATE_polizaGuardando = false;
+    if (guardarBtnEl) { guardarBtnEl.disabled = false; guardarBtnEl.textContent = textoOriginalBtn; }
+  }
+}
+async function guardarBorradorPolizaInterno() {
   if (document.activeElement && typeof document.activeElement.blur === 'function') document.activeElement.blur();
   const borrador = STATE_polizaBorrador;
   const businessId = borrador.businessId;
