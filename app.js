@@ -8221,12 +8221,12 @@ async function renderPL() {
       </table>
     </div>
 
-    ${gCostos.porMayor.length ? `
+    ${mayores.some(m => m.tipo === 'costo') ? `
     <div class="card">
       <div class="card-head"><h3>Costo de Ventas — ${periodoLabel}</h3></div>
       <table class="report-table">
         <tbody>
-          ${gCostos.porMayor.map(m => {
+          ${gCostos.porMayor.length ? gCostos.porMayor.map(m => {
             const ventaVinculada = m.conceptoVentaVinculadoId ? ingresosPorConcepto.find(i => i.id === m.conceptoVentaVinculadoId) : null;
             const porcentaje = (ventaVinculada && ventaVinculada.monto) ? ` <span style="color:var(--muted);font-weight:400;">(${(m.subtotal/ventaVinculada.monto*100).toFixed(1)}% de ${ventaVinculada.nombre})</span>` : '';
             return `
@@ -8234,7 +8234,7 @@ async function renderPL() {
             ${m.subs.map(s => filaArbolSubcuentaHtml(s, false, 0, detalleCostoHtml)).join('')}
             <tr><td style="padding-left:22px;font-style:italic;color:var(--muted);">Subtotal ${m.nombre}${porcentaje}</td><td class="num" style="font-weight:600;">${fmtNeg(m.subtotal)}</td></tr>
           `;
-          }).join('')}
+          }).join('') : `<tr><td colspan="2" class="empty">Sin costos clasificados en este periodo.</td></tr>`}
           <tr class="total-row"><td>Total Costo de Ventas</td><td class="num">${fmtNeg(gCostos.totalClasificado)}</td></tr>
           <tr class="total-row" style="border-top:2px solid var(--navy-1);"><td>Utilidad Bruta</td><td class="num" style="color:${utilidadBruta>=0?'var(--green)':'var(--red)'};">${fmt(utilidadBruta)}</td></tr>
         </tbody>
@@ -8287,7 +8287,7 @@ async function renderPL() {
       <table class="report-table">
         <tbody>
           <tr><td>Total ingresos</td><td class="num">${fmtNeg(totalIngresosFinal)}</td></tr>
-          ${gCostos.totalClasificado ? `
+          ${mayores.some(m => m.tipo === 'costo') ? `
           <tr><td>Costo de Ventas</td><td class="num" style="color:var(--red);">-${fmt(gCostos.totalClasificado)}</td></tr>
           <tr class="total-row"><td>Utilidad Bruta</td><td class="num" style="color:${utilidadBruta>=0?'var(--green)':'var(--red)'};">${fmt(utilidadBruta)}</td></tr>` : ''}
           <tr><td>Total gastos</td><td class="num" style="color:var(--red);">-${fmt(gastosTotales)}</td></tr>
