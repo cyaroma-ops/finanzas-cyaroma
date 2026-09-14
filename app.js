@@ -652,6 +652,7 @@ const SECTION_META = {
   activosfijos: { title: 'Activos Fijos', sub: '', showMonth: false, needsBiz: true },
   ivafiscal: { title: 'IVA Acreditable y Trasladado', sub: '', showMonth: false, needsBiz: true },
   balanza: { title: 'Balanza de Comprobación', sub: '', showMonth: true, needsBiz: true },
+  librodiario: { title: 'Libro Diario', sub: '', showMonth: false, needsBiz: true },
   pl: { title: 'Estado de Resultados', sub: '', showMonth: true, needsBiz: true },
   flujo: { title: 'Flujo de Efectivo', sub: '', showMonth: false, needsBiz: true },
   polizas: { title: 'Pólizas de Diario', sub: '', showMonth: false, needsBiz: true },
@@ -663,7 +664,7 @@ const SECTION_META = {
 };
 // Estas viven "dentro" de Configuración: ya no tienen su propio ítem en el menú principal,
 // pero conservan su sección y su función de render tal cual, solo cambia cómo se llega ahí.
-const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos', 'ivafiscal', 'balanza'];
+const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos', 'ivafiscal', 'balanza', 'librodiario'];
 function marcarNavActivo(seccion) {
   document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
   const seccionNav = SECCIONES_EN_CONFIGURACION.includes(seccion) ? 'configuracion' : seccion;
@@ -759,6 +760,7 @@ async function renderCurrentSection() {
   if (s === 'activosfijos') return renderActivosFijos();
   if (s === 'ivafiscal') return renderIvaFiscal();
   if (s === 'balanza') return renderBalanza();
+  if (s === 'librodiario') return renderLibroDiario();
   if (s === 'pl') return renderPL();
   if (s === 'flujo') return renderFlujo();
   if (s === 'polizas') return renderPolizas();
@@ -2136,6 +2138,90 @@ async function computeSaldosEspecialesBalanza(b, hastaFecha, subcuentas, mayores
   return { totalEfectivo, totalBancos, cuentasPorCobrar, ivaAcreditable, proveedoresPendiente, ivaTrasladado };
 }
 
+/* ---------- Libro Diario ---------- */
+async function renderLibroDiario() {
+  const el = document.getElementById('sec-librodiario');
+  const b = biz();
+  if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
+  el.innerHTML = '';
+  agregarBotonVolverConfig(el);
+
+  const { start, end } = monthBounds(STATE.currentMonth);
+  const contenido = document.createElement('div');
+  contenido.innerHTML = `
+    <div class="card">
+      <div class="card-head"><h3>Libro Diario — ${b.name}</h3><span class="hint">Todos los movimientos en formato Cargo/Abono</span></div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;">Reúne Pólizas de Diario, Facturas de Proveedores y Clientes, y movimientos de Bancos/Efectivo — cada uno convertido al mismo formato contable, en orden cronológico. Útil para entregar a auditoría o revisar todo un periodo de un vistazo.</p>
+      <div class="grid-3" style="max-width:640px;margin-bottom:14px;">
+        <div class="field" style="margin-bottom:0;">
+          <label>Del día</label>
+          <input type="date" id="ldDesde" value="${start}">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Al día</label>
+          <input type="date" id="ldHasta" value="${end}">
+        </div>
+        <div class="field" style="margin-bottom:0;display:flex;align-items:flex-end;gap:8px;">
+          <button class="btn btn-gold btn-sm" id="ldBuscar" style="flex:1;">Buscar</button>
+          <button class="btn btn-ghost btn-sm" id="ldExportar">Excel</button>
+        </div>
+      </div>
+      <div id="ldResumen" style="background:#f7f9fc;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px;"></div>
+      <div class="table-wrap scroll-sticky">
+        <table>
+          <thead><tr><th>Fecha</th><th>Referencia</th><th>Cuenta</th><th>Concepto</th><th>Cargo</th><th>Abono</th></tr></thead>
+          <tbody id="ldLista"><tr><td colspan="6" class="empty">Elige un rango y dale "Buscar".</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  el.appendChild(contenido);
+
+  let ultimoResultado = null;
+  const buscar = async () => {
+    const desde = document.getElementById('ldDesde').value;
+    const hasta = document.getElementById('ldHasta').value;
+    if (!desde || !hasta) { toast('Elige ambas fechas.', 'error'); return; }
+    document.getElementById('ldLista').innerHTML = `<tr><td colspan="6" class="empty">Calculando…</td></tr>`;
+    const resultado = await getLibroDiario(b.id, desde, hasta);
+    ultimoResultado = resultado;
+    const { filas, totalCargo, totalAbono } = resultado;
+    const cuadra = Math.abs(totalCargo - totalAbono) < 0.5;
+    document.getElementById('ldResumen').innerHTML = `
+      <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+        <span>Movimientos: <strong>${filas.length}</strong></span>
+        <span>Total Cargo: <strong>${fmt(totalCargo)}</strong></span>
+        <span>Total Abono: <strong>${fmt(totalAbono)}</strong></span>
+        <span style="color:${cuadra?'var(--green)':'var(--red)'};font-weight:700;">${cuadra?'✓ Cuadra exacto':'⚠ No cuadra — diferencia de '+fmt(Math.abs(totalCargo-totalAbono))}</span>
+      </div>
+    `;
+    document.getElementById('ldLista').innerHTML = filas.length ? filas.map(f => `
+      <tr>
+        <td>${fechaCorta(f.fecha)}</td>
+        <td>${f.referencia}</td>
+        <td>${f.cuenta}</td>
+        <td>${f.concepto}</td>
+        <td class="num">${f.cargo ? fmt(f.cargo) : ''}</td>
+        <td class="num">${f.abono ? fmt(f.abono) : ''}</td>
+      </tr>`).join('') : `<tr><td colspan="6" class="empty">No hay movimientos en este rango.</td></tr>`;
+  };
+  document.getElementById('ldBuscar').addEventListener('click', buscar);
+  document.getElementById('ldExportar').addEventListener('click', () => {
+    if (!ultimoResultado || !ultimoResultado.filas.length) { toast('Primero busca un rango con movimientos.', 'error'); return; }
+    const filasExcel = ultimoResultado.filas.map(f => ({
+      'Fecha': f.fecha, 'Referencia': f.referencia, 'Cuenta': f.cuenta, 'Concepto': f.concepto,
+      'Cargo': f.cargo || 0, 'Abono': f.abono || 0,
+    }));
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(filasExcel);
+    XLSX.utils.book_append_sheet(wb, ws, 'Libro Diario');
+    const desde = document.getElementById('ldDesde').value, hasta = document.getElementById('ldHasta').value;
+    XLSX.writeFile(wb, `Libro Diario - ${b.name} - ${desde} a ${hasta}.xlsx`);
+    registrarAuditoria(b.id, 'exportar', 'Libro Diario', `Exportado del ${desde} al ${hasta}`);
+  });
+  await buscar();
+}
+
 async function renderBalanza() {
   const el = document.getElementById('sec-balanza');
   const b = biz();
@@ -2254,6 +2340,7 @@ async function renderConfiguracion() {
       ${tarjetaConfigHtml('cfgActivosFijos', 'Activos Fijos', b ? `Equipo, mobiliario y su depreciación mensual automática en ${b.name}.` : 'Selecciona un negocio para gestionar sus activos.')}
       ${b?.modo === 'fiscal_contable' ? tarjetaConfigHtml('cfgIvaFiscal', 'IVA Acreditable y Trasladado', `Cuánto IVA ya puedes acreditar (pagado) y cuánto ya debes al SAT (cobrado) en ${b.name}.`) : ''}
       ${b?.modo === 'fiscal_contable' ? tarjetaConfigHtml('cfgBalanza', 'Balanza de Comprobación', `Saldos iniciales, movimientos y saldos finales de todas las cuentas en ${b.name}.`) : ''}
+      ${b ? tarjetaConfigHtml('cfgLibroDiario', 'Libro Diario', `Todos los movimientos de ${b.name} en formato Cargo/Abono, para auditorías o revisión completa por periodo.`) : ''}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgUsuarios', 'Usuarios autorizados', 'Quién puede entrar a Finanzas y a qué negocios.') : ''}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgMfa', 'Autenticación de dos pasos', 'Protege tu cuenta con un código adicional al iniciar sesión.') : ''}
     </div>
@@ -2267,6 +2354,7 @@ async function renderConfiguracion() {
   ir('cfgActivosFijos', 'activosfijos');
   ir('cfgIvaFiscal', 'ivafiscal');
   ir('cfgBalanza', 'balanza');
+  ir('cfgLibroDiario', 'librodiario');
   const usuariosBtn = document.getElementById('cfgUsuarios');
   if (usuariosBtn) usuariosBtn.addEventListener('click', openUsuariosModal);
   const mfaBtn = document.getElementById('cfgMfa');
@@ -7373,6 +7461,120 @@ async function getMovimientosCuenta(businessId, subcuentaIds, startDate, endDate
   let saldo = saldoInicial;
   filas.forEach(f => { saldo += f.cargo - f.abono; f.saldo = saldo; });
   return { filas, saldoInicial, saldoFinal: saldo };
+}
+
+/* ============================================================
+   LIBRO DIARIO UNIFICADO — convierte cada movimiento del sistema
+   (Pólizas, Bancos, Efectivo, Facturas de Proveedores/Clientes) al
+   mismo formato de Cargo/Abono, para auditorías y revisión completa.
+   ============================================================ */
+async function getLibroDiario(businessId, startDate, endDate) {
+  const filas = [];
+  const push = (fecha, referencia, cuenta, concepto, cargo, abono, origen) => {
+    if (!(Number(cargo)||0) && !(Number(abono)||0)) return;
+    filas.push({ fecha, referencia, cuenta, concepto: concepto || '—', cargo: Number(cargo)||0, abono: Number(abono)||0, origen });
+  };
+
+  const [subcuentas, mayores, cuentasBanco, monedas, catalogoProv] = await Promise.all([
+    loadSubcuentas(businessId), loadCuentasMayor(businessId),
+    sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).then(r=>r.data||[]),
+    sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).then(r=>r.data||[]),
+    sb.from('fz_proveedores_catalogo').select('*').eq('business_id', businessId).then(r=>r.data||[]),
+  ]);
+  const nombreSub = (id) => subcuentas.find(s=>s.id===id)?.nombre || '(cuenta eliminada)';
+  const nombreBanco = (id) => cuentasBanco.find(c=>c.id===id)?.nombre || 'Banco';
+  const nombreMoneda = (id) => monedas.find(m=>m.id===id)?.nombre || 'Efectivo';
+
+  // 1. Pólizas de Diario — ya están en formato cargo/abono, se toman directo.
+  const { data: polizas } = await sb.from('fz_polizas').select('id,numero,fecha,concepto').eq('business_id', businessId).gte('fecha', startDate).lte('fecha', endDate);
+  const polizaIds = (polizas||[]).map(p=>p.id);
+  const polizaMap = Object.fromEntries((polizas||[]).map(p=>[p.id,p]));
+  const { data: lineasPoliza } = polizaIds.length ? await sb.from('fz_polizas_lineas').select('*').in('poliza_id', polizaIds) : { data: [] };
+  (lineasPoliza||[]).forEach(l => {
+    const p = polizaMap[l.poliza_id];
+    if (!p) return;
+    let cuenta = '(cuenta eliminada)';
+    if (l.cuenta_tipo === 'banco') cuenta = `Banco: ${nombreBanco(l.cuenta_ref_id)}`;
+    else if (l.cuenta_tipo === 'efectivo') cuenta = `Efectivo: ${nombreMoneda(l.cuenta_ref_id)}`;
+    else if (l.cuenta_tipo === 'proveedor') cuenta = `Proveedores${l.proveedor ? ' — '+l.proveedor : ''}`;
+    else if (l.cuenta_tipo === 'cliente') cuenta = 'Clientes';
+    else cuenta = nombreSub(l.subcuenta_id);
+    push(p.fecha, `Póliza #${p.numero ?? ''}`, cuenta, l.descripcion || l.referencia || p.concepto, l.cargo, l.abono, { tipo:'poliza', id:p.id, fecha:p.fecha });
+  });
+
+  // 2. Facturas de Proveedores (al registrarse): Dr [desglose] + Dr IVA Acreditable, Cr Proveedores.
+  const { data: facturasProv } = await sb.from('fz_proveedores').select('*').eq('business_id', businessId).gte('fecha', startDate).lte('fecha', endDate);
+  (facturasProv||[]).forEach(f => {
+    if (f.origen_poliza_id) return; // ya se contabilizó como provisión en Pólizas, no se duplica
+    const ref = `Factura proveedor ${f.factura || 's/f'}`;
+    desgloseLineas(f.desglose).forEach(linea => {
+      push(f.fecha, ref, nombreSub(linea.subcuenta_id), linea.descripcion || f.proveedor, Number(linea.monto)||0, 0, { tipo:'proveedor', id:f.id, fecha:f.fecha });
+    });
+    if (f.aplica_iva && Number(f.iva_monto)) push(f.fecha, ref, 'IVA Acreditable', f.proveedor, Number(f.iva_monto), 0, { tipo:'proveedor', id:f.id, fecha:f.fecha });
+    push(f.fecha, ref, `Proveedores — ${f.proveedor||'(sin proveedor)'}`, `Factura ${f.factura||'s/f'}`, 0, Number(f.importe)||0, { tipo:'proveedor', id:f.id, fecha:f.fecha });
+  });
+
+  // 3. Facturas de Clientes (al registrarse): Dr Clientes, Cr [líneas] + Cr IVA Trasladado.
+  const { data: facturasCli } = await sb.from('fz_facturas_clientes').select('*').eq('business_id', businessId).gte('fecha', startDate).lte('fecha', endDate);
+  const clientesMap = Object.fromEntries((await loadClientes(businessId)).map(c=>[c.id,c.nombre_comercial]));
+  if ((facturasCli||[]).length) {
+    const { data: lineasCli } = await sb.from('fz_facturas_clientes_lineas').select('*').in('factura_id', facturasCli.map(f=>f.id));
+    (facturasCli||[]).forEach(f => {
+      const ref = `Factura cliente #${f.folio}`;
+      const nombreCli = clientesMap[f.cliente_id] || '(cliente)';
+      push(f.fecha, ref, `Clientes — ${nombreCli}`, ref, Number(f.total)||0, 0, { tipo:'clienteFactura', id:f.id, fecha:f.fecha });
+      (lineasCli||[]).filter(l=>l.factura_id===f.id).forEach(l => {
+        push(f.fecha, ref, nombreSub(l.subcuenta_id), l.descripcion || nombreCli, 0, Number(l.importe)||0, { tipo:'clienteFactura', id:f.id, fecha:f.fecha });
+      });
+      if (f.aplica_iva && Number(f.iva_monto)) push(f.fecha, ref, 'IVA Trasladado', nombreCli, 0, Number(f.iva_monto), { tipo:'clienteFactura', id:f.id, fecha:f.fecha });
+    });
+  }
+
+  // 4. Movimientos de Bancos y Efectivo: cada uno según cómo se clasificó al capturarlo.
+  const procesarMovimientos = (movs, esBanco) => {
+    (movs||[]).forEach(m => {
+      const cuentaOrigen = esBanco ? `Banco: ${nombreBanco(m.cuenta_id)}` : `Efectivo: ${nombreMoneda(m.moneda_id)}`;
+      const ref = m.referencia || m.concepto || (esBanco ? 'Movimiento bancario' : 'Movimiento de efectivo');
+      const desc = m.descripcion || m.proveedor || '—';
+      // Lado que SALE de la cuenta (cargo del movimiento)
+      if (Number(m.cargos)) {
+        if (m.tipo_salida === 'proveedor') {
+          push(m.fecha, ref, `Proveedores${m.proveedor?' — '+m.proveedor:''}`, desc, Number(m.cargos), 0, { tipo: esBanco?'bancos':'efectivo', id:m.id, cuentaId:m.cuenta_id, monedaId:m.moneda_id, fecha:m.fecha });
+        } else if (m.tipo_salida === 'gasto') {
+          const subtotal = m.aplica_iva ? (Number(m.subtotal)||0) : Number(m.cargos);
+          push(m.fecha, ref, nombreSub(m.subcuenta_id), desc, subtotal, 0, { tipo: esBanco?'bancos':'efectivo', id:m.id, fecha:m.fecha });
+          if (m.aplica_iva && Number(m.iva_monto)) push(m.fecha, ref, 'IVA Acreditable', desc, Number(m.iva_monto), 0, { tipo: esBanco?'bancos':'efectivo', id:m.id, fecha:m.fecha });
+        } else if (m.tipo_salida === 'cliente') {
+          push(m.fecha, ref, `Clientes${m.proveedor?' — '+m.proveedor:''}`, desc, Number(m.cargos), 0, { tipo: esBanco?'bancos':'efectivo', id:m.id, fecha:m.fecha });
+        } else {
+          push(m.fecha, ref, 'Sin clasificar (revisar)', desc, Number(m.cargos), 0, { tipo: esBanco?'bancos':'efectivo', id:m.id, fecha:m.fecha });
+        }
+        push(m.fecha, ref, cuentaOrigen, desc, 0, Number(m.cargos), { tipo: esBanco?'bancos':'efectivo', id:m.id, fecha:m.fecha });
+      }
+      // Lado que ENTRA a la cuenta (depósito del movimiento)
+      if (Number(m.depositos)) {
+        push(m.fecha, ref, cuentaOrigen, desc, Number(m.depositos), 0, { tipo: esBanco?'bancos':'efectivo', id:m.id, fecha:m.fecha });
+        if (m.tipo_entrada === 'cliente') {
+          push(m.fecha, ref, `Clientes${m.proveedor?' — '+m.proveedor:''}`, desc, 0, Number(m.depositos), { tipo: esBanco?'bancos':'efectivo', id:m.id, fecha:m.fecha });
+        } else if (m.tipo_entrada === 'traspaso') {
+          push(m.fecha, ref, 'Traspaso entre cuentas', desc, 0, Number(m.depositos), { tipo: esBanco?'bancos':'efectivo', id:m.id, fecha:m.fecha });
+        } else {
+          push(m.fecha, ref, 'Sin clasificar (revisar)', desc, 0, Number(m.depositos), { tipo: esBanco?'bancos':'efectivo', id:m.id, fecha:m.fecha });
+        }
+      }
+    });
+  };
+  const [bancosMovQ, efvoMovQ] = await Promise.all([
+    sb.from('fz_bancos_mov').select('*').eq('business_id', businessId).gte('fecha', startDate).lte('fecha', endDate),
+    sb.from('fz_efectivo_mov').select('*').eq('business_id', businessId).gte('fecha', startDate).lte('fecha', endDate),
+  ]);
+  procesarMovimientos(bancosMovQ.data, true);
+  procesarMovimientos(efvoMovQ.data, false);
+
+  filas.sort((a,b) => a.fecha.localeCompare(b.fecha));
+  const totalCargo = filas.reduce((s,f)=>s+f.cargo,0);
+  const totalAbono = filas.reduce((s,f)=>s+f.abono,0);
+  return { filas, totalCargo, totalAbono };
 }
 
 async function abrirModalMovimientosCuenta(nombre, subcuentaIds, businessId) {

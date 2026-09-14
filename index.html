@@ -594,6 +594,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <section class="section" id="sec-activosfijos"></section>
         <section class="section" id="sec-ivafiscal"></section>
         <section class="section" id="sec-balanza"></section>
+        <section class="section" id="sec-librodiario"></section>
         <section class="section" id="sec-pl"></section>
         <section class="section" id="sec-flujo"></section>
         <section class="section" id="sec-polizas"></section>
@@ -1298,6 +1299,36 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
       <button class="btn btn-ghost" id="closeActivoFijo">Cancelar</button>
       <button class="btn btn-ghost" id="darDeBajaActivoFijo" style="display:none;color:var(--red);">Dar de baja</button>
       <button class="btn btn-gold" id="saveActivoFijo">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Movimientos de cuenta (auxiliar) -->
+<div class="modal-bg" id="modalMovimientosCuenta">
+  <div class="modal" style="width:min(820px,97vw);max-height:92vh;overflow-y:auto;">
+    <h3 id="movCuentaTitulo">Movimientos de la cuenta</h3>
+    <div class="grid-3" style="margin-bottom:10px;">
+      <div class="field" style="margin-bottom:0;">
+        <label>Del día</label>
+        <input type="date" id="movCuentaDesde">
+      </div>
+      <div class="field" style="margin-bottom:0;">
+        <label>Al día</label>
+        <input type="date" id="movCuentaHasta">
+      </div>
+      <div class="field" style="margin-bottom:0;display:flex;align-items:flex-end;">
+        <button class="btn btn-ghost btn-sm" id="movCuentaBuscar" style="width:100%;">Buscar</button>
+      </div>
+    </div>
+    <div id="movCuentaResumen" style="background:#f7f9fc;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px;"></div>
+    <div class="table-wrap scroll-sticky">
+      <table>
+        <thead><tr><th>Fecha</th><th>Proveedor / Concepto</th><th>Descripción</th><th>Cargo</th><th>Abono</th><th>Saldo</th></tr></thead>
+        <tbody id="movCuentaLista"></tbody>
+      </table>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="closeMovimientosCuenta">Cerrar</button>
     </div>
   </div>
 </div>
