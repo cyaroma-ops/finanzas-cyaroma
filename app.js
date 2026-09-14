@@ -2428,25 +2428,35 @@ async function renderPagosImpuestos() {
   contenido.innerHTML = `<div class="empty">Calculando…</div>`;
   el.appendChild(contenido);
 
-  await autoGenerarIvaPagosImpuestos(b, STATE_piAnio);
+  await autoGenerarPagosImpuestos(b, STATE_piAnio);
   await pintarPagosImpuestos(contenido, b);
 }
 
-// Crea solo (nunca duplica) el registro de "IVA a cargo" de cada mes del año elegido que aún no
-// tenga registro — usando el mismo cálculo de IVA y Retenciones. Así no hay que capturarlo a mano.
-async function autoGenerarIvaPagosImpuestos(b, anio) {
-  const { data: existentes } = await sb.from('fz_pagos_impuestos').select('periodo').eq('business_id', b.id).eq('tipo_impuesto', 'iva').like('periodo', `${anio}-%`);
-  const periodosExistentes = new Set((existentes||[]).map(p => p.periodo));
+// Crea solo (nunca duplica) el "IVA a cargo" Y las retenciones de ISR/IVA por categoría de cada mes
+// del año elegido que aún no tengan registro — usando el mismo cálculo de IVA y Retenciones.
+async function autoGenerarPagosImpuestos(b, anio) {
+  const { data: existentes } = await sb.from('fz_pagos_impuestos').select('periodo,tipo_impuesto,concepto').eq('business_id', b.id).like('periodo', `${anio}-%`);
+  const yaExiste = (periodo, tipo, concepto) => (existentes||[]).some(p => p.periodo===periodo && p.tipo_impuesto===tipo && (p.concepto||null)===(concepto||null));
   const hastaMes = anio === todayStr().slice(0,4) ? Number(todayStr().slice(5,7)) : 12;
   const nuevos = [];
   for (let m = 1; m <= hastaMes; m++) {
     const periodo = `${anio}-${String(m).padStart(2,'0')}`;
-    if (periodosExistentes.has(periodo)) continue;
+    let [y,mm] = [Number(anio), m+1]; if (mm>12) { mm=1; y++; }
+    const fechaLimite = `${y}-${String(mm).padStart(2,'0')}-17`;
     const resumen = await computeResumenIvaMesLigero(b.id, monthBounds(periodo));
-    if (resumen.ivaCargoFavor > 0.004) {
-      let [y,mm] = [Number(anio), m+1]; if (mm>12) { mm=1; y++; }
-      nuevos.push({ business_id: b.id, periodo, tipo_impuesto: 'iva', concepto: null, monto: resumen.ivaCargoFavor, fecha_limite: `${y}-${String(mm).padStart(2,'0')}-17`, fecha_pago: null });
+
+    if (resumen.ivaCargoFavor > 0.004 && !yaExiste(periodo, 'iva', null)) {
+      nuevos.push({ business_id: b.id, periodo, tipo_impuesto: 'iva', concepto: null, monto: resumen.ivaCargoFavor, fecha_limite: fechaLimite, fecha_pago: null });
     }
+    Object.entries(resumen.retencionesPorCategoria || {}).forEach(([k, monto]) => {
+      if (monto <= 0.004) return;
+      const [tipoImp, cat] = k.split('|');
+      const tipo = tipoImp === 'ISR' ? 'retencion_isr' : 'retencion_iva';
+      const concepto = cat;
+      if (!yaExiste(periodo, tipo, concepto)) {
+        nuevos.push({ business_id: b.id, periodo, tipo_impuesto: tipo, concepto, monto, fecha_limite: fechaLimite, fecha_pago: null });
+      }
+    });
   }
   if (nuevos.length) await sb.from('fz_pagos_impuestos').insert(nuevos);
 }
@@ -7171,13 +7181,15 @@ function renderFacturaLineas() {
     STATE_facturaLineas[Number(inp.dataset.idx)].descripcion = inp.value;
   }));
   body.querySelectorAll('.factura-linea-cant').forEach(inp => inp.addEventListener('input', () => {
-    STATE_facturaLineas[Number(inp.dataset.idx)].cantidad = leerMonto(inp.value) || 0;
-    renderFacturaLineas();
+    const idx = Number(inp.dataset.idx);
+    STATE_facturaLineas[idx].cantidad = leerMonto(inp.value) || 0;
+    actualizarImporteFilaFactura(idx);
     actualizarTotalesFactura();
   }));
   body.querySelectorAll('.factura-linea-precio').forEach(inp => inp.addEventListener('input', () => {
-    STATE_facturaLineas[Number(inp.dataset.idx)].precio_unitario = leerMonto(inp.value) || 0;
-    renderFacturaLineas();
+    const idx = Number(inp.dataset.idx);
+    STATE_facturaLineas[idx].precio_unitario = leerMonto(inp.value) || 0;
+    actualizarImporteFilaFactura(idx);
     actualizarTotalesFactura();
   }));
   body.querySelectorAll('.factura-linea-del').forEach(btn => btn.addEventListener('click', () => {
@@ -7186,6 +7198,13 @@ function renderFacturaLineas() {
     actualizarTotalesFactura();
   }));
   actualizarTotalesFactura();
+}
+function actualizarImporteFilaFactura(idx) {
+  const body = document.getElementById('facturaLineasBody');
+  const fila = body.children[idx];
+  if (!fila) return;
+  const l = STATE_facturaLineas[idx];
+  fila.children[4].textContent = fmt((Number(l.cantidad)||0) * (Number(l.precio_unitario)||0));
 }
 document.getElementById('facturaAgregarLinea').addEventListener('click', () => {
   STATE_facturaLineas.push({ _tmpId: 'tmp_' + Date.now() + Math.random(), producto_id: null, descripcion: '', cantidad: 1, precio_unitario: 0, subcuenta_id: null });
