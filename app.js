@@ -247,6 +247,16 @@ function mostrarPasoMFA() {
   document.getElementById('mfaCodeError').textContent = '';
   document.getElementById('mfaCodeInput').focus();
 }
+// Seguro de emergencia: pase lo que pase adentro (una consulta lenta, un ciclo atorado, un
+// error silencioso), la pantalla de carga nunca debe quedarse ahí para siempre.
+setTimeout(() => {
+  const loading = document.getElementById('loadingScreen');
+  if (loading && loading.style.display !== 'none') {
+    console.warn('La carga inicial tardó demasiado — se muestra la pantalla de todos modos.');
+    loading.style.display = 'none';
+  }
+}, 12000);
+
 async function checkSession() {
   try {
     const { data } = await sb.auth.getSession();
@@ -1595,9 +1605,11 @@ function subcuentasRaiz(mayorId, subcuentas) {
 function subcuentasHijas(subcuentaId, subcuentas) {
   return subcuentas.filter(s => s.subcuenta_padre_id === subcuentaId);
 }
-function subcuentaIdsDescendientes(subcuentaId, subcuentas) {
+function subcuentaIdsDescendientes(subcuentaId, subcuentas, visitados = new Set()) {
+  if (visitados.has(subcuentaId)) return [];
+  visitados.add(subcuentaId);
   const hijas = subcuentasHijas(subcuentaId, subcuentas);
-  return hijas.flatMap(h => [h.id, ...subcuentaIdsDescendientes(h.id, subcuentas)]);
+  return hijas.flatMap(h => [h.id, ...subcuentaIdsDescendientes(h.id, subcuentas, visitados)]);
 }
 function opcionesMoverSubcuenta(s, subcuentas) {
   const excluidos = new Set([s.id, ...subcuentaIdsDescendientes(s.id, subcuentas)]);
@@ -7330,9 +7342,11 @@ async function getPolizaLineasParaCuenta(businessId, tipo, refId, hastaFecha) {
   return lineas.map(l => ({ ...l, poliza: polizaMap[l.poliza_id] })).filter(l => l.poliza && (!hastaFecha || l.poliza.fecha <= hastaFecha));
 }
 
-function construirArbolSubcuenta(subcuentaId, subcuentas, porSubcuenta) {
+function construirArbolSubcuenta(subcuentaId, subcuentas, porSubcuenta, visitados = new Set()) {
   const sub = subcuentas.find(s => s.id === subcuentaId);
-  const hijos = subcuentasHijas(subcuentaId, subcuentas).map(h => construirArbolSubcuenta(h.id, subcuentas, porSubcuenta));
+  if (visitados.has(subcuentaId)) return { id: subcuentaId, nombre: sub ? sub.nombre : '(eliminada)', propio: porSubcuenta[subcuentaId] || 0, hijos: [], total: porSubcuenta[subcuentaId] || 0 };
+  visitados.add(subcuentaId);
+  const hijos = subcuentasHijas(subcuentaId, subcuentas).map(h => construirArbolSubcuenta(h.id, subcuentas, porSubcuenta, visitados));
   const propio = porSubcuenta[subcuentaId] || 0;
   const total = propio + hijos.reduce((s,h)=>s+h.total,0);
   return { id: subcuentaId, nombre: sub ? sub.nombre : '(eliminada)', propio, hijos, total };
@@ -7415,9 +7429,11 @@ function fmtSigno(n) {
   return `<span style="color:${Number(n)>=0?'var(--green)':'var(--red)'};">${fmt(n)}</span>`;
 }
 // Recolecta el id de una subcuenta y todos sus descendientes (hijas, nietas, etc.)
-function recolectarSubcuentaIds(subcuentaId, subcuentas) {
+function recolectarSubcuentaIds(subcuentaId, subcuentas, visitados = new Set()) {
+  if (visitados.has(subcuentaId)) return []; // protección contra ciclos accidentales (A hija de B, B hija de A)
+  visitados.add(subcuentaId);
   const ids = [subcuentaId];
-  subcuentasHijas(subcuentaId, subcuentas).forEach(h => ids.push(...recolectarSubcuentaIds(h.id, subcuentas)));
+  subcuentasHijas(subcuentaId, subcuentas).forEach(h => ids.push(...recolectarSubcuentaIds(h.id, subcuentas, visitados)));
   return ids;
 }
 
