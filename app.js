@@ -7486,7 +7486,7 @@ async function renderBalanceGeneral() {
     <div class="card">
       <div class="card-head"><h3>Balance General — ${b.name}</h3><span class="hint">${esHoy ? 'Al día de hoy · ' + todayStr() : 'Al cierre de ' + MESES_LARGO[Number(hastaYm.slice(5,7))-1] + ' ' + hastaYm.slice(0,4)}</span></div>
       <div class="table-wrap scroll-sticky">
-      <table>
+      <table class="report-table">
         <tbody>
           <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">ACTIVO</td></tr>
           <tr><td style="padding-left:22px;font-weight:600;">Efectivo y equivalentes</td><td class="num" style="font-weight:600;">${fmtNeg(totalEfectivo)}</td></tr>
@@ -8037,14 +8037,16 @@ async function renderPLAnual(el, b) {
 
   const esEjecutivo = STATE_plAnualModo === 'ejecutivo';
   el.innerHTML = plTagsHtml() + `
-    <p style="font-size:13px;color:var(--muted);margin:-4px 0 10px;font-weight:600;">${estadoResultadosSubtitulo()}</p>
-    <div class="tag-row" style="margin-bottom:14px;">
-      <div class="tag ${!esEjecutivo?'active':''}" id="plAnualModoDetalle">Detalle</div>
-      <div class="tag ${esEjecutivo?'active':''}" id="plAnualModoEjecutivo">Ejecutivo</div>
+    <div class="pl-sticky-summary" style="padding-top:0;">
+      <p style="font-size:13px;color:var(--muted);margin:-4px 0 10px;font-weight:600;">${estadoResultadosSubtitulo()}</p>
+      <div class="tag-row" style="margin-bottom:14px;">
+        <div class="tag ${!esEjecutivo?'active':''}" id="plAnualModoDetalle">Detalle</div>
+        <div class="tag ${esEjecutivo?'active':''}" id="plAnualModoEjecutivo">Ejecutivo</div>
+      </div>
     </div>
     <div class="card">
       <div class="card-head"><h3>${esEjecutivo ? 'Resumen ejecutivo mes por mes' : 'Detalle mes por mes'}</h3></div>
-      <div class="table-wrap">
+      <div class="table-wrap scroll-sticky">
         <table>
           <thead><tr><th>Concepto</th>${mesesLabel.map(m=>`<th>${m}</th>`).join('')}<th>Acumulado</th></tr></thead>
           <tbody>
@@ -8155,19 +8157,21 @@ async function renderPL() {
   }
 
   el.innerHTML = `
-    ${plTagsHtml()}
-    <p style="font-size:13px;color:var(--muted);margin:-4px 0 14px;font-weight:600;">${estadoResultadosSubtitulo(periodo)}</p>
-    <div class="kpi-grid kpi-grid-compact">
-      <div class="kpi"><div class="label">Total ingresos</div><div class="value num">${fmt(totalIngresosFinal)}</div></div>
-      ${gCostos.totalClasificado ? `<div class="kpi"><div class="label">Utilidad bruta</div><div class="value num ${utilidadBruta>=0?'green':'red'}">${fmt(utilidadBruta)}</div></div>` : ''}
-      <div class="kpi"><div class="label">Total gastos</div><div class="value num red">${fmt(gastosTotales)}</div></div>
-      <div class="kpi"><div class="label">Utilidad / Pérdida</div><div class="value num ${utilidad>=0?'green':'red'}">${fmt(utilidad)}</div></div>
-      <div class="kpi"><div class="label">Margen</div><div class="value">${margen.toFixed(1)}%</div></div>
+    <div class="pl-sticky-summary">
+      ${plTagsHtml()}
+      <p style="font-size:13px;color:var(--muted);margin:-4px 0 14px;font-weight:600;">${estadoResultadosSubtitulo(periodo)}</p>
+      <div class="kpi-grid kpi-grid-compact">
+        <div class="kpi"><div class="label">Total ingresos</div><div class="value num">${fmt(totalIngresosFinal)}</div></div>
+        ${gCostos.totalClasificado ? `<div class="kpi"><div class="label">Utilidad bruta</div><div class="value num ${utilidadBruta>=0?'green':'red'}">${fmt(utilidadBruta)}</div></div>` : ''}
+        <div class="kpi"><div class="label">Total gastos</div><div class="value num red">${fmt(gastosTotales)}</div></div>
+        <div class="kpi"><div class="label">Utilidad / Pérdida</div><div class="value num ${utilidad>=0?'green':'red'}">${fmt(utilidad)}</div></div>
+        <div class="kpi"><div class="label">Margen</div><div class="value">${margen.toFixed(1)}%</div></div>
+      </div>
     </div>
 
     <div class="card">
       <div class="card-head"><h3>Ingresos — ${periodoLabel}</h3><span class="hint">Calculado de Ventas</span></div>
-      <table>
+      <table class="report-table">
         <tbody>
           ${(() => {
             const grupos = {}; const sinGrupo = [];
@@ -8204,7 +8208,7 @@ async function renderPL() {
     ${gCostos.porMayor.length ? `
     <div class="card">
       <div class="card-head"><h3>Costo de Ventas — ${periodoLabel}</h3></div>
-      <table>
+      <table class="report-table">
         <tbody>
           ${gCostos.porMayor.map(m => {
             const ventaVinculada = m.conceptoVentaVinculadoId ? ingresosPorConcepto.find(i => i.id === m.conceptoVentaVinculadoId) : null;
@@ -8228,7 +8232,7 @@ async function renderPL() {
           <button class="btn btn-gold btn-sm" id="addGastoBtn">+ Ajuste manual</button>
         </div>
       </div>
-      <table>
+      <table class="report-table">
         <tbody>
           <tr><td>Gastos operativos del día (desde Ventas, sin clasificar)</td><td class="num">${fmtNeg(gastosOperativos)}</td><td></td></tr>
           ${faltanteCaja ? `<tr><td>Faltante de caja (conciliación de Ventas)</td><td class="num" style="color:var(--red);">${fmt(faltanteCaja)}</td><td></td></tr>` : ''}
@@ -8264,7 +8268,7 @@ async function renderPL() {
 
     <div class="card">
       <div class="card-head"><h3>Resultado</h3></div>
-      <table>
+      <table class="report-table">
         <tbody>
           <tr><td>Total ingresos</td><td class="num">${fmtNeg(totalIngresosFinal)}</td></tr>
           ${gCostos.totalClasificado ? `
