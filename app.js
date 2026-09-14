@@ -7866,6 +7866,22 @@ function plTagsHtml() {
     </div>
     <p style="font-size:11.5px;color:var(--muted);margin:-2px 0 12px;">Puedes elegir un rango que abarque varios meses (ej. junio a julio) — no tiene que quedarse dentro de un solo mes.</p>
     </div>` : ''}
+  ${STATE_plVista==='acumulado' ? `
+    <div class="pl-controles-rango" style="visibility:hidden;" aria-hidden="true">
+    <div class="grid-3" style="margin:10px 0 4px;max-width:560px;">
+      <div class="field" style="margin-bottom:0;">
+        <label>Del día</label>
+        <input type="date" tabindex="-1">
+      </div>
+      <div class="field" style="margin-bottom:0;">
+        <label>Al día</label>
+        <input type="date" tabindex="-1">
+      </div>
+      <div class="field" style="margin-bottom:0;display:flex;align-items:flex-end;">
+      </div>
+    </div>
+    <p style="font-size:11.5px;color:var(--muted);margin:-2px 0 12px;">Puedes elegir un rango que abarque varios meses (ej. junio a julio) — no tiene que quedarse dentro de un solo mes.</p>
+    </div>` : ''}
   ${STATE_plVista==='anual' ? `
     <div class="pl-controles-rango">
     <div class="grid-3" style="margin:10px 0 4px;max-width:560px;">
