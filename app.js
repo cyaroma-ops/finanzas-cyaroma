@@ -8178,7 +8178,7 @@ async function renderPL() {
       <p style="font-size:13px;color:var(--muted);margin:-4px 0 14px;font-weight:600;">${estadoResultadosSubtitulo(periodo)}</p>
       <div class="kpi-grid kpi-grid-compact">
         <div class="kpi"><div class="label">Total ingresos</div><div class="value num">${fmt(totalIngresosFinal)}</div></div>
-        ${gCostos.totalClasificado ? `<div class="kpi"><div class="label">Utilidad bruta</div><div class="value num ${utilidadBruta>=0?'green':'red'}">${fmt(utilidadBruta)}</div></div>` : ''}
+        <div class="kpi"><div class="label">Utilidad bruta</div><div class="value num ${utilidadBruta>=0?'green':'red'}">${fmt(utilidadBruta)}</div></div>
         <div class="kpi"><div class="label">Total gastos</div><div class="value num red">${fmt(gastosTotales)}</div></div>
         <div class="kpi"><div class="label">Utilidad / Pérdida</div><div class="value num ${utilidad>=0?'green':'red'}">${fmt(utilidad)}</div></div>
         <div class="kpi"><div class="label">Margen</div><div class="value">${margen.toFixed(1)}%</div></div>
