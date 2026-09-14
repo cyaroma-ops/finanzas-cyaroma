@@ -1152,6 +1152,36 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         </div>
       </div>
       <p style="font-size:11px;color:var(--muted);margin-top:8px;">Este negocio es Fiscal Contable — el IVA se clasifica aparte, a la cuenta de IVA Acreditable, y se vuelve utilizable en cuanto pagues esta factura.</p>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;margin:10px 0 8px;border-top:1px solid var(--line);padding-top:10px;">
+        <input type="checkbox" id="fpAplicaRetencion"> Esta factura tiene retenciones de ISR/IVA (honorarios, arrendamiento, fletes, RESICO, etc.)
+      </label>
+      <div id="fpRetencionCampos" style="display:none;">
+        <div class="field">
+          <label>Categoría (sugiere los % — editable)</label>
+          <select id="fpRetencionCategoria"></select>
+        </div>
+        <div class="grid-2">
+          <div class="field" style="margin-bottom:0;">
+            <label>ISR retenido (%)</label>
+            <input type="text" inputmode="decimal" id="fpRetencionIsrPct" placeholder="0">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label>ISR retenido (monto)</label>
+            <input type="text" id="fpRetencionIsrMonto" readonly style="background:#f2f4f8;color:var(--muted);">
+          </div>
+        </div>
+        <div class="grid-2">
+          <div class="field" style="margin-bottom:0;">
+            <label>IVA retenido (%)</label>
+            <input type="text" inputmode="decimal" id="fpRetencionIvaPct" placeholder="0">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label>IVA retenido (monto)</label>
+            <input type="text" id="fpRetencionIvaMonto" readonly style="background:#f2f4f8;color:var(--muted);">
+          </div>
+        </div>
+        <p style="font-size:11px;color:var(--muted);margin-top:8px;">Los % normalmente se calculan sobre el Subtotal. Lo retenido va a "Retenciones por pagar" (se lo debes al SAT, no al proveedor) — el Importe de abajo ya se ajusta solo, restando lo retenido.</p>
+      </div>
     </div>
     <div class="grid-3">
       <div class="field">

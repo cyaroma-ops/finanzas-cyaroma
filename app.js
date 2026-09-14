@@ -2146,10 +2146,14 @@ async function computeSaldosEspecialesBalanza(b, hastaFecha, subcuentas, mayores
   }
   const ivaTrasladado = !esFiscalContable ? 0 : (facturasClientesData||[]).filter(f=>f.aplica_iva).reduce((s,f)=>s+(Number(f.iva_monto)||0),0);
 
-  const { data: provData } = await sb.from('fz_proveedores').select('importe,importe_pagado,estatus').eq('business_id', b.id).lte('fecha', hastaFecha);
+  const { data: provData } = await sb.from('fz_proveedores').select('importe,importe_pagado,estatus,aplica_retencion,retencion_isr_monto,retencion_iva_monto').eq('business_id', b.id).lte('fecha', hastaFecha);
   const proveedoresPendiente = (provData||[]).filter(p => p.estatus === 'Pendiente' || p.estatus === 'Parcial').reduce((s,p)=>s+(Number(p.importe)-Number(p.importe_pagado||0)),0);
+  let retencionesIsr = 0, retencionesIva = 0;
+  if (esFiscalContable) {
+    (provData||[]).filter(p => p.aplica_retencion).forEach(p => { retencionesIsr += Number(p.retencion_isr_monto)||0; retencionesIva += Number(p.retencion_iva_monto)||0; });
+  }
 
-  return { totalEfectivo, totalBancos, cuentasPorCobrar, ivaAcreditable, proveedoresPendiente, ivaTrasladado };
+  return { totalEfectivo, totalBancos, cuentasPorCobrar, ivaAcreditable, proveedoresPendiente, ivaTrasladado, retencionesIsr, retencionesIva };
 }
 
 /* ---------- Libro Diario ---------- */
@@ -2353,6 +2357,8 @@ async function renderBalanza() {
     { nombre: 'IVA Acreditable', tipo: 'activo', inicial: inicialesp.ivaAcreditable, final: finalesp.ivaAcreditable },
     { nombre: 'Proveedores por pagar', tipo: 'pasivo', inicial: inicialesp.proveedoresPendiente, final: finalesp.proveedoresPendiente },
     { nombre: 'IVA Trasladado por pagar', tipo: 'pasivo', inicial: inicialesp.ivaTrasladado, final: finalesp.ivaTrasladado },
+    { nombre: 'Retenciones de ISR por pagar', tipo: 'pasivo', inicial: inicialesp.retencionesIsr, final: finalesp.retencionesIsr },
+    { nombre: 'Retenciones de IVA por pagar', tipo: 'pasivo', inicial: inicialesp.retencionesIva, final: finalesp.retencionesIva },
   ].filter(f => Math.abs(f.inicial) > 0.004 || Math.abs(f.final) > 0.004);
 
   const todasFilas = [...filasEspeciales.map(f=>({...f, especial:true})), ...filasMayor.map(f=>({...f, especial:false}))];
@@ -5507,6 +5513,19 @@ const CATEGORIAS_ACTIVO_LISR = [
   { nombre: 'Otro (definir % manualmente)', pct: null },
 ];
 
+// Categorías de retención de ISR/IVA más comunes para Proveedores — % sugeridos según las tasas
+// vigentes (Art. 106 y 113-J LISR, Art. 1-A LIVA). Todos editables, por si el caso particular varía.
+// Nota: la retención de IVA del 6% por subcontratación de personal fue derogada en 2021 y no se incluye.
+const CATEGORIAS_RETENCION = [
+  { nombre: 'Honorarios (Régimen General)', isr: 10, iva: 10.6667 },
+  { nombre: 'Arrendamiento', isr: 10, iva: 10.6667 },
+  { nombre: 'Comisionistas', isr: 10, iva: 10.6667 },
+  { nombre: 'Autotransporte / Fletes (Régimen General)', isr: 0, iva: 4 },
+  { nombre: 'RESICO — Honorarios / Arrendamiento / Comisión', isr: 1.25, iva: 10.6667 },
+  { nombre: 'RESICO — Autotransporte / Fletes', isr: 1.25, iva: 4 },
+  { nombre: 'Otro (definir % manualmente)', isr: null, iva: null },
+];
+
 async function loadClientes(businessId) {
   const { data } = await sb.from('fz_clientes').select('*').eq('business_id', businessId).eq('activo', true);
   return data || [];
@@ -7058,6 +7077,16 @@ async function openModalFacturaProveedor(factura, businessId, catalogo, opciones
   document.getElementById('fpImporte').style.background = esFiscalContable ? '#f2f4f8' : '';
   document.getElementById('fpImporteLabel').textContent = esFiscalContable ? 'Importe (calculado)' : 'Importe';
 
+  const selRetCat = document.getElementById('fpRetencionCategoria');
+  selRetCat.innerHTML = `<option value="">— sin categoría —</option>` + CATEGORIAS_RETENCION.map(c => `<option value="${c.nombre}" data-isr="${c.isr ?? ''}" data-iva="${c.iva ?? ''}">${c.nombre}</option>`).join('');
+  document.getElementById('fpAplicaRetencion').checked = factura ? !!factura.aplica_retencion : false;
+  document.getElementById('fpRetencionCampos').style.display = document.getElementById('fpAplicaRetencion').checked ? '' : 'none';
+  selRetCat.value = factura?.retencion_categoria || '';
+  document.getElementById('fpRetencionIsrPct').value = factura?.retencion_isr_porcentaje ?? 0;
+  document.getElementById('fpRetencionIsrMonto').value = fmtInputVal(factura?.retencion_isr_monto || 0);
+  document.getElementById('fpRetencionIvaPct').value = factura?.retencion_iva_porcentaje ?? 0;
+  document.getElementById('fpRetencionIvaMonto').value = fmtInputVal(factura?.retencion_iva_monto || 0);
+
   const selPagado = document.getElementById('fpPagadoDesde');
   const valorPagadoDesde = factura?.pagado_desde_tipo ? (factura.pagado_desde_tipo + ':' + factura.pagado_desde_cuenta_id) : '';
   selPagado.innerHTML = `<option value="">— sin especificar —</option>` +
@@ -7120,12 +7149,33 @@ const fpActualizarIva = () => {
   const pct = leerMonto(document.getElementById('fpIvaPorcentaje').value) || 0;
   const ivaMonto = aplicaIva ? subtotal * pct / 100 : 0;
   document.getElementById('fpIvaMonto').value = fmtInputVal(ivaMonto);
-  document.getElementById('fpImporte').value = fmtInputVal(subtotal + ivaMonto);
+
+  const aplicaRetencion = document.getElementById('fpAplicaRetencion').checked;
+  const isrPct = leerMonto(document.getElementById('fpRetencionIsrPct').value) || 0;
+  const ivaRetPct = leerMonto(document.getElementById('fpRetencionIvaPct').value) || 0;
+  const isrMonto = aplicaRetencion ? subtotal * isrPct / 100 : 0;
+  const ivaRetMonto = aplicaRetencion ? subtotal * ivaRetPct / 100 : 0;
+  document.getElementById('fpRetencionIsrMonto').value = fmtInputVal(isrMonto);
+  document.getElementById('fpRetencionIvaMonto').value = fmtInputVal(ivaRetMonto);
+
+  document.getElementById('fpImporte').value = fmtInputVal(subtotal + ivaMonto - isrMonto - ivaRetMonto);
   if (typeof renderFpDesgloseList === 'function' && document.getElementById('fpDesgloseList')) renderFpDesgloseList();
 };
 document.getElementById('fpSubtotal').addEventListener('input', fpActualizarIva);
 document.getElementById('fpIvaPorcentaje').addEventListener('input', fpActualizarIva);
 document.getElementById('fpAplicaIva').addEventListener('change', fpActualizarIva);
+document.getElementById('fpAplicaRetencion').addEventListener('change', () => {
+  document.getElementById('fpRetencionCampos').style.display = document.getElementById('fpAplicaRetencion').checked ? '' : 'none';
+  fpActualizarIva();
+});
+document.getElementById('fpRetencionCategoria').addEventListener('change', (e) => {
+  const opt = e.target.selectedOptions[0];
+  if (opt && opt.dataset.isr !== '') document.getElementById('fpRetencionIsrPct').value = opt.dataset.isr;
+  if (opt && opt.dataset.iva !== '') document.getElementById('fpRetencionIvaPct').value = opt.dataset.iva;
+  fpActualizarIva();
+});
+document.getElementById('fpRetencionIsrPct').addEventListener('input', fpActualizarIva);
+document.getElementById('fpRetencionIvaPct').addEventListener('input', fpActualizarIva);
 
 let STATE_fpDesgloseLineas = [];
 let STATE_fpDesgloseEditandoIdx = null;
@@ -7248,6 +7298,12 @@ document.getElementById('saveFacturaProveedor').addEventListener('click', async 
     aplica_iva: esFiscalContable ? document.getElementById('fpAplicaIva').checked : false,
     iva_porcentaje: esFiscalContable ? (leerMonto(document.getElementById('fpIvaPorcentaje').value) || 0) : null,
     iva_monto: esFiscalContable ? (leerMonto(document.getElementById('fpIvaMonto').value) || 0) : 0,
+    aplica_retencion: esFiscalContable ? document.getElementById('fpAplicaRetencion').checked : false,
+    retencion_categoria: esFiscalContable ? (document.getElementById('fpRetencionCategoria').value || null) : null,
+    retencion_isr_porcentaje: esFiscalContable ? (leerMonto(document.getElementById('fpRetencionIsrPct').value) || 0) : 0,
+    retencion_isr_monto: esFiscalContable ? (leerMonto(document.getElementById('fpRetencionIsrMonto').value) || 0) : 0,
+    retencion_iva_porcentaje: esFiscalContable ? (leerMonto(document.getElementById('fpRetencionIvaPct').value) || 0) : 0,
+    retencion_iva_monto: esFiscalContable ? (leerMonto(document.getElementById('fpRetencionIvaMonto').value) || 0) : 0,
   };
   const pagadoDesde = document.getElementById('fpPagadoDesde').value;
   if (pagadoDesde) {
@@ -7913,13 +7969,19 @@ async function renderBalanceGeneral() {
 
   const ivaTrasladado = !esFiscalContable ? 0 : (facturasClientesData||[]).filter(f=>f.aplica_iva).reduce((s,f)=>s+(Number(f.iva_monto)||0),0);
 
+  let retencionesIsr = 0, retencionesIva = 0;
+  if (esFiscalContable) {
+    const { data: retData } = await sb.from('fz_proveedores').select('retencion_isr_monto,retencion_iva_monto').eq('business_id', b.id).eq('aplica_retencion', true).lte('fecha', hastaFecha);
+    (retData||[]).forEach(f => { retencionesIsr += Number(f.retencion_isr_monto)||0; retencionesIva += Number(f.retencion_iva_monto)||0; });
+  }
+
   const otrosPasivos = [];
   for (const m of mayores.filter(m => m.tipo === 'pasivo')) {
     const r = await computeSaldoCuentaMayorPolizas(b.id, m.id, subcuentas, 'haber', hastaFecha);
     if (Math.abs(r.total) > 0.004) otrosPasivos.push({ id: m.id, nombre: m.nombre, subs: r.subs, total: r.total });
   }
   const totalOtrosPasivos = otrosPasivos.reduce((s,x)=>s+x.total,0);
-  const totalPasivo = proveedoresPendiente + totalOtrosPasivos + ivaTrasladado;
+  const totalPasivo = proveedoresPendiente + totalOtrosPasivos + ivaTrasladado + retencionesIsr + retencionesIva;
 
   const cuentasCapital = [];
   for (const m of mayores.filter(m => m.tipo === 'capital')) {
@@ -7979,6 +8041,8 @@ async function renderBalanceGeneral() {
           <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">PASIVO</td></tr>
           <tr class="balance-link-proveedores" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">Proveedores por pagar ↗</td><td class="num" style="font-weight:600;">${fmtNeg(proveedoresPendiente)}</td></tr>
           ${esFiscalContable && Math.abs(ivaTrasladado) > 0.004 ? `<tr><td style="padding-left:22px;font-weight:600;">IVA Trasladado por pagar</td><td class="num" style="font-weight:600;">${fmtNeg(ivaTrasladado)}</td></tr>` : ''}
+          ${esFiscalContable && Math.abs(retencionesIsr) > 0.004 ? `<tr><td style="padding-left:22px;font-weight:600;">Retenciones de ISR por pagar</td><td class="num" style="font-weight:600;">${fmtNeg(retencionesIsr)}</td></tr>` : ''}
+          ${esFiscalContable && Math.abs(retencionesIva) > 0.004 ? `<tr><td style="padding-left:22px;font-weight:600;">Retenciones de IVA por pagar</td><td class="num" style="font-weight:600;">${fmtNeg(retencionesIva)}</td></tr>` : ''}
           ${otrosPasivos.map(m => `
             <tr class="balance-mayor-row" data-mayor="${m.id}" data-nombre="${m.nombre.replace(/"/g,'&quot;')}" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.total)}</td></tr>
             ${m.subs.map(s => filaArbolBalanceConDetalle(s, 1)).join('')}
