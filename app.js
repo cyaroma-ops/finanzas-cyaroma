@@ -7652,10 +7652,26 @@ async function abrirModalMovimientosCuenta(nombre, subcuentaIds, businessId, nom
   document.getElementById('movCuentaBuscar').onclick = buscar;
   document.getElementById('movCuentaExcel').onclick = () => {
     if (!ultimoResultado || !ultimoResultado.filas.length) { toast('No hay movimientos para exportar.', 'error'); return; }
-    const filasExcel = ultimoResultado.filas.map(f => ({
-      'Fecha': f.fecha, 'Cuenta': nombresPorId[f.subcuentaId] || '', 'Proveedor / Concepto': f.proveedor,
-      'Descripción': f.descripcion, 'Cargo': f.cargo || 0, 'Abono': f.abono || 0, 'Saldo': f.saldo,
-    }));
+    const { filas, saldoInicialPorSubcuenta, saldoFinal } = ultimoResultado;
+    const filasExcel = [];
+    let totalCargoGeneral = 0, totalAbonoGeneral = 0;
+    subcuentaIds.forEach(id => {
+      const filasDeEsta = filas.filter(f => f.subcuentaId === id);
+      const saldoIni = saldoInicialPorSubcuenta[id] || 0;
+      if (!filasDeEsta.length && Math.abs(saldoIni) < 0.004 && subcuentaIds.length > 1) return;
+      filasExcel.push({ 'Fecha/Cuenta': `${nombresPorId[id]||'(cuenta)'} — Saldo inicial: ${fmt(saldoIni)}`, 'Proveedor / Concepto': '', 'Descripción': '', 'Cargo': '', 'Abono': '', 'Saldo': '' });
+      let saldoCorrido = saldoIni, totalCargo = 0, totalAbono = 0;
+      filasDeEsta.forEach(f => {
+        saldoCorrido += f.cargo - f.abono;
+        totalCargo += f.cargo; totalAbono += f.abono;
+        filasExcel.push({ 'Fecha/Cuenta': f.fecha, 'Proveedor / Concepto': f.proveedor, 'Descripción': f.descripcion, 'Cargo': f.cargo||0, 'Abono': f.abono||0, 'Saldo': saldoCorrido });
+      });
+      totalCargoGeneral += totalCargo; totalAbonoGeneral += totalAbono;
+      filasExcel.push({ 'Fecha/Cuenta': 'Total', 'Proveedor / Concepto': '', 'Descripción': '', 'Cargo': totalCargo, 'Abono': totalAbono, 'Saldo': saldoCorrido });
+    });
+    if (subcuentaIds.length > 1) {
+      filasExcel.push({ 'Fecha/Cuenta': `Total ${nombre}`, 'Proveedor / Concepto': '', 'Descripción': '', 'Cargo': totalCargoGeneral, 'Abono': totalAbonoGeneral, 'Saldo': saldoFinal });
+    }
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.json_to_sheet(filasExcel);
     XLSX.utils.book_append_sheet(wb, ws, 'Movimientos');
@@ -7663,6 +7679,7 @@ async function abrirModalMovimientosCuenta(nombre, subcuentaIds, businessId, nom
   };
   document.getElementById('movCuentaPdf').onclick = () => {
     if (!ultimoResultado || !ultimoResultado.filas.length) { toast('No hay movimientos para exportar.', 'error'); return; }
+    const { filas, saldoInicialPorSubcuenta, saldoFinal, desde, hasta } = ultimoResultado;
     const negocio = biz();
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({ unit: 'pt', format: 'letter', orientation: 'landscape' });
@@ -7671,14 +7688,52 @@ async function abrirModalMovimientosCuenta(nombre, subcuentaIds, businessId, nom
     doc.text(negocio?.razon_social || negocio?.name || 'Finanzas', margin, 44);
     doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(102, 112, 133);
     doc.text(`Movimientos de: ${nombre}`, margin, 60);
-    doc.text(`${ultimoResultado.desde||'Inicio'} a ${ultimoResultado.hasta} · Saldo inicial: ${fmt(ultimoResultado.saldoInicial)} · Saldo final: ${fmt(ultimoResultado.saldoFinal)}`, margin, 74);
+    doc.text(`${desde||'Inicio'} a ${hasta} · Saldo inicial: ${fmt(ultimoResultado.saldoInicial)} · Saldo final: ${fmt(saldoFinal)}`, margin, 74);
+
+    // Arma el cuerpo agrupado por hija (encabezado + movimientos + subtotal), igual que en pantalla,
+    // llevando registro de qué filas son encabezado/subtotal para pintarlas distinto.
+    const body = []; const filasEncabezado = []; const filasSubtotal = [];
+    let totalCargoGeneral = 0, totalAbonoGeneral = 0;
+    subcuentaIds.forEach(id => {
+      const filasDeEsta = filas.filter(f => f.subcuentaId === id);
+      const saldoIni = saldoInicialPorSubcuenta[id] || 0;
+      if (!filasDeEsta.length && Math.abs(saldoIni) < 0.004 && subcuentaIds.length > 1) return;
+      filasEncabezado.push(body.length);
+      body.push([`${nombresPorId[id]||'(cuenta)'} — Saldo inicial: ${fmt(saldoIni)}`, '', '', '', '', '']);
+      let saldoCorrido = saldoIni, totalCargo = 0, totalAbono = 0;
+      filasDeEsta.forEach(f => {
+        saldoCorrido += f.cargo - f.abono;
+        totalCargo += f.cargo; totalAbono += f.abono;
+        body.push([fechaCorta(f.fecha), f.proveedor, f.descripcion, f.cargo?fmt(f.cargo):'', f.abono?fmt(f.abono):'', fmt(saldoCorrido)]);
+      });
+      totalCargoGeneral += totalCargo; totalAbonoGeneral += totalAbono;
+      filasSubtotal.push(body.length);
+      body.push(['Total', '', '', fmt(totalCargo), fmt(totalAbono), fmt(saldoCorrido)]);
+    });
+    if (subcuentaIds.length > 1) {
+      filasSubtotal.push(body.length);
+      body.push([`Total ${nombre}`, '', '', fmt(totalCargoGeneral), fmt(totalAbonoGeneral), fmt(saldoFinal)]);
+    }
+
     doc.autoTable({
       startY: 90, margin: { left: margin, right: margin },
-      head: [['Fecha', 'Cuenta', 'Proveedor / Concepto', 'Descripción', 'Cargo', 'Abono', 'Saldo']],
-      body: ultimoResultado.filas.map(f => [fechaCorta(f.fecha), nombresPorId[f.subcuentaId]||'', f.proveedor, f.descripcion, f.cargo?fmt(f.cargo):'', f.abono?fmt(f.abono):'', fmt(f.saldo)]),
+      head: [['Fecha / Cuenta', 'Proveedor / Concepto', 'Descripción', 'Cargo', 'Abono', 'Saldo']],
+      body,
       styles: { fontSize: 8 }, headStyles: { fillColor: [10,31,61] },
+      didParseCell: (data) => {
+        if (data.section !== 'body') return;
+        if (filasEncabezado.includes(data.row.index)) {
+          data.cell.styles.fillColor = [238,242,248];
+          data.cell.styles.fontStyle = 'bold';
+          if (data.column.index === 0) data.cell.colSpan = 6;
+          else data.cell.text = [];
+        } else if (filasSubtotal.includes(data.row.index)) {
+          data.cell.styles.fontStyle = 'italic';
+          data.cell.styles.textColor = [102,112,133];
+        }
+      },
     });
-    doc.save(`Movimientos - ${nombre} - ${ultimoResultado.desde||'inicio'} a ${ultimoResultado.hasta}.pdf`);
+    doc.save(`Movimientos - ${nombre} - ${desde||'inicio'} a ${hasta}.pdf`);
   };
   await buscar();
   document.getElementById('modalMovimientosCuenta').classList.add('show');
