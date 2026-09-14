@@ -2067,6 +2067,21 @@ async function renderIvaFiscal() {
         <div class="kpi"><div class="label">Retenciones IVA del mes</div><div class="value num ${totalRetIva>0.004?'red':''}">${fmt(totalRetIva)}</div></div>
       </div>
     </div>
+    ${ivaCargoFavorMes > 0.004 ? `
+    <div class="card" style="margin-bottom:14px;">
+      <div class="card-head"><h3>¿Se pagará fuera de tiempo? Recargos y Actualización sobre el IVA a cargo</h3></div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">El IVA de este mes vence el 17 de ${MESES_LARGO[(Number(STATE.currentMonth.slice(5,7))%12)]} — si se va a pagar después, indica en qué mes para calcular la actualización y los recargos.</p>
+      <div class="grid-2" style="max-width:420px;margin-bottom:10px;">
+        <div class="field" style="margin-bottom:0;">
+          <label>Se pagará en</label>
+          <input type="month" id="ivaRecargoMesPago">
+        </div>
+        <div class="field" style="margin-bottom:0;display:flex;align-items:flex-end;">
+          <button class="btn btn-ghost btn-sm" id="ivaRecargoCalcularBtn" style="width:100%;">Calcular</button>
+        </div>
+      </div>
+      <div id="ivaRecargoResultado"></div>
+    </div>` : ''}
     <div class="card" style="margin-bottom:14px;">
       <div class="card-head"><h3>IVA Acreditable — Comisiones y otros gastos directos (Bancos/Efectivo)</h3></div>
       <div class="table-wrap">
@@ -2147,15 +2162,49 @@ async function renderIvaFiscal() {
   `;
   el.appendChild(contenido);
 
+  let ultimoCalculoRecargoIva = null;
+  const mesVencimientoIva = (() => { let [y,m] = STATE.currentMonth.split('-').map(Number); m++; if (m>12) { m=1; y++; } return `${y}-${String(m).padStart(2,'0')}`; })();
+  if (ivaCargoFavorMes > 0.004) {
+    document.getElementById('ivaRecargoMesPago').value = mesVencimientoIva;
+    document.getElementById('ivaRecargoCalcularBtn').addEventListener('click', async () => {
+      const mesPago = document.getElementById('ivaRecargoMesPago').value;
+      const resultadoBox = document.getElementById('ivaRecargoResultado');
+      if (!mesPago) { toast('Elige el mes en que se pagará.', 'error'); return; }
+      const r = await calcularRecargosActualizacion(ivaCargoFavorMes, mesVencimientoIva, mesPago);
+      if (r.error) { resultadoBox.innerHTML = `<p style="color:var(--red);font-size:12.5px;margin-top:8px;">${r.error}</p>`; ultimoCalculoRecargoIva = null; return; }
+      ultimoCalculoRecargoIva = { ...r, mesPago };
+      resultadoBox.innerHTML = `
+        <div class="table-wrap" style="margin-top:10px;">
+          <table class="report-table">
+            <tbody>
+              <tr><td>IVA a cargo original</td><td class="num">${fmt(r.impuesto)}</td></tr>
+              <tr><td>Monto actualizado (INPC)</td><td class="num" style="font-weight:600;">${fmt(r.montoActualizado)}</td></tr>
+              <tr><td>Recargos (${r.tasaAcumulada.toFixed(2)}%)</td><td class="num">${fmt(r.recargos)}</td></tr>
+              <tr class="total-row"><td>Total a pagar</td><td class="num">${fmt(r.total)}</td></tr>
+            </tbody>
+          </table>
+        </div>
+      `;
+    });
+  }
+
   document.getElementById('ivaFiscalExcel').addEventListener('click', () => {
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([
+    const filasResumen = [
       { 'Concepto': 'IVA Trasladado cobrado', 'Monto': ivaTrasladadoCobradoMes },
       { 'Concepto': 'IVA Acreditable pagado', 'Monto': ivaAcreditablePagadoMes },
       { 'Concepto': ivaCargoFavorMes>=0?'IVA a cargo':'IVA a favor', 'Monto': Math.abs(ivaCargoFavorMes) },
       { 'Concepto': 'Retenciones ISR del mes', 'Monto': totalRetIsr },
       { 'Concepto': 'Retenciones IVA del mes', 'Monto': totalRetIva },
-    ]), 'Resumen');
+    ];
+    if (ultimoCalculoRecargoIva) {
+      filasResumen.push(
+        { 'Concepto': `Monto actualizado (a pagar en ${ultimoCalculoRecargoIva.mesPago})`, 'Monto': ultimoCalculoRecargoIva.montoActualizado },
+        { 'Concepto': `Recargos (${ultimoCalculoRecargoIva.tasaAcumulada.toFixed(2)}%)`, 'Monto': ultimoCalculoRecargoIva.recargos },
+        { 'Concepto': 'Total a pagar con recargos y actualización', 'Monto': ultimoCalculoRecargoIva.total },
+      );
+    }
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filasResumen), 'Resumen');
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet((facturasProv||[]).map(f=>({Fecha:f.fecha,Proveedor:f.proveedor,Factura:f.factura,Subtotal:f.subtotal,IVA:f.iva_monto}))), 'IVA Acreditable Proveedores');
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet((facturasCli||[]).map(f=>({Fecha:f.fecha,Cliente:clientesMap[f.cliente_id]||'',Folio:f.folio,IVA:f.iva_monto}))), 'IVA Trasladado Clientes');
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet((facturasRetencion||[]).map(f=>({Fecha:f.fecha,Proveedor:f.proveedor,Factura:f.factura,Categoria:f.retencion_categoria,ISR:f.retencion_isr_monto,IVA:f.retencion_iva_monto}))), 'Retenciones');
@@ -2178,6 +2227,11 @@ async function renderIvaFiscal() {
         [ivaCargoFavorMes>=0?'IVA a cargo':'IVA a favor', fmt(Math.abs(ivaCargoFavorMes))],
         ['Retenciones ISR del mes', fmt(totalRetIsr)],
         ['Retenciones IVA del mes', fmt(totalRetIva)],
+        ...(ultimoCalculoRecargoIva ? [
+          [`Monto actualizado (a pagar en ${ultimoCalculoRecargoIva.mesPago})`, fmt(ultimoCalculoRecargoIva.montoActualizado)],
+          [`Recargos (${ultimoCalculoRecargoIva.tasaAcumulada.toFixed(2)}%)`, fmt(ultimoCalculoRecargoIva.recargos)],
+          ['Total a pagar con recargos y actualización', fmt(ultimoCalculoRecargoIva.total)],
+        ] : []),
       ],
       styles: { fontSize: 9 }, headStyles: { fillColor: [10,31,61] },
     });
@@ -2367,6 +2421,42 @@ async function renderRecargos() {
 }
 
 let STATE_recargosAnio = todayStr().slice(0,4);
+
+// Cálculo de Recargos y Actualización reutilizable — usado tanto en la calculadora suelta
+// como conectado directo al "IVA a cargo" del mes en IVA y Retenciones.
+async function calcularRecargosActualizacion(impuesto, mesVenc, mesPago) {
+  const [{ data: inpcData }, { data: tasasData }] = await Promise.all([
+    sb.from('fz_inpc_valores').select('*'),
+    sb.from('fz_recargos_tasas').select('*'),
+  ]);
+  const inpcMap = Object.fromEntries((inpcData||[]).map(r => [r.periodo, Number(r.valor)]));
+  const tasasMap = Object.fromEntries((tasasData||[]).map(r => [r.periodo, Number(r.tasa)]));
+
+  if (mesPago <= mesVenc) return { error: 'El mes de pago debe ser posterior al mes en que debió pagarse.' };
+
+  const mesAnteriorA = (ym) => { const [y,m] = ym.split('-').map(Number); const d = new Date(y, m-2, 1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; };
+  const inpcPago = inpcMap[mesAnteriorA(mesPago)];
+  const inpcVenc = inpcMap[mesAnteriorA(mesVenc)];
+  if (!inpcPago || !inpcVenc) return { error: `Falta capturar el INPC de ${!inpcVenc ? mesAnteriorA(mesVenc) : mesAnteriorA(mesPago)} en Recargos y Actualización.` };
+
+  const factorActualizacion = inpcPago / inpcVenc;
+  const montoActualizado = impuesto * factorActualizacion;
+
+  let mesesFaltantes = [];
+  let tasaAcumulada = 0;
+  let [y,m] = mesVenc.split('-').map(Number);
+  m++; if (m>12) { m=1; y++; }
+  while (`${y}-${String(m).padStart(2,'0')}` <= mesPago) {
+    const ym = `${y}-${String(m).padStart(2,'0')}`;
+    if (tasasMap[ym] === undefined) mesesFaltantes.push(ym);
+    else tasaAcumulada += tasasMap[ym];
+    m++; if (m>12) { m=1; y++; }
+  }
+  if (mesesFaltantes.length) return { error: `Falta capturar la tasa de recargos de: ${mesesFaltantes.join(', ')} en Recargos y Actualización.` };
+
+  const recargos = montoActualizado * tasaAcumulada / 100;
+  return { impuesto, mesAnteriorVenc: mesAnteriorA(mesVenc), mesAnteriorPago: mesAnteriorA(mesPago), factorActualizacion, montoActualizado, tasaAcumulada, recargos, total: montoActualizado + recargos };
+}
 async function pintarRecargos(contenido) {
   const [{ data: inpcData }, { data: tasasData }] = await Promise.all([
     sb.from('fz_inpc_valores').select('*').order('periodo', { ascending: false }),
@@ -2460,52 +2550,24 @@ async function pintarRecargos(contenido) {
     toast(`${filas.length} tasa(s) guardada(s).`);
     await pintarRecargos(contenido);
   });
-  document.getElementById('calcBtn').addEventListener('click', () => {
+  document.getElementById('calcBtn').addEventListener('click', async () => {
     const impuesto = leerMonto(document.getElementById('calcImpuesto').value) || 0;
     const mesVenc = document.getElementById('calcMesVencimiento').value;
     const mesPago = document.getElementById('calcMesPago').value;
     const resultadoBox = document.getElementById('calcResultado');
     if (!impuesto || !mesVenc || !mesPago) { toast('Completa los 3 campos.', 'error'); return; }
-    if (mesPago <= mesVenc) { toast('El mes de pago debe ser posterior al mes en que debió pagarse.', 'error'); return; }
-
-    // Factor de actualización = INPC del mes anterior al pago ÷ INPC del mes anterior al vencimiento
-    const mesAnteriorA = (ym) => { const [y,m] = ym.split('-').map(Number); const d = new Date(y, m-2, 1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; };
-    const inpcPago = inpcMap[mesAnteriorA(mesPago)];
-    const inpcVenc = inpcMap[mesAnteriorA(mesVenc)];
-    if (!inpcPago || !inpcVenc) {
-      resultadoBox.innerHTML = `<p style="color:var(--red);font-size:13px;">Falta capturar el INPC de ${!inpcVenc ? mesAnteriorA(mesVenc) : mesAnteriorA(mesPago)} en el catálogo de arriba para poder calcular.</p>`;
-      return;
-    }
-    const factorActualizacion = inpcPago / inpcVenc;
-    const montoActualizado = impuesto * factorActualizacion;
-
-    // Recargos: se suma la tasa de cada mes transcurrido entre el mes siguiente al vencimiento y el mes de pago
-    let mesesFaltantes = [];
-    let tasaAcumulada = 0;
-    let [y,m] = mesVenc.split('-').map(Number);
-    m++; if (m>12) { m=1; y++; }
-    while (`${y}-${String(m).padStart(2,'0')}` <= mesPago) {
-      const ym = `${y}-${String(m).padStart(2,'0')}`;
-      if (tasasMap[ym] === undefined) mesesFaltantes.push(ym);
-      else tasaAcumulada += tasasMap[ym];
-      m++; if (m>12) { m=1; y++; }
-    }
-    if (mesesFaltantes.length) {
-      resultadoBox.innerHTML = `<p style="color:var(--red);font-size:13px;">Falta capturar la tasa de recargos de: ${mesesFaltantes.join(', ')} en el catálogo de arriba para poder calcular.</p>`;
-      return;
-    }
-    const recargos = montoActualizado * tasaAcumulada / 100;
-    const total = montoActualizado + recargos;
+    const r = await calcularRecargosActualizacion(impuesto, mesVenc, mesPago);
+    if (r.error) { resultadoBox.innerHTML = `<p style="color:var(--red);font-size:13px;">${r.error}</p>`; return; }
     resultadoBox.innerHTML = `
       <div class="table-wrap">
         <table class="report-table">
           <tbody>
-            <tr><td>Impuesto original</td><td class="num">${fmt(impuesto)}</td></tr>
-            <tr><td>Factor de actualización (INPC ${mesAnteriorA(mesPago)} ÷ INPC ${mesAnteriorA(mesVenc)})</td><td class="num">${factorActualizacion.toFixed(4)}</td></tr>
-            <tr><td>Monto actualizado</td><td class="num" style="font-weight:600;">${fmt(montoActualizado)}</td></tr>
-            <tr><td>Tasa de recargos acumulada (${tasaAcumulada.toFixed(2)}%, ${mesesFaltantes.length===0 ? 'sobre el monto actualizado' : ''})</td><td class="num">${tasaAcumulada.toFixed(2)}%</td></tr>
-            <tr><td>Recargos</td><td class="num">${fmt(recargos)}</td></tr>
-            <tr class="total-row"><td>Total a pagar</td><td class="num">${fmt(total)}</td></tr>
+            <tr><td>Impuesto original</td><td class="num">${fmt(r.impuesto)}</td></tr>
+            <tr><td>Factor de actualización (INPC ${r.mesAnteriorPago} ÷ INPC ${r.mesAnteriorVenc})</td><td class="num">${r.factorActualizacion.toFixed(4)}</td></tr>
+            <tr><td>Monto actualizado</td><td class="num" style="font-weight:600;">${fmt(r.montoActualizado)}</td></tr>
+            <tr><td>Tasa de recargos acumulada</td><td class="num">${r.tasaAcumulada.toFixed(2)}%</td></tr>
+            <tr><td>Recargos</td><td class="num">${fmt(r.recargos)}</td></tr>
+            <tr class="total-row"><td>Total a pagar</td><td class="num">${fmt(r.total)}</td></tr>
           </tbody>
         </table>
       </div>
