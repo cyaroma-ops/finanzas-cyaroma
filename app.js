@@ -2366,6 +2366,7 @@ async function renderRecargos() {
   await pintarRecargos(contenido);
 }
 
+let STATE_recargosAnio = todayStr().slice(0,4);
 async function pintarRecargos(contenido) {
   const [{ data: inpcData }, { data: tasasData }] = await Promise.all([
     sb.from('fz_inpc_valores').select('*').order('periodo', { ascending: false }),
@@ -2374,54 +2375,48 @@ async function pintarRecargos(contenido) {
   const inpcMap = Object.fromEntries((inpcData||[]).map(r => [r.periodo, Number(r.valor)]));
   const tasasMap = Object.fromEntries((tasasData||[]).map(r => [r.periodo, Number(r.tasa)]));
 
+  const anioActual = Number(todayStr().slice(0,4));
+  const anios = Array.from({length:6}, (_,i) => anioActual - 4 + i); // 4 años atrás a 1 adelante
+  const mesesDelAnio = Array.from({length:12}, (_,i) => `${STATE_recargosAnio}-${String(i+1).padStart(2,'0')}`);
+
+  const filaInput = (ym, valorExistente, inputId, placeholder) => `
+    <tr>
+      <td>${MESES_LARGO[Number(ym.slice(5,7))-1]}</td>
+      <td><input type="text" inputmode="decimal" class="${inputId}" data-periodo="${ym}" value="${valorExistente!==undefined?valorExistente:''}" placeholder="${placeholder}" style="width:100%;border:1px solid var(--line);border-radius:6px;padding:5px 8px;font-size:13px;"></td>
+    </tr>`;
+
   contenido.innerHTML = `
     <p style="font-size:12px;color:var(--muted);margin-bottom:14px;max-width:700px;">
-      Cuando un impuesto se paga después de la fecha en que debió pagarse, el SAT exige dos cosas: <b>actualizarlo por inflación</b> (usando el INPC que publica INEGI) y cobrar <b>recargos</b> (intereses moratorios, con una tasa mensual que publica el SAT/LIF cada año). Captura aquí esos valores conforme se publiquen, y usa la calculadora de abajo cuando necesites saber cuánto pagar.
+      Cuando un impuesto se paga después de la fecha en que debió pagarse, el SAT exige dos cosas: <b>actualizarlo por inflación</b> (usando el INPC que publica INEGI) y cobrar <b>recargos</b> (intereses moratorios, con una tasa mensual que publica el SAT/LIF cada año). Captura aquí esos valores conforme se publiquen, mes por mes, y usa la calculadora de abajo cuando necesites saber cuánto pagar.
     </p>
+    <div class="field" style="max-width:200px;margin-bottom:14px;">
+      <label>Año a capturar</label>
+      <select id="recargosAnioSel">${anios.map(a=>`<option value="${a}" ${String(a)===STATE_recargosAnio?'selected':''}>${a}</option>`).join('')}</select>
+    </div>
     <div class="grid-2" style="align-items:flex-start;">
       <div class="card">
-        <div class="card-head"><h3>Catálogo INPC (INEGI)</h3></div>
-        <div class="grid-2" style="margin-bottom:10px;">
-          <div class="field" style="margin-bottom:0;">
-            <label>Mes</label>
-            <input type="month" id="inpcNuevoMes">
-          </div>
-          <div class="field" style="margin-bottom:0;">
-            <label>Valor INPC</label>
-            <input type="text" inputmode="decimal" id="inpcNuevoValor" placeholder="Ej. 132.850">
-          </div>
-        </div>
-        <button class="btn btn-gold btn-sm" id="inpcAgregarBtn" style="width:100%;margin-bottom:12px;">Guardar valor</button>
-        <div class="table-wrap" style="max-height:260px;overflow-y:auto;">
+        <div class="card-head"><h3>Catálogo INPC (INEGI) — ${STATE_recargosAnio}</h3></div>
+        <div class="table-wrap" style="max-height:420px;overflow-y:auto;">
           <table class="report-table">
             <thead><tr><th>Mes</th><th>INPC</th></tr></thead>
             <tbody>
-              ${(inpcData||[]).length ? inpcData.map(r => `<tr><td>${r.periodo}</td><td class="num">${Number(r.valor).toFixed(4)}</td></tr>`).join('') : `<tr><td colspan="2" class="empty">Aún no has capturado ningún valor.</td></tr>`}
+              ${mesesDelAnio.map(ym => filaInput(ym, inpcMap[ym], 'inpc-input', 'Ej. 132.850')).join('')}
             </tbody>
           </table>
         </div>
+        <button class="btn btn-gold btn-sm" id="inpcGuardarBtn" style="width:100%;margin-top:12px;">Guardar cambios de INPC</button>
       </div>
       <div class="card">
-        <div class="card-head"><h3>Catálogo Tasa de Recargos (SAT/LIF)</h3></div>
-        <div class="grid-2" style="margin-bottom:10px;">
-          <div class="field" style="margin-bottom:0;">
-            <label>Mes</label>
-            <input type="month" id="tasaNuevoMes">
-          </div>
-          <div class="field" style="margin-bottom:0;">
-            <label>Tasa mensual (%)</label>
-            <input type="text" inputmode="decimal" id="tasaNuevoValor" placeholder="Ej. 1.47">
-          </div>
-        </div>
-        <button class="btn btn-gold btn-sm" id="tasaAgregarBtn" style="width:100%;margin-bottom:12px;">Guardar valor</button>
-        <div class="table-wrap" style="max-height:260px;overflow-y:auto;">
+        <div class="card-head"><h3>Catálogo Tasa de Recargos (SAT/LIF) — ${STATE_recargosAnio}</h3></div>
+        <div class="table-wrap" style="max-height:420px;overflow-y:auto;">
           <table class="report-table">
             <thead><tr><th>Mes</th><th>Tasa %</th></tr></thead>
             <tbody>
-              ${(tasasData||[]).length ? tasasData.map(r => `<tr><td>${r.periodo}</td><td class="num">${Number(r.tasa).toFixed(2)}%</td></tr>`).join('') : `<tr><td colspan="2" class="empty">Aún no has capturado ningún valor.</td></tr>`}
+              ${mesesDelAnio.map(ym => filaInput(ym, tasasMap[ym], 'tasa-input', 'Ej. 1.47')).join('')}
             </tbody>
           </table>
         </div>
+        <button class="btn btn-gold btn-sm" id="tasaGuardarBtn" style="width:100%;margin-top:12px;">Guardar cambios de Tasas</button>
       </div>
     </div>
     <div class="card" style="margin-top:16px;">
@@ -2445,22 +2440,24 @@ async function pintarRecargos(contenido) {
     </div>
   `;
 
-  document.getElementById('inpcAgregarBtn').addEventListener('click', async () => {
-    const periodo = document.getElementById('inpcNuevoMes').value;
-    const valor = leerMonto(document.getElementById('inpcNuevoValor').value);
-    if (!periodo || !valor) { toast('Escribe el mes y el valor de INPC.', 'error'); return; }
-    const { error } = await sb.from('fz_inpc_valores').upsert({ periodo, valor }, { onConflict: 'periodo' });
-    if (error) { toast('Error: ' + error.message, 'error'); return; }
-    toast('Valor de INPC guardado.');
+  document.getElementById('recargosAnioSel').addEventListener('change', async (e) => {
+    STATE_recargosAnio = e.target.value;
     await pintarRecargos(contenido);
   });
-  document.getElementById('tasaAgregarBtn').addEventListener('click', async () => {
-    const periodo = document.getElementById('tasaNuevoMes').value;
-    const tasa = leerMonto(document.getElementById('tasaNuevoValor').value);
-    if (!periodo || !tasa) { toast('Escribe el mes y la tasa.', 'error'); return; }
-    const { error } = await sb.from('fz_recargos_tasas').upsert({ periodo, tasa }, { onConflict: 'periodo' });
+  document.getElementById('inpcGuardarBtn').addEventListener('click', async () => {
+    const filas = [...contenido.querySelectorAll('.inpc-input')].map(inp => ({ periodo: inp.dataset.periodo, valor: leerMonto(inp.value) })).filter(r => r.valor);
+    if (!filas.length) { toast('No hay valores para guardar.', 'error'); return; }
+    const { error } = await sb.from('fz_inpc_valores').upsert(filas, { onConflict: 'periodo' });
     if (error) { toast('Error: ' + error.message, 'error'); return; }
-    toast('Tasa de recargos guardada.');
+    toast(`${filas.length} valor(es) de INPC guardado(s).`);
+    await pintarRecargos(contenido);
+  });
+  document.getElementById('tasaGuardarBtn').addEventListener('click', async () => {
+    const filas = [...contenido.querySelectorAll('.tasa-input')].map(inp => ({ periodo: inp.dataset.periodo, tasa: leerMonto(inp.value) })).filter(r => r.tasa);
+    if (!filas.length) { toast('No hay valores para guardar.', 'error'); return; }
+    const { error } = await sb.from('fz_recargos_tasas').upsert(filas, { onConflict: 'periodo' });
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    toast(`${filas.length} tasa(s) guardada(s).`);
     await pintarRecargos(contenido);
   });
   document.getElementById('calcBtn').addEventListener('click', () => {
