@@ -2019,6 +2019,9 @@ async function renderIvaFiscal() {
   }, 0);
   const trasladadoPendiente = trasladadoTotal - trasladadoCobrado;
 
+  const totalRetIsr = (facturasRetencion||[]).reduce((s,f)=>s+(Number(f.retencion_isr_monto)||0),0);
+  const totalRetIva = (facturasRetencion||[]).reduce((s,f)=>s+(Number(f.retencion_iva_monto)||0),0);
+
   const contenido = document.createElement('div');
   contenido.innerHTML = `
     <p style="font-size:12px;color:var(--muted);margin-bottom:14px;">El IVA solo se vuelve acreditable (Proveedores) o exigible ante el SAT (Clientes) hasta que la factura está efectivamente pagada o cobrada — por eso cada uno se reparte en "ya" y "pendiente", según cuánto se ha pagado/cobrado de cada factura.</p>
@@ -2027,6 +2030,8 @@ async function renderIvaFiscal() {
       <div class="kpi"><div class="label">IVA Acreditable (pendiente)</div><div class="value num ${acreditablePendiente>0.004?'red':''}">${fmt(acreditablePendiente)}</div></div>
       <div class="kpi"><div class="label">IVA Trasladado (ya cobrado)</div><div class="value num red">${fmt(trasladadoCobrado)}</div></div>
       <div class="kpi"><div class="label">IVA Trasladado (pendiente)</div><div class="value num">${fmt(trasladadoPendiente)}</div></div>
+      <div class="kpi"><div class="label">Retenciones ISR por pagar</div><div class="value num ${totalRetIsr>0.004?'red':''}">${fmt(totalRetIsr)}</div></div>
+      <div class="kpi"><div class="label">Retenciones IVA por pagar</div><div class="value num ${totalRetIva>0.004?'red':''}">${fmt(totalRetIva)}</div></div>
     </div>
     <div class="card" style="margin-bottom:16px;">
       <div class="card-head"><h3>IVA Acreditable — Comisiones y otros gastos directos (Bancos/Efectivo)</h3></div>
