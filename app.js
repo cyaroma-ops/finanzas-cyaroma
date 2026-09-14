@@ -3877,16 +3877,16 @@ function renderMovAdjuntoPendiente() {
   const pendientes = STATE_movArchivosPendientes;
   box.innerHTML = `<span style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;">
     ${pendientes.map((f, i) => `<span style="font-size:12px;color:var(--navy-1);background:#f7f9fc;border-radius:5px;padding:2px 6px;">${f.name} <button class="quitar-mov-adjunto-pendiente" data-idx="${i}" style="border:none;background:none;color:var(--red);cursor:pointer;">✕</button></span>`).join('')}
-    <label style="font-size:12px;color:var(--navy-3);text-decoration:underline;cursor:pointer;">${pendientes.length?'+ Agregar otro':'Adjuntar'} (se sube al guardar)<input type="file" accept=".pdf,.jpg,.jpeg,.png" class="mov-adjunto-pendiente-input" style="display:none;"></label>
+    <label style="font-size:12px;color:var(--navy-3);text-decoration:underline;cursor:pointer;">${pendientes.length?'+ Agregar más':'Adjuntar'} (se sube al guardar)<input type="file" accept=".pdf,.jpg,.jpeg,.png" multiple class="mov-adjunto-pendiente-input" style="display:none;"></label>
   </span>`;
   const input = box.querySelector('.mov-adjunto-pendiente-input');
   if (input) input.addEventListener('change', () => {
-    const file = input.files[0];
-    if (!file) return;
-    const ext = (file.name.split('.').pop() || '').toLowerCase();
-    if (!ADJUNTOS_EXT_PERMITIDAS.includes(ext)) { toast('Solo se permiten archivos PDF, JPG o PNG.', 'error'); return; }
-    if (file.size > ADJUNTOS_MAX_MB * 1024 * 1024) { toast(`El archivo pesa más de ${ADJUNTOS_MAX_MB} MB.`, 'error'); return; }
-    STATE_movArchivosPendientes.push(file);
+    Array.from(input.files).forEach(file => {
+      const ext = (file.name.split('.').pop() || '').toLowerCase();
+      if (!ADJUNTOS_EXT_PERMITIDAS.includes(ext)) { toast(`"${file.name}": solo se permiten archivos PDF, JPG o PNG.`, 'error'); return; }
+      if (file.size > ADJUNTOS_MAX_MB * 1024 * 1024) { toast(`"${file.name}" pesa más de ${ADJUNTOS_MAX_MB} MB.`, 'error'); return; }
+      STATE_movArchivosPendientes.push(file);
+    });
     renderMovAdjuntoPendiente();
   });
   box.querySelectorAll('.quitar-mov-adjunto-pendiente').forEach(btn => btn.addEventListener('click', () => {
@@ -6959,16 +6959,16 @@ function renderFpAdjuntoPendiente() {
   const pendientes = STATE_provArchivosPendientes;
   box.innerHTML = `<span style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;">
     ${pendientes.map((f, i) => `<span style="font-size:12px;color:var(--navy-1);background:#f7f9fc;border-radius:5px;padding:2px 6px;">${f.name} <button class="quitar-fp-adjunto-pendiente" data-idx="${i}" style="border:none;background:none;color:var(--red);cursor:pointer;">✕</button></span>`).join('')}
-    <label style="font-size:12px;color:var(--navy-3);text-decoration:underline;cursor:pointer;">${pendientes.length?'+ Agregar otro':'Adjuntar'} (se sube al guardar)<input type="file" accept=".pdf,.jpg,.jpeg,.png" class="fp-adjunto-pendiente-input" style="display:none;"></label>
+    <label style="font-size:12px;color:var(--navy-3);text-decoration:underline;cursor:pointer;">${pendientes.length?'+ Agregar más':'Adjuntar'} (se sube al guardar)<input type="file" accept=".pdf,.jpg,.jpeg,.png" multiple class="fp-adjunto-pendiente-input" style="display:none;"></label>
   </span>`;
   const input = box.querySelector('.fp-adjunto-pendiente-input');
   if (input) input.addEventListener('change', () => {
-    const file = input.files[0];
-    if (!file) return;
-    const ext = (file.name.split('.').pop() || '').toLowerCase();
-    if (!ADJUNTOS_EXT_PERMITIDAS.includes(ext)) { toast('Solo se permiten archivos PDF, JPG o PNG.', 'error'); return; }
-    if (file.size > ADJUNTOS_MAX_MB * 1024 * 1024) { toast(`El archivo pesa más de ${ADJUNTOS_MAX_MB} MB.`, 'error'); return; }
-    STATE_provArchivosPendientes.push(file);
+    Array.from(input.files).forEach(file => {
+      const ext = (file.name.split('.').pop() || '').toLowerCase();
+      if (!ADJUNTOS_EXT_PERMITIDAS.includes(ext)) { toast(`"${file.name}": solo se permiten archivos PDF, JPG o PNG.`, 'error'); return; }
+      if (file.size > ADJUNTOS_MAX_MB * 1024 * 1024) { toast(`"${file.name}" pesa más de ${ADJUNTOS_MAX_MB} MB.`, 'error'); return; }
+      STATE_provArchivosPendientes.push(file);
+    });
     renderFpAdjuntoPendiente();
   });
   box.querySelectorAll('.quitar-fp-adjunto-pendiente').forEach(btn => btn.addEventListener('click', () => {
@@ -9053,7 +9053,7 @@ function polizaCardHtmlBorrador(borrador) {
     const pendientes = borrador.poliza.archivosPendientes || [];
     adjuntoHtml = `<span style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;">
       ${pendientes.map((f, i) => `<span style="font-size:12px;color:var(--navy-1);background:#f7f9fc;border-radius:5px;padding:2px 6px;">${f.name} <button class="quitar-adjunto-pendiente" data-idx="${i}" style="border:none;background:none;color:var(--red);cursor:pointer;">✕</button></span>`).join('')}
-      <label style="font-size:12px;color:var(--navy-3);text-decoration:underline;cursor:pointer;">${pendientes.length?'+ Agregar otro':'Adjuntar'} (se sube al guardar)<input type="file" accept=".pdf,.jpg,.jpeg,.png" class="adjunto-pendiente-input" style="display:none;"></label>
+      <label style="font-size:12px;color:var(--navy-3);text-decoration:underline;cursor:pointer;">${pendientes.length?'+ Agregar más':'Adjuntar'} (se sube al guardar)<input type="file" accept=".pdf,.jpg,.jpeg,.png" multiple class="adjunto-pendiente-input" style="display:none;"></label>
     </span>`;
   } else {
     adjuntoHtml = adjuntosCellHtml(borrador.conteoAdjuntos, p.id);
@@ -9219,13 +9219,13 @@ function wireBorradorPolizaHandlers(wrap) {
   if (STATE_polizaBorrador.esNueva) {
     const pendienteInput = wrap.querySelector('.adjunto-pendiente-input');
     if (pendienteInput) pendienteInput.addEventListener('change', () => {
-      const file = pendienteInput.files[0];
-      if (!file) return;
-      const ext = (file.name.split('.').pop() || '').toLowerCase();
-      if (!ADJUNTOS_EXT_PERMITIDAS.includes(ext)) { toast('Solo se permiten archivos PDF, JPG o PNG.', 'error'); return; }
-      if (file.size > ADJUNTOS_MAX_MB * 1024 * 1024) { toast(`El archivo pesa más de ${ADJUNTOS_MAX_MB} MB.`, 'error'); return; }
       if (!STATE_polizaBorrador.poliza.archivosPendientes) STATE_polizaBorrador.poliza.archivosPendientes = [];
-      STATE_polizaBorrador.poliza.archivosPendientes.push(file);
+      Array.from(pendienteInput.files).forEach(file => {
+        const ext = (file.name.split('.').pop() || '').toLowerCase();
+        if (!ADJUNTOS_EXT_PERMITIDAS.includes(ext)) { toast(`"${file.name}": solo se permiten archivos PDF, JPG o PNG.`, 'error'); return; }
+        if (file.size > ADJUNTOS_MAX_MB * 1024 * 1024) { toast(`"${file.name}" pesa más de ${ADJUNTOS_MAX_MB} MB.`, 'error'); return; }
+        STATE_polizaBorrador.poliza.archivosPendientes.push(file);
+      });
       renderizarBorradorPoliza();
     });
     wrap.querySelectorAll('.quitar-adjunto-pendiente').forEach(btn => btn.addEventListener('click', () => {
