@@ -663,6 +663,7 @@ const SECTION_META = {
   ivafiscal: { title: 'IVA Acreditable y Trasladado', sub: '', showMonth: false, needsBiz: true },
   balanza: { title: 'Balanza de Comprobación', sub: '', showMonth: true, needsBiz: true },
   librodiario: { title: 'Libro Diario', sub: '', showMonth: false, needsBiz: true },
+  comparativo: { title: 'Comparativo entre negocios', sub: '', showMonth: true, needsBiz: false },
   pl: { title: 'Estado de Resultados', sub: '', showMonth: true, needsBiz: true },
   flujo: { title: 'Flujo de Efectivo', sub: '', showMonth: false, needsBiz: true },
   polizas: { title: 'Pólizas de Diario', sub: '', showMonth: false, needsBiz: true },
@@ -674,7 +675,7 @@ const SECTION_META = {
 };
 // Estas viven "dentro" de Configuración: ya no tienen su propio ítem en el menú principal,
 // pero conservan su sección y su función de render tal cual, solo cambia cómo se llega ahí.
-const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos', 'ivafiscal', 'balanza', 'librodiario'];
+const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos', 'ivafiscal', 'balanza', 'librodiario', 'comparativo'];
 function marcarNavActivo(seccion) {
   document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
   const seccionNav = SECCIONES_EN_CONFIGURACION.includes(seccion) ? 'configuracion' : seccion;
@@ -771,6 +772,7 @@ async function renderCurrentSection() {
   if (s === 'ivafiscal') return renderIvaFiscal();
   if (s === 'balanza') return renderBalanza();
   if (s === 'librodiario') return renderLibroDiario();
+  if (s === 'comparativo') return renderComparativo();
   if (s === 'pl') return renderPL();
   if (s === 'flujo') return renderFlujo();
   if (s === 'polizas') return renderPolizas();
@@ -2151,6 +2153,57 @@ async function computeSaldosEspecialesBalanza(b, hastaFecha, subcuentas, mayores
 }
 
 /* ---------- Libro Diario ---------- */
+/* ---------- Comparativo entre negocios ---------- */
+async function renderComparativo() {
+  const el = document.getElementById('sec-comparativo');
+  el.innerHTML = '';
+  agregarBotonVolverConfig(el);
+  const negocios = (STATE.businesses || []).filter(b => b.active !== false);
+  if (!negocios.length) { el.insertAdjacentHTML('beforeend', `<div class="empty">No tienes negocios disponibles.</div>`); return; }
+
+  const contenido = document.createElement('div');
+  contenido.innerHTML = `<div class="empty">Calculando…</div>`;
+  el.appendChild(contenido);
+
+  const periodo = monthBounds(STATE.currentMonth);
+  const resumenes = await Promise.all(negocios.map(async b => ({ negocio: b, ...(await computeResumenNegocio(b.id, periodo)) })));
+  const mejorUtilidad = Math.max(...resumenes.map(r => r.utilidad));
+  const totalGeneralIngresos = resumenes.reduce((s,r)=>s+r.totalIngresos,0);
+  const totalGeneralGastos = resumenes.reduce((s,r)=>s+r.totalGastos,0);
+  const totalGeneralUtilidad = resumenes.reduce((s,r)=>s+r.utilidad,0);
+
+  contenido.innerHTML = `
+    <div class="card">
+      <div class="card-head"><h3>Comparativo entre negocios</h3><span class="hint">${MESES_LARGO[Number(STATE.currentMonth.slice(5,7))-1]} ${STATE.currentMonth.slice(0,4)}</span></div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;">Mismos cálculos que el Estado de Resultados Mensual de cada negocio, uno junto al otro.</p>
+      <div class="table-wrap scroll-sticky">
+        <table>
+          <thead><tr><th>Negocio</th><th>Total ingresos</th><th>Total gastos</th><th>Utilidad / Pérdida</th><th>Margen</th></tr></thead>
+          <tbody>
+            ${resumenes.sort((a,b)=>b.utilidad-a.utilidad).map(r => `
+              <tr style="${r.utilidad===mejorUtilidad && negocios.length>1 ?'background:#f2fbf5;':''}">
+                <td style="font-weight:600;">${r.negocio.name}${r.utilidad===mejorUtilidad && negocios.length>1 ?' <span style="color:var(--green);font-size:11px;">★ mejor mes</span>':''}</td>
+                <td class="num">${fmt(r.totalIngresos)}</td>
+                <td class="num" style="color:var(--red);">${fmt(r.totalGastos)}</td>
+                <td class="num" style="font-weight:700;color:${r.utilidad>=0?'var(--green)':'var(--red)'};">${fmt(r.utilidad)}</td>
+                <td class="num">${r.margen.toFixed(1)}%</td>
+              </tr>`).join('')}
+          </tbody>
+          <tfoot>
+            <tr class="total-row">
+              <td>Total (${negocios.length} negocio${negocios.length===1?'':'s'})</td>
+              <td class="num">${fmt(totalGeneralIngresos)}</td>
+              <td class="num">${fmt(totalGeneralGastos)}</td>
+              <td class="num">${fmt(totalGeneralUtilidad)}</td>
+              <td class="num">${totalGeneralIngresos?(totalGeneralUtilidad/totalGeneralIngresos*100).toFixed(1):'0.0'}%</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
 async function renderLibroDiario() {
   const el = document.getElementById('sec-librodiario');
   const b = biz();
@@ -2353,6 +2406,7 @@ async function renderConfiguracion() {
       ${b?.modo === 'fiscal_contable' ? tarjetaConfigHtml('cfgIvaFiscal', 'IVA Acreditable y Trasladado', `Cuánto IVA ya puedes acreditar (pagado) y cuánto ya debes al SAT (cobrado) en ${b.name}.`) : ''}
       ${b?.modo === 'fiscal_contable' ? tarjetaConfigHtml('cfgBalanza', 'Balanza de Comprobación', `Saldos iniciales, movimientos y saldos finales de todas las cuentas en ${b.name}.`) : ''}
       ${b ? tarjetaConfigHtml('cfgLibroDiario', 'Libro Diario', `Todos los movimientos de ${b.name} en formato Cargo/Abono, para auditorías o revisión completa por periodo.`) : ''}
+      ${tarjetaConfigHtml('cfgComparativo', 'Comparativo entre negocios', 'Ingresos, gastos y utilidad de todos tus negocios, lado a lado, para el mismo mes.')}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgUsuarios', 'Usuarios autorizados', 'Quién puede entrar a Finanzas y a qué negocios.') : ''}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgMfa', 'Autenticación de dos pasos', 'Protege tu cuenta con un código adicional al iniciar sesión.') : ''}
     </div>
@@ -2367,6 +2421,7 @@ async function renderConfiguracion() {
   ir('cfgIvaFiscal', 'ivafiscal');
   ir('cfgBalanza', 'balanza');
   ir('cfgLibroDiario', 'librodiario');
+  ir('cfgComparativo', 'comparativo');
   const usuariosBtn = document.getElementById('cfgUsuarios');
   if (usuariosBtn) usuariosBtn.addEventListener('click', openUsuariosModal);
   const mfaBtn = document.getElementById('cfgMfa');
@@ -8027,6 +8082,36 @@ async function computeGastosClasificados(businessId, periodo, subcuentas, mayore
 
 // Ganancia/pérdida cambiaria: automática, sin póliza manual — compara el tipo de cambio de
 // cuando se facturó contra el tipo de cambio real capturado al momento de cobrar (USD).
+// Resumen ligero de un negocio para un periodo — mismos cálculos que el Estado de Resultados
+// Mensual, pero sin armar el detalle línea por línea (usado en el Comparativo entre negocios).
+async function computeResumenNegocio(businessId, periodo) {
+  const [ventasQ, conceptosVenta, conceptos, subcuentas, mayores, conceptosSistema] = await Promise.all([
+    sb.from('fz_ventas').select('*').eq('business_id', businessId).gte('fecha', periodo.start).lte('fecha', periodo.end),
+    loadConceptosVenta(businessId), loadConceptos(businessId), loadSubcuentas(businessId), loadCuentasMayor(businessId), loadConceptosSistema(businessId),
+  ]);
+  const v = ventasQ.data || [];
+  const ingresosPorConcepto = conceptosVenta.map(c => ({ id: c.id, tipo: c.tipo, monto: v.reduce((s, r) => s + (Number((r.venta_data || {})[c.id]) || 0), 0) }));
+  const totalIngresosVentas = ingresosPorConcepto.reduce((s, i) => s + (i.tipo === 'resta' ? -i.monto : i.monto), 0);
+  const gastosOperativos = v.reduce((s,r)=>s+(Number(r.gastos)||0),0);
+
+  const porCatPL = { efectivo: conceptos.filter(c=>c.categoria==='efectivo'), tarjetas: conceptos.filter(c=>c.categoria==='tarjetas'), bancos: conceptos.filter(c=>c.categoria==='bancos'), cxc: conceptos.filter(c=>c.categoria==='cxc'), propinas: conceptos.filter(c=>c.categoria==='propinas') };
+  let diffPeriodo = 0;
+  v.forEach(r => { diffPeriodo += computeRowDiffs(r, conceptosVenta, porCatPL, conceptosSistema).difTotal; });
+  const faltanteCaja = diffPeriodo > 0 ? diffPeriodo : 0;
+  const sobranteCaja = diffPeriodo < 0 ? -diffPeriodo : 0;
+  const totalIngresos = totalIngresosVentas + sobranteCaja;
+
+  const gClas = await computeGastosClasificados(businessId, periodo, subcuentas, mayores, 'gasto', true);
+  const gCostos = await computeGastosClasificados(businessId, periodo, subcuentas, mayores, 'costo', true);
+  const iPoliza = await computeIngresosPoliza(businessId, periodo, subcuentas, mayores, true);
+  const gananciaCambiaria = await computeGananciaCambiaria(businessId, periodo);
+  const totalIngresosFinal = totalIngresos + iPoliza.total + gananciaCambiaria;
+  const gastosTotales = gastosOperativos + gClas.totalClasificado + gClas.sinClasificar + faltanteCaja;
+  const utilidadReal = totalIngresosFinal - gCostos.totalClasificado - gastosTotales;
+  const margen = totalIngresosFinal ? (utilidadReal/totalIngresosFinal*100) : 0;
+  return { totalIngresos: totalIngresosFinal, totalGastos: gastosTotales + gCostos.totalClasificado, utilidad: utilidadReal, margen };
+}
+
 async function computeGananciaCambiaria(businessId, periodo) {
   const { data: cobros } = await sb.from('fz_cobros_aplicados')
     .select('monto,tipo_cambio,factura_id,fecha')
