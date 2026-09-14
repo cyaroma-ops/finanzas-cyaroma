@@ -7469,14 +7469,19 @@ async function getMovimientosCuenta(businessId, subcuentaIds, startDate, endDate
   };
 
   const filas = await calcularFilas(endDate);
+  const saldoInicialPorSubcuenta = {};
+  subcuentaIds.forEach(id => { saldoInicialPorSubcuenta[id] = 0; });
   let saldoInicial = 0;
   if (startDate) {
-    const previas = await getMovimientosCuenta(businessId, subcuentaIds, null, sumarDias(startDate, -1));
-    saldoInicial = previas.saldoFinal;
+    const filasPrevias = await calcularFilas(sumarDias(startDate, -1));
+    filasPrevias.forEach(f => {
+      saldoInicialPorSubcuenta[f.subcuentaId] = (saldoInicialPorSubcuenta[f.subcuentaId] || 0) + f.cargo - f.abono;
+    });
+    saldoInicial = Object.values(saldoInicialPorSubcuenta).reduce((s,x)=>s+x,0);
   }
   let saldo = saldoInicial;
   filas.forEach(f => { saldo += f.cargo - f.abono; f.saldo = saldo; });
-  return { filas, saldoInicial, saldoFinal: saldo };
+  return { filas, saldoInicial, saldoFinal: saldo, saldoInicialPorSubcuenta };
 }
 
 /* ============================================================
@@ -7601,44 +7606,48 @@ async function abrirModalMovimientosCuenta(nombre, subcuentaIds, businessId, nom
   const buscar = async () => {
     const desde = document.getElementById('movCuentaDesde').value || null;
     const hasta = document.getElementById('movCuentaHasta').value || todayStr();
-    document.getElementById('movCuentaLista').innerHTML = `<tr><td colspan="7" class="empty">Calculando…</td></tr>`;
-    const { filas, saldoInicial, saldoFinal } = await getMovimientosCuenta(businessId, subcuentaIds, desde, hasta);
-    ultimoResultado = { filas, saldoInicial, saldoFinal, desde, hasta };
+    document.getElementById('movCuentaLista').innerHTML = `<tr><td colspan="6" class="empty">Calculando…</td></tr>`;
+    const { filas, saldoInicial, saldoFinal, saldoInicialPorSubcuenta } = await getMovimientosCuenta(businessId, subcuentaIds, desde, hasta);
+    ultimoResultado = { filas, saldoInicial, saldoFinal, desde, hasta, saldoInicialPorSubcuenta };
     document.getElementById('movCuentaResumen').innerHTML = `
       <div style="display:flex;justify-content:space-between;"><span>Saldo inicial${desde?' (antes de '+desde+')':''}</span><strong>${fmt(saldoInicial)}</strong></div>
       <div style="display:flex;justify-content:space-between;margin-top:3px;"><span>Movimientos en el rango</span><strong>${filas.length}</strong></div>
       <div style="display:flex;justify-content:space-between;margin-top:3px;font-weight:700;border-top:1px solid var(--line);padding-top:4px;"><span>Saldo al ${hasta}</span><strong>${fmt(saldoFinal)}</strong></div>
     `;
-    // Si esta cuenta agrupa varias (una "padre" con hijas), se desglosa cuánto corresponde a cada una.
-    const porHijoBox = document.getElementById('movCuentaPorHijo');
+    document.getElementById('movCuentaPorHijo').innerHTML = '';
+    // Formato "Auxiliar de Cuentas": cada subcuenta con su propio encabezado (saldo inicial),
+    // sus movimientos, y su propio total — igual que un auxiliar contable clásico.
+    let filasHtml = '';
+    let totalCargoGeneral = 0, totalAbonoGeneral = 0;
+    subcuentaIds.forEach(id => {
+      const filasDeEsta = filas.filter(f => f.subcuentaId === id);
+      const saldoIni = saldoInicialPorSubcuenta[id] || 0;
+      if (!filasDeEsta.length && Math.abs(saldoIni) < 0.004 && subcuentaIds.length > 1) return; // sin saldo ni movimiento, se omite si es una cuenta agrupadora
+      let saldoCorrido = saldoIni;
+      let totalCargo = 0, totalAbono = 0;
+      const filasRender = filasDeEsta.map(f => {
+        saldoCorrido += f.cargo - f.abono;
+        totalCargo += f.cargo; totalAbono += f.abono;
+        return `<tr>
+          <td>${fechaCorta(f.fecha)}</td>
+          <td>${f.proveedor}</td>
+          <td>${f.descripcion}</td>
+          <td class="num">${f.cargo?fmt(f.cargo):''}</td>
+          <td class="num">${f.abono?fmt(f.abono):''}</td>
+          <td class="num">${fmt(saldoCorrido)}</td>
+        </tr>`;
+      }).join('');
+      totalCargoGeneral += totalCargo; totalAbonoGeneral += totalAbono;
+      filasHtml += `
+        <tr style="background:#eef2f8;"><td colspan="6" style="font-weight:700;">${nombresPorId[id]||'(cuenta)'} — Saldo inicial: ${fmt(saldoIni)}</td></tr>
+        ${filasRender}
+        <tr style="font-style:italic;color:var(--muted);"><td colspan="3">Total</td><td class="num">${fmt(totalCargo)}</td><td class="num">${fmt(totalAbono)}</td><td class="num" style="font-weight:700;">${fmt(saldoCorrido)}</td></tr>
+      `;
+    });
     if (subcuentaIds.length > 1) {
-      const porHijo = {};
-      subcuentaIds.forEach(id => { porHijo[id] = 0; });
-      filas.forEach(f => { porHijo[f.subcuentaId] = (porHijo[f.subcuentaId] || 0) + f.cargo - f.abono; });
-      porHijo[subcuentaIds[0]] = (porHijo[subcuentaIds[0]] || 0) + saldoInicial; // saldo inicial se atribuye a la cuenta raíz para que el total cuadre
-      porHijoBox.innerHTML = `
-        <p style="font-size:12px;font-weight:700;color:var(--navy-1);margin-bottom:6px;">Desglose por cuenta</p>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Cuenta</th><th>Saldo en el rango</th></tr></thead>
-            <tbody>
-              ${subcuentaIds.map(id => `<tr><td>${nombresPorId[id] || '(cuenta)'}</td><td class="num">${fmt(porHijo[id]||0)}</td></tr>`).join('')}
-            </tbody>
-          </table>
-        </div>`;
-    } else {
-      porHijoBox.innerHTML = '';
+      filasHtml += `<tr class="total-row"><td colspan="3">Total ${nombre}</td><td class="num">${fmt(totalCargoGeneral)}</td><td class="num">${fmt(totalAbonoGeneral)}</td><td class="num">${fmt(saldoFinal)}</td></tr>`;
     }
-    document.getElementById('movCuentaLista').innerHTML = filas.length ? filas.map(f => `
-      <tr>
-        <td>${fechaCorta(f.fecha)}</td>
-        <td>${nombresPorId[f.subcuentaId] || ''}</td>
-        <td>${f.proveedor}</td>
-        <td>${f.descripcion}</td>
-        <td class="num">${f.cargo ? fmt(f.cargo) : ''}</td>
-        <td class="num">${f.abono ? fmt(f.abono) : ''}</td>
-        <td class="num" style="font-weight:600;">${fmt(f.saldo)}</td>
-      </tr>`).join('') : `<tr><td colspan="7" class="empty">No hay movimientos en este rango.</td></tr>`;
+    document.getElementById('movCuentaLista').innerHTML = filasHtml || `<tr><td colspan="6" class="empty">No hay movimientos en este rango.</td></tr>`;
   };
   document.getElementById('movCuentaBuscar').onclick = buscar;
   document.getElementById('movCuentaExcel').onclick = () => {
