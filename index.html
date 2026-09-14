@@ -597,6 +597,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <section class="section" id="sec-librodiario"></section>
         <section class="section" id="sec-comparativo"></section>
         <section class="section" id="sec-recargos"></section>
+        <section class="section" id="sec-pagosimpuestos"></section>
         <section class="section" id="sec-pl"></section>
         <section class="section" id="sec-flujo"></section>
         <section class="section" id="sec-polizas"></section>
@@ -1331,6 +1332,58 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
       <button class="btn btn-ghost" id="closeActivoFijo">Cancelar</button>
       <button class="btn btn-ghost" id="darDeBajaActivoFijo" style="display:none;color:var(--red);">Dar de baja</button>
       <button class="btn btn-gold" id="saveActivoFijo">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Pago de Impuesto -->
+<div class="modal-bg" id="modalPagoImpuesto">
+  <div class="modal" style="width:min(600px,95vw);">
+    <h3 id="piTitulo">Registrar impuesto</h3>
+    <div class="field">
+      <label>Tipo de impuesto</label>
+      <select id="piTipo">
+        <option value="iva">IVA a cargo</option>
+        <option value="isr_provisional">ISR Provisional</option>
+        <option value="retencion_isr">Retención de ISR</option>
+        <option value="retencion_iva">Retención de IVA</option>
+        <option value="otro">Otro</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Concepto (ej. "Retención ISR — Honorarios")</label>
+      <input type="text" id="piConcepto" placeholder="Opcional">
+    </div>
+    <div class="grid-2">
+      <div class="field" style="margin-bottom:0;">
+        <label>Periodo (mes al que corresponde)</label>
+        <input type="month" id="piPeriodo">
+      </div>
+      <div class="field" style="margin-bottom:0;">
+        <label>Monto del impuesto</label>
+        <input type="text" inputmode="decimal" id="piMonto" placeholder="0.00">
+      </div>
+    </div>
+    <button class="btn btn-ghost btn-sm" id="piTraerIvaBtn" style="display:none;margin-bottom:14px;">Traer IVA a cargo de este periodo</button>
+    <div class="grid-2">
+      <div class="field" style="margin-bottom:0;">
+        <label>Fecha límite de pago</label>
+        <input type="date" id="piFechaLimite">
+      </div>
+      <div class="field" style="margin-bottom:0;">
+        <label>Fecha en que se pagó (vacío = pendiente)</label>
+        <input type="date" id="piFechaPago">
+      </div>
+    </div>
+    <div id="piRecargoPreview"></div>
+    <div class="field">
+      <label>Notas</label>
+      <input type="text" id="piNotas" placeholder="Opcional">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="closePagoImpuesto">Cancelar</button>
+      <button class="btn btn-danger" id="piEliminarBtn" style="display:none;">Eliminar</button>
+      <button class="btn btn-gold" id="piGuardarBtn">Guardar</button>
     </div>
   </div>
 </div>

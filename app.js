@@ -665,6 +665,7 @@ const SECTION_META = {
   librodiario: { title: 'Libro Diario', sub: '', showMonth: false, needsBiz: true },
   comparativo: { title: 'Comparativo entre negocios', sub: '', showMonth: true, needsBiz: false },
   recargos: { title: 'Recargos y Actualización', sub: '', showMonth: false, needsBiz: false },
+  pagosimpuestos: { title: 'Pagos de Impuestos', sub: '', showMonth: false, needsBiz: true },
   pl: { title: 'Estado de Resultados', sub: '', showMonth: true, needsBiz: true },
   flujo: { title: 'Flujo de Efectivo', sub: '', showMonth: false, needsBiz: true },
   polizas: { title: 'Pólizas de Diario', sub: '', showMonth: false, needsBiz: true },
@@ -676,7 +677,7 @@ const SECTION_META = {
 };
 // Estas viven "dentro" de Configuración: ya no tienen su propio ítem en el menú principal,
 // pero conservan su sección y su función de render tal cual, solo cambia cómo se llega ahí.
-const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos', 'ivafiscal', 'balanza', 'librodiario', 'comparativo', 'recargos'];
+const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos', 'ivafiscal', 'balanza', 'librodiario', 'comparativo', 'recargos', 'pagosimpuestos'];
 function marcarNavActivo(seccion) {
   document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
   const seccionNav = SECCIONES_EN_CONFIGURACION.includes(seccion) ? 'configuracion' : seccion;
@@ -775,6 +776,7 @@ async function renderCurrentSection() {
   if (s === 'librodiario') return renderLibroDiario();
   if (s === 'comparativo') return renderComparativo();
   if (s === 'recargos') return renderRecargos();
+  if (s === 'pagosimpuestos') return renderPagosImpuestos();
   if (s === 'pl') return renderPL();
   if (s === 'flujo') return renderFlujo();
   if (s === 'polizas') return renderPolizas();
@@ -2410,6 +2412,159 @@ async function computeSaldosEspecialesBalanza(b, hastaFecha, subcuentas, mayores
 /* ---------- Libro Diario ---------- */
 /* ---------- Comparativo entre negocios ---------- */
 /* ---------- Recargos y Actualización (INPC) ---------- */
+/* ---------- Pagos de Impuestos ---------- */
+const TIPO_IMPUESTO_LABEL = { iva: 'IVA a cargo', isr_provisional: 'ISR Provisional', retencion_isr: 'Retención de ISR', retencion_iva: 'Retención de IVA', otro: 'Otro' };
+let STATE_piEditandoId = null;
+
+async function renderPagosImpuestos() {
+  const el = document.getElementById('sec-pagosimpuestos');
+  const b = biz();
+  if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
+  el.innerHTML = '';
+  agregarBotonVolverConfig(el);
+
+  const contenido = document.createElement('div');
+  el.appendChild(contenido);
+  await pintarPagosImpuestos(contenido, b);
+}
+
+async function pintarPagosImpuestos(contenido, b) {
+  const { data: pagos } = await sb.from('fz_pagos_impuestos').select('*').eq('business_id', b.id).order('periodo', { ascending: false });
+  const hoy = todayStr();
+
+  const estatusDe = (p) => {
+    if (!p.fecha_pago) return hoy > p.fecha_limite ? { texto: 'Pendiente (vencido)', color: 'var(--red)' } : { texto: 'Pendiente', color: 'var(--gold)' };
+    if (p.fecha_pago <= p.fecha_limite) return { texto: 'Pagado a tiempo', color: 'var(--green)' };
+    return { texto: 'Pagado con recargos', color: 'var(--red)' };
+  };
+
+  const totalPendiente = (pagos||[]).filter(p=>!p.fecha_pago).reduce((s,p)=>s+Number(p.monto),0);
+  const totalPagado = (pagos||[]).filter(p=>p.fecha_pago).reduce((s,p)=>s+Number(p.total_pagado||p.monto),0);
+  const totalRecargosPagados = (pagos||[]).filter(p=>p.fecha_pago && p.recargos).reduce((s,p)=>s+Number(p.recargos||0),0);
+
+  contenido.innerHTML = `
+    <p style="font-size:12px;color:var(--muted);margin-bottom:14px;max-width:700px;">Registra aquí cualquier impuesto federal (IVA, ISR Provisional, Retenciones, u otro) por mes — cuándo vence, cuándo se pagó, y si fue tarde, el sistema calcula la actualización y los recargos usando los catálogos de Recargos y Actualización.</p>
+    <div class="kpi-grid kpi-grid-compact" style="margin-bottom:14px;">
+      <div class="kpi"><div class="label">Pendiente de pagar</div><div class="value num ${totalPendiente>0.004?'red':''}">${fmt(totalPendiente)}</div></div>
+      <div class="kpi"><div class="label">Ya pagado</div><div class="value num green">${fmt(totalPagado)}</div></div>
+      <div class="kpi"><div class="label">Recargos pagados (histórico)</div><div class="value num ${totalRecargosPagados>0.004?'red':''}">${fmt(totalRecargosPagados)}</div></div>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <h3>Impuestos registrados</h3>
+        <button class="btn btn-gold btn-sm" id="piNuevoBtn">+ Registrar impuesto</button>
+      </div>
+      <div class="table-wrap scroll-sticky">
+        <table class="report-table">
+          <thead><tr><th>Periodo</th><th>Tipo</th><th>Concepto</th><th>Monto</th><th>Fecha límite</th><th>Fecha de pago</th><th>Estatus</th><th>Total pagado</th></tr></thead>
+          <tbody>
+            ${(pagos||[]).length ? pagos.map(p => {
+              const est = estatusDe(p);
+              return `<tr class="pi-row" data-id="${p.id}" style="cursor:pointer;">
+                <td>${p.periodo}</td><td>${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]||p.tipo_impuesto}</td><td>${p.concepto||''}</td>
+                <td class="num">${fmt(p.monto)}</td><td>${fechaCorta(p.fecha_limite)}</td><td>${p.fecha_pago?fechaCorta(p.fecha_pago):'—'}</td>
+                <td style="color:${est.color};font-weight:600;">${est.texto}</td>
+                <td class="num">${p.total_pagado?fmt(p.total_pagado):''}</td>
+              </tr>`;
+            }).join('') : `<tr><td colspan="8" class="empty">Aún no has registrado ningún impuesto.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('piNuevoBtn').addEventListener('click', () => abrirModalPagoImpuesto(null, b));
+  contenido.querySelectorAll('.pi-row').forEach(tr => tr.addEventListener('click', () => {
+    const p = (pagos||[]).find(x => x.id === tr.dataset.id);
+    if (p) abrirModalPagoImpuesto(p, b);
+  }));
+}
+
+function abrirModalPagoImpuesto(pago, b) {
+  STATE_piEditandoId = pago?.id || null;
+  document.getElementById('piTitulo').textContent = pago ? 'Editar impuesto' : 'Registrar impuesto';
+  document.getElementById('piTipo').value = pago?.tipo_impuesto || 'iva';
+  document.getElementById('piConcepto').value = pago?.concepto || '';
+  document.getElementById('piPeriodo').value = pago?.periodo || STATE.currentMonth;
+  document.getElementById('piMonto').value = fmtInputVal(pago?.monto || 0);
+  document.getElementById('piFechaLimite').value = pago?.fecha_limite || '';
+  document.getElementById('piFechaPago').value = pago?.fecha_pago || '';
+  document.getElementById('piNotas').value = pago?.notas || '';
+  document.getElementById('piRecargoPreview').innerHTML = '';
+  document.getElementById('piEliminarBtn').style.display = pago ? '' : 'none';
+  actualizarVisibilidadTraerIva();
+  if (!pago) sugerirFechaLimitePi();
+  document.getElementById('modalPagoImpuesto').classList.add('show');
+}
+
+function sugerirFechaLimitePi() {
+  const periodo = document.getElementById('piPeriodo').value;
+  if (!periodo || document.getElementById('piFechaLimite').value) return;
+  let [y,m] = periodo.split('-').map(Number);
+  m++; if (m>12) { m=1; y++; }
+  document.getElementById('piFechaLimite').value = `${y}-${String(m).padStart(2,'0')}-17`;
+}
+function actualizarVisibilidadTraerIva() {
+  document.getElementById('piTraerIvaBtn').style.display = document.getElementById('piTipo').value === 'iva' ? '' : 'none';
+}
+document.getElementById('piTipo').addEventListener('change', actualizarVisibilidadTraerIva);
+document.getElementById('piPeriodo').addEventListener('change', sugerirFechaLimitePi);
+document.getElementById('piTraerIvaBtn').addEventListener('click', async () => {
+  const periodo = document.getElementById('piPeriodo').value;
+  const b = biz();
+  if (!periodo || !b) { toast('Elige el periodo primero.', 'error'); return; }
+  const resumen = await computeResumenIvaMesLigero(b.id, monthBounds(periodo));
+  if (resumen.ivaCargoFavor <= 0.004) { toast('Este periodo no tiene IVA a cargo (es a favor o cero).', 'error'); return; }
+  document.getElementById('piMonto').value = fmtInputVal(resumen.ivaCargoFavor);
+  toast('IVA a cargo del periodo traído.');
+});
+document.getElementById('closePagoImpuesto').addEventListener('click', () => {
+  document.getElementById('modalPagoImpuesto').classList.remove('show');
+});
+document.getElementById('piGuardarBtn').addEventListener('click', async () => {
+  const b = biz();
+  const periodo = document.getElementById('piPeriodo').value;
+  const monto = leerMonto(document.getElementById('piMonto').value) || 0;
+  const fechaLimite = document.getElementById('piFechaLimite').value;
+  const fechaPago = document.getElementById('piFechaPago').value || null;
+  if (!periodo || !monto || !fechaLimite) { toast('Completa periodo, monto y fecha límite.', 'error'); return; }
+
+  let monto_actualizado = null, recargos = null, total_pagado = null;
+  if (fechaPago) {
+    if (fechaPago <= fechaLimite) {
+      total_pagado = monto;
+    } else {
+      const r = await calcularRecargosActualizacion(monto, fechaLimite.slice(0,7), fechaPago.slice(0,7));
+      if (r.error) { toast(r.error, 'error'); return; }
+      monto_actualizado = r.montoActualizado; recargos = r.recargos; total_pagado = r.total;
+    }
+  }
+
+  const payload = {
+    business_id: b.id, periodo, tipo_impuesto: document.getElementById('piTipo').value,
+    concepto: document.getElementById('piConcepto').value.trim() || null,
+    monto, fecha_limite: fechaLimite, fecha_pago: fechaPago,
+    monto_actualizado, recargos, total_pagado,
+    notas: document.getElementById('piNotas').value.trim() || null,
+  };
+  const { error } = STATE_piEditandoId
+    ? await sb.from('fz_pagos_impuestos').update(payload).eq('id', STATE_piEditandoId)
+    : await sb.from('fz_pagos_impuestos').insert(payload);
+  if (error) { toast('Error: ' + error.message, 'error'); return; }
+  registrarAuditoria(b.id, STATE_piEditandoId ? 'editar' : 'crear', 'Pagos de Impuestos', `${TIPO_IMPUESTO_LABEL[payload.tipo_impuesto]} — ${periodo}`);
+  toast('Guardado.');
+  document.getElementById('modalPagoImpuesto').classList.remove('show');
+  renderPagosImpuestos();
+});
+document.getElementById('piEliminarBtn').addEventListener('click', async () => {
+  if (!STATE_piEditandoId || !confirm('¿Eliminar este registro de impuesto?')) return;
+  const b = biz();
+  await sb.from('fz_pagos_impuestos').delete().eq('id', STATE_piEditandoId);
+  registrarAuditoria(b.id, 'eliminar', 'Pagos de Impuestos', 'Registro eliminado');
+  document.getElementById('modalPagoImpuesto').classList.remove('show');
+  renderPagosImpuestos();
+});
+
 async function renderRecargos() {
   const el = document.getElementById('sec-recargos');
   el.innerHTML = '';
@@ -2836,6 +2991,7 @@ async function renderConfiguracion() {
       ${b ? tarjetaConfigHtml('cfgLibroDiario', 'Libro Diario', `Todos los movimientos de ${b.name} en formato Cargo/Abono, para auditorías o revisión completa por periodo.`) : ''}
       ${tarjetaConfigHtml('cfgComparativo', 'Comparativo entre negocios', 'Ingresos, gastos y utilidad de todos tus negocios, lado a lado, para el mismo mes.')}
       ${tarjetaConfigHtml('cfgRecargos', 'Recargos y Actualización', 'Calculadora de INPC y recargos para impuestos pagados fuera de tiempo — aplica a cualquier negocio.')}
+      ${b ? tarjetaConfigHtml('cfgPagosImpuestos', 'Pagos de Impuestos', `Control de IVA, ISR, Retenciones y otros impuestos federales de ${b.name}, mes a mes.`) : ''}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgUsuarios', 'Usuarios autorizados', 'Quién puede entrar a Finanzas y a qué negocios.') : ''}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgMfa', 'Autenticación de dos pasos', 'Protege tu cuenta con un código adicional al iniciar sesión.') : ''}
     </div>
@@ -2852,6 +3008,7 @@ async function renderConfiguracion() {
   ir('cfgLibroDiario', 'librodiario');
   ir('cfgComparativo', 'comparativo');
   ir('cfgRecargos', 'recargos');
+  ir('cfgPagosImpuestos', 'pagosimpuestos');
   const usuariosBtn = document.getElementById('cfgUsuarios');
   if (usuariosBtn) usuariosBtn.addEventListener('click', openUsuariosModal);
   const mfaBtn = document.getElementById('cfgMfa');
