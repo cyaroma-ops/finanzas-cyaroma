@@ -7552,7 +7552,7 @@ async function renderBalanceGeneral() {
   window.scrollTo(0, scrollY);
 }
 
-async function computeGastosClasificados(businessId, periodo, subcuentas, mayores, tipoFiltro = 'gasto') {
+async function computeGastosClasificados(businessId, periodo, subcuentas, mayores, tipoFiltro = 'gasto', incluirSinMovimiento = false) {
   const { start, end, mesStart, mesEnd } = periodo;
   const porSubcuenta = {}; // subcuenta_id -> monto
   let sinClasificar = 0;
@@ -7592,9 +7592,9 @@ async function computeGastosClasificados(businessId, periodo, subcuentas, mayore
   const porMayor = mayores.filter(m=>m.tipo===tipoFiltro).map(m => {
     const subs = subcuentasRaiz(m.id, subcuentas)
       .map(s => construirArbolSubcuenta(s.id, subcuentas, porSubcuenta))
-      .filter(s => s.total);
+      .filter(s => incluirSinMovimiento || s.total);
     return { nombre: m.nombre, subs, subtotal: subs.reduce((s,x)=>s+x.total,0), conceptoVentaVinculadoId: m.concepto_venta_vinculado_id || null };
-  }).filter(m => m.subtotal);
+  }).filter(m => incluirSinMovimiento || m.subtotal);
 
   const totalClasificado = porMayor.reduce((s,m)=>s+m.subtotal,0);
   return { porMayor, sinClasificar: tipoFiltro==='gasto' ? sinClasificar : 0, totalClasificado, gastosManuales: tipoFiltro==='gasto' ? gastosManuales : [] };
@@ -8151,8 +8151,8 @@ async function renderPL() {
 
   const totalIngresos = totalIngresosVentas + sobranteCaja;
 
-  const gClas = await computeGastosClasificados(b.id, periodo, subcuentas, mayores);
-  const gCostos = await computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'costo');
+  const gClas = await computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'gasto', true);
+  const gCostos = await computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'costo', true);
   const iPoliza = await computeIngresosPoliza(b.id, periodo, subcuentas, mayores);
   const gananciaCambiaria = await computeGananciaCambiaria(b.id, periodo);
   const totalIngresosFinal = totalIngresos + iPoliza.total + gananciaCambiaria;
