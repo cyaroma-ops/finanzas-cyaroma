@@ -242,6 +242,10 @@ h1,h2,h3,.serif{font-family:'Cormorant Garamond',serif;}
 
 /* Cards / KPIs */
 .kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:16px;margin-bottom:24px;}
+.kpi-grid-compact{grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px;}
+.kpi-grid-compact .kpi{padding:10px 14px;}
+.kpi-grid-compact .kpi .label{font-size:11px;margin-bottom:4px;}
+.kpi-grid-compact .kpi .value{font-size:18px;}
 .kpi{background:var(--card);border-radius:var(--radius);padding:18px 20px;box-shadow:var(--shadow);border:1px solid var(--line);}
 .kpi .label{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;font-weight:700;margin-bottom:8px;}
 .kpi .value{font-size:26px;font-weight:800;color:var(--navy-1);}
@@ -335,6 +339,12 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 
   .table-wrap, .table-wrap.scroll-sticky{overflow:visible !important;max-height:none !important;}
   table{break-inside:auto;font-size:11px;width:100%;table-layout:auto;border-collapse:collapse;}
+  /* Tablas de reporte sin encabezado (tarjetas de Ingresos/Gastos del Estado de Resultados
+     Mensual/Acumulado): cada una ajustaba su columna de números por su cuenta, así que no
+     alineaban entre sí. Se fija un ancho parejo para que todas queden en la misma línea vertical. */
+  table:not(:has(thead)){table-layout:fixed;}
+  table:not(:has(thead)) td:first-child{width:auto;}
+  table:not(:has(thead)) td.num{width:110px;}
   tr{break-inside:avoid;break-after:auto;}
   thead{display:table-header-group;} /* repite el encabezado de columnas en cada página nueva */
   tfoot{display:table-row-group;}
@@ -573,6 +583,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <section class="section" id="sec-clientes"></section>
         <section class="section" id="sec-activosfijos"></section>
         <section class="section" id="sec-ivafiscal"></section>
+        <section class="section" id="sec-balanza"></section>
         <section class="section" id="sec-pl"></section>
         <section class="section" id="sec-flujo"></section>
         <section class="section" id="sec-polizas"></section>

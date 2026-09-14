@@ -651,6 +651,7 @@ const SECTION_META = {
   clientes: { title: 'Clientes', sub: '', showMonth: false, needsBiz: true },
   activosfijos: { title: 'Activos Fijos', sub: '', showMonth: false, needsBiz: true },
   ivafiscal: { title: 'IVA Acreditable y Trasladado', sub: '', showMonth: false, needsBiz: true },
+  balanza: { title: 'Balanza de Comprobación', sub: '', showMonth: true, needsBiz: true },
   pl: { title: 'Estado de Resultados', sub: '', showMonth: true, needsBiz: true },
   flujo: { title: 'Flujo de Efectivo', sub: '', showMonth: false, needsBiz: true },
   polizas: { title: 'Pólizas de Diario', sub: '', showMonth: false, needsBiz: true },
@@ -662,7 +663,7 @@ const SECTION_META = {
 };
 // Estas viven "dentro" de Configuración: ya no tienen su propio ítem en el menú principal,
 // pero conservan su sección y su función de render tal cual, solo cambia cómo se llega ahí.
-const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos', 'ivafiscal'];
+const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos', 'ivafiscal', 'balanza'];
 function marcarNavActivo(seccion) {
   document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
   const seccionNav = SECCIONES_EN_CONFIGURACION.includes(seccion) ? 'configuracion' : seccion;
@@ -735,7 +736,8 @@ function updateTopbar() {
       }
       const mesLegible = MESES_LARGO[Number(STATE.currentMonth.slice(5,7)) - 1] + ' ' + STATE.currentMonth.slice(0,4);
       document.getElementById('printTitle').textContent = tituloImpresion;
-      document.getElementById('printSub').textContent = `${STATE.nombreUsuario ? STATE.nombreUsuario + ' · ' : ''}${meta.showMonth ? mesLegible + ' · ' : ''}Impreso el ${new Date().toLocaleDateString('es-MX', { year:'numeric', month:'long', day:'numeric' })}`;
+      const razonSocialLinea = (b?.razon_social && b.razon_social !== b?.name) ? `${b.razon_social} · ` : '';
+      document.getElementById('printSub').textContent = `${razonSocialLinea}${STATE.nombreUsuario ? STATE.nombreUsuario + ' · ' : ''}${meta.showMonth ? mesLegible + ' · ' : ''}Impreso el ${new Date().toLocaleDateString('es-MX', { year:'numeric', month:'long', day:'numeric' })}`;
       document.getElementById('printOrientationStyle').textContent = `@media print { @page { size: ${printOrientacion.value}; margin: 12mm 12mm 20mm 12mm; @bottom-center { content: "Página " counter(page) " de " counter(pages); font-size: 9px; color: #999; } } }`;
       window.print();
     };
@@ -756,6 +758,7 @@ async function renderCurrentSection() {
   if (s === 'clientes') return renderClientes();
   if (s === 'activosfijos') return renderActivosFijos();
   if (s === 'ivafiscal') return renderIvaFiscal();
+  if (s === 'balanza') return renderBalanza();
   if (s === 'pl') return renderPL();
   if (s === 'flujo') return renderFlujo();
   if (s === 'polizas') return renderPolizas();
@@ -2102,6 +2105,143 @@ document.getElementById('cerrarPeriodoBtn').addEventListener('click', async () =
   renderListaCierres(b.id);
 });
 
+/* ---------- Balanza de Comprobación (solo Fiscal Contable) ---------- */
+async function computeSaldosEspecialesBalanza(b, hastaFecha, subcuentas, mayores, monedas, cuentasBanco, conceptosEfectivo, conceptosTarjetas) {
+  let totalEfectivo = 0;
+  for (const m of monedas) totalEfectivo += (await computeMonedaSaldo(b.id, m, conceptosEfectivo, hastaFecha)) * (Number(m.tc_reporte) || 1);
+  let totalBancos = 0;
+  for (const c of cuentasBanco) totalBancos += await computeBancoSaldo(b.id, c, conceptosTarjetas, hastaFecha);
+
+  const { data: facturasClientesData } = await sb.from('fz_facturas_clientes').select('total,importe_pagado,moneda,tipo_cambio,aplica_iva,iva_monto').eq('business_id', b.id).lte('fecha', hastaFecha);
+  const cuentasPorCobrar = (facturasClientesData || []).reduce((s,f) => {
+    const tc = f.moneda === 'USD' ? (Number(f.tipo_cambio) || 1) : 1;
+    return s + ((Number(f.total) || 0) - (Number(f.importe_pagado) || 0)) * tc;
+  }, 0);
+
+  const esFiscalContable = b.modo === 'fiscal_contable';
+  let ivaAcreditable = 0;
+  if (esFiscalContable) {
+    const [ivaProvQ, ivaBancosQ, ivaEfvoQ] = await Promise.all([
+      sb.from('fz_proveedores').select('iva_monto').eq('business_id', b.id).eq('aplica_iva', true).lte('fecha', hastaFecha),
+      sb.from('fz_bancos_mov').select('iva_monto').eq('business_id', b.id).eq('aplica_iva', true).lte('fecha', hastaFecha),
+      sb.from('fz_efectivo_mov').select('iva_monto').eq('business_id', b.id).eq('aplica_iva', true).lte('fecha', hastaFecha),
+    ]);
+    ivaAcreditable = [...(ivaProvQ.data||[]), ...(ivaBancosQ.data||[]), ...(ivaEfvoQ.data||[])].reduce((s,f) => s + (Number(f.iva_monto)||0), 0);
+  }
+  const ivaTrasladado = !esFiscalContable ? 0 : (facturasClientesData||[]).filter(f=>f.aplica_iva).reduce((s,f)=>s+(Number(f.iva_monto)||0),0);
+
+  const { data: provData } = await sb.from('fz_proveedores').select('importe,importe_pagado,estatus').eq('business_id', b.id).lte('fecha', hastaFecha);
+  const proveedoresPendiente = (provData||[]).filter(p => p.estatus === 'Pendiente' || p.estatus === 'Parcial').reduce((s,p)=>s+(Number(p.importe)-Number(p.importe_pagado||0)),0);
+
+  return { totalEfectivo, totalBancos, cuentasPorCobrar, ivaAcreditable, proveedoresPendiente, ivaTrasladado };
+}
+
+async function renderBalanza() {
+  const el = document.getElementById('sec-balanza');
+  const b = biz();
+  if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
+  el.innerHTML = '';
+  agregarBotonVolverConfig(el);
+  if (b.modo !== 'fiscal_contable') {
+    el.insertAdjacentHTML('beforeend', `<div class="empty">Este negocio está en modo Financiero — cambia a "Fiscal Contable" en Configuración → Negocios para activar este reporte.</div>`);
+    return;
+  }
+
+  const contenido = document.createElement('div');
+  contenido.innerHTML = `<div class="empty">Calculando…</div>`;
+  el.appendChild(contenido);
+
+  const { start, end } = monthBounds(STATE.currentMonth);
+  const diaAntes = sumarDias(start, -1);
+
+  const [subcuentas, mayores, monedasQ, cuentasQ, conceptosEfvoQ, conceptosTarjQ] = await Promise.all([
+    loadSubcuentas(b.id), loadCuentasMayor(b.id),
+    sb.from('fz_efectivo_monedas').select('*').eq('business_id', b.id).eq('activo', true),
+    sb.from('fz_bancos_cuentas').select('*').eq('business_id', b.id).eq('activo', true),
+    sb.from('fz_conceptos').select('*').eq('business_id', b.id).eq('categoria', 'efectivo'),
+    sb.from('fz_conceptos').select('*').eq('business_id', b.id).in('categoria', ['tarjetas','bancos']),
+  ]);
+  const monedas = monedasQ.data || [], cuentasBanco = cuentasQ.data || [];
+  const conceptosEfectivo = conceptosEfvoQ.data || [], conceptosTarjetas = conceptosTarjQ.data || [];
+
+  const [inicialesp, finalesp] = await Promise.all([
+    computeSaldosEspecialesBalanza(b, diaAntes, subcuentas, mayores, monedas, cuentasBanco, conceptosEfectivo, conceptosTarjetas),
+    computeSaldosEspecialesBalanza(b, end, subcuentas, mayores, monedas, cuentasBanco, conceptosEfectivo, conceptosTarjetas),
+  ]);
+
+  const { data: polizasPeriodo } = await sb.from('fz_polizas').select('id').eq('business_id', b.id).gte('fecha', start).lte('fecha', end);
+  const polizaIdsPeriodo = (polizasPeriodo||[]).map(p=>p.id);
+  const { data: lineasPeriodo } = polizaIdsPeriodo.length
+    ? await sb.from('fz_polizas_lineas').select('cargo,abono,subcuenta_id').eq('cuenta_tipo', 'subcuenta').in('poliza_id', polizaIdsPeriodo)
+    : { data: [] };
+  const cargosPorSub = {}, abonosPorSub = {};
+  (lineasPeriodo||[]).forEach(l => {
+    cargosPorSub[l.subcuenta_id] = (cargosPorSub[l.subcuenta_id]||0) + (Number(l.cargo)||0);
+    abonosPorSub[l.subcuenta_id] = (abonosPorSub[l.subcuenta_id]||0) + (Number(l.abono)||0);
+  });
+
+  const filasMayor = [];
+  for (const m of mayores) {
+    const signoNormal = (m.tipo === 'activo' || m.tipo === 'costo' || m.tipo === 'gasto') ? 'debe' : 'haber';
+    const [inicial, final] = await Promise.all([
+      computeSaldoCuentaMayorPolizas(b.id, m.id, subcuentas, signoNormal, diaAntes),
+      computeSaldoCuentaMayorPolizas(b.id, m.id, subcuentas, signoNormal, end),
+    ]);
+    const subIds = subcuentas.filter(s => s.cuenta_mayor_id === m.id).map(s => s.id);
+    const cargos = subIds.reduce((s,id)=>s+(cargosPorSub[id]||0),0);
+    const abonos = subIds.reduce((s,id)=>s+(abonosPorSub[id]||0),0);
+    if (Math.abs(inicial.total) > 0.004 || Math.abs(final.total) > 0.004 || cargos > 0.004 || abonos > 0.004) {
+      filasMayor.push({ nombre: m.nombre, tipo: m.tipo, inicial: inicial.total, cargos, abonos, final: final.total });
+    }
+  }
+
+  const filasEspeciales = [
+    { nombre: 'Efectivo y equivalentes', tipo: 'activo', inicial: inicialesp.totalEfectivo, final: finalesp.totalEfectivo },
+    { nombre: 'Bancos', tipo: 'activo', inicial: inicialesp.totalBancos, final: finalesp.totalBancos },
+    { nombre: 'Cuentas por cobrar (Clientes)', tipo: 'activo', inicial: inicialesp.cuentasPorCobrar, final: finalesp.cuentasPorCobrar },
+    { nombre: 'IVA Acreditable', tipo: 'activo', inicial: inicialesp.ivaAcreditable, final: finalesp.ivaAcreditable },
+    { nombre: 'Proveedores por pagar', tipo: 'pasivo', inicial: inicialesp.proveedoresPendiente, final: finalesp.proveedoresPendiente },
+    { nombre: 'IVA Trasladado por pagar', tipo: 'pasivo', inicial: inicialesp.ivaTrasladado, final: finalesp.ivaTrasladado },
+  ].filter(f => Math.abs(f.inicial) > 0.004 || Math.abs(f.final) > 0.004);
+
+  const todasFilas = [...filasEspeciales.map(f=>({...f, especial:true})), ...filasMayor.map(f=>({...f, especial:false}))];
+  const ordenTipo = ['activo','pasivo','capital','ingreso','costo','gasto'];
+  todasFilas.sort((a,b2) => ordenTipo.indexOf(a.tipo) - ordenTipo.indexOf(b2.tipo));
+
+  const totalCargos = filasMayor.reduce((s,f)=>s+f.cargos,0);
+  const totalAbonos = filasMayor.reduce((s,f)=>s+f.abonos,0);
+  const totalInicial = todasFilas.reduce((s,f)=>s+f.inicial,0);
+  const totalFinal = todasFilas.reduce((s,f)=>s+f.final,0);
+
+  contenido.innerHTML = `
+    <div class="card">
+      <div class="card-head"><h3>Balanza de Comprobación — ${b.name}</h3><span class="hint">${MESES_LARGO[Number(STATE.currentMonth.slice(5,7))-1]} ${STATE.currentMonth.slice(0,4)}</span></div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;">Cargos y Abonos del periodo se calculan directo de Pólizas de Diario. Efectivo, Bancos, Cuentas por Cobrar/Pagar e IVA se muestran con su saldo inicial y final (mismo cálculo que el Balance General); su movimiento del periodo se ve como saldo neto, no desglosado en cargo/abono bruto, ya que se alimentan de varios módulos a la vez.</p>
+      <div class="table-wrap scroll-sticky">
+        <table>
+          <thead><tr><th>Cuenta</th><th>Tipo</th><th>Saldo inicial</th><th>Cargos</th><th>Abonos</th><th>Saldo final</th></tr></thead>
+          <tbody>
+            ${todasFilas.length ? todasFilas.map(f => `<tr>
+              <td>${f.nombre}${f.especial ? ' <span style="color:var(--muted);font-size:11px;">(automático)</span>' : ''}</td>
+              <td style="color:var(--muted);font-size:12px;">${TIPO_CUENTA_LABEL[f.tipo]||f.tipo}</td>
+              <td class="num">${fmt(f.inicial)}</td>
+              <td class="num">${f.especial ? '—' : fmt(f.cargos)}</td>
+              <td class="num">${f.especial ? '—' : fmt(f.abonos)}</td>
+              <td class="num" style="font-weight:700;">${fmt(f.final)}</td>
+            </tr>`).join('') : `<tr><td colspan="6" class="empty">No hay movimientos en este periodo.</td></tr>`}
+          </tbody>
+          <tfoot>
+            <tr class="total-row"><td colspan="2">Totales</td><td class="num">${fmt(totalInicial)}</td><td class="num">${fmt(totalCargos)}</td><td class="num">${fmt(totalAbonos)}</td><td class="num">${fmt(totalFinal)}</td></tr>
+          </tfoot>
+        </table>
+      </div>
+      <p style="font-size:11.5px;color:${Math.abs(totalCargos-totalAbonos)<0.5?'var(--green)':'var(--muted)'};margin-top:10px;font-weight:600;">
+        ${Math.abs(totalCargos-totalAbonos)<0.5 ? '✓ Cargos y Abonos de Pólizas cuadran exacto.' : 'Diferencia entre Cargos y Abonos de Pólizas: ' + fmt(Math.abs(totalCargos-totalAbonos)) + ' — revisa si hay pólizas descuadradas.'}
+      </p>
+    </div>
+  `;
+}
+
 async function renderConfiguracion() {
   const el = document.getElementById('sec-configuracion');
   const b = biz();
@@ -2113,6 +2253,7 @@ async function renderConfiguracion() {
       ${tarjetaConfigHtml('cfgCierre', 'Cierre de periodo', b ? `Bloquea la captura de meses ya cerrados en ${b.name}.` : 'Selecciona un negocio para gestionar sus cierres.')}
       ${tarjetaConfigHtml('cfgActivosFijos', 'Activos Fijos', b ? `Equipo, mobiliario y su depreciación mensual automática en ${b.name}.` : 'Selecciona un negocio para gestionar sus activos.')}
       ${b?.modo === 'fiscal_contable' ? tarjetaConfigHtml('cfgIvaFiscal', 'IVA Acreditable y Trasladado', `Cuánto IVA ya puedes acreditar (pagado) y cuánto ya debes al SAT (cobrado) en ${b.name}.`) : ''}
+      ${b?.modo === 'fiscal_contable' ? tarjetaConfigHtml('cfgBalanza', 'Balanza de Comprobación', `Saldos iniciales, movimientos y saldos finales de todas las cuentas en ${b.name}.`) : ''}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgUsuarios', 'Usuarios autorizados', 'Quién puede entrar a Finanzas y a qué negocios.') : ''}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgMfa', 'Autenticación de dos pasos', 'Protege tu cuenta con un código adicional al iniciar sesión.') : ''}
     </div>
@@ -2125,6 +2266,7 @@ async function renderConfiguracion() {
   if (cierreBtn) cierreBtn.addEventListener('click', () => { if (b) abrirModalCierrePeriodo(b.id); else toast('Selecciona un negocio primero.', 'error'); });
   ir('cfgActivosFijos', 'activosfijos');
   ir('cfgIvaFiscal', 'ivafiscal');
+  ir('cfgBalanza', 'balanza');
   const usuariosBtn = document.getElementById('cfgUsuarios');
   if (usuariosBtn) usuariosBtn.addEventListener('click', openUsuariosModal);
   const mfaBtn = document.getElementById('cfgMfa');
@@ -4364,7 +4506,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
         <button class="btn btn-ghost btn-sm" id="addMovBtnEfvo">+ Agregar movimiento (pago en efectivo)</button>
       </div>
     </div>
-    <div class="table-wrap">
+    <div class="table-wrap scroll-sticky">
       <table>
         <thead><tr><th>Fecha</th><th>Proveedor</th><th>Descripción</th><th>Cargos</th><th>Depósitos</th><th>Saldo</th><th></th></tr></thead>
         <tbody>${rowsHtml || `<tr><td colspan="10" class="empty">Sin movimientos todavía.</td></tr>`}</tbody>
@@ -4573,7 +4715,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
         <button class="btn btn-ghost btn-sm" id="addMovBtnBanco">+ Agregar movimiento</button>
       </div>
     </div>
-    <div class="table-wrap">
+    <div class="table-wrap scroll-sticky">
       <table>
         <thead><tr><th>Fecha</th><th>Proveedor</th><th>Descripción</th><th>Depósitos</th><th>Cargos</th><th>Saldo</th><th title="Conciliado">✓</th><th></th></tr></thead>
         <tbody>${rowsHtml || `<tr><td colspan="11" class="empty">Sin movimientos.</td></tr>`}</tbody>
@@ -4709,7 +4851,7 @@ async function renderProveedores() {
     </div>
     <div class="card">
       <div class="card-head"><h3>Adeudo por proveedor</h3><span class="hint">Clic en un proveedor para ver sus facturas pendientes (incluye créditos a favor, en verde)</span></div>
-      <div class="table-wrap">
+      <div class="table-wrap scroll-sticky">
         <table>
           <thead><tr><th>Proveedor</th><th>Facturas pendientes</th><th>Total adeudado</th></tr></thead>
           <tbody>
@@ -4745,7 +4887,7 @@ async function renderProveedores() {
       <div class="tag-row">
         ${['Pendiente','Todos','Pagado'].map(f => `<div class="tag prov-tab ${STATE_provFiltro===f?'active':''}" data-f="${f}">${f}</div>`).join('')}
       </div>
-      <div class="table-wrap">
+      <div class="table-wrap scroll-sticky">
         <table>
           <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Importe</th><th>Desglose</th><th>Estatus</th><th>Fecha pago</th><th>Pagado desde</th><th>Adjunto</th><th></th></tr></thead>
           <tbody>
@@ -4927,11 +5069,29 @@ async function renderDirectorioProveedores(el, b) {
   });
   const lista = Object.values(grupos).map(g => ({ ...g, pendiente: g.facturado - g.pagado })).sort((a,b) => b.pendiente - a.pendiente);
 
+  // Resumen general: por pagar, pagado este mes, facturas pendientes, pendientes de desglosar
+  const mesActual = STATE.currentMonth;
+  let totalPorPagar = 0, pagadoEsteMes = 0, facturasPendientes = 0, pendientesDesglose = 0;
+  (all || []).forEach(f => {
+    const saldo = (Number(f.importe) || 0) - (Number(f.importe_pagado) || 0);
+    if (saldo > 0.004) { totalPorPagar += saldo; facturasPendientes++; }
+    if (f.fecha_pago && f.fecha_pago.slice(0,7) === mesActual) pagadoEsteMes += Number(f.importe_pagado) || 0;
+    const desgloseTotal = desgloseLineas(f.desglose).reduce((s,l)=>s+(Number(l.monto)||0),0);
+    const metaDesglose = f.aplica_iva ? (Number(f.subtotal)||0) : (Number(f.importe)||0);
+    if (!(Math.abs(desgloseTotal - metaDesglose) < 1 && desgloseTotal > 0)) pendientesDesglose++;
+  });
+
   el.innerHTML = `
     ${provTabsHtml()}
+    <div class="kpi-grid" style="margin-bottom:14px;">
+      <div class="kpi"><div class="label">Total por pagar</div><div class="value num ${totalPorPagar>0.004?'red':''}">${fmt(totalPorPagar)}</div></div>
+      <div class="kpi"><div class="label">Pagado este mes</div><div class="value num green">${fmt(pagadoEsteMes)}</div></div>
+      <div class="kpi"><div class="label">Facturas pendientes</div><div class="value">${facturasPendientes}</div></div>
+      <div class="kpi"><div class="label">Pendientes de desglosar</div><div class="value ${pendientesDesglose>0?'red':''}">${pendientesDesglose}</div></div>
+    </div>
     <div class="card">
       <div class="card-head"><h3>Directorio de proveedores</h3><span class="hint">Clic en un proveedor para ver todo su historial</span></div>
-      <div class="table-wrap">
+      <div class="table-wrap scroll-sticky">
         <table>
           <thead><tr><th>Proveedor</th><th>No. facturas</th><th>Total facturado</th><th>Total pagado</th><th>Saldo pendiente</th></tr></thead>
           <tbody>
@@ -5037,7 +5197,7 @@ async function renderProveedorDetalle(el, b) {
     </div>
     <div class="card">
       <div class="card-head"><h3>${nombre}</h3><span class="hint">Todas las transacciones, más reciente primero</span></div>
-      <div class="table-wrap">
+      <div class="table-wrap scroll-sticky">
         <table>
           <thead><tr><th>Fecha</th><th>Tipo</th><th>Referencia</th><th>Monto</th><th>Saldo</th><th></th></tr></thead>
           <tbody>
@@ -5261,7 +5421,7 @@ async function renderClienteDetalle(el, b) {
     </div>
     <div class="card">
       <div class="card-head"><h3>${cliente.razon_social || cliente.nombre_comercial}</h3>${cliente.razon_social ? `<span class="hint">${cliente.nombre_comercial}</span>` : ''}</div>
-      <div class="table-wrap">
+      <div class="table-wrap scroll-sticky">
         <table>
           <thead><tr><th>Folio</th><th>Fecha</th><th>Total</th><th>Pagado</th><th>Pendiente</th><th>Estatus</th><th>Fiscal</th><th></th></tr></thead>
           <tbody>
@@ -5341,7 +5501,7 @@ async function renderDirectorioClientes(el, b) {
         <div class="tag ${STATE_clienteOrden==='nombre'?'active':''}" id="clienteOrdenNombre">Ordenar por nombre</div>
         <div class="tag ${STATE_clienteOrden==='saldo'?'active':''}" id="clienteOrdenSaldo">Ordenar por saldo (Open Balance)</div>
       </div>
-      <div class="table-wrap">
+      <div class="table-wrap scroll-sticky">
         <table>
           <thead><tr><th>Razón social</th><th>Nombre comercial</th><th>Teléfono</th><th>Moneda / TC</th><th>Open Balance</th><th></th></tr></thead>
           <tbody>
@@ -6065,7 +6225,7 @@ async function renderFacturasClientes(el, b) {
         <h3>Facturas de clientes</h3>
         <button class="btn btn-gold btn-sm" id="addFacturaBtn">+ Nueva factura</button>
       </div>
-      <div class="table-wrap">
+      <div class="table-wrap scroll-sticky">
         <table>
           <thead><tr><th>Folio</th><th>Fecha</th><th>Cliente</th><th>Total</th><th>Pagado</th><th>Estatus</th><th>¿Se factura?</th><th></th></tr></thead>
           <tbody>
@@ -6432,7 +6592,7 @@ async function renderOrdenesVenta(el, b) {
         <button class="btn btn-gold btn-sm" id="addOrdenBtn">+ Nueva orden</button>
       </div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Se crean primero como orden; cuando el cliente confirma (entrega/cobro), se convierten en Factura con un clic.</p>
-      <div class="table-wrap">
+      <div class="table-wrap scroll-sticky">
         <table>
           <thead><tr><th>Folio</th><th>Fecha</th><th>Cliente</th><th>Total</th><th>Estatus</th><th></th></tr></thead>
           <tbody>
@@ -7325,6 +7485,7 @@ async function renderBalanceGeneral() {
     </div>
     <div class="card">
       <div class="card-head"><h3>Balance General — ${b.name}</h3><span class="hint">${esHoy ? 'Al día de hoy · ' + todayStr() : 'Al cierre de ' + MESES_LARGO[Number(hastaYm.slice(5,7))-1] + ' ' + hastaYm.slice(0,4)}</span></div>
+      <div class="table-wrap scroll-sticky">
       <table>
         <tbody>
           <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">ACTIVO</td></tr>
@@ -7360,6 +7521,7 @@ async function renderBalanceGeneral() {
           <tr class="total-row" style="border-top:2px solid var(--navy-1);"><td>Total Pasivo + Capital</td><td class="num">${fmtNeg(totalPasivoCapital)}</td></tr>
         </tbody>
       </table>
+      </div>
       <p style="font-size:11.5px;color:var(--muted);margin-top:12px;">Efectivo, Bancos y Proveedores se calculan en automático desde sus módulos. Las demás cuentas (Activos fijos, Acreedores, Capital, etc.) se alimentan desde Pólizas de Diario — usa el Catálogo de Cuentas para crearlas.</p>
     </div>
   `;
@@ -7995,7 +8157,7 @@ async function renderPL() {
   el.innerHTML = `
     ${plTagsHtml()}
     <p style="font-size:13px;color:var(--muted);margin:-4px 0 14px;font-weight:600;">${estadoResultadosSubtitulo(periodo)}</p>
-    <div class="kpi-grid">
+    <div class="kpi-grid kpi-grid-compact">
       <div class="kpi"><div class="label">Total ingresos</div><div class="value num">${fmt(totalIngresosFinal)}</div></div>
       ${gCostos.totalClasificado ? `<div class="kpi"><div class="label">Utilidad bruta</div><div class="value num ${utilidadBruta>=0?'green':'red'}">${fmt(utilidadBruta)}</div></div>` : ''}
       <div class="kpi"><div class="label">Total gastos</div><div class="value num red">${fmt(gastosTotales)}</div></div>
@@ -8275,7 +8437,7 @@ async function renderPolizas() {
       </div>
       ${(STATE_polizaFiltroTexto||STATE_polizaFiltroDesde||STATE_polizaFiltroHasta) ? `<button class="btn btn-ghost btn-sm" id="polizaLimpiarFiltro" style="margin-bottom:12px;">✕ Limpiar filtros</button>` : ''}
       ${subcuentas.length === 0 ? `<div class="empty">Aún no tienes cuentas en el catálogo. Crea al menos una (de cualquier tipo) para poder registrar pólizas.</div>` : ''}
-      <div class="table-wrap">
+      <div class="table-wrap scroll-sticky">
         <table>
           <thead><tr><th>No. Póliza</th><th>Fecha</th><th>Concepto</th><th>Adjunto</th><th>Importe</th><th>Estado</th></tr></thead>
           <tbody id="polizasList">
@@ -8475,7 +8637,7 @@ function polizaCardHtmlBorrador(borrador) {
           ${!borrador.esNueva ? `<button class="btn btn-ghost btn-sm poliza-del" data-id="${p.id}" style="color:var(--red);">Eliminar póliza</button>` : ''}
         </div>
       </div>
-      <div class="table-wrap">
+      <div class="table-wrap scroll-sticky">
         <table>
           <thead><tr><th>Cuenta</th><th>Proveedor</th><th>Referencia/Factura</th><th>Descripción</th><th>Cargo</th><th>Abono</th><th></th></tr></thead>
           <tbody>
