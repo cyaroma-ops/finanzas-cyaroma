@@ -53,6 +53,17 @@ h1,h2,h3,.serif{font-family:'Cormorant Garamond',serif;}
   display:flex;
   overflow:hidden;
 }
+#loadingScreen{
+  position:fixed;inset:0;z-index:300;
+  display:flex;align-items:center;justify-content:center;
+  background:var(--navy-2, #0a1f3d);
+}
+#loadingScreen .spinner{
+  width:40px;height:40px;border-radius:50%;
+  border:3px solid rgba(255,255,255,.2);border-top-color:#fff;
+  animation:loadspin .8s linear infinite;
+}
+@keyframes loadspin{to{transform:rotate(360deg);}}
 .login-left{
   flex:0 0 38%;
   max-width:640px;
@@ -347,6 +358,8 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 </style>
 </head>
 <body>
+
+<div id="loadingScreen"><div class="spinner"></div></div>
 
 <!-- ============ LOGIN ============ -->
 <div id="loginScreen">

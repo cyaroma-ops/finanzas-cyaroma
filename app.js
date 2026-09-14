@@ -248,11 +248,16 @@ function mostrarPasoMFA() {
   document.getElementById('mfaCodeInput').focus();
 }
 async function checkSession() {
-  const { data } = await sb.auth.getSession();
-  if (data.session) {
-    STATE.user = data.session.user;
-    if (await requiereCodigoMFA()) { mostrarPasoMFA(); return; }
-    await boot();
+  try {
+    const { data } = await sb.auth.getSession();
+    if (data.session) {
+      STATE.user = data.session.user;
+      if (await requiereCodigoMFA()) { mostrarPasoMFA(); return; }
+      await boot();
+    }
+  } finally {
+    const loading = document.getElementById('loadingScreen');
+    if (loading) loading.style.display = 'none';
   }
 }
 
