@@ -7326,11 +7326,92 @@ function fmtNeg(n) {
 function fmtSigno(n) {
   return `<span style="color:${Number(n)>=0?'var(--green)':'var(--red)'};">${fmt(n)}</span>`;
 }
+// Recolecta el id de una subcuenta y todos sus descendientes (hijas, nietas, etc.)
+function recolectarSubcuentaIds(subcuentaId, subcuentas) {
+  const ids = [subcuentaId];
+  subcuentasHijas(subcuentaId, subcuentas).forEach(h => ids.push(...recolectarSubcuentaIds(h.id, subcuentas)));
+  return ids;
+}
+
+// Auxiliar de cuenta: todos los movimientos (Pólizas + Facturas de Proveedores desglosadas) de una
+// o varias subcuentas juntas, en un rango de fechas, con Cargo/Abono separados y saldo corrido.
+async function getMovimientosCuenta(businessId, subcuentaIds, startDate, endDate) {
+  const calcularFilas = async (hasta) => {
+    const { data: lineas } = await sb.from('fz_polizas_lineas').select('*').eq('business_id', businessId).eq('cuenta_tipo', 'subcuenta').in('subcuenta_id', subcuentaIds);
+    const polizaIds = [...new Set((lineas||[]).map(l => l.poliza_id))];
+    const { data: polizas } = polizaIds.length ? await sb.from('fz_polizas').select('id,fecha,numero,concepto').in('id', polizaIds) : { data: [] };
+    const polizaMap = Object.fromEntries((polizas||[]).map(p => [p.id, p]));
+    const filas = [];
+    (lineas||[]).forEach(l => {
+      const p = polizaMap[l.poliza_id];
+      if (!p) return;
+      if (startDate && p.fecha < startDate) return;
+      if (hasta && p.fecha > hasta) return;
+      const cargo = Number(l.cargo)||0, abono = Number(l.abono)||0;
+      if (!cargo && !abono) return;
+      filas.push({ fecha: p.fecha, proveedor: l.proveedor || `Póliza #${p.numero ?? ''}`, descripcion: l.descripcion || p.concepto || '—', cargo, abono, origen: { tipo: 'poliza', id: p.id, fecha: p.fecha } });
+    });
+    const { data: facturas } = await sb.from('fz_proveedores').select('*').eq('business_id', businessId);
+    (facturas||[]).forEach(f => {
+      if (startDate && f.fecha < startDate) return;
+      if (hasta && f.fecha > hasta) return;
+      desgloseLineas(f.desglose).forEach(linea => {
+        if (subcuentaIds.includes(linea.subcuenta_id) && Number(linea.monto)) {
+          filas.push({ fecha: f.fecha, proveedor: f.proveedor || '(sin proveedor)', descripcion: linea.descripcion || f.factura || '(factura)', cargo: Number(linea.monto), abono: 0, origen: { tipo: 'proveedor', id: f.id, fecha: f.fecha } });
+        }
+      });
+    });
+    return filas.sort((a,b) => a.fecha.localeCompare(b.fecha) || 0);
+  };
+
+  const filas = await calcularFilas(endDate);
+  let saldoInicial = 0;
+  if (startDate) {
+    const previas = await getMovimientosCuenta(businessId, subcuentaIds, null, sumarDias(startDate, -1));
+    saldoInicial = previas.saldoFinal;
+  }
+  let saldo = saldoInicial;
+  filas.forEach(f => { saldo += f.cargo - f.abono; f.saldo = saldo; });
+  return { filas, saldoInicial, saldoFinal: saldo };
+}
+
+async function abrirModalMovimientosCuenta(nombre, subcuentaIds, businessId) {
+  document.getElementById('movCuentaTitulo').textContent = `Movimientos de: ${nombre}`;
+  document.getElementById('movCuentaDesde').value = '';
+  document.getElementById('movCuentaHasta').value = todayStr();
+  const buscar = async () => {
+    const desde = document.getElementById('movCuentaDesde').value || null;
+    const hasta = document.getElementById('movCuentaHasta').value || todayStr();
+    document.getElementById('movCuentaLista').innerHTML = `<tr><td colspan="6" class="empty">Calculando…</td></tr>`;
+    const { filas, saldoInicial, saldoFinal } = await getMovimientosCuenta(businessId, subcuentaIds, desde, hasta);
+    document.getElementById('movCuentaResumen').innerHTML = `
+      <div style="display:flex;justify-content:space-between;"><span>Saldo inicial${desde?' (antes de '+desde+')':''}</span><strong>${fmt(saldoInicial)}</strong></div>
+      <div style="display:flex;justify-content:space-between;margin-top:3px;"><span>Movimientos en el rango</span><strong>${filas.length}</strong></div>
+      <div style="display:flex;justify-content:space-between;margin-top:3px;font-weight:700;border-top:1px solid var(--line);padding-top:4px;"><span>Saldo al ${hasta}</span><strong>${fmt(saldoFinal)}</strong></div>
+    `;
+    document.getElementById('movCuentaLista').innerHTML = filas.length ? filas.map(f => `
+      <tr>
+        <td>${fechaCorta(f.fecha)}</td>
+        <td>${f.proveedor}</td>
+        <td>${f.descripcion}</td>
+        <td class="num">${f.cargo ? fmt(f.cargo) : ''}</td>
+        <td class="num">${f.abono ? fmt(f.abono) : ''}</td>
+        <td class="num" style="font-weight:600;">${fmt(f.saldo)}</td>
+      </tr>`).join('') : `<tr><td colspan="6" class="empty">No hay movimientos en este rango.</td></tr>`;
+  };
+  document.getElementById('movCuentaBuscar').onclick = buscar;
+  await buscar();
+  document.getElementById('modalMovimientosCuenta').classList.add('show');
+}
+document.getElementById('closeMovimientosCuenta').addEventListener('click', () => {
+  document.getElementById('modalMovimientosCuenta').classList.remove('show');
+});
+
 function filaArbolBalanceHtml(nodo, nivel, detalleAbiertoHtml) {
   const indent = 40 + (nivel - 1) * 18;
   const estilo = nivel === 1 ? 'font-weight:600;' : 'color:var(--muted);font-size:12.5px;';
   const abierto = STATE_balanceDetalleAbierto === nodo.id;
-  let html = `<tr class="balance-subcuenta-row" data-subcuenta="${nodo.id}" style="cursor:pointer;"><td style="padding-left:${indent}px;${estilo}">${abierto?'▾':'▸'} ${nodo.nombre}</td><td class="num" style="${nivel === 1 ? 'font-weight:600;' : ''}">${fmtNeg(nodo.total)}</td></tr>`;
+  let html = `<tr class="balance-subcuenta-row" data-subcuenta="${nodo.id}" data-nombre="${nodo.nombre.replace(/"/g,'&quot;')}" style="cursor:pointer;"><td style="padding-left:${indent}px;${estilo}">${nodo.nombre}</td><td class="num" style="${nivel === 1 ? 'font-weight:600;' : ''}">${fmtNeg(nodo.total)}</td></tr>`;
   if (abierto) html += detalleAbiertoHtml;
   nodo.hijos.forEach(h => { html += filaArbolBalanceHtml(h, nivel + 1, detalleAbiertoHtml); });
   return html;
@@ -7410,7 +7491,7 @@ async function renderBalanceGeneral() {
   const otrosActivos = [];
   for (const m of mayores.filter(m => m.tipo === 'activo')) {
     const r = await computeSaldoCuentaMayorPolizas(b.id, m.id, subcuentas, 'debe', hastaFecha);
-    if (Math.abs(r.total) > 0.004) otrosActivos.push({ nombre: m.nombre, subs: r.subs, total: r.total });
+    if (Math.abs(r.total) > 0.004) otrosActivos.push({ id: m.id, nombre: m.nombre, subs: r.subs, total: r.total });
   }
   const totalOtrosActivos = otrosActivos.reduce((s,x)=>s+x.total,0);
 
@@ -7441,7 +7522,7 @@ async function renderBalanceGeneral() {
   const otrosPasivos = [];
   for (const m of mayores.filter(m => m.tipo === 'pasivo')) {
     const r = await computeSaldoCuentaMayorPolizas(b.id, m.id, subcuentas, 'haber', hastaFecha);
-    if (Math.abs(r.total) > 0.004) otrosPasivos.push({ nombre: m.nombre, subs: r.subs, total: r.total });
+    if (Math.abs(r.total) > 0.004) otrosPasivos.push({ id: m.id, nombre: m.nombre, subs: r.subs, total: r.total });
   }
   const totalOtrosPasivos = otrosPasivos.reduce((s,x)=>s+x.total,0);
   const totalPasivo = proveedoresPendiente + totalOtrosPasivos + ivaTrasladado;
@@ -7449,7 +7530,7 @@ async function renderBalanceGeneral() {
   const cuentasCapital = [];
   for (const m of mayores.filter(m => m.tipo === 'capital')) {
     const r = await computeSaldoCuentaMayorPolizas(b.id, m.id, subcuentas, 'haber', hastaFecha);
-    if (Math.abs(r.total) > 0.004) cuentasCapital.push({ nombre: m.nombre, subs: r.subs, total: r.total });
+    if (Math.abs(r.total) > 0.004) cuentasCapital.push({ id: m.id, nombre: m.nombre, subs: r.subs, total: r.total });
   }
   const totalCapitalCuentas = cuentasCapital.reduce((s,x)=>s+x.total,0);
   const utilidadAcumulada = await computeUtilidadAcumulada(b.id, hastaYm);
@@ -7496,7 +7577,7 @@ async function renderBalanceGeneral() {
           <tr class="balance-link-clientes" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">Cuentas por cobrar (Clientes) ↗</td><td class="num" style="font-weight:600;">${fmtNeg(cuentasPorCobrar)}</td></tr>
           ${esFiscalContable && Math.abs(ivaAcreditable) > 0.004 ? `<tr><td style="padding-left:22px;font-weight:600;">IVA Acreditable</td><td class="num" style="font-weight:600;">${fmtNeg(ivaAcreditable)}</td></tr>` : ''}
           ${otrosActivos.map(m => `
-            <tr><td style="padding-left:22px;font-weight:600;">${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.total)}</td></tr>
+            <tr class="balance-mayor-row" data-mayor="${m.id}" data-nombre="${m.nombre.replace(/"/g,'&quot;')}" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.total)}</td></tr>
             ${m.subs.map(s => filaArbolBalanceConDetalle(s, 1)).join('')}
           `).join('')}
           <tr class="total-row"><td>Total Activo</td><td class="num">${fmtNeg(totalActivo)}</td></tr>
@@ -7505,14 +7586,14 @@ async function renderBalanceGeneral() {
           <tr class="balance-link-proveedores" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">Proveedores por pagar ↗</td><td class="num" style="font-weight:600;">${fmtNeg(proveedoresPendiente)}</td></tr>
           ${esFiscalContable && Math.abs(ivaTrasladado) > 0.004 ? `<tr><td style="padding-left:22px;font-weight:600;">IVA Trasladado por pagar</td><td class="num" style="font-weight:600;">${fmtNeg(ivaTrasladado)}</td></tr>` : ''}
           ${otrosPasivos.map(m => `
-            <tr><td style="padding-left:22px;font-weight:600;">${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.total)}</td></tr>
+            <tr class="balance-mayor-row" data-mayor="${m.id}" data-nombre="${m.nombre.replace(/"/g,'&quot;')}" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.total)}</td></tr>
             ${m.subs.map(s => filaArbolBalanceConDetalle(s, 1)).join('')}
           `).join('')}
           <tr class="total-row"><td>Total Pasivo</td><td class="num">${fmtNeg(totalPasivo)}</td></tr>
 
           <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">CAPITAL</td></tr>
           ${cuentasCapital.map(m => `
-            <tr><td style="padding-left:22px;font-weight:600;">${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.total)}</td></tr>
+            <tr class="balance-mayor-row" data-mayor="${m.id}" data-nombre="${m.nombre.replace(/"/g,'&quot;')}" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.total)}</td></tr>
             ${m.subs.map(s => filaArbolBalanceConDetalle(s, 1)).join('')}
           `).join('')}
           <tr><td style="padding-left:22px;">Utilidad acumulada del ejercicio ${hastaYm.slice(0,4)}</td><td class="num">${fmtSigno(utilidadAcumulada)}</td></tr>
@@ -7529,8 +7610,12 @@ async function renderBalanceGeneral() {
   const hoyBtn = document.getElementById('balanceHastaHoy');
   if (hoyBtn) hoyBtn.addEventListener('click', () => { STATE_balanceHastaYm = ''; renderBalanceGeneral(); });
   el.querySelectorAll('.balance-subcuenta-row').forEach(tr => tr.addEventListener('click', () => {
-    STATE_balanceDetalleAbierto = STATE_balanceDetalleAbierto === tr.dataset.subcuenta ? null : tr.dataset.subcuenta;
-    renderBalanceGeneral();
+    const ids = recolectarSubcuentaIds(tr.dataset.subcuenta, subcuentas);
+    abrirModalMovimientosCuenta(tr.dataset.nombre, ids, b.id);
+  }));
+  el.querySelectorAll('.balance-mayor-row').forEach(tr => tr.addEventListener('click', () => {
+    const ids = subcuentas.filter(s => s.cuenta_mayor_id === tr.dataset.mayor).map(s => s.id);
+    if (ids.length) abrirModalMovimientosCuenta(tr.dataset.nombre, ids, b.id);
   }));
   el.querySelectorAll('.abrir-origen-btn').forEach(btn => btn.addEventListener('click', (e) => {
     e.stopPropagation();
