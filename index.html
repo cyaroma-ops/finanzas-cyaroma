@@ -1305,8 +1305,14 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 
 <!-- Modal: Movimientos de cuenta (auxiliar) -->
 <div class="modal-bg" id="modalMovimientosCuenta">
-  <div class="modal" style="width:min(820px,97vw);max-height:92vh;overflow-y:auto;">
-    <h3 id="movCuentaTitulo">Movimientos de la cuenta</h3>
+  <div class="modal" style="width:min(980px,98vw);max-height:94vh;overflow-y:auto;">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px;">
+      <h3 id="movCuentaTitulo" style="margin-bottom:0;">Movimientos de la cuenta</h3>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-ghost btn-sm" id="movCuentaExcel">Excel</button>
+        <button class="btn btn-ghost btn-sm" id="movCuentaPdf">PDF</button>
+      </div>
+    </div>
     <div class="grid-3" style="margin-bottom:10px;">
       <div class="field" style="margin-bottom:0;">
         <label>Del día</label>
@@ -1320,10 +1326,11 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <button class="btn btn-ghost btn-sm" id="movCuentaBuscar" style="width:100%;">Buscar</button>
       </div>
     </div>
-    <div id="movCuentaResumen" style="background:#f7f9fc;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px;"></div>
+    <div id="movCuentaResumen" style="background:#f7f9fc;border-radius:8px;padding:10px 14px;margin-bottom:8px;font-size:13px;"></div>
+    <div id="movCuentaPorHijo" style="margin-bottom:12px;"></div>
     <div class="table-wrap scroll-sticky">
       <table>
-        <thead><tr><th>Fecha</th><th>Proveedor / Concepto</th><th>Descripción</th><th>Cargo</th><th>Abono</th><th>Saldo</th></tr></thead>
+        <thead><tr><th>Fecha</th><th>Cuenta</th><th>Proveedor / Concepto</th><th>Descripción</th><th>Cargo</th><th>Abono</th><th>Saldo</th></tr></thead>
         <tbody id="movCuentaLista"></tbody>
       </table>
     </div>

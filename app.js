@@ -7453,7 +7453,7 @@ async function getMovimientosCuenta(businessId, subcuentaIds, startDate, endDate
       if (hasta && p.fecha > hasta) return;
       const cargo = Number(l.cargo)||0, abono = Number(l.abono)||0;
       if (!cargo && !abono) return;
-      filas.push({ fecha: p.fecha, proveedor: l.proveedor || `Póliza #${p.numero ?? ''}`, descripcion: l.descripcion || p.concepto || '—', cargo, abono, origen: { tipo: 'poliza', id: p.id, fecha: p.fecha } });
+      filas.push({ fecha: p.fecha, subcuentaId: l.subcuenta_id, proveedor: l.proveedor || `Póliza #${p.numero ?? ''}`, descripcion: l.descripcion || p.concepto || '—', cargo, abono, origen: { tipo: 'poliza', id: p.id, fecha: p.fecha } });
     });
     const { data: facturas } = await sb.from('fz_proveedores').select('*').eq('business_id', businessId);
     (facturas||[]).forEach(f => {
@@ -7461,7 +7461,7 @@ async function getMovimientosCuenta(businessId, subcuentaIds, startDate, endDate
       if (hasta && f.fecha > hasta) return;
       desgloseLineas(f.desglose).forEach(linea => {
         if (subcuentaIds.includes(linea.subcuenta_id) && Number(linea.monto)) {
-          filas.push({ fecha: f.fecha, proveedor: f.proveedor || '(sin proveedor)', descripcion: linea.descripcion || f.factura || '(factura)', cargo: Number(linea.monto), abono: 0, origen: { tipo: 'proveedor', id: f.id, fecha: f.fecha } });
+          filas.push({ fecha: f.fecha, subcuentaId: linea.subcuenta_id, proveedor: f.proveedor || '(sin proveedor)', descripcion: linea.descripcion || f.factura || '(factura)', cargo: Number(linea.monto), abono: 0, origen: { tipo: 'proveedor', id: f.id, fecha: f.fecha } });
         }
       });
     });
@@ -7593,31 +7593,84 @@ async function getLibroDiario(businessId, startDate, endDate) {
   return { filas, totalCargo, totalAbono };
 }
 
-async function abrirModalMovimientosCuenta(nombre, subcuentaIds, businessId) {
+async function abrirModalMovimientosCuenta(nombre, subcuentaIds, businessId, nombresPorId = {}) {
   document.getElementById('movCuentaTitulo').textContent = `Movimientos de: ${nombre}`;
   document.getElementById('movCuentaDesde').value = '';
   document.getElementById('movCuentaHasta').value = todayStr();
+  let ultimoResultado = null;
   const buscar = async () => {
     const desde = document.getElementById('movCuentaDesde').value || null;
     const hasta = document.getElementById('movCuentaHasta').value || todayStr();
-    document.getElementById('movCuentaLista').innerHTML = `<tr><td colspan="6" class="empty">Calculando…</td></tr>`;
+    document.getElementById('movCuentaLista').innerHTML = `<tr><td colspan="7" class="empty">Calculando…</td></tr>`;
     const { filas, saldoInicial, saldoFinal } = await getMovimientosCuenta(businessId, subcuentaIds, desde, hasta);
+    ultimoResultado = { filas, saldoInicial, saldoFinal, desde, hasta };
     document.getElementById('movCuentaResumen').innerHTML = `
       <div style="display:flex;justify-content:space-between;"><span>Saldo inicial${desde?' (antes de '+desde+')':''}</span><strong>${fmt(saldoInicial)}</strong></div>
       <div style="display:flex;justify-content:space-between;margin-top:3px;"><span>Movimientos en el rango</span><strong>${filas.length}</strong></div>
       <div style="display:flex;justify-content:space-between;margin-top:3px;font-weight:700;border-top:1px solid var(--line);padding-top:4px;"><span>Saldo al ${hasta}</span><strong>${fmt(saldoFinal)}</strong></div>
     `;
+    // Si esta cuenta agrupa varias (una "padre" con hijas), se desglosa cuánto corresponde a cada una.
+    const porHijoBox = document.getElementById('movCuentaPorHijo');
+    if (subcuentaIds.length > 1) {
+      const porHijo = {};
+      subcuentaIds.forEach(id => { porHijo[id] = 0; });
+      filas.forEach(f => { porHijo[f.subcuentaId] = (porHijo[f.subcuentaId] || 0) + f.cargo - f.abono; });
+      porHijo[subcuentaIds[0]] = (porHijo[subcuentaIds[0]] || 0) + saldoInicial; // saldo inicial se atribuye a la cuenta raíz para que el total cuadre
+      porHijoBox.innerHTML = `
+        <p style="font-size:12px;font-weight:700;color:var(--navy-1);margin-bottom:6px;">Desglose por cuenta</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Cuenta</th><th>Saldo en el rango</th></tr></thead>
+            <tbody>
+              ${subcuentaIds.map(id => `<tr><td>${nombresPorId[id] || '(cuenta)'}</td><td class="num">${fmt(porHijo[id]||0)}</td></tr>`).join('')}
+            </tbody>
+          </table>
+        </div>`;
+    } else {
+      porHijoBox.innerHTML = '';
+    }
     document.getElementById('movCuentaLista').innerHTML = filas.length ? filas.map(f => `
       <tr>
         <td>${fechaCorta(f.fecha)}</td>
+        <td>${nombresPorId[f.subcuentaId] || ''}</td>
         <td>${f.proveedor}</td>
         <td>${f.descripcion}</td>
         <td class="num">${f.cargo ? fmt(f.cargo) : ''}</td>
         <td class="num">${f.abono ? fmt(f.abono) : ''}</td>
         <td class="num" style="font-weight:600;">${fmt(f.saldo)}</td>
-      </tr>`).join('') : `<tr><td colspan="6" class="empty">No hay movimientos en este rango.</td></tr>`;
+      </tr>`).join('') : `<tr><td colspan="7" class="empty">No hay movimientos en este rango.</td></tr>`;
   };
   document.getElementById('movCuentaBuscar').onclick = buscar;
+  document.getElementById('movCuentaExcel').onclick = () => {
+    if (!ultimoResultado || !ultimoResultado.filas.length) { toast('No hay movimientos para exportar.', 'error'); return; }
+    const filasExcel = ultimoResultado.filas.map(f => ({
+      'Fecha': f.fecha, 'Cuenta': nombresPorId[f.subcuentaId] || '', 'Proveedor / Concepto': f.proveedor,
+      'Descripción': f.descripcion, 'Cargo': f.cargo || 0, 'Abono': f.abono || 0, 'Saldo': f.saldo,
+    }));
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(filasExcel);
+    XLSX.utils.book_append_sheet(wb, ws, 'Movimientos');
+    XLSX.writeFile(wb, `Movimientos - ${nombre} - ${ultimoResultado.desde||'inicio'} a ${ultimoResultado.hasta}.xlsx`);
+  };
+  document.getElementById('movCuentaPdf').onclick = () => {
+    if (!ultimoResultado || !ultimoResultado.filas.length) { toast('No hay movimientos para exportar.', 'error'); return; }
+    const negocio = biz();
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: 'pt', format: 'letter', orientation: 'landscape' });
+    const margin = 40;
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.setTextColor(10, 31, 61);
+    doc.text(negocio?.razon_social || negocio?.name || 'Finanzas', margin, 44);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(102, 112, 133);
+    doc.text(`Movimientos de: ${nombre}`, margin, 60);
+    doc.text(`${ultimoResultado.desde||'Inicio'} a ${ultimoResultado.hasta} · Saldo inicial: ${fmt(ultimoResultado.saldoInicial)} · Saldo final: ${fmt(ultimoResultado.saldoFinal)}`, margin, 74);
+    doc.autoTable({
+      startY: 90, margin: { left: margin, right: margin },
+      head: [['Fecha', 'Cuenta', 'Proveedor / Concepto', 'Descripción', 'Cargo', 'Abono', 'Saldo']],
+      body: ultimoResultado.filas.map(f => [fechaCorta(f.fecha), nombresPorId[f.subcuentaId]||'', f.proveedor, f.descripcion, f.cargo?fmt(f.cargo):'', f.abono?fmt(f.abono):'', fmt(f.saldo)]),
+      styles: { fontSize: 8 }, headStyles: { fillColor: [10,31,61] },
+    });
+    doc.save(`Movimientos - ${nombre} - ${ultimoResultado.desde||'inicio'} a ${ultimoResultado.hasta}.pdf`);
+  };
   await buscar();
   document.getElementById('modalMovimientosCuenta').classList.add('show');
 }
@@ -7827,13 +7880,14 @@ async function renderBalanceGeneral() {
   document.getElementById('balanceHastaMes').addEventListener('change', (e) => { STATE_balanceHastaYm = e.target.value; renderBalanceGeneral(); });
   const hoyBtn = document.getElementById('balanceHastaHoy');
   if (hoyBtn) hoyBtn.addEventListener('click', () => { STATE_balanceHastaYm = ''; renderBalanceGeneral(); });
+  const nombresPorIdSubcuenta = Object.fromEntries(subcuentas.map(s => [s.id, s.nombre]));
   el.querySelectorAll('.balance-subcuenta-row').forEach(tr => tr.addEventListener('click', () => {
     const ids = recolectarSubcuentaIds(tr.dataset.subcuenta, subcuentas);
-    abrirModalMovimientosCuenta(tr.dataset.nombre, ids, b.id);
+    abrirModalMovimientosCuenta(tr.dataset.nombre, ids, b.id, nombresPorIdSubcuenta);
   }));
   el.querySelectorAll('.balance-mayor-row').forEach(tr => tr.addEventListener('click', () => {
     const ids = subcuentas.filter(s => s.cuenta_mayor_id === tr.dataset.mayor).map(s => s.id);
-    if (ids.length) abrirModalMovimientosCuenta(tr.dataset.nombre, ids, b.id);
+    if (ids.length) abrirModalMovimientosCuenta(tr.dataset.nombre, ids, b.id, nombresPorIdSubcuenta);
   }));
   el.querySelectorAll('.abrir-origen-btn').forEach(btn => btn.addEventListener('click', (e) => {
     e.stopPropagation();
