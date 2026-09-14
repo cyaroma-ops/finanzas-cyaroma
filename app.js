@@ -660,7 +660,7 @@ const SECTION_META = {
   proveedores: { title: 'Proveedores', sub: '', showMonth: false, needsBiz: true },
   clientes: { title: 'Clientes', sub: '', showMonth: false, needsBiz: true },
   activosfijos: { title: 'Activos Fijos', sub: '', showMonth: false, needsBiz: true },
-  ivafiscal: { title: 'IVA y Retenciones', sub: '', showMonth: false, needsBiz: true },
+  ivafiscal: { title: 'IVA y Retenciones', sub: '', showMonth: true, needsBiz: true },
   balanza: { title: 'Balanza de Comprobación', sub: '', showMonth: true, needsBiz: true },
   librodiario: { title: 'Libro Diario', sub: '', showMonth: false, needsBiz: true },
   comparativo: { title: 'Comparativo entre negocios', sub: '', showMonth: true, needsBiz: false },
@@ -1994,101 +1994,114 @@ async function renderIvaFiscal() {
     return;
   }
 
-  const [{ data: facturasProv }, { data: facturasCli }, { data: movsBancos }, { data: movsEfvo }, { data: facturasRetencion }] = await Promise.all([
-    sb.from('fz_proveedores').select('proveedor,factura,fecha,importe,importe_pagado,aplica_iva,iva_monto,subtotal').eq('business_id', b.id).eq('aplica_iva', true),
-    sb.from('fz_facturas_clientes').select('folio,fecha,cliente_id,total,importe_pagado,aplica_iva,iva_monto').eq('business_id', b.id).eq('aplica_iva', true),
-    sb.from('fz_bancos_mov').select('fecha,proveedor,descripcion,subtotal,iva_monto').eq('business_id', b.id).eq('aplica_iva', true),
-    sb.from('fz_efectivo_mov').select('fecha,proveedor,descripcion,subtotal,iva_monto').eq('business_id', b.id).eq('aplica_iva', true),
-    sb.from('fz_proveedores').select('proveedor,factura,fecha,retencion_categoria,retencion_isr_monto,retencion_iva_monto').eq('business_id', b.id).eq('aplica_retencion', true),
+  const { start, end } = monthBounds(STATE.currentMonth);
+
+  // Facturas/movimientos DEVENGADOS este mes (lo que se facturó/generó, sin importar si ya se pagó)
+  const [{ data: facturasProv }, { data: facturasCli }, { data: movsBancos }, { data: movsEfvo }, { data: facturasRetencion },
+         { data: pagosDelMes }, { data: cobrosDelMes }, { data: todasFacturasProvIva }, { data: todasFacturasCliIva }] = await Promise.all([
+    sb.from('fz_proveedores').select('proveedor,factura,fecha,importe,importe_pagado,aplica_iva,iva_monto,subtotal').eq('business_id', b.id).eq('aplica_iva', true).gte('fecha', start).lte('fecha', end),
+    sb.from('fz_facturas_clientes').select('folio,fecha,cliente_id,total,importe_pagado,aplica_iva,iva_monto').eq('business_id', b.id).eq('aplica_iva', true).gte('fecha', start).lte('fecha', end),
+    sb.from('fz_bancos_mov').select('fecha,proveedor,descripcion,subtotal,iva_monto').eq('business_id', b.id).eq('aplica_iva', true).gte('fecha', start).lte('fecha', end),
+    sb.from('fz_efectivo_mov').select('fecha,proveedor,descripcion,subtotal,iva_monto').eq('business_id', b.id).eq('aplica_iva', true).gte('fecha', start).lte('fecha', end),
+    sb.from('fz_proveedores').select('proveedor,factura,fecha,retencion_categoria,retencion_isr_monto,retencion_iva_monto').eq('business_id', b.id).eq('aplica_retencion', true).gte('fecha', start).lte('fecha', end),
+    sb.from('fz_pagos_aplicados').select('monto,factura_id').eq('business_id', b.id).gte('fecha', start).lte('fecha', end),
+    sb.from('fz_cobros_aplicados').select('monto,factura_id').eq('business_id', b.id).gte('fecha', start).lte('fecha', end),
+    sb.from('fz_proveedores').select('id,importe,iva_monto').eq('business_id', b.id).eq('aplica_iva', true),
+    sb.from('fz_facturas_clientes').select('id,total,iva_monto').eq('business_id', b.id).eq('aplica_iva', true),
   ]);
   const movsIvaDirectos = [...(movsBancos||[]), ...(movsEfvo||[])];
   const clientesMap = Object.fromEntries((await loadClientes(b.id)).map(c => [c.id, c.nombre_comercial]));
 
-  const ivaDirectosTotal = movsIvaDirectos.reduce((s,m)=>s+(Number(m.iva_monto)||0),0); // siempre "pagado", se registran al momento (ej. comisiones bancarias)
-  const acreditableTotal = (facturasProv||[]).reduce((s,f)=>s+(Number(f.iva_monto)||0),0) + ivaDirectosTotal;
-  const acreditablePagado = (facturasProv||[]).reduce((s,f) => {
-    const prop = Number(f.importe) > 0 ? Math.min(1, (Number(f.importe_pagado)||0) / Number(f.importe)) : 0;
-    return s + (Number(f.iva_monto)||0) * prop;
-  }, 0) + ivaDirectosTotal;
-  const acreditablePendiente = acreditableTotal - acreditablePagado;
-
-  const trasladadoTotal = (facturasCli||[]).reduce((s,f)=>s+(Number(f.iva_monto)||0),0);
-  const trasladadoCobrado = (facturasCli||[]).reduce((s,f) => {
-    const prop = Number(f.total) > 0 ? Math.min(1, (Number(f.importe_pagado)||0) / Number(f.total)) : 0;
-    return s + (Number(f.iva_monto)||0) * prop;
+  // IVA efectivamente pagado/cobrado ESTE MES (base correcta para "IVA a cargo/a favor" — el SAT
+  // exige base de flujo de efectivo, no lo simplemente facturado).
+  const facturasProvMap = Object.fromEntries((todasFacturasProvIva||[]).map(f => [f.id, f]));
+  const facturasCliMap = Object.fromEntries((todasFacturasCliIva||[]).map(f => [f.id, f]));
+  const ivaAcreditablePagadoMes = (pagosDelMes||[]).reduce((s,p) => {
+    const f = facturasProvMap[p.factura_id];
+    if (!f || !Number(f.importe)) return s;
+    return s + Number(f.iva_monto||0) * (Number(p.monto)/Number(f.importe));
+  }, 0) + movsIvaDirectos.reduce((s,m)=>s+(Number(m.iva_monto)||0),0); // directos ya cuentan como pagados al momento
+  const ivaTrasladadoCobradoMes = (cobrosDelMes||[]).reduce((s,c) => {
+    const f = facturasCliMap[c.factura_id];
+    if (!f || !Number(f.total)) return s;
+    return s + Number(f.iva_monto||0) * (Number(c.monto)/Number(f.total));
   }, 0);
-  const trasladadoPendiente = trasladadoTotal - trasladadoCobrado;
+  const ivaCargoFavorMes = ivaTrasladadoCobradoMes - ivaAcreditablePagadoMes;
 
+  const ivaDirectosTotal = movsIvaDirectos.reduce((s,m)=>s+(Number(m.iva_monto)||0),0);
+  const acreditableDevengadoMes = (facturasProv||[]).reduce((s,f)=>s+(Number(f.iva_monto)||0),0) + ivaDirectosTotal;
+  const trasladadoDevengadoMes = (facturasCli||[]).reduce((s,f)=>s+(Number(f.iva_monto)||0),0);
   const totalRetIsr = (facturasRetencion||[]).reduce((s,f)=>s+(Number(f.retencion_isr_monto)||0),0);
   const totalRetIva = (facturasRetencion||[]).reduce((s,f)=>s+(Number(f.retencion_iva_monto)||0),0);
 
   const contenido = document.createElement('div');
   contenido.innerHTML = `
-    <p style="font-size:12px;color:var(--muted);margin-bottom:14px;">El IVA solo se vuelve acreditable (Proveedores) o exigible ante el SAT (Clientes) hasta que la factura está efectivamente pagada o cobrada — por eso cada uno se reparte en "ya" y "pendiente", según cuánto se ha pagado/cobrado de cada factura.</p>
-    <div class="kpi-grid" style="margin-bottom:18px;">
-      <div class="kpi"><div class="label">IVA Acreditable (ya pagado)</div><div class="value num green">${fmt(acreditablePagado)}</div></div>
-      <div class="kpi"><div class="label">IVA Acreditable (pendiente)</div><div class="value num ${acreditablePendiente>0.004?'red':''}">${fmt(acreditablePendiente)}</div></div>
-      <div class="kpi"><div class="label">IVA Trasladado (ya cobrado)</div><div class="value num red">${fmt(trasladadoCobrado)}</div></div>
-      <div class="kpi"><div class="label">IVA Trasladado (pendiente)</div><div class="value num">${fmt(trasladadoPendiente)}</div></div>
-      <div class="kpi"><div class="label">Retenciones ISR por pagar</div><div class="value num ${totalRetIsr>0.004?'red':''}">${fmt(totalRetIsr)}</div></div>
-      <div class="kpi"><div class="label">Retenciones IVA por pagar</div><div class="value num ${totalRetIva>0.004?'red':''}">${fmt(totalRetIva)}</div></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+      <p style="font-size:12px;color:var(--muted);margin:0;max-width:640px;">Todo lo de esta pantalla es del mes elegido arriba. El "IVA a cargo/a favor" usa lo efectivamente pagado/cobrado ese mes (no solo lo facturado), que es la base que exige el SAT.</p>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-ghost btn-sm" id="ivaFiscalExcel">Excel</button>
+        <button class="btn btn-ghost btn-sm" id="ivaFiscalPdf">PDF</button>
+      </div>
     </div>
-    <div class="card" style="margin-bottom:16px;">
+    <div class="card" style="margin-bottom:14px;">
+      <div class="card-head"><h3>Resumen fiscal del mes — ${MESES_LARGO[Number(STATE.currentMonth.slice(5,7))-1]} ${STATE.currentMonth.slice(0,4)}</h3></div>
+      <div class="kpi-grid kpi-grid-compact">
+        <div class="kpi"><div class="label">IVA Trasladado cobrado</div><div class="value num red">${fmt(ivaTrasladadoCobradoMes)}</div></div>
+        <div class="kpi"><div class="label">IVA Acreditable pagado</div><div class="value num green">${fmt(ivaAcreditablePagadoMes)}</div></div>
+        <div class="kpi"><div class="label">${ivaCargoFavorMes>=0?'IVA a cargo':'IVA a favor'}</div><div class="value num ${ivaCargoFavorMes>=0?'red':'green'}">${fmt(Math.abs(ivaCargoFavorMes))}</div></div>
+        <div class="kpi"><div class="label">IVA Trasladado devengado</div><div class="value num">${fmt(trasladadoDevengadoMes)}</div></div>
+        <div class="kpi"><div class="label">IVA Acreditable devengado</div><div class="value num">${fmt(acreditableDevengadoMes)}</div></div>
+        <div class="kpi"><div class="label">Retenciones ISR del mes</div><div class="value num ${totalRetIsr>0.004?'red':''}">${fmt(totalRetIsr)}</div></div>
+        <div class="kpi"><div class="label">Retenciones IVA del mes</div><div class="value num ${totalRetIva>0.004?'red':''}">${fmt(totalRetIva)}</div></div>
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:14px;">
       <div class="card-head"><h3>IVA Acreditable — Comisiones y otros gastos directos (Bancos/Efectivo)</h3></div>
       <div class="table-wrap">
-        <table>
+        <table class="report-table">
           <thead><tr><th>Fecha</th><th>Concepto</th><th>Subtotal</th><th>IVA</th></tr></thead>
           <tbody>
             ${movsIvaDirectos.length ? movsIvaDirectos.map(m => `<tr>
                 <td>${fechaCorta(m.fecha)}</td><td>${m.proveedor || m.descripcion || ''}</td>
                 <td class="num">${fmt(m.subtotal)}</td><td class="num">${fmt(m.iva_monto)}</td>
-              </tr>`).join('') : `<tr><td colspan="4" class="empty">No hay movimientos directos con IVA desglosado.</td></tr>`}
+              </tr>`).join('') : `<tr><td colspan="4" class="empty">No hay movimientos directos con IVA este mes.</td></tr>`}
           </tbody>
         </table>
       </div>
-      <p style="font-size:11px;color:var(--muted);margin-top:8px;">Estos se registran ya pagados al momento de capturarse (ej. comisiones bancarias), así que su IVA cuenta como acreditable de inmediato.</p>
     </div>
-    <div class="card" style="margin-bottom:16px;">
+    <div class="card" style="margin-bottom:14px;">
       <div class="card-head"><h3>IVA Acreditable — Facturas de Proveedores</h3></div>
       <div class="table-wrap">
-        <table>
-          <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>IVA total</th><th>IVA ya pagado</th><th>IVA pendiente</th></tr></thead>
+        <table class="report-table">
+          <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Subtotal</th><th>IVA</th></tr></thead>
           <tbody>
-            ${(facturasProv||[]).length ? facturasProv.map(f => {
-              const prop = Number(f.importe) > 0 ? Math.min(1, (Number(f.importe_pagado)||0) / Number(f.importe)) : 0;
-              const ivaPagado = (Number(f.iva_monto)||0) * prop;
-              return `<tr>
+            ${(facturasProv||[]).length ? facturasProv.map(f => `<tr>
                 <td>${fechaCorta(f.fecha)}</td><td>${f.proveedor||''}</td><td>${f.factura||'s/f'}</td>
-                <td class="num">${fmt(f.iva_monto)}</td><td class="num">${fmt(ivaPagado)}</td><td class="num">${fmt((Number(f.iva_monto)||0)-ivaPagado)}</td>
-              </tr>`;
-            }).join('') : `<tr><td colspan="6" class="empty">No hay facturas de proveedor con IVA desglosado.</td></tr>`}
+                <td class="num">${fmt(f.subtotal)}</td><td class="num">${fmt(f.iva_monto)}</td>
+              </tr>`).join('') : `<tr><td colspan="5" class="empty">No hay facturas de proveedor con IVA este mes.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:14px;">
+      <div class="card-head"><h3>IVA Trasladado — Facturas de Clientes</h3></div>
+      <div class="table-wrap">
+        <table class="report-table">
+          <thead><tr><th>Fecha</th><th>Cliente</th><th>Folio</th><th>IVA</th></tr></thead>
+          <tbody>
+            ${(facturasCli||[]).length ? facturasCli.map(f => `<tr>
+                <td>${fechaCorta(f.fecha)}</td><td>${clientesMap[f.cliente_id]||''}</td><td>#${f.folio}</td>
+                <td class="num">${fmt(f.iva_monto)}</td>
+              </tr>`).join('') : `<tr><td colspan="4" class="empty">No hay facturas de cliente con IVA este mes.</td></tr>`}
           </tbody>
         </table>
       </div>
     </div>
     <div class="card">
-      <div class="card-head"><h3>IVA Trasladado — Facturas de Clientes</h3></div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Fecha</th><th>Cliente</th><th>Folio</th><th>IVA total</th><th>IVA ya cobrado</th><th>IVA pendiente</th></tr></thead>
-          <tbody>
-            ${(facturasCli||[]).length ? facturasCli.map(f => {
-              const prop = Number(f.total) > 0 ? Math.min(1, (Number(f.importe_pagado)||0) / Number(f.total)) : 0;
-              const ivaCobrado = (Number(f.iva_monto)||0) * prop;
-              return `<tr>
-                <td>${fechaCorta(f.fecha)}</td><td>${clientesMap[f.cliente_id]||''}</td><td>#${f.folio}</td>
-                <td class="num">${fmt(f.iva_monto)}</td><td class="num">${fmt(ivaCobrado)}</td><td class="num">${fmt((Number(f.iva_monto)||0)-ivaCobrado)}</td>
-              </tr>`;
-            }).join('') : `<tr><td colspan="6" class="empty">No hay facturas de cliente con IVA desglosado.</td></tr>`}
-          </tbody>
-        </table>
-      </div>
-    </div>
-    <div class="card" style="margin-top:16px;">
-      <div class="card-head"><h3>Retenciones de ISR/IVA por categoría</h3></div>
-      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Cada categoría se declara y se paga por separado ante el SAT (ej. retención de IVA por Arrendamiento no es lo mismo que por Fletes) — por eso se muestran aparte, no como un solo total.</p>
+      <div class="card-head"><h3>Retenciones de ISR/IVA por categoría — este mes</h3></div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Cada categoría se declara y se paga por separado ante el SAT (ej. retención de IVA por Arrendamiento no es lo mismo que por Fletes).</p>
       <div class="table-wrap" style="margin-bottom:14px;">
-        <table>
+        <table class="report-table">
           <thead><tr><th>Categoría</th><th>ISR retenido</th><th>IVA retenido</th><th>Total retenido</th></tr></thead>
           <tbody>
             ${(() => {
@@ -2102,25 +2115,77 @@ async function renderIvaFiscal() {
               const cats = Object.entries(porCat);
               return cats.length ? cats.map(([cat,v]) => `<tr>
                 <td>${cat}</td><td class="num">${fmt(v.isr)}</td><td class="num">${fmt(v.iva)}</td><td class="num" style="font-weight:600;">${fmt(v.isr+v.iva)}</td>
-              </tr>`).join('') : `<tr><td colspan="4" class="empty">No hay retenciones capturadas.</td></tr>`;
+              </tr>`).join('') : `<tr><td colspan="4" class="empty">No hay retenciones este mes.</td></tr>`;
             })()}
           </tbody>
         </table>
       </div>
       <div class="table-wrap">
-        <table>
+        <table class="report-table">
           <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Categoría</th><th>ISR retenido</th><th>IVA retenido</th></tr></thead>
           <tbody>
             ${(facturasRetencion||[]).length ? facturasRetencion.map(f => `<tr>
                 <td>${fechaCorta(f.fecha)}</td><td>${f.proveedor||''}</td><td>${f.factura||'s/f'}</td><td>${f.retencion_categoria||'Sin categoría'}</td>
                 <td class="num">${fmt(f.retencion_isr_monto)}</td><td class="num">${fmt(f.retencion_iva_monto)}</td>
-              </tr>`).join('') : `<tr><td colspan="6" class="empty">No hay facturas con retenciones.</td></tr>`}
+              </tr>`).join('') : `<tr><td colspan="6" class="empty">No hay facturas con retenciones este mes.</td></tr>`}
           </tbody>
         </table>
       </div>
     </div>
   `;
   el.appendChild(contenido);
+
+  document.getElementById('ivaFiscalExcel').addEventListener('click', () => {
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([
+      { 'Concepto': 'IVA Trasladado cobrado', 'Monto': ivaTrasladadoCobradoMes },
+      { 'Concepto': 'IVA Acreditable pagado', 'Monto': ivaAcreditablePagadoMes },
+      { 'Concepto': ivaCargoFavorMes>=0?'IVA a cargo':'IVA a favor', 'Monto': Math.abs(ivaCargoFavorMes) },
+      { 'Concepto': 'Retenciones ISR del mes', 'Monto': totalRetIsr },
+      { 'Concepto': 'Retenciones IVA del mes', 'Monto': totalRetIva },
+    ]), 'Resumen');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet((facturasProv||[]).map(f=>({Fecha:f.fecha,Proveedor:f.proveedor,Factura:f.factura,Subtotal:f.subtotal,IVA:f.iva_monto}))), 'IVA Acreditable Proveedores');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet((facturasCli||[]).map(f=>({Fecha:f.fecha,Cliente:clientesMap[f.cliente_id]||'',Folio:f.folio,IVA:f.iva_monto}))), 'IVA Trasladado Clientes');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet((facturasRetencion||[]).map(f=>({Fecha:f.fecha,Proveedor:f.proveedor,Factura:f.factura,Categoria:f.retencion_categoria,ISR:f.retencion_isr_monto,IVA:f.retencion_iva_monto}))), 'Retenciones');
+    XLSX.writeFile(wb, `IVA y Retenciones - ${b.name} - ${STATE.currentMonth}.xlsx`);
+  });
+  document.getElementById('ivaFiscalPdf').addEventListener('click', () => {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: 'pt', format: 'letter' });
+    const margin = 40;
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.setTextColor(10, 31, 61);
+    doc.text(b?.razon_social || b?.name || 'Finanzas', margin, 44);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(102, 112, 133);
+    doc.text(`IVA y Retenciones — ${MESES_LARGO[Number(STATE.currentMonth.slice(5,7))-1]} ${STATE.currentMonth.slice(0,4)}`, margin, 60);
+    doc.autoTable({
+      startY: 78, margin: { left: margin, right: margin },
+      head: [['Concepto', 'Monto']],
+      body: [
+        ['IVA Trasladado cobrado', fmt(ivaTrasladadoCobradoMes)],
+        ['IVA Acreditable pagado', fmt(ivaAcreditablePagadoMes)],
+        [ivaCargoFavorMes>=0?'IVA a cargo':'IVA a favor', fmt(Math.abs(ivaCargoFavorMes))],
+        ['Retenciones ISR del mes', fmt(totalRetIsr)],
+        ['Retenciones IVA del mes', fmt(totalRetIva)],
+      ],
+      styles: { fontSize: 9 }, headStyles: { fillColor: [10,31,61] },
+    });
+    let y = doc.lastAutoTable.finalY + 20;
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.text('Retenciones por categoría', margin, y);
+    const porCat = {};
+    (facturasRetencion||[]).forEach(f => {
+      const cat = f.retencion_categoria || 'Sin categoría';
+      if (!porCat[cat]) porCat[cat] = { isr: 0, iva: 0 };
+      porCat[cat].isr += Number(f.retencion_isr_monto)||0;
+      porCat[cat].iva += Number(f.retencion_iva_monto)||0;
+    });
+    doc.autoTable({
+      startY: y + 10, margin: { left: margin, right: margin },
+      head: [['Categoría', 'ISR retenido', 'IVA retenido']],
+      body: Object.entries(porCat).map(([cat,v]) => [cat, fmt(v.isr), fmt(v.iva)]),
+      styles: { fontSize: 9 }, headStyles: { fillColor: [10,31,61] },
+    });
+    doc.save(`IVA y Retenciones - ${b.name} - ${STATE.currentMonth}.pdf`);
+  });
 }
 
 async function abrirModalCierrePeriodo(businessId) {
@@ -7698,6 +7763,8 @@ async function getLibroDiario(businessId, startDate, endDate) {
       push(f.fecha, ref, nombreSub(linea.subcuenta_id), linea.descripcion || f.proveedor, Number(linea.monto)||0, 0, { tipo:'proveedor', id:f.id, fecha:f.fecha });
     });
     if (f.aplica_iva && Number(f.iva_monto)) push(f.fecha, ref, 'IVA Acreditable', f.proveedor, Number(f.iva_monto), 0, { tipo:'proveedor', id:f.id, fecha:f.fecha });
+    if (f.aplica_retencion && Number(f.retencion_isr_monto)) push(f.fecha, ref, `Retención ISR — ${f.retencion_categoria||'Sin categoría'}`, f.proveedor, 0, Number(f.retencion_isr_monto), { tipo:'proveedor', id:f.id, fecha:f.fecha });
+    if (f.aplica_retencion && Number(f.retencion_iva_monto)) push(f.fecha, ref, `Retención IVA — ${f.retencion_categoria||'Sin categoría'}`, f.proveedor, 0, Number(f.retencion_iva_monto), { tipo:'proveedor', id:f.id, fecha:f.fecha });
     push(f.fecha, ref, `Proveedores — ${f.proveedor||'(sin proveedor)'}`, `Factura ${f.factura||'s/f'}`, 0, Number(f.importe)||0, { tipo:'proveedor', id:f.id, fecha:f.fecha });
   });
 
