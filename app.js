@@ -3090,6 +3090,10 @@ async function renderBalanza() {
         <div style="display:flex;align-items:center;gap:10px;">
           <span class="hint">${MESES_LARGO[Number(STATE.currentMonth.slice(5,7))-1]} ${STATE.currentMonth.slice(0,4)}</span>
           <button class="btn btn-ghost btn-sm" id="balanzaExcelBtn">Excel</button>
+          <select id="balanzaPdfOrientacion" style="font-size:12.5px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;">
+            <option value="landscape" selected>Horizontal</option>
+            <option value="portrait">Vertical</option>
+          </select>
           <button class="btn btn-ghost btn-sm" id="balanzaPdfBtn">PDF</button>
         </div>
       </div>
@@ -3176,27 +3180,32 @@ async function renderBalanza() {
     XLSX.writeFile(wb, `Balanza de Comprobación - ${b.name} - ${STATE.currentMonth}.xlsx`);
   });
   document.getElementById('balanzaPdfBtn').addEventListener('click', () => {
+    const orientacion = document.getElementById('balanzaPdfOrientacion').value; // 'landscape' | 'portrait'
+    const esVertical = orientacion === 'portrait';
     const { jsPDF } = window.jspdf;
-    const doc = new jsPDF({ unit: 'pt', format: 'letter', orientation: 'landscape' });
-    const margin = 30;
+    const doc = new jsPDF({ unit: 'pt', format: 'letter', orientation: orientacion });
+    const margin = esVertical ? 24 : 30;
     doc.setFont('helvetica', 'bold'); doc.setFontSize(15); doc.setTextColor(10, 31, 61);
-    doc.text(b?.razon_social || b?.name || 'Finanzas', margin, 38);
+    doc.text(b?.razon_social || b.name, margin, 32);
     doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(102, 112, 133);
-    doc.text(`Balanza de Comprobación — ${MESES_LARGO[Number(STATE.currentMonth.slice(5,7))-1]} ${STATE.currentMonth.slice(0,4)}`, margin, 52);
+    // Se muestran ambos nombres — razón social (fiscal) y nombre comercial — cuando son distintos.
+    let y0 = 46;
+    if (b?.razon_social && b.razon_social !== b.name) { doc.text(`Nombre comercial: ${b.name}`, margin, y0); y0 += 13; }
+    doc.text(`Balanza de Comprobación — ${MESES_LARGO[Number(STATE.currentMonth.slice(5,7))-1]} ${STATE.currentMonth.slice(0,4)}`, margin, y0);
     const filasEspeciales = []; // índices de filas con estilo especial (sección/subtotal)
     const body = filasExport.map((f,i) => {
       if (f.tipo!=='cuenta') filasEspeciales.push({i, tipo:f.tipo});
       return f.v.map(x => typeof x === 'number' ? fmt(x) : x);
     });
     doc.autoTable({
-      startY: 64, margin: { left: margin, right: margin },
+      startY: y0 + 14, margin: { left: margin, right: margin },
       head: [['Cuenta','Tipo','Saldo inicial Deudor','Saldo inicial Acreedor','Cargos','Abonos','Saldo actual Deudor','Saldo actual Acreedor']],
       body,
-      styles: { fontSize: 7.5 },
-      headStyles: { fillColor: [10,31,61] },
+      styles: { fontSize: esVertical ? 6.3 : 7.5 },
+      headStyles: { fillColor: [10,31,61], fontSize: esVertical ? 6.3 : 7.5 },
       columnStyles: {
-        0: { cellWidth: 190 },
-        1: { cellWidth: 52 },
+        0: { cellWidth: esVertical ? 118 : 190 },
+        1: { cellWidth: esVertical ? 36 : 52 },
         2: { cellWidth: 'auto', halign: 'right' },
         3: { cellWidth: 'auto', halign: 'right' },
         4: { cellWidth: 'auto', halign: 'right' },
