@@ -2967,98 +2967,180 @@ async function renderBalanza() {
   el.appendChild(contenido);
 
   const { start, end } = monthBounds(STATE.currentMonth);
-  const diaAntes = sumarDias(start, -1);
+  const inicioAnio = `${STATE.currentMonth.slice(0,4)}-01-01`;
 
-  const [subcuentas, mayores, monedasQ, cuentasQ, conceptosEfvoQ, conceptosTarjQ] = await Promise.all([
-    loadSubcuentas(b.id), loadCuentasMayor(b.id),
-    sb.from('fz_efectivo_monedas').select('*').eq('business_id', b.id).eq('activo', true),
-    sb.from('fz_bancos_cuentas').select('*').eq('business_id', b.id).eq('activo', true),
-    sb.from('fz_conceptos').select('*').eq('business_id', b.id).eq('categoria', 'efectivo'),
-    sb.from('fz_conceptos').select('*').eq('business_id', b.id).in('categoria', ['tarjetas','bancos']),
-  ]);
-  const monedas = monedasQ.data || [], cuentasBanco = cuentasQ.data || [];
-  const conceptosEfectivo = conceptosEfvoQ.data || [], conceptosTarjetas = conceptosTarjQ.data || [];
+  const { filas, mayores, subcuentas } = await getLibroPartidaDoble(b.id, end);
+  const mayorDeSub = (subId) => { const s = subcuentas.find(x=>x.id===subId); return s ? mayores.find(m=>m.id===s.cuenta_mayor_id) : null; };
 
-  const [inicialesp, finalesp] = await Promise.all([
-    computeSaldosEspecialesBalanza(b, diaAntes, subcuentas, mayores, monedas, cuentasBanco, conceptosEfectivo, conceptosTarjetas),
-    computeSaldosEspecialesBalanza(b, end, subcuentas, mayores, monedas, cuentasBanco, conceptosEfectivo, conceptosTarjetas),
-  ]);
-
-  const { data: polizasPeriodo } = await sb.from('fz_polizas').select('id').eq('business_id', b.id).gte('fecha', start).lte('fecha', end);
-  const polizaIdsPeriodo = (polizasPeriodo||[]).map(p=>p.id);
-  const { data: lineasPeriodo } = polizaIdsPeriodo.length
-    ? await sb.from('fz_polizas_lineas').select('cargo,abono,subcuenta_id').eq('cuenta_tipo', 'subcuenta').in('poliza_id', polizaIdsPeriodo)
-    : { data: [] };
-  const cargosPorSub = {}, abonosPorSub = {};
-  (lineasPeriodo||[]).forEach(l => {
-    cargosPorSub[l.subcuenta_id] = (cargosPorSub[l.subcuenta_id]||0) + (Number(l.cargo)||0);
-    abonosPorSub[l.subcuenta_id] = (abonosPorSub[l.subcuenta_id]||0) + (Number(l.abono)||0);
-  });
-
-  const filasMayor = [];
-  for (const m of mayores) {
-    const signoNormal = (m.tipo === 'activo' || m.tipo === 'costo' || m.tipo === 'gasto') ? 'debe' : 'haber';
-    const [inicial, final] = await Promise.all([
-      computeSaldoCuentaMayorPolizas(b.id, m.id, subcuentas, signoNormal, diaAntes),
-      computeSaldoCuentaMayorPolizas(b.id, m.id, subcuentas, signoNormal, end),
-    ]);
-    const subIds = subcuentas.filter(s => s.cuenta_mayor_id === m.id).map(s => s.id);
-    const cargos = subIds.reduce((s,id)=>s+(cargosPorSub[id]||0),0);
-    const abonos = subIds.reduce((s,id)=>s+(abonosPorSub[id]||0),0);
-    if (Math.abs(inicial.total) > 0.004 || Math.abs(final.total) > 0.004 || cargos > 0.004 || abonos > 0.004) {
-      filasMayor.push({ nombre: m.nombre, tipo: m.tipo, inicial: inicial.total, cargos, abonos, final: final.total });
+  // Acumular, por cada cuenta (clave estable), su saldo inicial (antes de "start") y sus
+  // cargos/abonos DENTRO del periodo. Las cuentas temporales (ingreso/costo/gasto) reinician
+  // cada año fiscal — su "saldo inicial" es lo acumulado desde el 1 de enero, no desde siempre.
+  const cuentas = {};
+  filas.forEach(f => {
+    if (!cuentas[f.clave]) cuentas[f.clave] = { nombre: f.nombre, tipo: f.tipo, saldoInicialNeto: 0, cargosPeriodo: 0, abonosPeriodo: 0 };
+    const c = cuentas[f.clave];
+    const esTemporal = f.tipo === 'ingreso' || f.tipo === 'costo' || f.tipo === 'gasto';
+    if (f.fecha < start) {
+      if (!esTemporal || f.fecha >= inicioAnio) c.saldoInicialNeto += f.cargo - f.abono;
+    } else if (f.fecha <= end) {
+      c.cargosPeriodo += f.cargo;
+      c.abonosPeriodo += f.abono;
     }
-  }
-
-  const clavesRetencion = new Set([...Object.keys(inicialesp.retencionesPorCategoria||{}), ...Object.keys(finalesp.retencionesPorCategoria||{})]);
-  const filasRetencion = [...clavesRetencion].map(k => {
-    const [tipoImp, cat] = k.split('|');
-    return { nombre: `Retención ${tipoImp} — ${cat}`, tipo: 'pasivo', inicial: (inicialesp.retencionesPorCategoria||{})[k]||0, final: (finalesp.retencionesPorCategoria||{})[k]||0 };
   });
-  const filasEspeciales = [
-    { nombre: 'Efectivo y equivalentes', tipo: 'activo', inicial: inicialesp.totalEfectivo, final: finalesp.totalEfectivo },
-    { nombre: 'Bancos', tipo: 'activo', inicial: inicialesp.totalBancos, final: finalesp.totalBancos },
-    { nombre: 'Cuentas por cobrar (Clientes)', tipo: 'activo', inicial: inicialesp.cuentasPorCobrar, final: finalesp.cuentasPorCobrar },
-    { nombre: 'IVA Acreditable', tipo: 'activo', inicial: inicialesp.ivaAcreditable, final: finalesp.ivaAcreditable },
-    { nombre: 'Proveedores por pagar', tipo: 'pasivo', inicial: inicialesp.proveedoresPendiente, final: finalesp.proveedoresPendiente },
-    { nombre: 'IVA Trasladado por pagar', tipo: 'pasivo', inicial: inicialesp.ivaTrasladado, final: finalesp.ivaTrasladado },
-    ...filasRetencion,
-  ].filter(f => Math.abs(f.inicial) > 0.004 || Math.abs(f.final) > 0.004);
+  Object.values(cuentas).forEach(c => {
+    c.saldoActualNeto = c.saldoInicialNeto + c.cargosPeriodo - c.abonosPeriodo;
+    c.saldoInicialDeudor = c.saldoInicialNeto > 0 ? c.saldoInicialNeto : 0;
+    c.saldoInicialAcreedor = c.saldoInicialNeto < 0 ? -c.saldoInicialNeto : 0;
+    c.saldoActualDeudor = c.saldoActualNeto > 0 ? c.saldoActualNeto : 0;
+    c.saldoActualAcreedor = c.saldoActualNeto < 0 ? -c.saldoActualNeto : 0;
+  });
 
-  const todasFilas = [...filasEspeciales.map(f=>({...f, especial:true})), ...filasMayor.map(f=>({...f, especial:false}))];
-  const ordenTipo = ['activo','pasivo','capital','ingreso','costo','gasto'];
-  todasFilas.sort((a,b2) => ordenTipo.indexOf(a.tipo) - ordenTipo.indexOf(b2.tipo));
+  // Solo se muestran cuentas con algo que mostrar (saldo o movimiento) en este corte.
+  const listaCuentas = Object.entries(cuentas)
+    .map(([clave, c]) => ({ clave, ...c }))
+    .filter(c => Math.abs(c.saldoInicialNeto) > 0.004 || Math.abs(c.saldoActualNeto) > 0.004 || c.cargosPeriodo > 0.004 || c.abonosPeriodo > 0.004);
 
-  const totalCargos = filasMayor.reduce((s,f)=>s+f.cargos,0);
-  const totalAbonos = filasMayor.reduce((s,f)=>s+f.abonos,0);
-  const totalInicial = todasFilas.reduce((s,f)=>s+f.inicial,0);
-  const totalFinal = todasFilas.reduce((s,f)=>s+f.final,0);
+  // Dentro de Capital Contable, separar por nombre de la cuenta mayor: Capital / Resultados de
+  // ejercicios anteriores / (una cuenta "Resultado del Ejercicio" manual, si existiera, se marca
+  // aparte para revisión — el resultado del año en curso se calcula solo, más abajo).
+  const categoriaCapital = (clave, nombreCuenta) => {
+    let nombreMayor = nombreCuenta;
+    if (clave.startsWith('sub:')) nombreMayor = mayorDeSub(clave.slice(4))?.nombre || nombreCuenta;
+    const n = (nombreMayor || '').toLowerCase();
+    if (n.includes('anterior')) return 'resultados_anteriores';
+    if (n.includes('resultado') && n.includes('ejercicio')) return 'resultado_manual';
+    return 'capital';
+  };
+
+  const porTipo = {
+    activo: listaCuentas.filter(c => c.tipo === 'activo'),
+    pasivo: listaCuentas.filter(c => c.tipo === 'pasivo'),
+    capital: listaCuentas.filter(c => c.tipo === 'capital' && categoriaCapital(c.clave, c.nombre) === 'capital'),
+    resultados_anteriores: listaCuentas.filter(c => c.tipo === 'capital' && categoriaCapital(c.clave, c.nombre) === 'resultados_anteriores'),
+    resultado_manual: listaCuentas.filter(c => c.tipo === 'capital' && categoriaCapital(c.clave, c.nombre) === 'resultado_manual'),
+    ingreso: listaCuentas.filter(c => c.tipo === 'ingreso'),
+    costo: listaCuentas.filter(c => c.tipo === 'costo'),
+    gasto: listaCuentas.filter(c => c.tipo === 'gasto'),
+  };
+
+  // Resultado del ejercicio (acumulado del año a la fecha de corte) — calculado SIEMPRE a partir
+  // de Ingresos, Costo de Ventas y Gastos; nunca capturado a mano.
+  const montoIngresos = porTipo.ingreso.reduce((s,c)=>s + (-c.saldoActualNeto), 0);
+  const montoCostos = porTipo.costo.reduce((s,c)=>s + c.saldoActualNeto, 0);
+  const montoGastos = porTipo.gasto.reduce((s,c)=>s + c.saldoActualNeto, 0);
+  const utilidadEjercicio = montoIngresos - montoCostos - montoGastos;
+  const esUtilidad = utilidadEjercicio >= 0;
+
+  // Verificación cruzada contra el Estado de Resultados (misma fórmula, mismo periodo acumulado)
+  const resumenPLCheck = await computeResumenNegocio(b.id, { start: inicioAnio, end });
+  const diferenciaVsPL = utilidadEjercicio - resumenPLCheck.utilidad;
+
+  // Cuadre: se valida SOLO sobre cuentas reales (activo+pasivo+capital+ingreso+costo+gasto) — el
+  // renglón de "Resultado del ejercicio" es un cálculo de apoyo para Capital, no una cuenta con
+  // movimientos propios, así que NO se suma aquí (sumarlo duplicaría el efecto de Ingresos/Gastos).
+  const totalCargos = listaCuentas.reduce((s,c)=>s+c.cargosPeriodo,0);
+  const totalAbonos = listaCuentas.reduce((s,c)=>s+c.abonosPeriodo,0);
+  const totalSaldoInicialD = listaCuentas.reduce((s,c)=>s+c.saldoInicialDeudor,0);
+  const totalSaldoInicialA = listaCuentas.reduce((s,c)=>s+c.saldoInicialAcreedor,0);
+  const totalSaldoActualD = listaCuentas.reduce((s,c)=>s+c.saldoActualDeudor,0);
+  const totalSaldoActualA = listaCuentas.reduce((s,c)=>s+c.saldoActualAcreedor,0);
+
+  const cuadraCargos = Math.abs(totalCargos-totalAbonos) < 0.5;
+  const cuadraInicial = Math.abs(totalSaldoInicialD-totalSaldoInicialA) < 0.5;
+  const cuadraActual = Math.abs(totalSaldoActualD-totalSaldoActualA) < 0.5;
+  const cuadraPL = Math.abs(diferenciaVsPL) < 0.5;
+
+  // Activo = Pasivo + Capital Contable (con Resultado del ejercicio integrado)
+  const totalActivoNeto = porTipo.activo.reduce((s,c)=>s+c.saldoActualNeto,0);
+  const totalPasivoNeto = -porTipo.pasivo.reduce((s,c)=>s+c.saldoActualNeto,0);
+  const totalCapitalRealNeto = -[...porTipo.capital, ...porTipo.resultados_anteriores, ...porTipo.resultado_manual].reduce((s,c)=>s+c.saldoActualNeto,0);
+  const totalCapitalContable = totalCapitalRealNeto + utilidadEjercicio;
+  const cuadraBalanceGeneral = Math.abs(totalActivoNeto - (totalPasivoNeto + totalCapitalContable)) < 0.5;
+
+  const filaCuenta = (c) => `<tr>
+    <td>${c.nombre}</td>
+    <td style="color:var(--muted);font-size:12px;">${TIPO_CUENTA_LABEL[c.tipo]||c.tipo}</td>
+    <td class="num">${c.saldoInicialDeudor>0.004?fmt(c.saldoInicialDeudor):''}</td>
+    <td class="num">${c.saldoInicialAcreedor>0.004?fmt(c.saldoInicialAcreedor):''}</td>
+    <td class="num">${c.cargosPeriodo>0.004?fmt(c.cargosPeriodo):''}</td>
+    <td class="num">${c.abonosPeriodo>0.004?fmt(c.abonosPeriodo):''}</td>
+    <td class="num" style="font-weight:600;">${c.saldoActualDeudor>0.004?fmt(c.saldoActualDeudor):''}</td>
+    <td class="num" style="font-weight:600;">${c.saldoActualAcreedor>0.004?fmt(c.saldoActualAcreedor):''}</td>
+  </tr>`;
+
+  const filaSeccion = (titulo) => `<tr style="background:#f7f9fc;"><td colspan="8" style="font-weight:700;">${titulo}</td></tr>`;
+
+  const filaSubtotal = (titulo, lista) => {
+    const si_d = lista.reduce((s,c)=>s+c.saldoInicialDeudor,0), si_a = lista.reduce((s,c)=>s+c.saldoInicialAcreedor,0);
+    const ca = lista.reduce((s,c)=>s+c.cargosPeriodo,0), ab = lista.reduce((s,c)=>s+c.abonosPeriodo,0);
+    const sa_d = lista.reduce((s,c)=>s+c.saldoActualDeudor,0), sa_a = lista.reduce((s,c)=>s+c.saldoActualAcreedor,0);
+    return `<tr style="font-style:italic;color:var(--muted);"><td colspan="2">Subtotal ${titulo}</td><td class="num">${fmt(si_d)}</td><td class="num">${fmt(si_a)}</td><td class="num">${fmt(ca)}</td><td class="num">${fmt(ab)}</td><td class="num">${fmt(sa_d)}</td><td class="num">${fmt(sa_a)}</td></tr>`;
+  };
 
   contenido.innerHTML = `
     <div class="card">
       <div class="card-head"><h3>Balanza de Comprobación — ${b.name}</h3><span class="hint">${MESES_LARGO[Number(STATE.currentMonth.slice(5,7))-1]} ${STATE.currentMonth.slice(0,4)}</span></div>
-      <p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;">Cargos y Abonos del periodo se calculan directo de Pólizas de Diario. Efectivo, Bancos, Cuentas por Cobrar/Pagar e IVA se muestran con su saldo inicial y final (mismo cálculo que el Balance General); su movimiento del periodo se ve como saldo neto, no desglosado en cargo/abono bruto, ya que se alimentan de varios módulos a la vez.</p>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;">Partida doble completa: Cargos y Abonos reconstruidos de Pólizas, Facturas de Proveedores/Clientes, y movimientos de Bancos/Efectivo. Trabaja con los nombres y tipos ya existentes en tu catálogo — sin códigos de cuenta todavía.</p>
       <div class="table-wrap scroll-sticky">
         <table>
-          <thead><tr><th>Cuenta</th><th>Tipo</th><th>Saldo inicial</th><th>Cargos</th><th>Abonos</th><th>Saldo final</th></tr></thead>
+          <thead><tr><th>Cuenta</th><th>Tipo</th><th>Saldo inicial Deudor</th><th>Saldo inicial Acreedor</th><th>Cargos</th><th>Abonos</th><th>Saldo actual Deudor</th><th>Saldo actual Acreedor</th></tr></thead>
           <tbody>
-            ${todasFilas.length ? todasFilas.map(f => `<tr>
-              <td>${f.nombre}${f.especial ? ' <span style="color:var(--muted);font-size:11px;">(automático)</span>' : ''}</td>
-              <td style="color:var(--muted);font-size:12px;">${TIPO_CUENTA_LABEL[f.tipo]||f.tipo}</td>
-              <td class="num">${fmt(f.inicial)}</td>
-              <td class="num">${f.especial ? '—' : fmt(f.cargos)}</td>
-              <td class="num">${f.especial ? '—' : fmt(f.abonos)}</td>
-              <td class="num" style="font-weight:700;">${fmt(f.final)}</td>
-            </tr>`).join('') : `<tr><td colspan="6" class="empty">No hay movimientos en este periodo.</td></tr>`}
+            ${filaSeccion('ACTIVO')}
+            ${porTipo.activo.map(filaCuenta).join('') || '<tr><td colspan="8" class="empty">Sin cuentas de Activo con movimiento.</td></tr>'}
+            ${filaSubtotal('Activo', porTipo.activo)}
+
+            ${filaSeccion('PASIVO')}
+            ${porTipo.pasivo.map(filaCuenta).join('') || '<tr><td colspan="8" class="empty">Sin cuentas de Pasivo con movimiento.</td></tr>'}
+            ${filaSubtotal('Pasivo', porTipo.pasivo)}
+
+            ${filaSeccion('CAPITAL CONTABLE')}
+            ${porTipo.capital.length ? `<tr><td colspan="8" style="font-weight:600;color:var(--navy-3);">Capital</td></tr>` : ''}
+            ${porTipo.capital.map(filaCuenta).join('')}
+            ${porTipo.resultados_anteriores.length ? `<tr><td colspan="8" style="font-weight:600;color:var(--navy-3);">Resultados de ejercicios anteriores</td></tr>` : ''}
+            ${porTipo.resultados_anteriores.map(filaCuenta).join('')}
+            ${porTipo.resultado_manual.length ? `<tr><td colspan="8" style="font-weight:600;color:var(--gold);">⚠ Cuenta(s) manual(es) de Resultado del Ejercicio — el resultado del año en curso ya se calcula automático abajo; considera mover este saldo a "Resultados de ejercicios anteriores"</td></tr>` : ''}
+            ${porTipo.resultado_manual.map(filaCuenta).join('')}
+            <tr><td colspan="8" style="font-weight:600;color:var(--navy-3);">Resultado del ejercicio (calculado — no editable)</td></tr>
+            <tr>
+              <td>${esUtilidad ? 'Utilidad del ejercicio' : 'Pérdida del ejercicio'}</td>
+              <td style="color:var(--muted);font-size:12px;">Capital</td>
+              <td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td>
+              <td class="num" style="font-weight:700;">${!esUtilidad?fmt(Math.abs(utilidadEjercicio)):''}</td>
+              <td class="num" style="font-weight:700;">${esUtilidad?fmt(utilidadEjercicio):''}</td>
+            </tr>
+            <tr class="total-row"><td colspan="6">Total Capital Contable (incluye Resultado del ejercicio)</td><td class="num" colspan="2" style="text-align:right;">${fmt(totalCapitalContable)}</td></tr>
+
+            ${filaSeccion('INGRESOS')}
+            ${porTipo.ingreso.map(filaCuenta).join('') || '<tr><td colspan="8" class="empty">Sin cuentas de Ingreso con movimiento.</td></tr>'}
+            ${filaSubtotal('Ingresos', porTipo.ingreso)}
+
+            ${filaSeccion('COSTO DE VENTAS')}
+            ${porTipo.costo.map(filaCuenta).join('') || '<tr><td colspan="8" class="empty">Sin cuentas de Costo con movimiento.</td></tr>'}
+            ${filaSubtotal('Costo de Ventas', porTipo.costo)}
+
+            ${filaSeccion('GASTOS')}
+            ${porTipo.gasto.map(filaCuenta).join('') || '<tr><td colspan="8" class="empty">Sin cuentas de Gasto con movimiento.</td></tr>'}
+            ${filaSubtotal('Gastos', porTipo.gasto)}
           </tbody>
           <tfoot>
-            <tr class="total-row"><td colspan="2">Totales</td><td class="num">${fmt(totalInicial)}</td><td class="num">${fmt(totalCargos)}</td><td class="num">${fmt(totalAbonos)}</td><td class="num">${fmt(totalFinal)}</td></tr>
+            <tr class="total-row" style="border-top:2px solid var(--navy-1);">
+              <td colspan="2">TOTALES (cuentas reales, sin el renglón de Resultado)</td>
+              <td class="num">${fmt(totalSaldoInicialD)}</td><td class="num">${fmt(totalSaldoInicialA)}</td>
+              <td class="num">${fmt(totalCargos)}</td><td class="num">${fmt(totalAbonos)}</td>
+              <td class="num">${fmt(totalSaldoActualD)}</td><td class="num">${fmt(totalSaldoActualA)}</td>
+            </tr>
           </tfoot>
         </table>
       </div>
-      <p style="font-size:11.5px;color:${Math.abs(totalCargos-totalAbonos)<0.5?'var(--green)':'var(--muted)'};margin-top:10px;font-weight:600;">
-        ${Math.abs(totalCargos-totalAbonos)<0.5 ? '✓ Cargos y Abonos de Pólizas cuadran exacto.' : 'Diferencia entre Cargos y Abonos de Pólizas: ' + fmt(Math.abs(totalCargos-totalAbonos)) + ' — revisa si hay pólizas descuadradas.'}
-      </p>
+
+      <div style="margin-top:14px;padding:12px 14px;background:#f7f9fc;border-radius:8px;">
+        <p style="font-size:12.5px;font-weight:700;color:var(--navy-1);margin-bottom:8px;">Verificaciones</p>
+        <p style="font-size:12.5px;color:${cuadraInicial?'var(--green)':'var(--red)'};font-weight:600;margin-bottom:4px;">${cuadraInicial?'✓':'✗'} Total Saldo Inicial Deudor = Total Saldo Inicial Acreedor ${cuadraInicial?'':'— diferencia de '+fmt(Math.abs(totalSaldoInicialD-totalSaldoInicialA))}</p>
+        <p style="font-size:12.5px;color:${cuadraCargos?'var(--green)':'var(--red)'};font-weight:600;margin-bottom:4px;">${cuadraCargos?'✓':'✗'} Total Cargos = Total Abonos ${cuadraCargos?'':'— diferencia de '+fmt(Math.abs(totalCargos-totalAbonos))}</p>
+        <p style="font-size:12.5px;color:${cuadraActual?'var(--green)':'var(--red)'};font-weight:600;margin-bottom:4px;">${cuadraActual?'✓':'✗'} Total Saldo Actual Deudor = Total Saldo Actual Acreedor ${cuadraActual?'':'— diferencia de '+fmt(Math.abs(totalSaldoActualD-totalSaldoActualA))}</p>
+        <p style="font-size:12.5px;color:${cuadraPL?'var(--green)':'var(--gold)'};font-weight:600;margin-bottom:4px;">${cuadraPL?'✓':'⚠'} Resultado del ejercicio (${fmt(utilidadEjercicio)}) vs. Estado de Resultados Acumulado (${fmt(resumenPLCheck.utilidad)}) ${cuadraPL?'— coinciden exacto':'— diferencia de '+fmt(Math.abs(diferenciaVsPL))+'. Si usas el módulo de Ventas, esta diferencia es esperada: Ventas (y su ganancia cambiaria) todavía no pasan por partida doble, solo Pólizas/Facturas/Bancos/Efectivo. Si no usas Ventas para el ingreso, deberían coincidir exacto — avísame si no es así.'}</p>
+        <p style="font-size:12.5px;color:${cuadraBalanceGeneral?'var(--green)':'var(--red)'};font-weight:600;">${cuadraBalanceGeneral?'✓':'✗'} Activo (${fmt(totalActivoNeto)}) = Pasivo + Capital Contable (${fmt(totalPasivoNeto+totalCapitalContable)}) ${cuadraBalanceGeneral?'':'— diferencia de '+fmt(Math.abs(totalActivoNeto-(totalPasivoNeto+totalCapitalContable)))}</p>
+      </div>
     </div>
   `;
 }
@@ -8281,6 +8363,104 @@ async function getMovimientosCuenta(businessId, subcuentaIds, startDate, endDate
    (Pólizas, Bancos, Efectivo, Facturas de Proveedores/Clientes) al
    mismo formato de Cargo/Abono, para auditorías y revisión completa.
    ============================================================ */
+/* ============================================================
+   BALANZA DE COMPROBACIÓN — PARTIDA DOBLE
+   Reconstruye, para cada cuenta real (identificada por clave estable, no por texto),
+   todos los cargos/abonos de cada tipo de movimiento del sistema, igual que el Libro
+   Diario, pero conservando la identidad de la cuenta para poder clasificarla por tipo
+   y agregar su saldo correctamente a través del tiempo.
+   ============================================================ */
+async function getLibroPartidaDoble(businessId, hastaFecha) {
+  const filas = [];
+  const push = (clave, nombre, tipo, fecha, cargo, abono) => {
+    if (!(Number(cargo)||0) && !(Number(abono)||0)) return;
+    filas.push({ clave, nombre, tipo, fecha, cargo: Number(cargo)||0, abono: Number(abono)||0 });
+  };
+
+  const [subcuentas, mayores, cuentasBanco, monedas] = await Promise.all([
+    loadSubcuentas(businessId), loadCuentasMayor(businessId),
+    sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).then(r=>r.data||[]),
+    sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).then(r=>r.data||[]),
+  ]);
+  const mayorDeSub = (subId) => { const s = subcuentas.find(x=>x.id===subId); return s ? mayores.find(m=>m.id===s.cuenta_mayor_id) : null; };
+  const nombreSub = (id) => subcuentas.find(s=>s.id===id)?.nombre || '(cuenta eliminada)';
+  const tipoDeSub = (id) => mayorDeSub(id)?.tipo || 'activo';
+  const nombreBanco = (id) => cuentasBanco.find(c=>c.id===id)?.nombre || 'Banco';
+  const nombreMoneda = (id) => monedas.find(m=>m.id===id)?.nombre || 'Efectivo';
+  const pushSub = (subId, fecha, cargo, abono) => push('sub:'+subId, nombreSub(subId), tipoDeSub(subId), fecha, cargo, abono);
+
+  // 1. Pólizas de Diario (ya están en formato cargo/abono, se toman directo)
+  const { data: polizas } = await sb.from('fz_polizas').select('id,fecha').eq('business_id', businessId).lte('fecha', hastaFecha);
+  const polizaIds = (polizas||[]).map(p=>p.id);
+  const polizaFechaMap = Object.fromEntries((polizas||[]).map(p=>[p.id,p.fecha]));
+  const { data: lineasPoliza } = polizaIds.length ? await sb.from('fz_polizas_lineas').select('*').in('poliza_id', polizaIds) : { data: [] };
+  (lineasPoliza||[]).forEach(l => {
+    const fecha = polizaFechaMap[l.poliza_id];
+    if (!fecha) return;
+    if (l.cuenta_tipo === 'banco') push('banco:'+l.cuenta_ref_id, `Banco: ${nombreBanco(l.cuenta_ref_id)}`, 'activo', fecha, l.cargo, l.abono);
+    else if (l.cuenta_tipo === 'efectivo') push('efectivo:'+l.cuenta_ref_id, `Efectivo: ${nombreMoneda(l.cuenta_ref_id)}`, 'activo', fecha, l.cargo, l.abono);
+    else if (l.cuenta_tipo === 'proveedor' || l.cuenta_tipo === 'proveedor_provision') push('proveedores', 'Proveedores', 'pasivo', fecha, l.cargo, l.abono);
+    else if (l.cuenta_tipo === 'cliente') push('clientes', 'Clientes', 'activo', fecha, l.cargo, l.abono);
+    else pushSub(l.subcuenta_id, fecha, l.cargo, l.abono);
+  });
+
+  // 2. Facturas de Proveedores (al registrarse): Dr [desglose] + Dr IVA Acreditable + Cr Retenciones, Cr Proveedores.
+  const { data: facturasProv } = await sb.from('fz_proveedores').select('*').eq('business_id', businessId).lte('fecha', hastaFecha);
+  (facturasProv||[]).forEach(f => {
+    if (f.origen_poliza_id) return; // ya se contabilizó como provisión en Pólizas, no se duplica
+    desgloseLineas(f.desglose).forEach(linea => pushSub(linea.subcuenta_id, f.fecha, Number(linea.monto)||0, 0));
+    if (f.aplica_iva && Number(f.iva_monto)) push('iva_acreditable', 'IVA Acreditable', 'activo', f.fecha, Number(f.iva_monto), 0);
+    if (f.aplica_retencion && Number(f.retencion_isr_monto)) push('ret_isr:'+(f.retencion_categoria||'Sin categoría'), `Retención ISR — ${f.retencion_categoria||'Sin categoría'}`, 'pasivo', f.fecha, 0, Number(f.retencion_isr_monto));
+    if (f.aplica_retencion && Number(f.retencion_iva_monto)) push('ret_iva:'+(f.retencion_categoria||'Sin categoría'), `Retención IVA — ${f.retencion_categoria||'Sin categoría'}`, 'pasivo', f.fecha, 0, Number(f.retencion_iva_monto));
+    push('proveedores', 'Proveedores', 'pasivo', f.fecha, 0, Number(f.importe)||0);
+  });
+
+  // 3. Facturas de Clientes (al registrarse): Dr Clientes, Cr [líneas] + Cr IVA Trasladado.
+  const { data: facturasCli } = await sb.from('fz_facturas_clientes').select('*').eq('business_id', businessId).lte('fecha', hastaFecha);
+  if ((facturasCli||[]).length) {
+    const { data: lineasCli } = await sb.from('fz_facturas_clientes_lineas').select('*').in('factura_id', facturasCli.map(f=>f.id));
+    (facturasCli||[]).forEach(f => {
+      push('clientes', 'Clientes', 'activo', f.fecha, Number(f.total)||0, 0);
+      (lineasCli||[]).filter(l=>l.factura_id===f.id).forEach(l => pushSub(l.subcuenta_id, f.fecha, 0, Number(l.importe)||0));
+      if (f.aplica_iva && Number(f.iva_monto)) push('iva_trasladado', 'IVA Trasladado', 'pasivo', f.fecha, 0, Number(f.iva_monto));
+    });
+  }
+
+  // 4. Movimientos de Bancos y Efectivo: cada uno según cómo se clasificó al capturarlo.
+  const procesarMovimientos = (movs, esBanco) => {
+    (movs||[]).forEach(m => {
+      const claveOrigen = esBanco ? 'banco:'+m.cuenta_id : 'efectivo:'+m.moneda_id;
+      const nombreOrigen = esBanco ? `Banco: ${nombreBanco(m.cuenta_id)}` : `Efectivo: ${nombreMoneda(m.moneda_id)}`;
+      if (Number(m.cargos)) {
+        if (m.tipo_salida === 'proveedor') push('proveedores', 'Proveedores', 'pasivo', m.fecha, Number(m.cargos), 0);
+        else if (m.tipo_salida === 'gasto') {
+          const subtotal = m.aplica_iva ? (Number(m.subtotal)||0) : Number(m.cargos);
+          pushSub(m.subcuenta_id, m.fecha, subtotal, 0);
+          if (m.aplica_iva && Number(m.iva_monto)) push('iva_acreditable', 'IVA Acreditable', 'activo', m.fecha, Number(m.iva_monto), 0);
+        }
+        else if (m.tipo_salida === 'cliente') push('clientes', 'Clientes', 'activo', m.fecha, Number(m.cargos), 0);
+        else if (m.tipo_salida === 'traspaso') push('traspasos', 'Traspasos entre cuentas', 'activo', m.fecha, Number(m.cargos), 0);
+        else push('sin_clasificar', 'Sin clasificar (revisar)', 'gasto', m.fecha, Number(m.cargos), 0);
+        push(claveOrigen, nombreOrigen, 'activo', m.fecha, 0, Number(m.cargos));
+      }
+      if (Number(m.depositos)) {
+        push(claveOrigen, nombreOrigen, 'activo', m.fecha, Number(m.depositos), 0);
+        if (m.tipo_entrada === 'cliente') push('clientes', 'Clientes', 'activo', m.fecha, 0, Number(m.depositos));
+        else if (m.tipo_entrada === 'traspaso') push('traspasos', 'Traspasos entre cuentas', 'activo', m.fecha, 0, Number(m.depositos));
+        else push('sin_clasificar', 'Sin clasificar (revisar)', 'gasto', m.fecha, 0, Number(m.depositos));
+      }
+    });
+  };
+  const [bancosMovQ, efvoMovQ] = await Promise.all([
+    sb.from('fz_bancos_mov').select('*').eq('business_id', businessId).lte('fecha', hastaFecha),
+    sb.from('fz_efectivo_mov').select('*').eq('business_id', businessId).lte('fecha', hastaFecha),
+  ]);
+  procesarMovimientos(bancosMovQ.data, true);
+  procesarMovimientos(efvoMovQ.data, false);
+
+  return { filas, mayores, subcuentas };
+}
+
 async function getLibroDiario(businessId, startDate, endDate) {
   const filas = [];
   const push = (fecha, referencia, cuenta, concepto, cargo, abono, origen) => {
