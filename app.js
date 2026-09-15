@@ -43,6 +43,24 @@ const monthBounds = (ym) => {
   return { start, end };
 };
 const todayStr = () => new Date().toISOString().slice(0, 10);
+
+// Inicia un PDF con el encabezado estándar: razón social (o nombre comercial si no hay razón
+// social distinta) + "Nombre comercial: X" cuando ambos existen y difieren + el subtítulo del
+// reporte. Devuelve {doc, margin, y} — "y" es el siguiente renglón libre para continuar (tabla, etc.)
+function iniciarPdfConEncabezado(b, subtitulo, opts = {}) {
+  const { jsPDF } = window.jspdf;
+  const orientation = opts.orientation || 'landscape';
+  const doc = new jsPDF({ unit: 'pt', format: 'letter', orientation });
+  const margin = opts.margin || (orientation === 'portrait' ? 24 : 30);
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(15); doc.setTextColor(10, 31, 61);
+  doc.text(b?.razon_social || b?.name || 'Finanzas', margin, 32);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(102, 112, 133);
+  let y = 46;
+  if (b?.razon_social && b.razon_social !== b.name) { doc.text(`Nombre comercial: ${b.name}`, margin, y); y += 13; }
+  doc.text(subtitulo, margin, y);
+  y += 18;
+  return { doc, margin, y };
+}
 const sumarDias = (fechaStr, dias) => {
   const d = new Date(fechaStr + 'T00:00:00');
   d.setDate(d.getDate() + Number(dias || 0));
@@ -2215,15 +2233,9 @@ async function renderIvaFiscal() {
     XLSX.writeFile(wb, `IVA y Retenciones - ${b.name} - ${STATE.currentMonth}.xlsx`);
   });
   document.getElementById('ivaFiscalPdf').addEventListener('click', () => {
-    const { jsPDF } = window.jspdf;
-    const doc = new jsPDF({ unit: 'pt', format: 'letter' });
-    const margin = 40;
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.setTextColor(10, 31, 61);
-    doc.text(b?.razon_social || b?.name || 'Finanzas', margin, 44);
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(102, 112, 133);
-    doc.text(`IVA y Retenciones — ${MESES_LARGO[Number(STATE.currentMonth.slice(5,7))-1]} ${STATE.currentMonth.slice(0,4)}`, margin, 60);
+    const { doc, margin, y: y0 } = iniciarPdfConEncabezado(b, `IVA y Retenciones — ${MESES_LARGO[Number(STATE.currentMonth.slice(5,7))-1]} ${STATE.currentMonth.slice(0,4)}`, { orientation: 'portrait' });
     doc.autoTable({
-      startY: 78, margin: { left: margin, right: margin },
+      startY: y0, margin: { left: margin, right: margin },
       head: [['Concepto', 'Monto']],
       body: [
         ['IVA Trasladado cobrado', fmt(ivaTrasladadoCobradoMes)],
@@ -2308,10 +2320,22 @@ async function renderIvaFiscalAnual(el, b) {
   const clavesRetencion = [...new Set(datos.flatMap(d => Object.keys(d.retencionesPorCategoria)))].sort();
 
   const filaHtml = (nombre, valores, opts={}) => `<tr class="${opts.total?'total-row':''}"><td class="wrap-text" style="max-width:200px;">${nombre}</td>${valores.map(v=>`<td class="num" style="${opts.color?'color:'+opts.color+';':''}">${fmt(v)}</td>`).join('')}<td class="num" style="font-weight:700;">${fmt(valores.reduce((s,v)=>s+v,0))}</td></tr>`;
+  const filasExport = [
+    ['IVA Trasladado cobrado', datos.map(d=>d.ivaTrasladadoCobrado)],
+    ['IVA Acreditable pagado', datos.map(d=>d.ivaAcreditablePagado)],
+    ['IVA a cargo / (a favor)', datos.map(d=>d.ivaCargoFavor)],
+    ...clavesRetencion.map(k => { const [tipoImp, cat] = k.split('|'); return [`Retención ${tipoImp} — ${cat}`, datos.map(d=>d.retencionesPorCategoria[k]||0)]; }),
+  ];
 
   contenido.innerHTML = `
     <div class="card">
-      <div class="card-head"><h3>IVA y Retenciones — Todos los meses de ${anio}</h3></div>
+      <div class="card-head">
+        <h3>IVA y Retenciones — Todos los meses de ${anio}</h3>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-ghost btn-sm" id="ivaAnualExcelBtn">Excel</button>
+          <button class="btn btn-ghost btn-sm" id="ivaAnualPdfBtn">PDF</button>
+        </div>
+      </div>
       <div class="table-wrap scroll-sticky">
         <table>
           <thead><tr><th>Concepto</th>${mesesLabel.map(m=>`<th>${m}</th>`).join('')}<th>Total</th></tr></thead>
@@ -2329,6 +2353,25 @@ async function renderIvaFiscalAnual(el, b) {
       <p style="font-size:11px;color:var(--muted);margin-top:10px;">"IVA a cargo/(a favor)" está en negativo cuando es a favor — súmalo con cuidado al leerlo por columna.</p>
     </div>
   `;
+
+  document.getElementById('ivaAnualExcelBtn').addEventListener('click', () => {
+    const encabezados = ['Concepto', ...mesesLabel, 'Total'];
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet([encabezados, ...filasExport.map(([nombre, valores]) => [nombre, ...valores, valores.reduce((s,v)=>s+v,0)])]);
+    XLSX.utils.book_append_sheet(wb, ws, 'IVA ' + anio);
+    XLSX.writeFile(wb, `IVA y Retenciones - ${b.name} - ${anio} - Todos los meses.xlsx`);
+  });
+  document.getElementById('ivaAnualPdfBtn').addEventListener('click', () => {
+    const { doc, margin, y } = iniciarPdfConEncabezado(b, `IVA y Retenciones — Todos los meses de ${anio}`);
+    doc.autoTable({
+      startY: y, margin: { left: margin, right: margin },
+      head: [['Concepto', ...mesesLabel, 'Total']],
+      body: filasExport.map(([nombre, valores]) => [nombre, ...valores.map(v=>fmt(v)), fmt(valores.reduce((s,v)=>s+v,0))]),
+      styles: { fontSize: 7.5 }, headStyles: { fillColor: [10,31,61] },
+      columnStyles: { 0: { cellWidth: 140 } },
+    });
+    doc.save(`IVA y Retenciones - ${b.name} - ${anio} - Todos los meses.pdf`);
+  });
 }
 
 async function abrirModalCierrePeriodo(businessId) {
@@ -2570,6 +2613,7 @@ async function pintarIsrMes(contenido, b) {
     <div style="display:flex;gap:10px;margin-bottom:16px;">
       <button class="btn btn-gold btn-sm" id="isrRegistrarBtn">Registrar en Pagos de Impuestos</button>
       <button class="btn btn-ghost btn-sm" id="isrExcelBtn">Excel</button>
+      <button class="btn btn-ghost btn-sm" id="isrPdfBtn">PDF</button>
     </div>
 
     ${calc.impuestoACargo > 0.004 ? `
@@ -2668,6 +2712,40 @@ async function pintarIsrMes(contenido, b) {
     XLSX.writeFile(wb, `ISR Provisional - ${b.name} - ${ym}.xlsx`);
   });
 
+  document.getElementById('isrPdfBtn').addEventListener('click', () => {
+    const { doc, margin, y } = iniciarPdfConEncabezado(b, `Pago Provisional de ISR — ${MESES_LARGO[Number(ym.slice(5,7))-1]} ${anio}`, { orientation: 'portrait' });
+    const filas = [
+      ['Ingresos nominales facturados', fmt(calc.ingresosFacturadosMes)],
+      ['(−) Ingresos a disminuir', fmt(calc.disminuir)],
+      ['(+) Ingresos adicionales', fmt(calc.adicional)],
+      ['Ingresos nominales del mes (ajustado)', fmt(calc.ingresosMesAjustado)],
+      ['+ Ingresos de periodos anteriores', fmt(calc.ingresosAnteriores)],
+      ['Total de ingresos nominales del periodo', fmt(calc.totalIngresosNominales)],
+      ['Coeficiente de Utilidad', calc.coeficiente.toFixed(4)],
+      ['Utilidad fiscal para pago provisional', fmt(calc.utilidadFiscal)],
+      ['(−) PTU del periodo', fmt(calc.ptu)],
+      ['(−) Pérdidas fiscales aplicadas', fmt(calc.perdidaAplicada)],
+      ['Base gravable', fmt(calc.baseGravable)],
+      ['Impuesto causado (30%)', fmt(calc.impuestoCausado)],
+      ['(−) Estímulos al ISR causado', fmt(calc.estimulo)],
+      ['Impuesto del periodo', fmt(calc.impuestoDelPeriodo)],
+      ['(−) Impuesto acreditable por dividendos', fmt(calc.dividendos)],
+      ['(−) Pagos provisionales anteriores', fmt(calc.pagosPrevios)],
+      ['(−) Total de impuesto retenido', fmt(calc.retenido)],
+    ];
+    doc.autoTable({
+      startY: y, margin: { left: margin, right: margin },
+      head: [['Concepto', 'Monto']], body: filas,
+      styles: { fontSize: 9 }, headStyles: { fillColor: [10,31,61] },
+    });
+    doc.autoTable({
+      startY: doc.lastAutoTable.finalY + 6, margin: { left: margin, right: margin },
+      body: [['Impuesto a cargo', fmt(calc.impuestoACargo)]],
+      styles: { fontSize: 11, fontStyle: 'bold', fillColor: [10,31,61], textColor: [255,255,255] },
+    });
+    doc.save(`ISR Provisional - ${b.name} - ${ym}.pdf`);
+  });
+
   if (calc.impuestoACargo > 0.004) {
     let [yv,mv] = ym.split('-').map(Number); mv++; if (mv>12) { mv=1; yv++; }
     const mesVencimientoIsr = `${yv}-${String(mv).padStart(2,'0')}`;
@@ -2706,9 +2784,34 @@ async function pintarIsrAnual(contenido, b) {
     acumulado += calc.ingresosMesAjustado;
   }
   const filaHtml = (nombre, valores, opts={}) => `<tr class="${opts.total?'total-row':''}"><td class="wrap-text" style="max-width:200px;${opts.op?'color:var(--muted);font-style:italic;font-size:11px;':''}">${nombre}</td>${valores.map(v=>`<td class="num">${opts.pct ? (v*100).toFixed(2)+'%' : fmt(v)}</td>`).join('')}</tr>`;
+  const filasExport = [
+    ['Ingresos nominales facturados', datos.map(d=>d.ingresosFacturadosMes)],
+    ['(−) Ingresos a disminuir', datos.map(d=>d.disminuir)],
+    ['(+) Ingresos adicionales', datos.map(d=>d.adicional)],
+    ['Ingresos nominales del mes', datos.map(d=>d.ingresosMesAjustado)],
+    ['+ Ingresos de periodos anteriores', datos.map(d=>d.ingresosAnteriores)],
+    ['Total ingresos nominales del periodo', datos.map(d=>d.totalIngresosNominales)],
+    ['Coeficiente de Utilidad', datos.map(d=>d.coeficiente)],
+    ['Utilidad fiscal para pago provisional', datos.map(d=>d.utilidadFiscal)],
+    ['(−) PTU del periodo', datos.map(d=>d.ptu)],
+    ['(−) Pérdidas fiscales aplicadas', datos.map(d=>d.perdidaAplicada)],
+    ['Base gravable', datos.map(d=>d.baseGravable)],
+    ['Impuesto causado', datos.map(d=>d.impuestoCausado)],
+    ['(−) Estímulos al ISR causado', datos.map(d=>d.estimulo)],
+    ['(−) Impuesto acreditable dividendos', datos.map(d=>d.dividendos)],
+    ['(−) Total impuesto retenido', datos.map(d=>d.retenido)],
+    ['Pagos provisionales anteriores', datos.map(d=>d.pagosPrevios)],
+    ['Impuesto a cargo del mes', datos.map(d=>d.impuestoACargo)],
+  ];
   contenido.innerHTML = `
     <div class="card">
-      <div class="card-head"><h3>Pago Provisional de ISR — Todos los meses de ${anio}</h3></div>
+      <div class="card-head">
+        <h3>Pago Provisional de ISR — Todos los meses de ${anio}</h3>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-ghost btn-sm" id="isrAnualExcelBtn">Excel</button>
+          <button class="btn btn-ghost btn-sm" id="isrAnualPdfBtn">PDF</button>
+        </div>
+      </div>
       <div class="table-wrap scroll-sticky">
         <table class="report-table">
           <thead><tr><th>Concepto</th>${mesesLabel.slice(0,hastaMes).map(m=>`<th>${m}</th>`).join('')}</tr></thead>
@@ -2736,6 +2839,25 @@ async function pintarIsrAnual(contenido, b) {
       <p style="font-size:11px;color:var(--muted);margin-top:10px;">Las filas en cursiva son ajustes opcionales — solo tienen valor los meses en que se capturó alguno.</p>
     </div>
   `;
+
+  document.getElementById('isrAnualExcelBtn').addEventListener('click', () => {
+    const encabezados = ['Concepto', ...mesesLabel.slice(0,hastaMes)];
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet([encabezados, ...filasExport.map(([nombre, valores]) => [nombre, ...valores])]);
+    XLSX.utils.book_append_sheet(wb, ws, 'ISR Provisional ' + anio);
+    XLSX.writeFile(wb, `ISR Provisional - ${b.name} - ${anio} - Todos los meses.xlsx`);
+  });
+  document.getElementById('isrAnualPdfBtn').addEventListener('click', () => {
+    const { doc, margin, y } = iniciarPdfConEncabezado(b, `Pago Provisional de ISR — Todos los meses de ${anio}`);
+    doc.autoTable({
+      startY: y, margin: { left: margin, right: margin },
+      head: [['Concepto', ...mesesLabel.slice(0,hastaMes)]],
+      body: filasExport.map(([nombre, valores]) => [nombre, ...valores.map(v => fmt(v))]),
+      styles: { fontSize: 7.5 }, headStyles: { fillColor: [10,31,61] },
+      columnStyles: { 0: { cellWidth: 150 } },
+    });
+    doc.save(`ISR Provisional - ${b.name} - ${anio} - Todos los meses.pdf`);
+  });
 }
 
 async function renderPagosImpuestos() {
@@ -2820,7 +2942,13 @@ async function pintarPagosImpuestos(contenido, b) {
       <div class="kpi"><div class="label">Recargos pagados (histórico)</div><div class="value num ${totalRecargosPagados>0.004?'red':''}">${fmt(totalRecargosPagados)}</div></div>
     </div>
     <div class="card">
-      <div class="card-head"><h3>Impuestos de ${STATE_piAnio}</h3></div>
+      <div class="card-head">
+        <h3>Impuestos de ${STATE_piAnio}</h3>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-ghost btn-sm" id="piExcelBtn">Excel</button>
+          <button class="btn btn-ghost btn-sm" id="piPdfBtn">PDF</button>
+        </div>
+      </div>
       <div class="table-wrap scroll-sticky">
         <table>
           <thead><tr><th>Periodo</th><th>Tipo</th><th>Concepto</th><th>Monto principal</th><th>Fecha límite</th><th>Fecha de pago</th><th>Estatus</th><th>Actualización</th><th>Recargos</th><th>Total</th><th></th></tr></thead>
@@ -2855,6 +2983,33 @@ async function pintarPagosImpuestos(contenido, b) {
     renderPagosImpuestos();
   });
   document.getElementById('piNuevoBtn').addEventListener('click', () => abrirModalPagoImpuesto(null, b));
+  document.getElementById('piExcelBtn').addEventListener('click', () => {
+    if (!(pagos||[]).length) { toast('No hay impuestos registrados en ' + STATE_piAnio + '.', 'error'); return; }
+    const wb = XLSX.utils.book_new();
+    const filas = pagos.map(p => ({
+      Periodo: p.periodo, Tipo: TIPO_IMPUESTO_LABEL[p.tipo_impuesto]||p.tipo_impuesto, Concepto: p.concepto||'',
+      'Monto principal': p.monto, 'Fecha límite': p.fecha_limite, 'Fecha de pago': p.fecha_pago||'',
+      Estatus: estatusDe(p).texto, Actualización: p.monto_actualizado ? Math.max(0, p.monto_actualizado-Number(p.monto)) : '',
+      Recargos: p.recargos||'', Total: p.total_pagado||'',
+    }));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filas), 'Pagos de Impuestos');
+    XLSX.writeFile(wb, `Pagos de Impuestos - ${b.name} - ${STATE_piAnio}.xlsx`);
+  });
+  document.getElementById('piPdfBtn').addEventListener('click', () => {
+    if (!(pagos||[]).length) { toast('No hay impuestos registrados en ' + STATE_piAnio + '.', 'error'); return; }
+    const { doc, margin, y } = iniciarPdfConEncabezado(b, `Pagos de Impuestos — ${STATE_piAnio}`);
+    doc.autoTable({
+      startY: y, margin: { left: margin, right: margin },
+      head: [['Periodo', 'Tipo', 'Concepto', 'Monto principal', 'Fecha límite', 'Fecha de pago', 'Estatus', 'Actualización', 'Recargos', 'Total']],
+      body: pagos.map(p => [
+        p.periodo, TIPO_IMPUESTO_LABEL[p.tipo_impuesto]||p.tipo_impuesto, p.concepto||'',
+        fmt(p.monto), fechaCorta(p.fecha_limite), p.fecha_pago?fechaCorta(p.fecha_pago):'—', estatusDe(p).texto,
+        p.monto_actualizado ? fmt(Math.max(0, p.monto_actualizado-Number(p.monto))) : '', p.recargos?fmt(p.recargos):'', p.total_pagado?fmt(p.total_pagado):'',
+      ]),
+      styles: { fontSize: 7.5 }, headStyles: { fillColor: [10,31,61] },
+    });
+    doc.save(`Pagos de Impuestos - ${b.name} - ${STATE_piAnio}.pdf`);
+  });
   contenido.querySelectorAll('.pi-fecha-pago-input').forEach(inp => inp.addEventListener('change', async () => {
     const p = (pagos||[]).find(x => x.id === inp.dataset.id);
     if (!p) return;
@@ -3049,9 +3204,15 @@ async function pintarRecargos(contenido) {
     <p style="font-size:12px;color:var(--muted);margin-bottom:14px;max-width:700px;">
       Cuando un impuesto se paga después de la fecha en que debió pagarse, el SAT exige dos cosas: <b>actualizarlo por inflación</b> (usando el INPC que publica INEGI) y cobrar <b>recargos</b> (intereses moratorios, con una tasa mensual que publica el SAT/LIF cada año). Captura aquí esos valores conforme se publiquen, mes por mes, y usa la calculadora de abajo cuando necesites saber cuánto pagar.
     </p>
-    <div class="field" style="max-width:200px;margin-bottom:14px;">
-      <label>Año a capturar</label>
-      <select id="recargosAnioSel">${anios.map(a=>`<option value="${a}" ${String(a)===STATE_recargosAnio?'selected':''}>${a}</option>`).join('')}</select>
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+      <div class="field" style="max-width:200px;margin-bottom:0;">
+        <label>Año a capturar</label>
+        <select id="recargosAnioSel">${anios.map(a=>`<option value="${a}" ${String(a)===STATE_recargosAnio?'selected':''}>${a}</option>`).join('')}</select>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-ghost btn-sm" id="recargosExcelBtn">Excel</button>
+        <button class="btn btn-ghost btn-sm" id="recargosPdfBtn">PDF</button>
+      </div>
     </div>
     <div class="grid-2" style="align-items:flex-start;">
       <div class="card">
@@ -3103,6 +3264,23 @@ async function pintarRecargos(contenido) {
   document.getElementById('recargosAnioSel').addEventListener('change', async (e) => {
     STATE_recargosAnio = e.target.value;
     await pintarRecargos(contenido);
+  });
+  document.getElementById('recargosExcelBtn').addEventListener('click', () => {
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(mesesDelAnio.map(ym => ({ Mes: ym, INPC: inpcMap[ym]||'' }))), 'INPC ' + STATE_recargosAnio);
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(mesesDelAnio.map(ym => ({ Mes: ym, 'Tasa %': tasasMap[ym]||'' }))), 'Tasas ' + STATE_recargosAnio);
+    XLSX.writeFile(wb, `Recargos y Actualización - ${STATE_recargosAnio}.xlsx`);
+  });
+  document.getElementById('recargosPdfBtn').addEventListener('click', () => {
+    const negocio = biz();
+    const { doc, margin, y } = iniciarPdfConEncabezado(negocio, `Recargos y Actualización — ${STATE_recargosAnio}`);
+    doc.autoTable({
+      startY: y, margin: { left: margin, right: margin },
+      head: [['Mes', 'INPC', 'Tasa de recargos %']],
+      body: mesesDelAnio.map(ym => [ym, inpcMap[ym]?Number(inpcMap[ym]).toFixed(4):'', tasasMap[ym]?Number(tasasMap[ym]).toFixed(2)+'%':'']),
+      styles: { fontSize: 9 }, headStyles: { fillColor: [10,31,61] },
+    });
+    doc.save(`Recargos y Actualización - ${STATE_recargosAnio}.pdf`);
   });
   document.getElementById('inpcGuardarBtn').addEventListener('click', async () => {
     const filas = [...contenido.querySelectorAll('.inpc-input')].map(inp => ({ periodo: inp.dataset.periodo, valor: leerMonto(inp.value) })).filter(r => r.valor);
