@@ -2640,7 +2640,7 @@ async function pintarIsrMes(contenido, b) {
     const coeficiente = leerMonto(document.getElementById('isrCoeficiente').value) || 0;
     const perdidasPendientes = leerMonto(document.getElementById('isrPerdidasPendientes').value) || 0;
     if (!vigenteDesde) { toast('Elige desde qué mes aplica.', 'error'); return; }
-    const { error } = await sb.from('fz_isr_datos_anuales').upsert({ business_id: b.id, vigente_desde: vigenteDesde, coeficiente_utilidad: coeficiente, perdidas_fiscales_pendientes: perdidasPendientes }, { onConflict: 'business_id,vigente_desde' });
+    const { error } = await sb.from('fz_isr_datos_anuales').upsert({ business_id: b.id, vigente_desde: vigenteDesde, anio: vigenteDesde.slice(0,4), coeficiente_utilidad: coeficiente, perdidas_fiscales_pendientes: perdidasPendientes }, { onConflict: 'business_id,vigente_desde' });
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     toast('Guardado — vigente desde ' + vigenteDesde + '.');
     pintarIsrMes(contenido, b);
