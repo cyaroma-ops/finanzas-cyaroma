@@ -3096,7 +3096,7 @@ async function renderBalanza() {
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;">Partida doble completa: Cargos y Abonos reconstruidos de Pólizas, Facturas de Proveedores/Clientes, y movimientos de Bancos/Efectivo. Trabaja con los nombres y tipos ya existentes en tu catálogo — sin códigos de cuenta todavía.</p>
       <div class="table-wrap scroll-sticky">
         <table>
-          <thead><tr><th>Cuenta</th><th>Tipo</th><th>Saldo inicial Deudor</th><th>Saldo inicial Acreedor</th><th>Cargos</th><th>Abonos</th><th>Saldo actual Deudor</th><th>Saldo actual Acreedor</th></tr></thead>
+          <thead><tr><th>Cuenta</th><th style="width:80px;">Tipo</th><th style="width:110px;">Saldo inicial Deudor</th><th style="width:110px;">Saldo inicial Acreedor</th><th style="width:100px;">Cargos</th><th style="width:100px;">Abonos</th><th style="width:110px;">Saldo actual Deudor</th><th style="width:110px;">Saldo actual Acreedor</th></tr></thead>
           <tbody>
             ${seccionCompleta('ACTIVO', 'Activo', porTipo.activo)}
             ${seccionCompleta('PASIVO', 'Pasivo', porTipo.pasivo)}
@@ -3192,7 +3192,19 @@ async function renderBalanza() {
       startY: 64, margin: { left: margin, right: margin },
       head: [['Cuenta','Tipo','Saldo inicial Deudor','Saldo inicial Acreedor','Cargos','Abonos','Saldo actual Deudor','Saldo actual Acreedor']],
       body,
-      styles: { fontSize: 7.5 }, headStyles: { fillColor: [10,31,61] },
+      styles: { fontSize: 7.5 },
+      headStyles: { fillColor: [10,31,61] },
+      columnStyles: {
+        0: { cellWidth: 190 },
+        1: { cellWidth: 52 },
+        2: { cellWidth: 'auto', halign: 'right' },
+        3: { cellWidth: 'auto', halign: 'right' },
+        4: { cellWidth: 'auto', halign: 'right' },
+        5: { cellWidth: 'auto', halign: 'right' },
+        6: { cellWidth: 'auto', halign: 'right' },
+        7: { cellWidth: 'auto', halign: 'right' },
+      },
+      tableWidth: 'wrap',
       didParseCell: (data) => {
         if (data.section !== 'body') return;
         const esp = filasEspeciales.find(e => e.i === data.row.index);
