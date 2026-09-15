@@ -9720,9 +9720,9 @@ async function renderPolizas() {
       ${subcuentas.length === 0 ? `<div class="empty">Aún no tienes cuentas en el catálogo. Crea al menos una (de cualquier tipo) para poder registrar pólizas.</div>` : ''}
       <div class="table-wrap scroll-sticky">
         <table>
-          <thead><tr><th>No. Póliza</th><th>Fecha</th><th>Concepto</th><th>Adjunto</th><th>Importe</th><th>Estado</th></tr></thead>
+          <thead><tr><th>No. Póliza</th><th>Fecha</th><th>Concepto</th><th>Adjunto</th><th>Importe</th><th>Estado</th><th></th></tr></thead>
           <tbody id="polizasList">
-            ${polizas.length === 0 ? `<tr><td colspan="6" class="empty">${todasPolizas.length ? 'Ninguna póliza coincide con la búsqueda.' : 'Sin pólizas todavía.'}</td></tr>` : polizas.map(p => {
+            ${polizas.length === 0 ? `<tr><td colspan="7" class="empty">${todasPolizas.length ? 'Ninguna póliza coincide con la búsqueda.' : 'Sin pólizas todavía.'}</td></tr>` : polizas.map(p => {
               const t = totalesPoliza(p);
               const cuadrada = Math.abs(t.cargo-t.abono)<0.01 && t.count>0;
               const nAdj = conteoAdjuntosPolizas[p.id] || 0;
@@ -9733,6 +9733,7 @@ async function renderPolizas() {
                 <td>${nAdj ? nAdj + (nAdj===1?' archivo':' archivos') : '—'}</td>
                 <td class="num" style="font-weight:700;">${fmt(t.cargo)}</td>
                 <td><span class="badge ${cuadrada?'pag':'pend'}">${cuadrada ? 'Cuadrada' : 'Diferencia ' + fmt(t.cargo-t.abono)}</span></td>
+                <td><button class="btn btn-ghost btn-sm poliza-duplicar-btn" data-id="${p.id}" title="Duplicar esta póliza" style="font-size:12px;padding:4px 10px;">Duplicar</button></td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -9753,6 +9754,10 @@ async function renderPolizas() {
   if (limpiarBtn) limpiarBtn.addEventListener('click', () => { STATE_polizaFiltroTexto=''; STATE_polizaFiltroDesde=''; STATE_polizaFiltroHasta=''; renderPolizas(); });
   el.querySelectorAll('.poliza-resumen-row').forEach(row => row.addEventListener('click', () => {
     openPolizaModal(row.dataset.poliza, b.id);
+  }));
+  el.querySelectorAll('.poliza-duplicar-btn').forEach(btn => btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    duplicarPoliza(btn.dataset.id, b.id);
   }));
   window.scrollTo(0, scrollY);
 }
@@ -9806,14 +9811,14 @@ function polizaEsBorradorVacio(borrador) {
   );
 }
 
-async function openPolizaModal(polizaId, businessId) {
+async function openPolizaModal(polizaId, businessId, baseOverride) {
   const [subcuentas, mayores, cuentasBancoQ, monedasQ, proveedoresCatalogoQ] = await Promise.all([
     loadSubcuentas(businessId), loadCuentasMayor(businessId),
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
     sb.from('fz_proveedores_catalogo').select('*').eq('business_id', businessId),
   ]);
-  const base = polizaId ? await crearBorradorPolizaExistente(polizaId, businessId) : await crearBorradorPolizaNueva(businessId);
+  const base = baseOverride || (polizaId ? await crearBorradorPolizaExistente(polizaId, businessId) : await crearBorradorPolizaNueva(businessId));
   const idsYaVinculados = base.lineas.filter(l => l.cuenta_tipo === 'proveedor' && l.proveedor_factura_id).map(l => l.proveedor_factura_id);
   const { data: facturasData } = await sb.from('fz_proveedores').select('id,proveedor,factura,importe,importe_pagado,estatus').eq('business_id', businessId);
   const facturasPendientes = (facturasData || []).filter(f => f.estatus === 'Pendiente' || f.estatus === 'Parcial' || idsYaVinculados.includes(f.id));
@@ -9825,12 +9830,32 @@ async function openPolizaModal(polizaId, businessId) {
   const catalogos = { subcuentas, mayores, cuentasBanco: cuentasBancoQ.data || [], monedasEfectivo: monedasQ.data || [], facturasPendientes, facturasClientesPendientes, proveedoresCatalogo: proveedoresCatalogoQ.data || [] };
   STATE_polizaBorrador = { ...base, catalogos };
   STATE_polizaBorrador.original = JSON.stringify({ poliza: STATE_polizaBorrador.poliza, lineas: STATE_polizaBorrador.lineas });
-  if (polizaId) {
+  if (polizaId && !baseOverride) {
     const conteo = await contarAdjuntosPorRegistro('fz_polizas', [polizaId]);
     STATE_polizaBorrador.conteoAdjuntos = conteo[polizaId] || 0;
   }
   document.getElementById('modalPoliza').classList.add('show');
   renderizarBorradorPoliza();
+}
+
+// Duplicar: arma un borrador NUEVO (folio propio, fecha de hoy) con las mismas líneas de una póliza
+// ya existente, para no tener que volver a capturar todo — el usuario revisa y guarda como nueva.
+async function duplicarPoliza(polizaId, businessId) {
+  const original = await crearBorradorPolizaExistente(polizaId, businessId);
+  const { data: existentes } = await sb.from('fz_polizas').select('numero').eq('business_id', businessId);
+  const maxNum = (existentes || []).reduce((mx, p) => Math.max(mx, p.numero || 0), 0);
+  const base = {
+    esNueva: true, businessId,
+    poliza: { id: null, numero: maxNum + 1, fecha: todayStr(), concepto: original.poliza.concepto || '', archivo_path: null, archivo_nombre: null },
+    lineas: original.lineas.map((l, i) => ({
+      id: 'tmp_' + Date.now() + '_' + i,
+      subcuenta_id: l.subcuenta_id, cuenta_tipo: l.cuenta_tipo, cuenta_ref_id: l.cuenta_ref_id,
+      proveedor_factura_id: null, cliente_factura_id: null, proveedor: l.proveedor || '',
+      cargo: l.cargo, abono: l.abono, descripcion: l.descripcion, referencia: l.referencia, orden: i,
+    })),
+  };
+  toast('Póliza duplicada — revisa la fecha y los montos antes de guardar.');
+  await openPolizaModal(null, businessId, base);
 }
 
 function polizaBorradorEsSucio() {
