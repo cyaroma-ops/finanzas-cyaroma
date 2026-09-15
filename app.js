@@ -2501,7 +2501,7 @@ async function pintarPagosImpuestos(contenido, b) {
               const est = estatusDe(p);
               const deltaActualizacion = p.monto_actualizado ? Math.max(0, p.monto_actualizado - Number(p.monto)) : null;
               return `<tr>
-                <td>${p.periodo}</td><td>${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]||p.tipo_impuesto}</td><td>${p.concepto||''}</td>
+                <td>${p.periodo}</td><td>${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]||p.tipo_impuesto}</td><td class="td-concepto-reporte">${p.concepto||''}</td>
                 <td class="num">${fmt(p.monto)}</td><td>${fechaCorta(p.fecha_limite)}</td>
                 <td><input type="date" class="pi-fecha-pago-input" data-id="${p.id}" value="${p.fecha_pago||''}" style="border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12.5px;"></td>
                 <td style="color:${est.color};font-weight:600;">${est.texto}</td>

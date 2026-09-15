@@ -261,9 +261,10 @@ h1,h2,h3,.serif{font-family:'Cormorant Garamond',serif;}
    Resultados, Balance General): son tarjetas separadas, cada una con su propia tabla — sin esto,
    cada una ajusta el ancho de su columna de números por su cuenta, según su propio contenido,
    y no quedan alineadas entre sí ni consistentes al cambiar de Mensual a Acumulado. */
-table.report-table{table-layout:fixed;width:100%;}
+table.report-table{table-layout:fixed;min-width:100%;}
 table.report-table td{overflow-wrap:break-word;word-break:break-word;}
-table.report-table td:first-child{width:auto;}
+table.report-table td:first-child{width:auto;min-width:160px;}
+table.report-table td.td-concepto-reporte{min-width:160px;}
 table.report-table td.num{width:130px;}
 table.report-table td.td-vacia-reporte{width:0;padding:0 !important;}
 .card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px;}
