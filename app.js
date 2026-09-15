@@ -4158,40 +4158,100 @@ function openImportExcelModal(tipo, businessId, onDone, extra) {
       } else if (tipo === 'bancos_mov') {
         const cuentaId = extra;
         if (!cuentaId) { toast('Selecciona primero una cuenta bancaria.', 'error'); return; }
-        const payload = rows.map(r => ({
-          business_id: businessId,
-          cuenta_id: cuentaId,
-          fecha: parseFechaExcel(buscarColumna(r, ['fecha'])),
-          descripcion: String(buscarColumna(r, ['descripcion', 'descripción']) || '').trim() || null,
-          concepto: String(buscarColumna(r, ['concepto']) || '').trim() || null,
-          referencia: String(buscarColumna(r, ['referencia']) || '').trim() || null,
-          depositos: Number(buscarColumna(r, ['depositos', 'depósitos', 'abono', 'abonos'])) || 0,
-          cargos: Number(buscarColumna(r, ['cargos', 'cargo'])) || 0,
-          tipo_salida: 'otro',
-        })).filter(m => m.depositos || m.cargos);
+        const [cuentasBancoQ, monedasQ] = await Promise.all([
+          sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
+          sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
+        ]);
+        const cuentasBanco = cuentasBancoQ.data || [], monedasEfvo = monedasQ.data || [];
+        const buscarDestino = (nombreDestino) => {
+          if (!nombreDestino) return null;
+          const n = normalizarEncabezado(nombreDestino);
+          const banco = cuentasBanco.find(c => normalizarEncabezado(c.nombre) === n && c.id !== cuentaId);
+          if (banco) return { tipo: 'banco', id: banco.id };
+          const moneda = monedasEfvo.find(m => normalizarEncabezado(m.nombre) === n);
+          if (moneda) return { tipo: 'efectivo', id: moneda.id };
+          return null;
+        };
+        const payload = [], legsDestino = [], filasSinDestino = [];
+        rows.forEach(r => {
+          const esTraspaso = normalizarEncabezado(String(buscarColumna(r, ['tipo']) || '')).includes('traspaso');
+          const cargos = Number(buscarColumna(r, ['cargos', 'cargo'])) || 0;
+          const depositos = Number(buscarColumna(r, ['depositos', 'depósitos', 'abono', 'abonos'])) || 0;
+          if (!cargos && !depositos) return;
+          const traspasoId = esTraspaso ? uid() : null;
+          const destino = esTraspaso ? buscarDestino(buscarColumna(r, ['cuenta destino', 'destino', 'cuentadestino'])) : null;
+          if (esTraspaso && cargos && !destino) filasSinDestino.push(buscarColumna(r, ['fecha']) || '(fecha sin leer)');
+          payload.push({
+            business_id: businessId, cuenta_id: cuentaId,
+            fecha: parseFechaExcel(buscarColumna(r, ['fecha'])),
+            descripcion: String(buscarColumna(r, ['descripcion', 'descripción']) || '').trim() || null,
+            concepto: String(buscarColumna(r, ['concepto']) || '').trim() || null,
+            referencia: String(buscarColumna(r, ['referencia']) || '').trim() || null,
+            depositos, cargos,
+            tipo_salida: esTraspaso ? 'traspaso' : 'otro',
+            tipo_entrada: esTraspaso ? 'traspaso' : 'otro',
+            traspaso_id: traspasoId,
+          });
+          if (esTraspaso && cargos && destino) {
+            const leg = { business_id: businessId, fecha: parseFechaExcel(buscarColumna(r, ['fecha'])), descripcion: String(buscarColumna(r, ['descripcion', 'descripción']) || '').trim() || null, concepto: 'Traspaso', cargos: 0, depositos: cargos, tipo_salida: 'traspaso', tipo_entrada: 'traspaso', traspaso_id: traspasoId };
+            legsDestino.push(destino.tipo === 'banco' ? { tabla: 'fz_bancos_mov', row: { ...leg, cuenta_id: destino.id } } : { tabla: 'fz_efectivo_mov', row: { ...leg, moneda_id: destino.id, proveedor: 'Traspaso' } });
+          }
+        });
         if (!payload.length) { toast('No se encontraron filas válidas (revisa las columnas Depósitos/Cargos).', 'error'); return; }
         const { error } = await sb.from('fz_bancos_mov').insert(payload);
         if (error) { toast('Error al importar: ' + error.message, 'error'); return; }
-        toast(`${payload.length} movimientos importados.`);
+        for (const leg of legsDestino) await sb.from(leg.tabla).insert(leg.row);
+        toast(`${payload.length} movimientos importados${legsDestino.length ? ` (${legsDestino.length} traspaso(s) reflejados también en su cuenta destino)` : ''}.`);
+        if (filasSinDestino.length) toast(`${filasSinDestino.length} fila(s) marcadas "Traspaso" no tenían una "Cuenta destino" reconocible — se guardaron sin la otra mitad del traspaso.`, 'error');
 
       } else if (tipo === 'efectivo_mov') {
         const monedaId = extra;
         if (!monedaId) { toast('Selecciona primero una caja de efectivo.', 'error'); return; }
-        const payload = rows.map(r => ({
-          business_id: businessId,
-          moneda_id: monedaId,
-          fecha: parseFechaExcel(buscarColumna(r, ['fecha'])),
-          proveedor: String(buscarColumna(r, ['proveedor', 'concepto']) || '').trim() || null,
-          descripcion: String(buscarColumna(r, ['descripcion', 'descripción']) || '').trim() || null,
-          factura: String(buscarColumna(r, ['factura', 'referencia']) || '').trim() || null,
-          depositos: Number(buscarColumna(r, ['depositos', 'depósitos', 'abono', 'abonos'])) || 0,
-          cargos: Number(buscarColumna(r, ['cargos', 'cargo'])) || 0,
-          tipo_salida: 'otro',
-        })).filter(m => m.depositos || m.cargos);
+        const [cuentasBancoQ, monedasQ] = await Promise.all([
+          sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
+          sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
+        ]);
+        const cuentasBanco = cuentasBancoQ.data || [], monedasEfvo = monedasQ.data || [];
+        const buscarDestino = (nombreDestino) => {
+          if (!nombreDestino) return null;
+          const n = normalizarEncabezado(nombreDestino);
+          const banco = cuentasBanco.find(c => normalizarEncabezado(c.nombre) === n);
+          if (banco) return { tipo: 'banco', id: banco.id };
+          const moneda = monedasEfvo.find(m => normalizarEncabezado(m.nombre) === n && m.id !== monedaId);
+          if (moneda) return { tipo: 'efectivo', id: moneda.id };
+          return null;
+        };
+        const payload = [], legsDestino = [], filasSinDestino = [];
+        rows.forEach(r => {
+          const esTraspaso = normalizarEncabezado(String(buscarColumna(r, ['tipo']) || '')).includes('traspaso');
+          const cargos = Number(buscarColumna(r, ['cargos', 'cargo'])) || 0;
+          const depositos = Number(buscarColumna(r, ['depositos', 'depósitos', 'abono', 'abonos'])) || 0;
+          if (!cargos && !depositos) return;
+          const traspasoId = esTraspaso ? uid() : null;
+          const destino = esTraspaso ? buscarDestino(buscarColumna(r, ['cuenta destino', 'destino', 'cuentadestino'])) : null;
+          if (esTraspaso && cargos && !destino) filasSinDestino.push(buscarColumna(r, ['fecha']) || '(fecha sin leer)');
+          payload.push({
+            business_id: businessId, moneda_id: monedaId,
+            fecha: parseFechaExcel(buscarColumna(r, ['fecha'])),
+            proveedor: esTraspaso ? 'Traspaso' : (String(buscarColumna(r, ['proveedor', 'concepto']) || '').trim() || null),
+            descripcion: String(buscarColumna(r, ['descripcion', 'descripción']) || '').trim() || null,
+            factura: String(buscarColumna(r, ['factura', 'referencia']) || '').trim() || null,
+            depositos, cargos,
+            tipo_salida: esTraspaso ? 'traspaso' : 'otro',
+            tipo_entrada: esTraspaso ? 'traspaso' : 'otro',
+            traspaso_id: traspasoId,
+          });
+          if (esTraspaso && cargos && destino) {
+            const leg = { business_id: businessId, fecha: parseFechaExcel(buscarColumna(r, ['fecha'])), descripcion: String(buscarColumna(r, ['descripcion', 'descripción']) || '').trim() || null, concepto: 'Traspaso', cargos: 0, depositos: cargos, tipo_salida: 'traspaso', tipo_entrada: 'traspaso', traspaso_id: traspasoId };
+            legsDestino.push(destino.tipo === 'banco' ? { tabla: 'fz_bancos_mov', row: { ...leg, cuenta_id: destino.id } } : { tabla: 'fz_efectivo_mov', row: { ...leg, moneda_id: destino.id, proveedor: 'Traspaso' } });
+          }
+        });
         if (!payload.length) { toast('No se encontraron filas válidas (revisa las columnas Depósitos/Cargos).', 'error'); return; }
         const { error } = await sb.from('fz_efectivo_mov').insert(payload);
         if (error) { toast('Error al importar: ' + error.message, 'error'); return; }
-        toast(`${payload.length} movimientos importados.`);
+        for (const leg of legsDestino) await sb.from(leg.tabla).insert(leg.row);
+        toast(`${payload.length} movimientos importados${legsDestino.length ? ` (${legsDestino.length} traspaso(s) reflejados también en su cuenta destino)` : ''}.`);
+        if (filasSinDestino.length) toast(`${filasSinDestino.length} fila(s) marcadas "Traspaso" no tenían una "Cuenta destino" reconocible — se guardaron sin la otra mitad del traspaso.`, 'error');
 
       } else if (tipo === 'ventas') {
         const [conceptosVentaQ, conceptosQ, conceptosSistemaQ] = await Promise.all([
@@ -5509,7 +5569,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
     <div class="card-head" style="margin-top:14px;">
       <span class="hint">Saldo al inicio de ${STATE.currentMonth}: ${fmtNum(saldoApertura)} ${moneda.nombre}</span>
       <div style="display:flex;gap:8px;">
-        <button class="btn btn-ghost btn-sm" id="importMovBtnEfvo">Importar movimientos (Excel)</button>
+        <button class="btn btn-ghost btn-sm" id="importMovBtnEfvo" title="Columnas: Fecha, Proveedor/Concepto, Descripción, Factura/Referencia, Depósitos, Cargos. Opcional para traspasos: Tipo (escribe &quot;Traspaso&quot;) y Cuenta destino (nombre exacto del banco o caja de efectivo).">Importar movimientos (Excel)</button>
         <button class="btn btn-ghost btn-sm" id="addMovBtnEfvo">+ Agregar movimiento (pago en efectivo)</button>
       </div>
     </div>
@@ -5718,7 +5778,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
       <span class="hint">Saldo al inicio de ${STATE.currentMonth}: ${fmt(saldoApertura)}</span>
       <div style="display:flex;gap:8px;">
         <button class="btn btn-ghost btn-sm" id="conciliarBtn">Conciliar</button>
-        <button class="btn btn-ghost btn-sm" id="importMovBtn">Importar movimientos (Excel)</button>
+        <button class="btn btn-ghost btn-sm" id="importMovBtn" title="Columnas: Fecha, Descripción, Concepto, Referencia, Depósitos, Cargos. Opcional para traspasos: Tipo (escribe &quot;Traspaso&quot;) y Cuenta destino (nombre exacto del banco o caja de efectivo).">Importar movimientos (Excel)</button>
         <button class="btn btn-ghost btn-sm" id="addMovBtnBanco">+ Agregar movimiento</button>
       </div>
     </div>
