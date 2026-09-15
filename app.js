@@ -2499,15 +2499,21 @@ async function pintarPagosImpuestos(contenido, b) {
           <tbody>
             ${(pagos||[]).length ? pagos.map(p => {
               const est = estatusDe(p);
+              const deltaActualizacion = p.monto_actualizado ? p.monto_actualizado - Number(p.monto) : null;
               return `<tr>
                 <td>${p.periodo}</td><td>${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]||p.tipo_impuesto}</td><td>${p.concepto||''}</td>
                 <td class="num">${fmt(p.monto)}</td><td>${fechaCorta(p.fecha_limite)}</td>
                 <td><input type="date" class="pi-fecha-pago-input" data-id="${p.id}" value="${p.fecha_pago||''}" style="border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12.5px;"></td>
                 <td style="color:${est.color};font-weight:600;">${est.texto}</td>
-                <td class="num">${p.monto_actualizado?fmt(p.monto_actualizado):''}</td>
+                <td class="num">${deltaActualizacion!==null?fmt(deltaActualizacion):''}</td>
                 <td class="num">${p.recargos?fmt(p.recargos):''}</td>
                 <td class="num" style="font-weight:600;">${p.total_pagado?fmt(p.total_pagado):''}</td>
-                <td><button class="row-del pi-eliminar" data-id="${p.id}" title="Eliminar">✕</button></td>
+                <td style="position:relative;">
+                  <button class="btn btn-ghost btn-sm pi-menu-btn" data-id="${p.id}" style="padding:3px 10px;">⋯</button>
+                  <div class="pi-menu-dropdown" data-menu="${p.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:110px;overflow:hidden;">
+                    <button class="pi-eliminar" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);">Eliminar</button>
+                  </div>
+                </td>
               </tr>`;
             }).join('') : `<tr><td colspan="11" class="empty">No hay impuestos registrados en ${STATE_piAnio}.</td></tr>`}
           </tbody>
@@ -2527,6 +2533,14 @@ async function pintarPagosImpuestos(contenido, b) {
     await guardarFechaPagoInline(p, inp.value || null, b);
     await pintarPagosImpuestos(contenido, b);
   }));
+  contenido.querySelectorAll('.pi-menu-btn').forEach(btn => btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const dropdown = contenido.querySelector(`.pi-menu-dropdown[data-menu="${btn.dataset.id}"]`);
+    const abierto = dropdown.style.display === 'block';
+    contenido.querySelectorAll('.pi-menu-dropdown').forEach(d => d.style.display = 'none');
+    dropdown.style.display = abierto ? 'none' : 'block';
+  }));
+  document.addEventListener('click', () => contenido.querySelectorAll('.pi-menu-dropdown').forEach(d => d.style.display = 'none'));
   contenido.querySelectorAll('.pi-eliminar').forEach(btn => btn.addEventListener('click', async (e) => {
     e.stopPropagation();
     if (!confirm('¿Eliminar este registro de impuesto?')) return;
