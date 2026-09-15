@@ -23,6 +23,7 @@ const fmt = (n) => {
 const fmtNum = (n) => (Number(n) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fechaCorta = (iso) => { if (!iso) return ''; const [y,m,d] = iso.split('-'); return d && m && y ? `${d}/${m}/${y}` : iso; };
 const fmtInputVal = (n) => (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtCoef = (n) => (Number(n) || 0).toFixed(4);
 const leerMonto = (v) => Number(String(v).replace(/,/g, '')) || 0;
 function wireInputsMoneda(container) {
   container.querySelectorAll('.num-fmt').forEach(el => {
@@ -2558,7 +2559,7 @@ async function pintarIsrMes(contenido, b) {
           </div>
           <div class="field" style="margin-bottom:0;">
             <label>Coeficiente de Utilidad</label>
-            <input type="text" id="isrCoeficiente" inputmode="decimal" value="${fmtInputVal(calc.coeficiente)}" placeholder="0.0000">
+            <input type="text" id="isrCoeficiente" inputmode="decimal" value="${fmtCoef(calc.coeficiente)}" placeholder="0.0000">
           </div>
           <div class="field" style="margin-bottom:0;">
             <label>Pérdidas fiscales pendientes (total)</label>
@@ -2695,7 +2696,7 @@ async function pintarIsrMes(contenido, b) {
       { Concepto: 'Ingresos nominales del mes (ajustado)', Monto: calc.ingresosMesAjustado },
       { Concepto: 'Ingresos de periodos anteriores', Monto: calc.ingresosAnteriores },
       { Concepto: 'Total de ingresos nominales del periodo', Monto: calc.totalIngresosNominales },
-      { Concepto: 'Coeficiente de Utilidad', Monto: calc.coeficiente },
+      { Concepto: 'Coeficiente de Utilidad', Monto: fmtCoef(calc.coeficiente) },
       { Concepto: 'Utilidad fiscal para pago provisional', Monto: calc.utilidadFiscal },
       { Concepto: 'PTU del periodo', Monto: -calc.ptu },
       { Concepto: 'Pérdidas fiscales aplicadas', Monto: -calc.perdidaAplicada },
@@ -2783,7 +2784,7 @@ async function pintarIsrAnual(contenido, b) {
     datos.push(calc);
     acumulado += calc.ingresosMesAjustado;
   }
-  const filaHtml = (nombre, valores, opts={}) => `<tr class="${opts.total?'total-row':''}"><td class="wrap-text" style="max-width:200px;${opts.op?'color:var(--muted);font-style:italic;font-size:11px;':''}">${nombre}</td>${valores.map(v=>`<td class="num">${opts.pct ? (v*100).toFixed(2)+'%' : fmt(v)}</td>`).join('')}</tr>`;
+  const filaHtml = (nombre, valores, opts={}) => `<tr class="${opts.total?'total-row':''}"><td class="wrap-text" style="max-width:200px;${opts.op?'color:var(--muted);font-style:italic;font-size:11px;':''}">${nombre}</td>${valores.map(v=>`<td class="num">${opts.coef ? fmtCoef(v) : opts.pct ? (v*100).toFixed(2)+'%' : fmt(v)}</td>`).join('')}</tr>`;
   const filasExport = [
     ['Ingresos nominales facturados', datos.map(d=>d.ingresosFacturadosMes)],
     ['(−) Ingresos a disminuir', datos.map(d=>d.disminuir)],
@@ -2822,7 +2823,7 @@ async function pintarIsrAnual(contenido, b) {
             ${filaHtml('Ingresos nominales del mes', datos.map(d=>d.ingresosMesAjustado))}
             ${filaHtml('+ Ingresos de periodos anteriores', datos.map(d=>d.ingresosAnteriores))}
             ${filaHtml('Total ingresos nominales del periodo', datos.map(d=>d.totalIngresosNominales))}
-            ${filaHtml('Coeficiente de Utilidad', datos.map(d=>d.coeficiente), {op:true})}
+            ${filaHtml('Coeficiente de Utilidad', datos.map(d=>d.coeficiente), {op:true, coef:true})}
             ${filaHtml('Utilidad fiscal para pago provisional', datos.map(d=>d.utilidadFiscal))}
             ${filaHtml('(−) PTU del periodo', datos.map(d=>d.ptu), {op:true})}
             ${filaHtml('(−) Pérdidas fiscales aplicadas', datos.map(d=>d.perdidaAplicada), {op:true})}
@@ -2843,7 +2844,7 @@ async function pintarIsrAnual(contenido, b) {
   document.getElementById('isrAnualExcelBtn').addEventListener('click', () => {
     const encabezados = ['Concepto', ...mesesLabel.slice(0,hastaMes)];
     const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.aoa_to_sheet([encabezados, ...filasExport.map(([nombre, valores]) => [nombre, ...valores])]);
+    const ws = XLSX.utils.aoa_to_sheet([encabezados, ...filasExport.map(([nombre, valores]) => [nombre, ...(nombre === 'Coeficiente de Utilidad' ? valores.map(fmtCoef) : valores)])]);
     XLSX.utils.book_append_sheet(wb, ws, 'ISR Provisional ' + anio);
     XLSX.writeFile(wb, `ISR Provisional - ${b.name} - ${anio} - Todos los meses.xlsx`);
   });
@@ -2852,7 +2853,7 @@ async function pintarIsrAnual(contenido, b) {
     doc.autoTable({
       startY: y, margin: { left: margin, right: margin },
       head: [['Concepto', ...mesesLabel.slice(0,hastaMes)]],
-      body: filasExport.map(([nombre, valores]) => [nombre, ...valores.map(v => fmt(v))]),
+      body: filasExport.map(([nombre, valores]) => [nombre, ...valores.map(v => nombre === 'Coeficiente de Utilidad' ? fmtCoef(v) : fmt(v))]),
       styles: { fontSize: 7.5 }, headStyles: { fillColor: [10,31,61] },
       columnStyles: { 0: { cellWidth: 150 } },
     });
