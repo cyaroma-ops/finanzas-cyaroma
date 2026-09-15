@@ -1734,7 +1734,13 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <option value="otro">Sin clasificar</option>
         <option value="gasto">Gasto</option>
         <option value="proveedor">Pago a proveedor</option>
+        <option value="traspaso_banco">Traspaso a banco</option>
+        <option value="traspaso_efectivo">Traspaso a caja de efectivo</option>
       </select>
+    </div>
+    <div class="field" id="movTraspasoDestinoWrap" style="display:none;">
+      <label>Cuenta destino</label>
+      <select id="movTraspasoDestino"></select>
     </div>
     <div class="field" id="movSubcuentaWrap" style="display:none;">
       <label>Subcuenta</label>

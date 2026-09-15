@@ -4900,6 +4900,20 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   ]);
   const origenCorto = contexto.tipo === 'efectivo' ? 'Caja — ' + (cuentaInfo?.nombre || '') : 'Banco — ' + (cuentaInfo?.nombre || '');
 
+  const [cuentasBancoMov, monedasEfvoMov] = await Promise.all([
+    sb.from('fz_bancos_cuentas').select('*').eq('business_id', contexto.businessId).eq('activo', true),
+    sb.from('fz_efectivo_monedas').select('*').eq('business_id', contexto.businessId).eq('activo', true),
+  ]);
+  const actualizarOpcionesDestinoTraspaso = () => {
+    const tipoVal = document.getElementById('movTipoSalida').value;
+    const destSel = document.getElementById('movTraspasoDestino');
+    if (tipoVal === 'traspaso_banco') {
+      destSel.innerHTML = (cuentasBancoMov.data||[]).filter(c => !(contexto.tipo==='banco' && c.id===contexto.refId)).map(c => `<option value="${c.id}">${c.nombre}</option>`).join('');
+    } else if (tipoVal === 'traspaso_efectivo') {
+      destSel.innerHTML = (monedasEfvoMov.data||[]).filter(m => !(contexto.tipo==='efectivo' && m.id===contexto.refId)).map(m => `<option value="${m.id}">${m.nombre}</option>`).join('');
+    }
+  };
+
   document.getElementById('movSubcuenta').innerHTML = `<option value="">— elegir subcuenta —</option>` +
     opcionesSubcuentaHtml(subcuentas, mayores, movimientoExistente?.subcuenta_id || null);
 
@@ -5023,9 +5037,9 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     const valorActual = sel.value;
     document.getElementById('movTipoLabel').textContent = esDeposito ? 'Tipo de entrada' : 'Tipo de salida';
     sel.innerHTML = esDeposito
-      ? `<option value="otro">Sin clasificar</option><option value="cliente">Cobro de cliente</option>`
-      : `<option value="otro">Sin clasificar</option><option value="gasto">Gasto</option><option value="proveedor">Pago a proveedor</option>`;
-    sel.value = ['otro','cliente','gasto','proveedor'].includes(valorActual) && Array.from(sel.options).some(o=>o.value===valorActual) ? valorActual : 'otro';
+      ? `<option value="otro">Sin clasificar</option><option value="cliente">Cobro de cliente</option><option value="traspaso_banco">Traspaso desde banco</option><option value="traspaso_efectivo">Traspaso desde caja de efectivo</option>`
+      : `<option value="otro">Sin clasificar</option><option value="gasto">Gasto</option><option value="proveedor">Pago a proveedor</option><option value="traspaso_banco">Traspaso a banco</option><option value="traspaso_efectivo">Traspaso a caja de efectivo</option>`;
+    sel.value = ['otro','cliente','gasto','proveedor','traspaso_banco','traspaso_efectivo'].includes(valorActual) && Array.from(sel.options).some(o=>o.value===valorActual) ? valorActual : 'otro';
   };
   document.getElementById('movCargos').addEventListener('input', actualizarOpcionesTipo);
   document.getElementById('movDepositos').addEventListener('input', actualizarOpcionesTipo);
@@ -5038,6 +5052,8 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     document.getElementById('movFacturasWrap').style.display = val === 'proveedor' ? 'block' : 'none';
     document.getElementById('movFacturasClienteWrap').style.display = val === 'cliente' ? 'block' : 'none';
     document.getElementById('movIvaWrap').style.display = (val === 'gasto' && esFiscalContableMov) ? '' : 'none';
+    document.getElementById('movTraspasoDestinoWrap').style.display = (val === 'traspaso_banco' || val === 'traspaso_efectivo') ? 'block' : 'none';
+    if (val === 'traspaso_banco' || val === 'traspaso_efectivo') actualizarOpcionesDestinoTraspaso();
   };
   document.getElementById('movTipoSalida').onchange = actualizarVisibilidadDetalle;
   document.getElementById('movTipoSalida').oninput = actualizarVisibilidadDetalle;
@@ -5086,10 +5102,27 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     const tipoElegido = document.getElementById('movTipoSalida').value;
     if (!cargos && !depositos) { toast('Escribe un monto en Cargos o Depósitos.', 'error'); return; }
     const esClasifCliente = tipoElegido === 'cliente';
+    const esTraspaso = tipoElegido === 'traspaso_banco' || tipoElegido === 'traspaso_efectivo';
     const idsFacturas = tipoElegido === 'proveedor' ? Array.from(document.querySelectorAll('.mov-factura-check:checked')).map(c => c.value) : [];
     const idsFacturasCliente = esClasifCliente ? Array.from(document.querySelectorAll('.mov-factura-cliente-check:checked')).map(c => c.value) : [];
-    const tipoSalida = esClasifCliente ? 'otro' : tipoElegido;
-    const tipoEntrada = esClasifCliente ? 'cliente' : 'otro';
+    let legDestino = null, traspasoIdNuevo = null;
+    if (esTraspaso) {
+      const destinoId = document.getElementById('movTraspasoDestino').value;
+      if (!destinoId) { toast('Elige la cuenta destino del traspaso.', 'error'); return; }
+      traspasoIdNuevo = movimientoExistente?.traspaso_id || uid();
+      const esSalida = cargos > 0;
+      const monto = esSalida ? cargos : depositos;
+      const legPayload = {
+        business_id: contexto.businessId, fecha, tipo_salida: 'traspaso', tipo_entrada: 'traspaso', traspaso_id: traspasoIdNuevo,
+        cargos: esSalida ? 0 : monto, depositos: esSalida ? monto : 0,
+        descripcion: `Traspaso ${esSalida ? 'a' : 'desde'} ${origenCorto}`, concepto: 'Traspaso',
+      };
+      legDestino = tipoElegido === 'traspaso_banco'
+        ? { tabla: 'fz_bancos_mov', row: legPayload, extra: { cuenta_id: destinoId } }
+        : { tabla: 'fz_efectivo_mov', row: legPayload, extra: { moneda_id: destinoId, proveedor: 'Traspaso' } };
+    }
+    const tipoSalida = esClasifCliente ? 'otro' : (esTraspaso ? 'traspaso' : tipoElegido);
+    const tipoEntrada = esClasifCliente ? 'cliente' : (esTraspaso ? 'traspaso' : 'otro');
     let payload, table;
     if (contexto.tipo === 'efectivo') {
       table = 'fz_efectivo_mov';
@@ -5099,6 +5132,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
       payload = { business_id: contexto.businessId, cuenta_id: contexto.refId, fecha, proveedor: document.getElementById('movCampo1').value || null, concepto: document.getElementById('movConcepto').value || null, referencia: document.getElementById('movReferencia').value || null, descripcion, cargos, depositos, tipo_salida: tipoSalida, tipo_entrada: tipoEntrada };
     }
     payload.subcuenta_id = tipoElegido === 'gasto' ? (document.getElementById('movSubcuenta').value || null) : null;
+    payload.traspaso_id = esTraspaso ? traspasoIdNuevo : null;
     if (tipoElegido === 'gasto' && esFiscalContableMov) {
       payload.aplica_iva = document.getElementById('movAplicaIva').checked;
       payload.subtotal = payload.aplica_iva ? (leerMonto(document.getElementById('movSubtotal').value) || 0) : null;
@@ -5123,6 +5157,11 @@ async function openMovimientoModal(contexto, movimientoExistente) {
         if (subido) await sb.from('fz_adjuntos').insert({ business_id: contexto.businessId, tabla: table, registro_id: nuevoMov.id, archivo_path: subido.path, archivo_nombre: subido.nombre });
       }
       STATE_movArchivosPendientes = [];
+    }
+    if (legDestino) {
+      const { error: errLeg } = await sb.from(legDestino.tabla).insert({ ...legDestino.row, ...legDestino.extra });
+      if (errLeg) toast('El movimiento se guardó, pero hubo un error creando la otra mitad del traspaso: ' + errLeg.message, 'error');
+      else toast('Traspaso guardado y reflejado en la cuenta destino.');
     }
 
     // Al editar, siempre revisamos ambos lados (aunque no haya nada nuevo que aplicar) para
@@ -5268,7 +5307,7 @@ function sinClasificarBannerHtml(count, total) {
   if (!count) return '';
   return `<div class="card" style="background:#fff8ec;border:1px solid #f0d99a;margin-bottom:12px;padding:12px 16px;">
     <strong style="color:#8a6d1f;">${count} cargo(s) sin clasificar este mes</strong>
-    <span style="color:var(--muted);"> — suman ${fmt(total)}. Ve a la columna "Tipo de salida" para clasificarlos.</span>
+    <span style="color:var(--muted);"> — suman ${fmt(total)}. Están resaltados en la tabla de abajo (fondo color crema) — dales clic en "⋯ → Editar" para clasificarlos.</span>
   </div>`;
 }
 function facturaIdsDe(r) {
@@ -5540,7 +5579,8 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
         <td></td>
       </tr>`;
     }
-    return `<tr>
+    const sinClasificarFila = (r.tipo_salida || 'otro') === 'otro' && (Number(r.cargos)||0) > 0;
+    return `<tr${sinClasificarFila ? ' style="background:#fff8ec;"' : ''}>
       <td><input class="cell mov-cell" type="date" value="${r.fecha}" data-id="${r.id}" data-field="fecha"></td>
       <td><input class="cell mov-cell" type="text" value="${r.proveedor||''}" data-id="${r.id}" data-field="proveedor"></td>
       <td><input class="cell mov-cell" type="text" value="${r.descripcion||''}" data-id="${r.id}" data-field="descripcion"></td>
@@ -5548,7 +5588,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
       <td><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(r.depositos)}" data-id="${r.id}" data-field="depositos"></td>
       <td class="num" style="font-weight:700;">${fmtNum(saldo)}</td>
       <td style="position:relative;">
-        <button class="btn btn-ghost btn-sm mov-menu-btn" data-id="${r.id}" style="padding:5px 12px;">⋯</button>
+        <button class="btn btn-ghost btn-sm mov-menu-btn" data-id="${r.id}" style="padding:5px 12px;">${sinClasificarFila?'⚠ ⋯':'⋯'}</button>
         <div class="mov-menu-dropdown" data-menu="${r.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:120px;overflow:hidden;">
           <button class="mov-editar" data-id="${r.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Editar</button>
           <button class="mov-del" data-id="${r.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>
@@ -5747,7 +5787,8 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
         <td></td>
       </tr>`;
     }
-    return `<tr>
+    const sinClasificarFila = (m.tipo_salida || 'otro') === 'otro' && (Number(m.cargos)||0) > 0;
+    return `<tr${sinClasificarFila ? ' style="background:#fff8ec;"' : ''}>
       <td><input class="cell mov-cell" type="date" value="${m.fecha}" data-id="${m.id}" data-field="fecha"></td>
       <td><input class="cell mov-cell" type="text" value="${m.proveedor||''}" data-id="${m.id}" data-field="proveedor"></td>
       <td><input class="cell mov-cell" type="text" value="${m.descripcion||''}" data-id="${m.id}" data-field="descripcion"></td>
@@ -5756,7 +5797,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
       <td class="num" style="font-weight:700;">${fmt(saldo)}</td>
       <td style="text-align:center;color:var(--green);" title="${m.conciliado ? 'Conciliado el ' + fechaCorta(m.fecha_conciliacion) : 'Pendiente de conciliar'}">${m.conciliado ? '✓' : ''}</td>
       <td style="position:relative;">
-        <button class="btn btn-ghost btn-sm mov-menu-btn" data-id="${m.id}" style="padding:5px 12px;">⋯</button>
+        <button class="btn btn-ghost btn-sm mov-menu-btn" data-id="${m.id}" style="padding:5px 12px;">${sinClasificarFila?'⚠ ⋯':'⋯'}</button>
         <div class="mov-menu-dropdown" data-menu="${m.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:120px;overflow:hidden;">
           <button class="mov-editar" data-id="${m.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Editar</button>
           <button class="mov-del" data-id="${m.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>
