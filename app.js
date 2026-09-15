@@ -2305,13 +2305,13 @@ async function renderIvaFiscalAnual(el, b) {
 
   const clavesRetencion = [...new Set(datos.flatMap(d => Object.keys(d.retencionesPorCategoria)))].sort();
 
-  const filaHtml = (nombre, valores, opts={}) => `<tr class="${opts.total?'total-row':''}"><td>${nombre}</td>${valores.map(v=>`<td class="num" style="${opts.color?'color:'+opts.color+';':''}">${fmt(v)}</td>`).join('')}<td class="num" style="font-weight:700;">${fmt(valores.reduce((s,v)=>s+v,0))}</td></tr>`;
+  const filaHtml = (nombre, valores, opts={}) => `<tr class="${opts.total?'total-row':''}"><td class="wrap-text" style="max-width:200px;">${nombre}</td>${valores.map(v=>`<td class="num" style="${opts.color?'color:'+opts.color+';':''}">${fmt(v)}</td>`).join('')}<td class="num" style="font-weight:700;">${fmt(valores.reduce((s,v)=>s+v,0))}</td></tr>`;
 
   contenido.innerHTML = `
     <div class="card">
       <div class="card-head"><h3>IVA y Retenciones — Todos los meses de ${anio}</h3></div>
       <div class="table-wrap scroll-sticky">
-        <table class="report-table">
+        <table>
           <thead><tr><th>Concepto</th>${mesesLabel.map(m=>`<th>${m}</th>`).join('')}<th>Total</th></tr></thead>
           <tbody>
             ${filaHtml('IVA Trasladado cobrado', datos.map(d=>d.ivaTrasladadoCobrado), { color:'var(--red)' })}
@@ -2494,14 +2494,14 @@ async function pintarPagosImpuestos(contenido, b) {
     <div class="card">
       <div class="card-head"><h3>Impuestos de ${STATE_piAnio}</h3></div>
       <div class="table-wrap scroll-sticky">
-        <table class="report-table">
+        <table>
           <thead><tr><th>Periodo</th><th>Tipo</th><th>Concepto</th><th>Monto principal</th><th>Fecha límite</th><th>Fecha de pago</th><th>Estatus</th><th>Actualización</th><th>Recargos</th><th>Total</th><th></th></tr></thead>
           <tbody>
             ${(pagos||[]).length ? pagos.map(p => {
               const est = estatusDe(p);
               const deltaActualizacion = p.monto_actualizado ? Math.max(0, p.monto_actualizado - Number(p.monto)) : null;
               return `<tr>
-                <td>${p.periodo}</td><td>${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]||p.tipo_impuesto}</td><td class="td-concepto-reporte">${p.concepto||''}</td>
+                <td>${p.periodo}</td><td>${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]||p.tipo_impuesto}</td><td class="wrap-text" style="max-width:220px;">${p.concepto||''}</td>
                 <td class="num">${fmt(p.monto)}</td><td>${fechaCorta(p.fecha_limite)}</td>
                 <td><input type="date" class="pi-fecha-pago-input" data-id="${p.id}" value="${p.fecha_pago||''}" style="border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12.5px;"></td>
                 <td style="color:${est.color};font-weight:600;">${est.texto}</td>
