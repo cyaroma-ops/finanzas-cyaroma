@@ -2879,10 +2879,25 @@ async function renderPagosImpuestos() {
 // Crea solo (nunca duplica) el "IVA a cargo" Y las retenciones de ISR/IVA por categoría de cada mes
 // del año elegido que aún no tengan registro — usando el mismo cálculo de IVA y Retenciones.
 async function autoGenerarPagosImpuestos(b, anio) {
-  const { data: existentes } = await sb.from('fz_pagos_impuestos').select('periodo,tipo_impuesto,concepto').eq('business_id', b.id).like('periodo', `${anio}-%`);
-  const yaExiste = (periodo, tipo, concepto) => (existentes||[]).some(p => p.periodo===periodo && p.tipo_impuesto===tipo && (p.concepto||null)===(concepto||null));
+  const { data: existentesIniciales } = await sb.from('fz_pagos_impuestos').select('id,periodo,tipo_impuesto,concepto,monto,fecha_pago').eq('business_id', b.id).like('periodo', `${anio}-%`);
+  const existentes = existentesIniciales || [];
+  const buscarExistente = (periodo, tipo, concepto) => existentes.find(p => p.periodo===periodo && p.tipo_impuesto===tipo && (p.concepto||null)===(concepto||null));
   const hastaMes = anio === todayStr().slice(0,4) ? Number(todayStr().slice(5,7)) : 12;
-  const nuevos = [];
+  // Corrige de inmediato (no hasta el final) los registros SIN PAGAR cuyo monto ya no coincide con
+  // el cálculo real — así, si un mes se corrige, los meses siguientes de esta misma pasada ya ven
+  // el valor correcto (en vez de tardar varias visitas en propagarse). Nunca toca lo ya pagado.
+  const registrar = async (periodo, tipo, concepto, monto, fechaLimite) => {
+    const existente = buscarExistente(periodo, tipo, concepto);
+    if (!existente) {
+      if (monto > 0.004) {
+        const { data } = await sb.from('fz_pagos_impuestos').insert({ business_id: b.id, periodo, tipo_impuesto: tipo, concepto, monto, fecha_limite: fechaLimite, fecha_pago: null }).select().single();
+        if (data) existentes.push(data);
+      }
+    } else if (!existente.fecha_pago && Math.abs(Number(existente.monto) - monto) > 0.5) {
+      await sb.from('fz_pagos_impuestos').update({ monto }).eq('id', existente.id);
+      existente.monto = monto;
+    }
+  };
   let acumuladoIsr = 0;
   for (let m = 1; m <= hastaMes; m++) {
     const periodo = `${anio}-${String(m).padStart(2,'0')}`;
@@ -2890,26 +2905,17 @@ async function autoGenerarPagosImpuestos(b, anio) {
     const fechaLimite = `${y}-${String(mm).padStart(2,'0')}-17`;
     const resumen = await computeResumenIvaMesLigero(b.id, monthBounds(periodo));
 
-    if (resumen.ivaCargoFavor > 0.004 && !yaExiste(periodo, 'iva', null)) {
-      nuevos.push({ business_id: b.id, periodo, tipo_impuesto: 'iva', concepto: null, monto: resumen.ivaCargoFavor, fecha_limite: fechaLimite, fecha_pago: null });
-    }
-    Object.entries(resumen.retencionesPorCategoria || {}).forEach(([k, monto]) => {
-      if (monto <= 0.004) return;
+    await registrar(periodo, 'iva', null, resumen.ivaCargoFavor, fechaLimite);
+    for (const [k, monto] of Object.entries(resumen.retencionesPorCategoria || {})) {
       const [tipoImp, cat] = k.split('|');
       const tipo = tipoImp === 'ISR' ? 'retencion_isr' : 'retencion_iva';
-      const concepto = cat;
-      if (!yaExiste(periodo, tipo, concepto)) {
-        nuevos.push({ business_id: b.id, periodo, tipo_impuesto: tipo, concepto, monto, fecha_limite: fechaLimite, fecha_pago: null });
-      }
-    });
+      await registrar(periodo, tipo, cat, monto, fechaLimite);
+    }
 
     const calcIsr = await computeIsrProvisional(b.id, periodo, acumuladoIsr);
     acumuladoIsr += calcIsr.ingresosMesAjustado;
-    if (calcIsr.impuestoACargo > 0.004 && !yaExiste(periodo, 'isr_provisional', null)) {
-      nuevos.push({ business_id: b.id, periodo, tipo_impuesto: 'isr_provisional', concepto: null, monto: calcIsr.impuestoACargo, fecha_limite: fechaLimite, fecha_pago: null });
-    }
+    await registrar(periodo, 'isr_provisional', null, calcIsr.impuestoACargo, fechaLimite);
   }
-  if (nuevos.length) await sb.from('fz_pagos_impuestos').insert(nuevos);
 }
 
 async function pintarPagosImpuestos(contenido, b) {
