@@ -666,6 +666,7 @@ const SECTION_META = {
   comparativo: { title: 'Comparativo entre negocios', sub: '', showMonth: true, needsBiz: false },
   recargos: { title: 'Recargos y Actualización', sub: '', showMonth: false, needsBiz: false },
   pagosimpuestos: { title: 'Pagos de Impuestos', sub: '', showMonth: false, needsBiz: true },
+  isrprovisional: { title: 'Pago Provisional de ISR', sub: '', showMonth: true, needsBiz: true },
   pl: { title: 'Estado de Resultados', sub: '', showMonth: true, needsBiz: true },
   flujo: { title: 'Flujo de Efectivo', sub: '', showMonth: false, needsBiz: true },
   polizas: { title: 'Pólizas de Diario', sub: '', showMonth: false, needsBiz: true },
@@ -677,7 +678,7 @@ const SECTION_META = {
 };
 // Estas viven "dentro" de Configuración: ya no tienen su propio ítem en el menú principal,
 // pero conservan su sección y su función de render tal cual, solo cambia cómo se llega ahí.
-const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos', 'ivafiscal', 'balanza', 'librodiario', 'comparativo', 'recargos', 'pagosimpuestos'];
+const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos', 'ivafiscal', 'balanza', 'librodiario', 'comparativo', 'recargos', 'pagosimpuestos', 'isrprovisional'];
 function marcarNavActivo(seccion) {
   document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
   const seccionNav = SECCIONES_EN_CONFIGURACION.includes(seccion) ? 'configuracion' : seccion;
@@ -777,6 +778,7 @@ async function renderCurrentSection() {
   if (s === 'comparativo') return renderComparativo();
   if (s === 'recargos') return renderRecargos();
   if (s === 'pagosimpuestos') return renderPagosImpuestos();
+  if (s === 'isrprovisional') return renderIsrProvisional();
   if (s === 'pl') return renderPL();
   if (s === 'flujo') return renderFlujo();
   if (s === 'polizas') return renderPolizas();
@@ -2417,6 +2419,300 @@ const TIPO_IMPUESTO_LABEL = { iva: 'IVA a cargo', isr_provisional: 'ISR Provisio
 let STATE_piEditandoId = null;
 let STATE_piAnio = todayStr().slice(0,4);
 
+/* ---------- Pago Provisional de ISR ---------- */
+let STATE_isrVista = 'mes';
+const ISR_LISTAS = { disminuir: 'Ingresos a disminuir', adicional: 'Ingresos adicionales', estimulo: 'Estímulos al ISR causado' };
+const ISR_UNICOS = { ptu: 'PTU del periodo', perdida_aplicada: 'Pérdidas fiscales aplicadas', dividendos: 'Impuesto acreditable por dividendos', retenido: 'Total de impuesto retenido' };
+
+async function renderIsrProvisional() {
+  const el = document.getElementById('sec-isrprovisional');
+  const b = biz();
+  if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
+  el.innerHTML = '';
+  agregarBotonVolverConfig(el);
+
+  el.insertAdjacentHTML('beforeend', `<div class="tag-row" style="margin-bottom:14px;">
+    <div class="tag ${STATE_isrVista==='mes'?'active':''}" id="isrTabMes">Mes</div>
+    <div class="tag ${STATE_isrVista==='anual'?'active':''}" id="isrTabAnual">Todos los meses</div>
+  </div>`);
+  document.getElementById('isrTabMes').addEventListener('click', () => { STATE_isrVista = 'mes'; renderIsrProvisional(); });
+  document.getElementById('isrTabAnual').addEventListener('click', () => { STATE_isrVista = 'anual'; renderIsrProvisional(); });
+
+  const contenido = document.createElement('div');
+  contenido.innerHTML = `<div class="empty">Calculando…</div>`;
+  el.appendChild(contenido);
+
+  if (STATE_isrVista === 'anual') { await pintarIsrAnual(contenido, b); return; }
+  await pintarIsrMes(contenido, b);
+}
+
+async function pintarIsrMes(contenido, b) {
+  const ym = STATE.currentMonth;
+  const anio = ym.slice(0,4);
+  const [calc, datosAnuales, conceptos] = await Promise.all([
+    computeIsrProvisional(b.id, ym),
+    sb.from('fz_isr_datos_anuales').select('*').eq('business_id', b.id).eq('anio', anio).maybeSingle().then(r=>r.data),
+    sb.from('fz_isr_conceptos').select('*').eq('business_id', b.id).eq('periodo', ym).then(r=>r.data||[]),
+  ]);
+  const listaDe = (tipo) => conceptos.filter(c => c.tipo === tipo);
+  const unicoDe = (tipo) => conceptos.find(c => c.tipo === tipo);
+
+  const listaHtml = (tipo, titulo) => `
+    <div class="field" style="margin:12px 0 0;"><label>${titulo} <span class="badge-opc" style="display:inline-block;font-size:10px;font-weight:700;color:var(--muted);background:#eef1f5;padding:2px 7px;border-radius:5px;margin-left:6px;">OPCIONAL</span></label></div>
+    <div style="background:#f7f9fc;border:1px solid var(--line);border-radius:9px;padding:10px 12px;margin:6px 0 4px;">
+      ${listaDe(tipo).map(c => `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12.5px;">
+        <span>${c.concepto||'(sin descripción)'}</span>
+        <span style="font-weight:600;">${fmt(c.monto)} <button class="isr-del-concepto" data-id="${c.id}" style="border:none;background:none;color:var(--red);cursor:pointer;font-size:12px;margin-left:8px;">✕</button></span>
+      </div>`).join('') || ''}
+      <div style="display:flex;gap:6px;margin-top:${listaDe(tipo).length?'8px':'0'};">
+        <input type="text" class="isr-nuevo-concepto-nombre" data-tipo="${tipo}" placeholder="Concepto" style="flex:2;border:1px solid var(--line);border-radius:6px;padding:6px 8px;font-size:12.5px;">
+        <input type="text" class="isr-nuevo-concepto-monto" data-tipo="${tipo}" inputmode="decimal" placeholder="Monto" style="flex:1;border:1px solid var(--line);border-radius:6px;padding:6px 8px;font-size:12.5px;">
+        <button class="btn btn-ghost btn-sm isr-agregar-concepto" data-tipo="${tipo}" style="padding:5px 12px;">+ Agregar</button>
+      </div>
+    </div>`;
+
+  const unicoHtml = (tipo, titulo, nota) => `
+    <div class="calc-row" style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--line);">
+      <div style="font-size:13px;">− ${titulo} <span style="display:inline-block;font-size:10px;font-weight:700;color:var(--muted);background:#eef1f5;padding:2px 7px;border-radius:5px;margin-left:4px;">OPCIONAL</span>${nota?`<span style="display:block;font-size:11px;color:var(--muted);">${nota}</span>`:''}</div>
+      <input type="text" class="isr-unico-input" data-tipo="${tipo}" inputmode="decimal" value="${fmtInputVal(unicoDe(tipo)?.monto||0)}" style="width:120px;text-align:right;border:1px solid var(--line);border-radius:6px;padding:6px 8px;font-size:13px;">
+    </div>`;
+
+  contenido.innerHTML = `
+    <div class="card">
+      <div class="card-head"><h3>Ingresos</h3><span class="hint">${MESES_LARGO[Number(ym.slice(5,7))-1]} ${anio}</span></div>
+      <div style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--line);">
+        <span style="font-size:13.5px;">Ingresos nominales facturados<span style="display:block;font-size:11px;color:var(--muted);">Estado de Resultados de este mes</span></span>
+        <span style="font-weight:600;">${fmt(calc.ingresosFacturadosMes)} <span style="color:var(--green);font-size:10px;font-weight:700;">AUTO</span></span>
+      </div>
+      ${listaHtml('disminuir', 'Ingresos a disminuir')}
+      ${listaHtml('adicional', 'Ingresos adicionales')}
+      <div style="display:flex;justify-content:space-between;padding:10px 0;margin-top:8px;background:#f7f9fc;margin-left:-24px;margin-right:-24px;padding-left:24px;padding-right:24px;">
+        <span style="font-weight:700;font-size:13.5px;">Ingresos nominales del mes (ajustado)</span>
+        <span style="font-weight:700;">${fmt(calc.ingresosMesAjustado)}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;padding:9px 0;margin-top:8px;">
+        <span style="font-size:13.5px;">+ Ingresos nominales de periodos anteriores<span style="display:block;font-size:11px;color:var(--muted);">Suma de meses previos del año, ya ajustados</span></span>
+        <span style="font-weight:600;">${fmt(calc.ingresosAnteriores)} <span style="color:var(--green);font-size:10px;font-weight:700;">AUTO</span></span>
+      </div>
+      <div style="background:var(--navy-3);color:#fff;margin:8px -24px -22px;padding:16px 24px;border-radius:0 0 12px 12px;display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-weight:600;">Total de ingresos nominales del periodo</span>
+        <span style="font-size:19px;font-weight:800;">${fmt(calc.totalIngresosNominales)}</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h3>Determinación</h3></div>
+      <div style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--line);">
+        <span style="font-size:13.5px;">Total de ingresos nominales del periodo</span><span style="font-weight:600;">${fmt(calc.totalIngresosNominales)}</span>
+      </div>
+      <div class="grid-2" style="margin:10px 0 4px;">
+        <div class="field" style="margin-bottom:0;">
+          <label>× Coeficiente de Utilidad <span style="display:inline-block;font-size:10px;font-weight:700;color:var(--gold);background:#fdf3e3;padding:2px 7px;border-radius:5px;margin-left:4px;">MANUAL</span></label>
+          <input type="text" id="isrCoeficiente" inputmode="decimal" value="${fmtInputVal(calc.coeficiente)}" placeholder="0.0000">
+          <div style="font-size:11px;color:var(--muted);margin-top:3px;">De tu declaración anual — se guarda por año (${anio})</div>
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Pérdidas fiscales pendientes (total) <span style="display:inline-block;font-size:10px;font-weight:700;color:var(--gold);background:#fdf3e3;padding:2px 7px;border-radius:5px;margin-left:4px;">MANUAL</span></label>
+          <input type="text" id="isrPerdidasPendientes" inputmode="decimal" value="${fmtInputVal(calc.perdidasPendientes)}" placeholder="0.00">
+          <div style="font-size:11px;color:var(--muted);margin-top:3px;">Solo de referencia — lo que apliques cada mes va abajo</div>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:space-between;padding:10px 0;background:#f7f9fc;margin-left:-24px;margin-right:-24px;padding-left:24px;padding-right:24px;">
+        <span style="font-weight:700;font-size:13.5px;">Utilidad fiscal para pago provisional</span><span style="font-weight:700;">${fmt(calc.utilidadFiscal)}</span>
+      </div>
+      <div style="margin-top:8px;">
+        ${unicoHtml('ptu', 'PTU del periodo', 'Aplica a partir de mayo')}
+        ${unicoHtml('perdida_aplicada', 'Pérdidas fiscales de ejercicios anteriores por aplicar', calc.perdidasPendientes ? `Pendiente total capturado: ${fmt(calc.perdidasPendientes)}` : 'Captura primero el monto pendiente arriba en "Datos del ejercicio"')}
+      </div>
+      <div style="display:flex;justify-content:space-between;padding:10px 0;background:#f7f9fc;margin:8px -24px 0;padding-left:24px;padding-right:24px;">
+        <span style="font-weight:700;font-size:13.5px;">Base gravable del pago provisional</span><span style="font-weight:700;">${fmt(calc.baseGravable)}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;padding:9px 0;margin-top:8px;border-bottom:1px solid var(--line);">
+        <span style="font-size:13.5px;">× Tasa ISR (30%)</span><span></span>
+      </div>
+      <div style="display:flex;justify-content:space-between;padding:10px 0;background:#f7f9fc;margin-left:-24px;margin-right:-24px;padding-left:24px;padding-right:24px;">
+        <span style="font-weight:700;font-size:13.5px;">Impuesto causado</span><span style="font-weight:700;">${fmt(calc.impuestoCausado)}</span>
+      </div>
+      ${listaHtml('estimulo', 'Estímulos al ISR causado')}
+      <div style="display:flex;justify-content:space-between;padding:10px 0;background:#f7f9fc;margin-left:-24px;margin-right:-24px;padding-left:24px;padding-right:24px;margin-top:8px;">
+        <span style="font-weight:700;font-size:13.5px;">Impuesto del periodo</span><span style="font-weight:700;">${fmt(calc.impuestoDelPeriodo)}</span>
+      </div>
+      <div style="margin-top:8px;">
+        ${unicoHtml('dividendos', 'Impuesto acreditable por dividendos o utilidades distribuidas')}
+        ${unicoHtml('retenido', 'Total de impuesto retenido', 'Si te retuvieron ISR a ti')}
+      </div>
+      <div style="display:flex;justify-content:space-between;padding:9px 0;">
+        <span style="font-size:13.5px;">− Pagos provisionales de periodos anteriores<span style="display:block;font-size:11px;color:var(--muted);">Ya registrados en Pagos de Impuestos</span></span>
+        <span style="font-weight:600;color:var(--red);">−${fmt(calc.pagosPrevios)} <span style="color:var(--green);font-size:10px;font-weight:700;">AUTO</span></span>
+      </div>
+      <div style="background:var(--navy-1);color:#fff;margin:8px -24px -22px;padding:18px 24px;border-radius:0 0 12px 12px;display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-weight:600;">Impuesto a cargo — ${MESES_LARGO[Number(ym.slice(5,7))-1]}</span>
+        <span style="font-size:22px;font-weight:800;">${fmt(calc.impuestoACargo)}</span>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:10px;margin-bottom:16px;">
+      <button class="btn btn-gold btn-sm" id="isrRegistrarBtn">Registrar en Pagos de Impuestos</button>
+      <button class="btn btn-ghost btn-sm" id="isrExcelBtn">Excel</button>
+    </div>
+
+    ${calc.impuestoACargo > 0.004 ? `
+    <div class="card">
+      <div class="card-head"><h3>¿Se pagará fuera de tiempo?</h3></div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Vence el 17 del mes siguiente — indica en qué mes se pagará para calcular actualización y recargos.</p>
+      <div class="grid-3" style="max-width:420px;">
+        <div class="field" style="margin-bottom:0;">
+          <label>Se pagará en</label>
+          <input type="month" id="isrRecargoMesPago">
+        </div>
+        <div class="field" style="margin-bottom:0;display:flex;align-items:flex-end;">
+          <button class="btn btn-ghost btn-sm" id="isrRecargoCalcularBtn" style="width:100%;">Calcular</button>
+        </div>
+      </div>
+      <div id="isrRecargoResultado"></div>
+    </div>` : ''}
+  `;
+
+  // Guardar Coeficiente y Pérdidas pendientes (por año)
+  const guardarDatosAnuales = async () => {
+    const coeficiente = leerMonto(document.getElementById('isrCoeficiente').value) || 0;
+    const perdidasPendientes = leerMonto(document.getElementById('isrPerdidasPendientes').value) || 0;
+    await sb.from('fz_isr_datos_anuales').upsert({ business_id: b.id, anio, coeficiente_utilidad: coeficiente, perdidas_fiscales_pendientes: perdidasPendientes }, { onConflict: 'business_id,anio' });
+    toast('Datos del ejercicio guardados para ' + anio + '.');
+    pintarIsrMes(contenido, b);
+  };
+  document.getElementById('isrCoeficiente').addEventListener('change', guardarDatosAnuales);
+  document.getElementById('isrPerdidasPendientes').addEventListener('change', guardarDatosAnuales);
+
+  // Listas abiertas: agregar / eliminar
+  contenido.querySelectorAll('.isr-agregar-concepto').forEach(btn => btn.addEventListener('click', async () => {
+    const tipo = btn.dataset.tipo;
+    const nombreInput = contenido.querySelector(`.isr-nuevo-concepto-nombre[data-tipo="${tipo}"]`);
+    const montoInput = contenido.querySelector(`.isr-nuevo-concepto-monto[data-tipo="${tipo}"]`);
+    const monto = leerMonto(montoInput.value);
+    if (!monto) { toast('Escribe un monto.', 'error'); return; }
+    await sb.from('fz_isr_conceptos').insert({ business_id: b.id, periodo: ym, tipo, concepto: nombreInput.value.trim() || null, monto });
+    pintarIsrMes(contenido, b);
+  }));
+  contenido.querySelectorAll('.isr-del-concepto').forEach(btn => btn.addEventListener('click', async () => {
+    await sb.from('fz_isr_conceptos').delete().eq('id', btn.dataset.id);
+    pintarIsrMes(contenido, b);
+  }));
+
+  // Valores únicos (PTU, pérdidas aplicadas, dividendos, retenido)
+  contenido.querySelectorAll('.isr-unico-input').forEach(inp => inp.addEventListener('change', async () => {
+    const tipo = inp.dataset.tipo;
+    const monto = leerMonto(inp.value) || 0;
+    const existente = unicoDe(tipo);
+    if (existente) await sb.from('fz_isr_conceptos').update({ monto }).eq('id', existente.id);
+    else if (monto) await sb.from('fz_isr_conceptos').insert({ business_id: b.id, periodo: ym, tipo, monto });
+    pintarIsrMes(contenido, b);
+  }));
+
+  document.getElementById('isrRegistrarBtn').addEventListener('click', async () => {
+    if (calc.impuestoACargo <= 0.004) { toast('No hay impuesto a cargo este mes.', 'error'); return; }
+    let [y,m] = ym.split('-').map(Number); m++; if (m>12) { m=1; y++; }
+    const { error } = await sb.from('fz_pagos_impuestos').insert({
+      business_id: b.id, periodo: ym, tipo_impuesto: 'isr_provisional', concepto: null,
+      monto: calc.impuestoACargo, fecha_limite: `${y}-${String(m).padStart(2,'0')}-17`, fecha_pago: null,
+    });
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    registrarAuditoria(b.id, 'crear', 'Pago Provisional de ISR', `${ym} — ${fmt(calc.impuestoACargo)} registrado en Pagos de Impuestos`);
+    toast('Registrado en Pagos de Impuestos.');
+  });
+
+  document.getElementById('isrExcelBtn').addEventListener('click', () => {
+    const wb = XLSX.utils.book_new();
+    const filas = [
+      { Concepto: 'Ingresos nominales facturados', Monto: calc.ingresosFacturadosMes },
+      { Concepto: 'Ingresos a disminuir', Monto: -calc.disminuir },
+      { Concepto: 'Ingresos adicionales', Monto: calc.adicional },
+      { Concepto: 'Ingresos nominales del mes (ajustado)', Monto: calc.ingresosMesAjustado },
+      { Concepto: 'Ingresos de periodos anteriores', Monto: calc.ingresosAnteriores },
+      { Concepto: 'Total de ingresos nominales del periodo', Monto: calc.totalIngresosNominales },
+      { Concepto: 'Coeficiente de Utilidad', Monto: calc.coeficiente },
+      { Concepto: 'Utilidad fiscal para pago provisional', Monto: calc.utilidadFiscal },
+      { Concepto: 'PTU del periodo', Monto: -calc.ptu },
+      { Concepto: 'Pérdidas fiscales aplicadas', Monto: -calc.perdidaAplicada },
+      { Concepto: 'Base gravable', Monto: calc.baseGravable },
+      { Concepto: 'Impuesto causado (30%)', Monto: calc.impuestoCausado },
+      { Concepto: 'Estímulos al ISR causado', Monto: -calc.estimulo },
+      { Concepto: 'Impuesto del periodo', Monto: calc.impuestoDelPeriodo },
+      { Concepto: 'Impuesto acreditable por dividendos', Monto: -calc.dividendos },
+      { Concepto: 'Pagos provisionales anteriores', Monto: -calc.pagosPrevios },
+      { Concepto: 'Total de impuesto retenido', Monto: -calc.retenido },
+      { Concepto: 'Impuesto a cargo', Monto: calc.impuestoACargo },
+    ];
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filas), 'ISR Provisional');
+    XLSX.writeFile(wb, `ISR Provisional - ${b.name} - ${ym}.xlsx`);
+  });
+
+  if (calc.impuestoACargo > 0.004) {
+    let [yv,mv] = ym.split('-').map(Number); mv++; if (mv>12) { mv=1; yv++; }
+    const mesVencimientoIsr = `${yv}-${String(mv).padStart(2,'0')}`;
+    document.getElementById('isrRecargoMesPago').value = mesVencimientoIsr;
+    document.getElementById('isrRecargoCalcularBtn').addEventListener('click', async () => {
+      const mesPago = document.getElementById('isrRecargoMesPago').value;
+      const resultadoBox = document.getElementById('isrRecargoResultado');
+      if (!mesPago) { toast('Elige el mes en que se pagará.', 'error'); return; }
+      const r = await calcularRecargosActualizacion(calc.impuestoACargo, mesVencimientoIsr, mesPago);
+      if (r.error) { resultadoBox.innerHTML = `<p style="color:var(--red);font-size:12.5px;margin-top:8px;">${r.error}</p>`; return; }
+      resultadoBox.innerHTML = `
+        <div class="table-wrap" style="margin-top:10px;">
+          <table class="report-table">
+            <tbody>
+              <tr><td>Impuesto a cargo original</td><td class="num">${fmt(r.impuesto)}</td></tr>
+              <tr><td>Monto actualizado (INPC)</td><td class="num" style="font-weight:600;">${fmt(r.montoActualizado)}</td></tr>
+              <tr><td>Recargos (${r.tasaAcumulada.toFixed(2)}%)</td><td class="num">${fmt(r.recargos)}</td></tr>
+              <tr class="total-row"><td>Total a pagar</td><td class="num">${fmt(r.total)}</td></tr>
+            </tbody>
+          </table>
+        </div>`;
+    });
+  }
+}
+
+async function pintarIsrAnual(contenido, b) {
+  const anio = STATE.currentMonth.slice(0,4);
+  const mesesLabel = Array.from({length:12}, (_,i) => MESES_LARGO[i].slice(0,3));
+  const hastaMes = anio === todayStr().slice(0,4) ? Number(todayStr().slice(5,7)) : 12;
+  const datos = [];
+  for (let m = 1; m <= hastaMes; m++) {
+    datos.push(await computeIsrProvisional(b.id, `${anio}-${String(m).padStart(2,'0')}`));
+  }
+  const filaHtml = (nombre, valores, opts={}) => `<tr class="${opts.total?'total-row':''}"><td class="wrap-text" style="max-width:200px;${opts.op?'color:var(--muted);font-style:italic;font-size:11px;':''}">${nombre}</td>${valores.map(v=>`<td class="num">${opts.pct ? (v*100).toFixed(2)+'%' : fmt(v)}</td>`).join('')}</tr>`;
+  contenido.innerHTML = `
+    <div class="card">
+      <div class="card-head"><h3>Pago Provisional de ISR — Todos los meses de ${anio}</h3></div>
+      <div class="table-wrap scroll-sticky">
+        <table class="report-table">
+          <thead><tr><th>Concepto</th>${mesesLabel.slice(0,hastaMes).map(m=>`<th>${m}</th>`).join('')}</tr></thead>
+          <tbody>
+            ${filaHtml('Ingresos nominales facturados', datos.map(d=>d.ingresosFacturadosMes))}
+            ${filaHtml('(−) Ingresos a disminuir', datos.map(d=>d.disminuir), {op:true})}
+            ${filaHtml('(+) Ingresos adicionales', datos.map(d=>d.adicional), {op:true})}
+            ${filaHtml('Ingresos nominales del mes', datos.map(d=>d.ingresosMesAjustado))}
+            ${filaHtml('+ Ingresos de periodos anteriores', datos.map(d=>d.ingresosAnteriores))}
+            ${filaHtml('Total ingresos nominales del periodo', datos.map(d=>d.totalIngresosNominales))}
+            ${filaHtml('Coeficiente de Utilidad', datos.map(d=>d.coeficiente), {op:true})}
+            ${filaHtml('Utilidad fiscal para pago provisional', datos.map(d=>d.utilidadFiscal))}
+            ${filaHtml('(−) PTU del periodo', datos.map(d=>d.ptu), {op:true})}
+            ${filaHtml('(−) Pérdidas fiscales aplicadas', datos.map(d=>d.perdidaAplicada), {op:true})}
+            ${filaHtml('Base gravable', datos.map(d=>d.baseGravable))}
+            ${filaHtml('Impuesto causado', datos.map(d=>d.impuestoCausado))}
+            ${filaHtml('(−) Estímulos al ISR causado', datos.map(d=>d.estimulo), {op:true})}
+            ${filaHtml('(−) Impuesto acreditable dividendos', datos.map(d=>d.dividendos), {op:true})}
+            ${filaHtml('(−) Total impuesto retenido', datos.map(d=>d.retenido), {op:true})}
+            ${filaHtml('Pagos provisionales anteriores', datos.map(d=>d.pagosPrevios))}
+            ${filaHtml('Impuesto a cargo del mes', datos.map(d=>d.impuestoACargo), {total:true})}
+          </tbody>
+        </table>
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin-top:10px;">Las filas en cursiva son ajustes opcionales — solo tienen valor los meses en que se capturó alguno.</p>
+    </div>
+  `;
+}
+
 async function renderPagosImpuestos() {
   const el = document.getElementById('sec-pagosimpuestos');
   const b = biz();
@@ -3253,6 +3549,7 @@ async function renderConfiguracion() {
       ${tarjetaConfigHtml('cfgComparativo', 'Comparativo entre negocios', 'Ingresos, gastos y utilidad de todos tus negocios, lado a lado, para el mismo mes.')}
       ${tarjetaConfigHtml('cfgRecargos', 'Recargos y Actualización', 'Calculadora de INPC y recargos para impuestos pagados fuera de tiempo — aplica a cualquier negocio.')}
       ${b ? tarjetaConfigHtml('cfgPagosImpuestos', 'Pagos de Impuestos', `Control de IVA, ISR, Retenciones y otros impuestos federales de ${b.name}, mes a mes.`) : ''}
+      ${b ? tarjetaConfigHtml('cfgIsrProvisional', 'Pago Provisional de ISR', `Cálculo mensual del ISR Provisional de ${b.name}, con la misma estructura que la declaración del SAT.`) : ''}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgUsuarios', 'Usuarios autorizados', 'Quién puede entrar a Finanzas y a qué negocios.') : ''}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgMfa', 'Autenticación de dos pasos', 'Protege tu cuenta con un código adicional al iniciar sesión.') : ''}
     </div>
@@ -3270,6 +3567,7 @@ async function renderConfiguracion() {
   ir('cfgComparativo', 'comparativo');
   ir('cfgRecargos', 'recargos');
   ir('cfgPagosImpuestos', 'pagosimpuestos');
+  ir('cfgIsrProvisional', 'isrprovisional');
   const usuariosBtn = document.getElementById('cfgUsuarios');
   if (usuariosBtn) usuariosBtn.addEventListener('click', openUsuariosModal);
   const mfaBtn = document.getElementById('cfgMfa');
@@ -9210,6 +9508,66 @@ async function computeGastosClasificados(businessId, periodo, subcuentas, mayore
 // cuando se facturó contra el tipo de cambio real capturado al momento de cobrar (USD).
 // Resumen ligero de un negocio para un periodo — mismos cálculos que el Estado de Resultados
 // Mensual, pero sin armar el detalle línea por línea (usado en el Comparativo entre negocios).
+/* ============================================================
+   PAGO PROVISIONAL DE ISR — Personas Morales, Régimen General
+   Estructura basada en la Guía de llenado oficial del SAT ("ISR personas
+   morales"): Ingresos → Determinación, con listas abiertas de conceptos
+   (a disminuir / adicionales / estímulos / dividendos / retenido / PTU /
+   pérdidas aplicadas) que el usuario va agregando libremente.
+   ============================================================ */
+async function computeIsrProvisional(businessId, ym) {
+  const anio = ym.slice(0,4);
+  const mesNum = Number(ym.slice(5,7));
+  const { start, end } = monthBounds(ym);
+
+  const resumenMes = await computeResumenNegocio(businessId, { start, end });
+  const ingresosFacturadosMes = resumenMes.totalIngresos;
+
+  const { data: conceptos } = await sb.from('fz_isr_conceptos').select('*').eq('business_id', businessId).eq('periodo', ym);
+  const sumaPorTipo = (tipo) => (conceptos||[]).filter(c=>c.tipo===tipo).reduce((s,c)=>s+Number(c.monto),0);
+  const disminuir = sumaPorTipo('disminuir'), adicional = sumaPorTipo('adicional'), estimulo = sumaPorTipo('estimulo');
+  const dividendos = sumaPorTipo('dividendos'), retenido = sumaPorTipo('retenido');
+  const ptu = sumaPorTipo('ptu'), perdidaAplicada = sumaPorTipo('perdida_aplicada');
+
+  const ingresosMesAjustado = ingresosFacturadosMes - disminuir + adicional;
+
+  // Ingresos de periodos anteriores: suma de los ingresos ya ajustados de cada mes previo del mismo año.
+  let ingresosAnteriores = 0;
+  for (let mm = 1; mm < mesNum; mm++) {
+    const ymPrev = `${anio}-${String(mm).padStart(2,'0')}`;
+    const { start: s2, end: e2 } = monthBounds(ymPrev);
+    const [resumenPrev, conceptosPrevQ] = await Promise.all([
+      computeResumenNegocio(businessId, { start: s2, end: e2 }),
+      sb.from('fz_isr_conceptos').select('tipo,monto').eq('business_id', businessId).eq('periodo', ymPrev),
+    ]);
+    const cp = conceptosPrevQ.data || [];
+    const dis = cp.filter(c=>c.tipo==='disminuir').reduce((s,c)=>s+Number(c.monto),0);
+    const adi = cp.filter(c=>c.tipo==='adicional').reduce((s,c)=>s+Number(c.monto),0);
+    ingresosAnteriores += resumenPrev.totalIngresos - dis + adi;
+  }
+  const totalIngresosNominales = ingresosMesAjustado + ingresosAnteriores;
+
+  const { data: datosAnuales } = await sb.from('fz_isr_datos_anuales').select('*').eq('business_id', businessId).eq('anio', anio).maybeSingle();
+  const coeficiente = Number(datosAnuales?.coeficiente_utilidad) || 0;
+  const perdidasPendientes = Number(datosAnuales?.perdidas_fiscales_pendientes) || 0;
+
+  const utilidadFiscal = totalIngresosNominales * coeficiente;
+  const baseGravable = Math.max(0, utilidadFiscal - ptu - perdidaAplicada);
+  const impuestoCausado = baseGravable * 0.30;
+  const impuestoDelPeriodo = Math.max(0, impuestoCausado - estimulo);
+
+  const { data: pagosAnteriores } = await sb.from('fz_pagos_impuestos').select('monto').eq('business_id', businessId).eq('tipo_impuesto', 'isr_provisional').like('periodo', `${anio}-%`).lt('periodo', ym);
+  const pagosPrevios = (pagosAnteriores||[]).reduce((s,p)=>s+Number(p.monto),0);
+
+  const impuestoACargo = Math.max(0, impuestoDelPeriodo - dividendos - pagosPrevios - retenido);
+
+  return {
+    ingresosFacturadosMes, disminuir, adicional, ingresosMesAjustado, ingresosAnteriores, totalIngresosNominales,
+    coeficiente, perdidasPendientes, utilidadFiscal, ptu, perdidaAplicada, baseGravable, impuestoCausado,
+    estimulo, impuestoDelPeriodo, dividendos, pagosPrevios, retenido, impuestoACargo,
+  };
+}
+
 async function computeResumenNegocio(businessId, periodo) {
   const [ventasQ, conceptosVenta, conceptos, subcuentas, mayores, conceptosSistema] = await Promise.all([
     sb.from('fz_ventas').select('*').eq('business_id', businessId).gte('fecha', periodo.start).lte('fecha', periodo.end),
