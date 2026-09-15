@@ -2449,9 +2449,9 @@ async function renderIsrProvisional() {
 async function pintarIsrMes(contenido, b) {
   const ym = STATE.currentMonth;
   const anio = ym.slice(0,4);
-  const [calc, datosAnuales, conceptos] = await Promise.all([
+  const [calc, historialCoeficientes, conceptos] = await Promise.all([
     computeIsrProvisional(b.id, ym),
-    sb.from('fz_isr_datos_anuales').select('*').eq('business_id', b.id).eq('anio', anio).maybeSingle().then(r=>r.data),
+    sb.from('fz_isr_datos_anuales').select('*').eq('business_id', b.id).order('vigente_desde', { ascending: false }).then(r=>r.data||[]),
     sb.from('fz_isr_conceptos').select('*').eq('business_id', b.id).eq('periodo', ym).then(r=>r.data||[]),
   ]);
   const listaDe = (tipo) => conceptos.filter(c => c.tipo === tipo);
@@ -2505,17 +2505,33 @@ async function pintarIsrMes(contenido, b) {
       <div style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--line);">
         <span style="font-size:13.5px;">Total de ingresos nominales del periodo</span><span style="font-weight:600;">${fmt(calc.totalIngresosNominales)}</span>
       </div>
-      <div class="grid-2" style="margin:10px 0 4px;">
-        <div class="field" style="margin-bottom:0;">
-          <label>× Coeficiente de Utilidad <span style="display:inline-block;font-size:10px;font-weight:700;color:var(--gold);background:#fdf3e3;padding:2px 7px;border-radius:5px;margin-left:4px;">MANUAL</span></label>
-          <input type="text" id="isrCoeficiente" inputmode="decimal" value="${fmtInputVal(calc.coeficiente)}" placeholder="0.0000">
-          <div style="font-size:11px;color:var(--muted);margin-top:3px;">De tu declaración anual — se guarda por año (${anio})</div>
+      <div style="background:#f7f9fc;border:1px solid var(--line);border-radius:9px;padding:12px 14px;margin:10px 0 4px;">
+        <p style="font-size:12.5px;font-weight:700;color:var(--navy-1);margin-bottom:2px;">Coeficiente de Utilidad y Pérdidas pendientes <span style="display:inline-block;font-size:10px;font-weight:700;color:var(--gold);background:#fdf3e3;padding:2px 7px;border-radius:5px;margin-left:4px;">MANUAL</span></p>
+        <p style="font-size:11px;color:var(--muted);margin-bottom:10px;">Normalmente no lo conoces desde enero — se sabe hasta que presentas la anual (marzo). Indica desde qué mes aplica cada valor; si cambia después, agrega uno nuevo con su propia fecha, sin borrar el anterior.</p>
+        <div class="grid-3">
+          <div class="field" style="margin-bottom:0;">
+            <label>Vigente desde</label>
+            <input type="month" id="isrVigenteDesde" value="${ym}">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label>Coeficiente de Utilidad</label>
+            <input type="text" id="isrCoeficiente" inputmode="decimal" value="${fmtInputVal(calc.coeficiente)}" placeholder="0.0000">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label>Pérdidas fiscales pendientes (total)</label>
+            <input type="text" id="isrPerdidasPendientes" inputmode="decimal" value="${fmtInputVal(calc.perdidasPendientes)}" placeholder="0.00">
+          </div>
         </div>
-        <div class="field" style="margin-bottom:0;">
-          <label>Pérdidas fiscales pendientes (total) <span style="display:inline-block;font-size:10px;font-weight:700;color:var(--gold);background:#fdf3e3;padding:2px 7px;border-radius:5px;margin-left:4px;">MANUAL</span></label>
-          <input type="text" id="isrPerdidasPendientes" inputmode="decimal" value="${fmtInputVal(calc.perdidasPendientes)}" placeholder="0.00">
-          <div style="font-size:11px;color:var(--muted);margin-top:3px;">Solo de referencia — lo que apliques cada mes va abajo</div>
-        </div>
+        <button class="btn btn-gold btn-sm" id="isrGuardarCoeficienteBtn" style="margin-top:10px;">Guardar</button>
+        ${historialCoeficientes.length ? `
+        <div style="margin-top:14px;border-top:1px solid var(--line);padding-top:10px;">
+          <p style="font-size:11px;font-weight:700;color:var(--navy-3);margin-bottom:6px;">Historial capturado</p>
+          ${historialCoeficientes.map(h => `<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;padding:4px 0;">
+            <span>Desde ${h.vigente_desde} — Coeficiente ${Number(h.coeficiente_utilidad).toFixed(4)}, Pérdidas ${fmt(h.perdidas_fiscales_pendientes)}</span>
+            <button class="isr-del-coeficiente" data-id="${h.id}" style="border:none;background:none;color:var(--red);cursor:pointer;font-size:12px;">✕</button>
+          </div>`).join('')}
+        </div>` : ''}
+        <p style="font-size:11px;color:var(--muted);margin-top:8px;">Este mes (${ym}) está usando: Coeficiente ${calc.coeficiente ? calc.coeficiente.toFixed(4) : '(sin capturar)'}, vigente desde el registro más reciente con fecha igual o anterior a este mes.</p>
       </div>
       <div style="display:flex;justify-content:space-between;padding:10px 0;background:#f7f9fc;margin-left:-24px;margin-right:-24px;padding-left:24px;padding-right:24px;">
         <span style="font-weight:700;font-size:13.5px;">Utilidad fiscal para pago provisional</span><span style="font-weight:700;">${fmt(calc.utilidadFiscal)}</span>
@@ -2573,16 +2589,21 @@ async function pintarIsrMes(contenido, b) {
     </div>` : ''}
   `;
 
-  // Guardar Coeficiente y Pérdidas pendientes (por año)
-  const guardarDatosAnuales = async () => {
+  // Guardar Coeficiente y Pérdidas pendientes, con vigencia desde el mes indicado
+  document.getElementById('isrGuardarCoeficienteBtn').addEventListener('click', async () => {
+    const vigenteDesde = document.getElementById('isrVigenteDesde').value;
     const coeficiente = leerMonto(document.getElementById('isrCoeficiente').value) || 0;
     const perdidasPendientes = leerMonto(document.getElementById('isrPerdidasPendientes').value) || 0;
-    await sb.from('fz_isr_datos_anuales').upsert({ business_id: b.id, anio, coeficiente_utilidad: coeficiente, perdidas_fiscales_pendientes: perdidasPendientes }, { onConflict: 'business_id,anio' });
-    toast('Datos del ejercicio guardados para ' + anio + '.');
+    if (!vigenteDesde) { toast('Elige desde qué mes aplica.', 'error'); return; }
+    const { error } = await sb.from('fz_isr_datos_anuales').upsert({ business_id: b.id, vigente_desde: vigenteDesde, coeficiente_utilidad: coeficiente, perdidas_fiscales_pendientes: perdidasPendientes }, { onConflict: 'business_id,vigente_desde' });
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    toast('Guardado — vigente desde ' + vigenteDesde + '.');
     pintarIsrMes(contenido, b);
-  };
-  document.getElementById('isrCoeficiente').addEventListener('change', guardarDatosAnuales);
-  document.getElementById('isrPerdidasPendientes').addEventListener('change', guardarDatosAnuales);
+  });
+  contenido.querySelectorAll('.isr-del-coeficiente').forEach(btn => btn.addEventListener('click', async () => {
+    await sb.from('fz_isr_datos_anuales').delete().eq('id', btn.dataset.id);
+    pintarIsrMes(contenido, b);
+  }));
 
   // Listas abiertas: agregar / eliminar
   contenido.querySelectorAll('.isr-agregar-concepto').forEach(btn => btn.addEventListener('click', async () => {
@@ -2739,6 +2760,7 @@ async function autoGenerarPagosImpuestos(b, anio) {
   const yaExiste = (periodo, tipo, concepto) => (existentes||[]).some(p => p.periodo===periodo && p.tipo_impuesto===tipo && (p.concepto||null)===(concepto||null));
   const hastaMes = anio === todayStr().slice(0,4) ? Number(todayStr().slice(5,7)) : 12;
   const nuevos = [];
+  let acumuladoIsr = 0;
   for (let m = 1; m <= hastaMes; m++) {
     const periodo = `${anio}-${String(m).padStart(2,'0')}`;
     let [y,mm] = [Number(anio), m+1]; if (mm>12) { mm=1; y++; }
@@ -2757,6 +2779,12 @@ async function autoGenerarPagosImpuestos(b, anio) {
         nuevos.push({ business_id: b.id, periodo, tipo_impuesto: tipo, concepto, monto, fecha_limite: fechaLimite, fecha_pago: null });
       }
     });
+
+    const calcIsr = await computeIsrProvisional(b.id, periodo, acumuladoIsr);
+    acumuladoIsr += calcIsr.ingresosMesAjustado;
+    if (calcIsr.impuestoACargo > 0.004 && !yaExiste(periodo, 'isr_provisional', null)) {
+      nuevos.push({ business_id: b.id, periodo, tipo_impuesto: 'isr_provisional', concepto: null, monto: calcIsr.impuestoACargo, fecha_limite: fechaLimite, fecha_pago: null });
+    }
   }
   if (nuevos.length) await sb.from('fz_pagos_impuestos').insert(nuevos);
 }
@@ -9560,7 +9588,8 @@ async function computeIsrProvisional(businessId, ym, ingresosAnterioresOverride 
   }
   const totalIngresosNominales = ingresosMesAjustado + ingresosAnteriores;
 
-  const { data: datosAnuales } = await sb.from('fz_isr_datos_anuales').select('*').eq('business_id', businessId).eq('anio', anio).maybeSingle();
+  const { data: datosAnualesArr } = await sb.from('fz_isr_datos_anuales').select('*').eq('business_id', businessId).lte('vigente_desde', ym).order('vigente_desde', { ascending: false }).limit(1);
+  const datosAnuales = (datosAnualesArr||[])[0];
   const coeficiente = Number(datosAnuales?.coeficiente_utilidad) || 0;
   const perdidasPendientes = Number(datosAnuales?.perdidas_fiscales_pendientes) || 0;
 
