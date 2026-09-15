@@ -3076,22 +3076,30 @@ async function renderBalanza() {
     const sa_d = lista.reduce((s,c)=>s+c.saldoActualDeudor,0), sa_a = lista.reduce((s,c)=>s+c.saldoActualAcreedor,0);
     return `<tr style="font-style:italic;color:var(--muted);"><td colspan="2">Subtotal ${titulo}</td><td class="num">${fmt(si_d)}</td><td class="num">${fmt(si_a)}</td><td class="num">${fmt(ca)}</td><td class="num">${fmt(ab)}</td><td class="num">${fmt(sa_d)}</td><td class="num">${fmt(sa_a)}</td></tr>`;
   };
+  // Arma una sección completa (encabezado + cuentas + subtotal) — si no hay cuentas, no se
+  // muestra nada de esa sección (ni encabezado ni "sin movimiento"), para que se vea limpio.
+  const seccionCompleta = (tituloSeccion, tituloSubtotal, lista) => {
+    if (!lista.length) return '';
+    return filaSeccion(tituloSeccion) + lista.map(filaCuenta).join('') + filaSubtotal(tituloSubtotal, lista);
+  };
 
   contenido.innerHTML = `
     <div class="card">
-      <div class="card-head"><h3>Balanza de Comprobación — ${b.name}</h3><span class="hint">${MESES_LARGO[Number(STATE.currentMonth.slice(5,7))-1]} ${STATE.currentMonth.slice(0,4)}</span></div>
+      <div class="card-head">
+        <h3>Balanza de Comprobación — ${b.name}</h3>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <span class="hint">${MESES_LARGO[Number(STATE.currentMonth.slice(5,7))-1]} ${STATE.currentMonth.slice(0,4)}</span>
+          <button class="btn btn-ghost btn-sm" id="balanzaExcelBtn">Excel</button>
+          <button class="btn btn-ghost btn-sm" id="balanzaPdfBtn">PDF</button>
+        </div>
+      </div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;">Partida doble completa: Cargos y Abonos reconstruidos de Pólizas, Facturas de Proveedores/Clientes, y movimientos de Bancos/Efectivo. Trabaja con los nombres y tipos ya existentes en tu catálogo — sin códigos de cuenta todavía.</p>
       <div class="table-wrap scroll-sticky">
         <table>
           <thead><tr><th>Cuenta</th><th>Tipo</th><th>Saldo inicial Deudor</th><th>Saldo inicial Acreedor</th><th>Cargos</th><th>Abonos</th><th>Saldo actual Deudor</th><th>Saldo actual Acreedor</th></tr></thead>
           <tbody>
-            ${filaSeccion('ACTIVO')}
-            ${porTipo.activo.map(filaCuenta).join('') || '<tr><td colspan="8" class="empty">Sin cuentas de Activo con movimiento.</td></tr>'}
-            ${filaSubtotal('Activo', porTipo.activo)}
-
-            ${filaSeccion('PASIVO')}
-            ${porTipo.pasivo.map(filaCuenta).join('') || '<tr><td colspan="8" class="empty">Sin cuentas de Pasivo con movimiento.</td></tr>'}
-            ${filaSubtotal('Pasivo', porTipo.pasivo)}
+            ${seccionCompleta('ACTIVO', 'Activo', porTipo.activo)}
+            ${seccionCompleta('PASIVO', 'Pasivo', porTipo.pasivo)}
 
             ${filaSeccion('CAPITAL CONTABLE')}
             ${porTipo.capital.length ? `<tr><td colspan="8" style="font-weight:600;color:var(--navy-3);">Capital</td></tr>` : ''}
@@ -3110,17 +3118,9 @@ async function renderBalanza() {
             </tr>
             <tr class="total-row"><td colspan="6">Total Capital Contable (incluye Resultado del ejercicio)</td><td class="num" colspan="2" style="text-align:right;">${fmt(totalCapitalContable)}</td></tr>
 
-            ${filaSeccion('INGRESOS')}
-            ${porTipo.ingreso.map(filaCuenta).join('') || '<tr><td colspan="8" class="empty">Sin cuentas de Ingreso con movimiento.</td></tr>'}
-            ${filaSubtotal('Ingresos', porTipo.ingreso)}
-
-            ${filaSeccion('COSTO DE VENTAS')}
-            ${porTipo.costo.map(filaCuenta).join('') || '<tr><td colspan="8" class="empty">Sin cuentas de Costo con movimiento.</td></tr>'}
-            ${filaSubtotal('Costo de Ventas', porTipo.costo)}
-
-            ${filaSeccion('GASTOS')}
-            ${porTipo.gasto.map(filaCuenta).join('') || '<tr><td colspan="8" class="empty">Sin cuentas de Gasto con movimiento.</td></tr>'}
-            ${filaSubtotal('Gastos', porTipo.gasto)}
+            ${seccionCompleta('INGRESOS', 'Ingresos', porTipo.ingreso)}
+            ${seccionCompleta('COSTO DE VENTAS', 'Costo de Ventas', porTipo.costo)}
+            ${seccionCompleta('GASTOS', 'Gastos', porTipo.gasto)}
           </tbody>
           <tfoot>
             <tr class="total-row" style="border-top:2px solid var(--navy-1);">
@@ -3143,6 +3143,75 @@ async function renderBalanza() {
       </div>
     </div>
   `;
+
+  // Construye las filas para exportar (Excel/PDF), en el mismo orden y agrupación que la pantalla.
+  const filasExport = [];
+  const agregarSeccionExport = (titulo, lista, tituloSubtotal) => {
+    if (!lista.length) return;
+    filasExport.push({ tipo:'seccion', v:[titulo,'','','','','','',''] });
+    lista.forEach(c => filasExport.push({ tipo:'cuenta', v:[c.nombre, TIPO_CUENTA_LABEL[c.tipo]||c.tipo, c.saldoInicialDeudor||'', c.saldoInicialAcreedor||'', c.cargosPeriodo||'', c.abonosPeriodo||'', c.saldoActualDeudor||'', c.saldoActualAcreedor||''] }));
+    const si_d=lista.reduce((s,c)=>s+c.saldoInicialDeudor,0), si_a=lista.reduce((s,c)=>s+c.saldoInicialAcreedor,0);
+    const ca=lista.reduce((s,c)=>s+c.cargosPeriodo,0), ab=lista.reduce((s,c)=>s+c.abonosPeriodo,0);
+    const sa_d=lista.reduce((s,c)=>s+c.saldoActualDeudor,0), sa_a=lista.reduce((s,c)=>s+c.saldoActualAcreedor,0);
+    filasExport.push({ tipo:'subtotal', v:[`Subtotal ${tituloSubtotal}`,'',si_d,si_a,ca,ab,sa_d,sa_a] });
+  };
+  agregarSeccionExport('ACTIVO', porTipo.activo, 'Activo');
+  agregarSeccionExport('PASIVO', porTipo.pasivo, 'Pasivo');
+  filasExport.push({ tipo:'seccion', v:['CAPITAL CONTABLE','','','','','','',''] });
+  if (porTipo.capital.length) { filasExport.push({ tipo:'subseccion', v:['Capital','','','','','','',''] }); porTipo.capital.forEach(c => filasExport.push({ tipo:'cuenta', v:[c.nombre,'Capital',c.saldoInicialDeudor||'',c.saldoInicialAcreedor||'',c.cargosPeriodo||'',c.abonosPeriodo||'',c.saldoActualDeudor||'',c.saldoActualAcreedor||''] })); }
+  if (porTipo.resultados_anteriores.length) { filasExport.push({ tipo:'subseccion', v:['Resultados de ejercicios anteriores','','','','','','',''] }); porTipo.resultados_anteriores.forEach(c => filasExport.push({ tipo:'cuenta', v:[c.nombre,'Capital',c.saldoInicialDeudor||'',c.saldoInicialAcreedor||'',c.cargosPeriodo||'',c.abonosPeriodo||'',c.saldoActualDeudor||'',c.saldoActualAcreedor||''] })); }
+  filasExport.push({ tipo:'subseccion', v:['Resultado del ejercicio (calculado)','','','','','','',''] });
+  filasExport.push({ tipo:'cuenta', v:[esUtilidad?'Utilidad del ejercicio':'Pérdida del ejercicio','Capital','','','','', !esUtilidad?Math.abs(utilidadEjercicio):'', esUtilidad?utilidadEjercicio:''] });
+  filasExport.push({ tipo:'subtotal', v:['Total Capital Contable (incluye Resultado)','','','','','','',totalCapitalContable] });
+  agregarSeccionExport('INGRESOS', porTipo.ingreso, 'Ingresos');
+  agregarSeccionExport('COSTO DE VENTAS', porTipo.costo, 'Costo de Ventas');
+  agregarSeccionExport('GASTOS', porTipo.gasto, 'Gastos');
+
+  document.getElementById('balanzaExcelBtn').addEventListener('click', () => {
+    const encabezados = ['Cuenta','Tipo','Saldo inicial Deudor','Saldo inicial Acreedor','Cargos','Abonos','Saldo actual Deudor','Saldo actual Acreedor'];
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet([encabezados, ...filasExport.map(f=>f.v)]);
+    XLSX.utils.book_append_sheet(wb, ws, 'Balanza');
+    XLSX.writeFile(wb, `Balanza de Comprobación - ${b.name} - ${STATE.currentMonth}.xlsx`);
+  });
+  document.getElementById('balanzaPdfBtn').addEventListener('click', () => {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: 'pt', format: 'letter', orientation: 'landscape' });
+    const margin = 30;
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(15); doc.setTextColor(10, 31, 61);
+    doc.text(b?.razon_social || b?.name || 'Finanzas', margin, 38);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(102, 112, 133);
+    doc.text(`Balanza de Comprobación — ${MESES_LARGO[Number(STATE.currentMonth.slice(5,7))-1]} ${STATE.currentMonth.slice(0,4)}`, margin, 52);
+    const filasEspeciales = []; // índices de filas con estilo especial (sección/subtotal)
+    const body = filasExport.map((f,i) => {
+      if (f.tipo!=='cuenta') filasEspeciales.push({i, tipo:f.tipo});
+      return f.v.map(x => typeof x === 'number' ? fmt(x) : x);
+    });
+    doc.autoTable({
+      startY: 64, margin: { left: margin, right: margin },
+      head: [['Cuenta','Tipo','Saldo inicial Deudor','Saldo inicial Acreedor','Cargos','Abonos','Saldo actual Deudor','Saldo actual Acreedor']],
+      body,
+      styles: { fontSize: 7.5 }, headStyles: { fillColor: [10,31,61] },
+      didParseCell: (data) => {
+        if (data.section !== 'body') return;
+        const esp = filasEspeciales.find(e => e.i === data.row.index);
+        if (!esp) return;
+        if (esp.tipo === 'seccion') { data.cell.styles.fillColor = [10,31,61]; data.cell.styles.textColor = [255,255,255]; data.cell.styles.fontStyle = 'bold'; }
+        else if (esp.tipo === 'subseccion') { data.cell.styles.fillColor = [238,242,248]; data.cell.styles.fontStyle = 'bold'; }
+        else if (esp.tipo === 'subtotal') { data.cell.styles.fontStyle = 'italic'; data.cell.styles.textColor = [102,112,133]; }
+      },
+    });
+    let y = doc.lastAutoTable.finalY + 16;
+    doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.text('Verificaciones', margin, y); y += 14;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5);
+    [
+      [cuadraInicial, `Total Saldo Inicial Deudor = Total Saldo Inicial Acreedor (${fmt(totalSaldoInicialD)})`],
+      [cuadraCargos, `Total Cargos = Total Abonos (${fmt(totalCargos)})`],
+      [cuadraActual, `Total Saldo Actual Deudor = Total Saldo Actual Acreedor (${fmt(totalSaldoActualD)})`],
+      [cuadraBalanceGeneral, `Activo (${fmt(totalActivoNeto)}) = Pasivo + Capital Contable (${fmt(totalPasivoNeto+totalCapitalContable)})`],
+    ].forEach(([ok,texto]) => { doc.text(`${ok?'✓':'✗'} ${texto}`, margin, y); y += 12; });
+    doc.save(`Balanza de Comprobación - ${b.name} - ${STATE.currentMonth}.pdf`);
+  });
 }
 
 async function renderConfiguracion() {
@@ -8240,7 +8309,7 @@ async function computeSaldoCuentaMayorPolizas(businessId, cuentaMayorId, subcuen
   const subIds = new Set(subs.map(s => s.id));
   const [lineasQ, facturasQ] = await Promise.all([
     sb.from('fz_polizas_lineas').select('cargo,abono,subcuenta_id,poliza_id').eq('business_id', businessId).eq('cuenta_tipo', 'subcuenta').in('subcuenta_id', subs.map(s => s.id)),
-    sb.from('fz_proveedores').select('fecha,desglose').eq('business_id', businessId),
+    sb.from('fz_proveedores').select('fecha,desglose,origen_poliza_id').eq('business_id', businessId),
   ]);
   let lineas = lineasQ.data || [];
   if (hastaFecha && lineas.length) {
@@ -8256,8 +8325,9 @@ async function computeSaldoCuentaMayorPolizas(businessId, cuentaMayorId, subcuen
   });
   // Facturas de Proveedores desglosadas contra alguna de estas subcuentas también cuentan
   // (ej. una compra que se clasificó como Activo en vez de Gasto) — antes solo se veían
-  // en Proveedores/P&L, nunca llegaban al Balance General.
-  (facturasQ.data || []).filter(f => !hastaFecha || f.fecha <= hastaFecha).forEach(f => {
+  // en Proveedores/P&L, nunca llegaban al Balance General. Se excluyen las que vienen de una
+  // provisión de póliza, ya que esa misma línea de la póliza ya se contó arriba.
+  (facturasQ.data || []).filter(f => !f.origen_poliza_id && (!hastaFecha || f.fecha <= hastaFecha)).forEach(f => {
     desgloseLineas(f.desglose).forEach(linea => {
       if (subIds.has(linea.subcuenta_id) && Number(linea.monto)) {
         const monto = Number(linea.monto);
@@ -8969,7 +9039,7 @@ async function computeGastosClasificados(businessId, periodo, subcuentas, mayore
   let sinClasificar = 0;
 
   const [provQ, bancosMovQ, efvoMovQ, plGastosQ, lineasPoliza] = await Promise.all([
-    sb.from('fz_proveedores').select('desglose').eq('business_id', businessId).gte('fecha', start).lte('fecha', end),
+    sb.from('fz_proveedores').select('desglose,origen_poliza_id').eq('business_id', businessId).gte('fecha', start).lte('fecha', end),
     sb.from('fz_bancos_mov').select('cargos,subcuenta_id,aplica_iva,subtotal').eq('business_id', businessId).eq('tipo_salida', 'gasto').gte('fecha', start).lte('fecha', end),
     sb.from('fz_efectivo_mov').select('cargos,subcuenta_id,aplica_iva,subtotal').eq('business_id', businessId).eq('tipo_salida', 'gasto').gte('fecha', start).lte('fecha', end),
     sb.from('fz_pl_gastos').select('*').eq('business_id', businessId).gte('mes', mesStart).lte('mes', mesEnd),
@@ -8977,6 +9047,7 @@ async function computeGastosClasificados(businessId, periodo, subcuentas, mayore
   ]);
 
   (provQ.data || []).forEach(f => {
+    if (f.origen_poliza_id) return; // ya se contabilizó vía la línea de la póliza que la generó — no se duplica
     desgloseLineas(f.desglose).forEach(linea => {
       porSubcuenta[linea.subcuenta_id] = (porSubcuenta[linea.subcuenta_id] || 0) + (Number(linea.monto) || 0);
     });
