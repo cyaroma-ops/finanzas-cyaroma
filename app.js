@@ -2499,7 +2499,7 @@ async function pintarPagosImpuestos(contenido, b) {
           <tbody>
             ${(pagos||[]).length ? pagos.map(p => {
               const est = estatusDe(p);
-              const deltaActualizacion = p.monto_actualizado ? p.monto_actualizado - Number(p.monto) : null;
+              const deltaActualizacion = p.monto_actualizado ? Math.max(0, p.monto_actualizado - Number(p.monto)) : null;
               return `<tr>
                 <td>${p.periodo}</td><td>${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]||p.tipo_impuesto}</td><td>${p.concepto||''}</td>
                 <td class="num">${fmt(p.monto)}</td><td>${fechaCorta(p.fecha_limite)}</td>
@@ -2681,7 +2681,7 @@ async function calcularRecargosActualizacion(impuesto, mesVenc, mesPago) {
   const inpcVenc = inpcMap[mesAnteriorA(mesVenc)];
   if (!inpcPago || !inpcVenc) return { error: `Falta capturar el INPC de ${!inpcVenc ? mesAnteriorA(mesVenc) : mesAnteriorA(mesPago)} en Recargos y Actualización.` };
 
-  const factorActualizacion = inpcPago / inpcVenc;
+  const factorActualizacion = Math.max(1, inpcPago / inpcVenc); // Art. 17-A CFF: si el resultado da menos de 1, se usa 1 (nunca se actualiza a la baja)
   const montoActualizado = impuesto * factorActualizacion;
 
   let mesesFaltantes = [];
@@ -9369,7 +9369,7 @@ function filaArbolSubcuentaHtml(nodo, conTerceraColumna, nivel, detalleHtmlSiAbi
   const estilo = nivel === 0 ? 'font-weight:600;' : 'color:var(--muted);font-size:12.5px;';
   let html = `<tr class="pl-subcuenta-row" data-subcuenta="${nodo.id}" style="cursor:pointer;">
     <td style="padding-left:${indent}px;${estilo}">${abierto?'▾':'▸'} ${nodo.nombre}</td>
-    <td class="num" style="${nivel === 0 ? 'font-weight:600;' : ''}">${fmtNeg(nodo.total)}</td>${conTerceraColumna?'<td></td>':''}
+    <td class="num" style="${nivel === 0 ? 'font-weight:600;' : ''}">${fmtNeg(nodo.total)}</td>${conTerceraColumna?'<td class="td-vacia-reporte"></td>':''}
   </tr>`;
   if (abierto) html += detalleHtmlSiAbierto;
   nodo.hijos.forEach(h => { html += filaArbolSubcuentaHtml(h, conTerceraColumna, nivel + 1, detalleHtmlSiAbierto); });
@@ -9511,15 +9511,15 @@ async function renderPL() {
       </div>
       <table class="report-table">
         <tbody>
-          <tr><td>Gastos operativos del día (desde Ventas, sin clasificar)</td><td class="num">${fmtNeg(gastosOperativos)}</td><td></td></tr>
-          ${faltanteCaja ? `<tr><td>Faltante de caja (conciliación de Ventas)</td><td class="num" style="color:var(--red);">${fmt(faltanteCaja)}</td><td></td></tr>` : ''}
+          <tr><td>Gastos operativos del día (desde Ventas, sin clasificar)</td><td class="num">${fmtNeg(gastosOperativos)}</td><td class="td-vacia-reporte"></td></tr>
+          ${faltanteCaja ? `<tr><td>Faltante de caja (conciliación de Ventas)</td><td class="num" style="color:var(--red);">${fmt(faltanteCaja)}</td><td class="td-vacia-reporte"></td></tr>` : ''}
           ${gClas.porMayor.map(m => `
-            <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">${m.nombre}</td><td></td></tr>
+            <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">${m.nombre}</td><td class="td-vacia-reporte"></td></tr>
             ${m.subs.map(s => filaArbolSubcuentaHtml(s, true, 0, detalleGastoHtml)).join('')}
-            <tr><td style="padding-left:22px;font-style:italic;color:var(--muted);">Subtotal ${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.subtotal)}</td><td></td></tr>
+            <tr><td style="padding-left:22px;font-style:italic;color:var(--muted);">Subtotal ${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.subtotal)}</td><td class="td-vacia-reporte"></td></tr>
           `).join('')}
-          ${gClas.sinClasificar ? `<tr><td>Otros gastos sin subcuenta asignada</td><td class="num">${fmtNeg(gClas.sinClasificar)}</td><td></td></tr>` : ''}
-          <tr class="total-row"><td>Total gastos</td><td class="num">${fmtNeg(gastosTotales)}</td><td></td></tr>
+          ${gClas.sinClasificar ? `<tr><td>Otros gastos sin subcuenta asignada</td><td class="num">${fmtNeg(gClas.sinClasificar)}</td><td class="td-vacia-reporte"></td></tr>` : ''}
+          <tr class="total-row"><td>Total gastos</td><td class="num">${fmtNeg(gastosTotales)}</td><td class="td-vacia-reporte"></td></tr>
         </tbody>
       </table>
       <p style="font-size:12px;color:var(--muted);margin-top:10px;">Los gastos se toman de las facturas de Proveedores (por su desglose), de las salidas de Bancos/Efectivo marcadas como "Gasto", y de los ajustes manuales de abajo.</p>
