@@ -3166,6 +3166,7 @@ async function renderBalanza() {
   agregarSeccionExport('INGRESOS', porTipo.ingreso, 'Ingresos');
   agregarSeccionExport('COSTO DE VENTAS', porTipo.costo, 'Costo de Ventas');
   agregarSeccionExport('GASTOS', porTipo.gasto, 'Gastos');
+  filasExport.push({ tipo:'totalgeneral', v:['TOTALES (cuentas reales, sin el renglón de Resultado)','',totalSaldoInicialD,totalSaldoInicialA,totalCargos,totalAbonos,totalSaldoActualD,totalSaldoActualA] });
 
   document.getElementById('balanzaExcelBtn').addEventListener('click', () => {
     const encabezados = ['Cuenta','Tipo','Saldo inicial Deudor','Saldo inicial Acreedor','Cargos','Abonos','Saldo actual Deudor','Saldo actual Acreedor'];
@@ -3199,6 +3200,7 @@ async function renderBalanza() {
         if (esp.tipo === 'seccion') { data.cell.styles.fillColor = [10,31,61]; data.cell.styles.textColor = [255,255,255]; data.cell.styles.fontStyle = 'bold'; }
         else if (esp.tipo === 'subseccion') { data.cell.styles.fillColor = [238,242,248]; data.cell.styles.fontStyle = 'bold'; }
         else if (esp.tipo === 'subtotal') { data.cell.styles.fontStyle = 'italic'; data.cell.styles.textColor = [102,112,133]; }
+        else if (esp.tipo === 'totalgeneral') { data.cell.styles.fontStyle = 'bold'; data.cell.styles.lineWidth = { top: 1 }; data.cell.styles.lineColor = [10,31,61]; }
       },
     });
     let y = doc.lastAutoTable.finalY + 16;
