@@ -2677,8 +2677,12 @@ async function pintarIsrAnual(contenido, b) {
   const mesesLabel = Array.from({length:12}, (_,i) => MESES_LARGO[i].slice(0,3));
   const hastaMes = anio === todayStr().slice(0,4) ? Number(todayStr().slice(5,7)) : 12;
   const datos = [];
+  let acumulado = 0;
   for (let m = 1; m <= hastaMes; m++) {
-    datos.push(await computeIsrProvisional(b.id, `${anio}-${String(m).padStart(2,'0')}`));
+    const ym = `${anio}-${String(m).padStart(2,'0')}`;
+    const calc = await computeIsrProvisional(b.id, ym, acumulado);
+    datos.push(calc);
+    acumulado += calc.ingresosMesAjustado;
   }
   const filaHtml = (nombre, valores, opts={}) => `<tr class="${opts.total?'total-row':''}"><td class="wrap-text" style="max-width:200px;${opts.op?'color:var(--muted);font-style:italic;font-size:11px;':''}">${nombre}</td>${valores.map(v=>`<td class="num">${opts.pct ? (v*100).toFixed(2)+'%' : fmt(v)}</td>`).join('')}</tr>`;
   contenido.innerHTML = `
@@ -9515,35 +9519,44 @@ async function computeGastosClasificados(businessId, periodo, subcuentas, mayore
    (a disminuir / adicionales / estímulos / dividendos / retenido / PTU /
    pérdidas aplicadas) que el usuario va agregando libremente.
    ============================================================ */
-async function computeIsrProvisional(businessId, ym) {
+// Ingresos ajustados de UN SOLO mes (sin recalcular meses anteriores) — se usa como pieza
+// reutilizable tanto en el cálculo de un mes individual como en la vista "Todos los meses".
+async function computeIngresosAjustadosMes(businessId, ym) {
+  const { start, end } = monthBounds(ym);
+  const [resumen, conceptosQ] = await Promise.all([
+    computeResumenNegocio(businessId, { start, end }),
+    sb.from('fz_isr_conceptos').select('tipo,monto').eq('business_id', businessId).eq('periodo', ym),
+  ]);
+  const cp = conceptosQ.data || [];
+  const dis = cp.filter(c=>c.tipo==='disminuir').reduce((s,c)=>s+Number(c.monto),0);
+  const adi = cp.filter(c=>c.tipo==='adicional').reduce((s,c)=>s+Number(c.monto),0);
+  return { ingresosFacturadosMes: resumen.totalIngresos, disminuir: dis, adicional: adi, ingresosMesAjustado: resumen.totalIngresos - dis + adi };
+}
+
+async function computeIsrProvisional(businessId, ym, ingresosAnterioresOverride = null) {
   const anio = ym.slice(0,4);
   const mesNum = Number(ym.slice(5,7));
-  const { start, end } = monthBounds(ym);
 
-  const resumenMes = await computeResumenNegocio(businessId, { start, end });
-  const ingresosFacturadosMes = resumenMes.totalIngresos;
+  const { ingresosFacturadosMes, disminuir, adicional, ingresosMesAjustado } = await computeIngresosAjustadosMes(businessId, ym);
 
   const { data: conceptos } = await sb.from('fz_isr_conceptos').select('*').eq('business_id', businessId).eq('periodo', ym);
   const sumaPorTipo = (tipo) => (conceptos||[]).filter(c=>c.tipo===tipo).reduce((s,c)=>s+Number(c.monto),0);
-  const disminuir = sumaPorTipo('disminuir'), adicional = sumaPorTipo('adicional'), estimulo = sumaPorTipo('estimulo');
+  const estimulo = sumaPorTipo('estimulo');
   const dividendos = sumaPorTipo('dividendos'), retenido = sumaPorTipo('retenido');
   const ptu = sumaPorTipo('ptu'), perdidaAplicada = sumaPorTipo('perdida_aplicada');
 
-  const ingresosMesAjustado = ingresosFacturadosMes - disminuir + adicional;
-
-  // Ingresos de periodos anteriores: suma de los ingresos ya ajustados de cada mes previo del mismo año.
-  let ingresosAnteriores = 0;
-  for (let mm = 1; mm < mesNum; mm++) {
-    const ymPrev = `${anio}-${String(mm).padStart(2,'0')}`;
-    const { start: s2, end: e2 } = monthBounds(ymPrev);
-    const [resumenPrev, conceptosPrevQ] = await Promise.all([
-      computeResumenNegocio(businessId, { start: s2, end: e2 }),
-      sb.from('fz_isr_conceptos').select('tipo,monto').eq('business_id', businessId).eq('periodo', ymPrev),
-    ]);
-    const cp = conceptosPrevQ.data || [];
-    const dis = cp.filter(c=>c.tipo==='disminuir').reduce((s,c)=>s+Number(c.monto),0);
-    const adi = cp.filter(c=>c.tipo==='adicional').reduce((s,c)=>s+Number(c.monto),0);
-    ingresosAnteriores += resumenPrev.totalIngresos - dis + adi;
+  // Ingresos de periodos anteriores: si ya se calculó como acumulado corrido (vista "Todos los
+  // meses"), se reutiliza tal cual — evita recalcular cada mes anterior una y otra vez.
+  let ingresosAnteriores;
+  if (ingresosAnterioresOverride !== null) {
+    ingresosAnteriores = ingresosAnterioresOverride;
+  } else {
+    ingresosAnteriores = 0;
+    for (let mm = 1; mm < mesNum; mm++) {
+      const ymPrev = `${anio}-${String(mm).padStart(2,'0')}`;
+      const r = await computeIngresosAjustadosMes(businessId, ymPrev);
+      ingresosAnteriores += r.ingresosMesAjustado;
+    }
   }
   const totalIngresosNominales = ingresosMesAjustado + ingresosAnteriores;
 
