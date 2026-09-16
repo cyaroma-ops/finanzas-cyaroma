@@ -183,8 +183,9 @@ h1,h2,h3,.serif{font-family:'Cormorant Garamond',serif;}
   background:linear-gradient(180deg,var(--navy-1),#081830);
   color:#dce6f5;
   display:flex;flex-direction:column;
-  position:sticky;top:0;height:100vh;
+  position:fixed;top:0;left:0;height:100vh;overflow-y:auto;z-index:50;
 }
+.main{flex:1;min-width:0;margin-left:250px;}
 .sb-brand{padding:22px 20px 16px;display:flex;align-items:center;gap:11px;border-bottom:1px solid rgba(255,255,255,.08);}
 .sb-brand .mark{width:36px;height:36px;border-radius:9px;background:rgba(185,138,46,.18);border:1px solid rgba(185,138,46,.4);display:flex;align-items:center;justify-content:center;color:var(--gold);font-family:'Cormorant Garamond',serif;font-weight:700;font-size:18px;flex-shrink:0;}
 .sb-brand .logo-box{display:flex;align-items:center;justify-content:center;flex-shrink:0;}
@@ -228,12 +229,12 @@ h1,h2,h3,.serif{font-family:'Cormorant Garamond',serif;}
 .config-card:hover{border-color:var(--navy-3) !important;box-shadow:0 2px 10px rgba(0,0,0,.06);}
 
 /* Main */
-.main{flex:1;min-width:0;}
 .topbar{
   background:#fff;border-bottom:1px solid var(--line);padding:18px 32px;
   display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:10;
 }
 .pl-sticky-summary{position:sticky;top:79px;z-index:6;background:var(--paper);padding-top:10px;margin:-10px -32px 18px;padding-left:32px;padding-right:32px;padding-bottom:4px;}
+#impuestosTabBar{position:sticky;top:79px;z-index:6;background:var(--paper);padding:10px 32px 10px;margin:-10px -32px 14px;}
 .topbar h2{font-size:24px;color:var(--navy-1);}
 .topbar .sub{font-size:12.5px;color:var(--muted);margin-top:2px;}
 .topbar-actions{display:flex;align-items:center;gap:10px;}
@@ -316,8 +317,9 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 .grid-4{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;}
 
 @media(max-width:900px){
-  .sidebar{position:fixed;left:-260px;z-index:100;transition:left .2s;}
+  .sidebar{left:-260px;z-index:100;transition:left .2s;}
   .sidebar.open{left:0;}
+  .main{margin-left:0;}
   .content{padding:16px;}
   .topbar{padding:14px 16px;flex-wrap:wrap;gap:8px;}
   .topbar h2{font-size:19px;}

@@ -2033,8 +2033,17 @@ function estadosDeImpuesto(p) {
   return { determinacion, declaracion, pago };
 }
 
+let STATE_impuestosUltimoMes = null;
 async function renderImpuestos() {
   const b = biz();
+  // Si el mes de arriba cambió, sincroniza el año de Pagos/Retenciones para que "el periodo" se
+  // sienta consistente al cambiar de pestaña — sin esto, cada una recordaba su propio año.
+  if (STATE_impuestosUltimoMes !== STATE.currentMonth) {
+    STATE_impuestosUltimoMes = STATE.currentMonth;
+    const anioDelMes = STATE.currentMonth.slice(0,4);
+    STATE_piAnio = anioDelMes;
+    STATE_impRetAnio = anioDelMes;
+  }
   const tabBarEl = document.getElementById('impuestosTabBar');
   const tabs = [
     { id: 'resumen', label: 'Resumen' },
@@ -2265,41 +2274,6 @@ async function renderIvaFiscal() {
                 <td>${fechaCorta(f.fecha)}</td><td>${clientesMap[f.cliente_id]||''}</td><td>#${f.folio}</td>
                 <td class="num">${fmt(f.iva_monto)}</td>
               </tr>`).join('') : `<tr><td colspan="4" class="empty">No hay facturas de cliente con IVA este mes.</td></tr>`}
-          </tbody>
-        </table>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-head"><h3>Retenciones de ISR/IVA por categoría — este mes</h3></div>
-      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Cada categoría se declara y se paga por separado ante el SAT (ej. retención de IVA por Arrendamiento no es lo mismo que por Fletes).</p>
-      <div class="table-wrap" style="margin-bottom:14px;">
-        <table class="report-table">
-          <thead><tr><th>Categoría</th><th>ISR retenido</th><th>IVA retenido</th><th>Total retenido</th></tr></thead>
-          <tbody>
-            ${(() => {
-              const porCat = {};
-              (facturasRetencion||[]).forEach(f => {
-                const cat = f.retencion_categoria || 'Sin categoría';
-                if (!porCat[cat]) porCat[cat] = { isr: 0, iva: 0 };
-                porCat[cat].isr += Number(f.retencion_isr_monto)||0;
-                porCat[cat].iva += Number(f.retencion_iva_monto)||0;
-              });
-              const cats = Object.entries(porCat);
-              return cats.length ? cats.map(([cat,v]) => `<tr>
-                <td>${cat}</td><td class="num">${fmt(v.isr)}</td><td class="num">${fmt(v.iva)}</td><td class="num" style="font-weight:600;">${fmt(v.isr+v.iva)}</td>
-              </tr>`).join('') : `<tr><td colspan="4" class="empty">No hay retenciones este mes.</td></tr>`;
-            })()}
-          </tbody>
-        </table>
-      </div>
-      <div class="table-wrap">
-        <table class="report-table">
-          <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Categoría</th><th>ISR retenido</th><th>IVA retenido</th></tr></thead>
-          <tbody>
-            ${(facturasRetencion||[]).length ? facturasRetencion.map(f => `<tr>
-                <td>${fechaCorta(f.fecha)}</td><td>${f.proveedor||''}</td><td>${f.factura||'s/f'}</td><td>${f.retencion_categoria||'Sin categoría'}</td>
-                <td class="num">${fmt(f.retencion_isr_monto)}</td><td class="num">${fmt(f.retencion_iva_monto)}</td>
-              </tr>`).join('') : `<tr><td colspan="6" class="empty">No hay facturas con retenciones este mes.</td></tr>`}
           </tbody>
         </table>
       </div>
@@ -2990,7 +2964,7 @@ async function renderImpuestosRetenciones(b) {
 
   const [{ data: retenciones }, { data: facturasDetalle }] = await Promise.all([
     sb.from('fz_pagos_impuestos').select('*').eq('business_id', b.id).in('tipo_impuesto', ['retencion_isr','retencion_iva']).like('periodo', `${anio}-%`).order('periodo'),
-    sb.from('fz_proveedores').select('proveedor,factura,fecha,subtotal,retencion_categoria,retencion_isr_monto,retencion_iva_monto').eq('business_id', b.id).eq('aplica_retencion', true).like('fecha', `${anio}-%`).order('fecha', { ascending: false }),
+    sb.from('fz_proveedores').select('proveedor,factura,fecha,subtotal,retencion_categoria,retencion_isr_monto,retencion_iva_monto').eq('business_id', b.id).eq('aplica_retencion', true).gte('fecha', `${anio}-01-01`).lte('fecha', `${anio}-12-31`).order('fecha', { ascending: false }),
   ]);
 
   const anioActual = Number(todayStr().slice(0,4));
