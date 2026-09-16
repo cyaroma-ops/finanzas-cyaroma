@@ -690,6 +690,7 @@ const SECTION_META = {
   flujo: { title: 'Flujo de Efectivo', sub: '', showMonth: false, needsBiz: true },
   polizas: { title: 'Pólizas de Diario', sub: '', showMonth: false, needsBiz: true },
   balance: { title: 'Balance General', sub: 'Al día de hoy', showMonth: false, needsBiz: true },
+  impuestos: { title: 'Impuestos', sub: '', showMonth: true, needsBiz: true },
   catalogo: { title: 'Catálogo de Cuentas', sub: 'Estructura contable: cuenta mayor › subcuenta › sub-subcuenta', showMonth: false, needsBiz: true },
   auditoria: { title: 'Auditoría', sub: 'Quién creó, editó o eliminó cada registro', showMonth: false, needsBiz: true },
   negocios: { title: 'Negocios', sub: 'Alta y perfil de cada negocio del grupo', showMonth: false, needsBiz: false },
@@ -697,7 +698,7 @@ const SECTION_META = {
 };
 // Estas viven "dentro" de Configuración: ya no tienen su propio ítem en el menú principal,
 // pero conservan su sección y su función de render tal cual, solo cambia cómo se llega ahí.
-const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos', 'ivafiscal', 'balanza', 'librodiario', 'comparativo', 'recargos', 'pagosimpuestos', 'isrprovisional'];
+const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos', 'balanza', 'librodiario', 'comparativo', 'recargos'];
 function marcarNavActivo(seccion) {
   document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
   const seccionNav = SECCIONES_EN_CONFIGURACION.includes(seccion) ? 'configuracion' : seccion;
@@ -792,6 +793,7 @@ async function renderCurrentSection() {
   if (s === 'clientes') return renderClientes();
   if (s === 'activosfijos') return renderActivosFijos();
   if (s === 'ivafiscal') return renderIvaFiscal();
+  if (s === 'impuestos') return renderImpuestos();
   if (s === 'balanza') return renderBalanza();
   if (s === 'librodiario') return renderLibroDiario();
   if (s === 'comparativo') return renderComparativo();
@@ -2008,12 +2010,132 @@ async function generarDepreciacionesSiCorresponde(businessId) {
 
 /* ---------- IVA Acreditable (Proveedores) y Trasladado (Clientes) — solo modo Fiscal Contable ---------- */
 let STATE_ivaFiscalVista = 'mes';
+/* ============================================================
+   IMPUESTOS — sección principal que concentra IVA, ISR, Retenciones y Pagos
+   bajo pestañas: Resumen | IVA | ISR | Retenciones | Pagos.
+   Reutiliza tal cual la lógica y fórmulas ya existentes de cada pantalla —
+   esto es solo organización y navegación, no un motor de cálculo nuevo.
+   ============================================================ */
+let STATE_impuestosTab = 'resumen';
+
+// Los 3 controles son independientes entre sí — un mismo impuesto puede estar,
+// por ejemplo, Determinado + Declarada + Pendiente de pago, todo a la vez.
+function estadosDeImpuesto(p) {
+  const hoy = todayStr();
+  const determinacion = { texto: 'Determinado', color: 'var(--navy-3)' }; // si existe el registro, ya está determinado
+  const declaracion = p.declarada
+    ? { texto: 'Declarada' + (p.tipo_declaracion === 'complementaria' ? ' (Complementaria)' : ''), color: 'var(--green)' }
+    : { texto: 'No presentada', color: 'var(--gold)' };
+  let pago;
+  if (!p.fecha_pago) pago = hoy > p.fecha_limite ? { texto: 'Pendiente (vencido)', color: 'var(--red)' } : { texto: 'Pendiente', color: 'var(--gold)' };
+  else if (p.fecha_pago <= p.fecha_limite) pago = { texto: 'Pagado a tiempo', color: 'var(--green)' };
+  else pago = { texto: 'Pagado con recargos', color: 'var(--red)' };
+  return { determinacion, declaracion, pago };
+}
+
+async function renderImpuestos() {
+  const b = biz();
+  const tabBarEl = document.getElementById('impuestosTabBar');
+  const tabs = [
+    { id: 'resumen', label: 'Resumen' },
+    { id: 'iva', label: 'IVA' },
+    { id: 'isr', label: 'ISR' },
+    { id: 'retenciones', label: 'Retenciones' },
+    { id: 'pagos', label: 'Pagos' },
+  ];
+  tabBarEl.innerHTML = tabs.map(t => `<div class="tag ${STATE_impuestosTab===t.id?'active':''}" data-tab="${t.id}">${t.label}</div>`).join('');
+  tabBarEl.querySelectorAll('.tag').forEach(tag => tag.addEventListener('click', () => {
+    STATE_impuestosTab = tag.dataset.tab;
+    renderImpuestos();
+  }));
+
+  const mapaVistas = { resumen: 'impuestos-resumen', iva: 'sec-ivafiscal', isr: 'sec-isrprovisional', retenciones: 'impuestos-retenciones', pagos: 'sec-pagosimpuestos' };
+  Object.entries(mapaVistas).forEach(([tab, id]) => {
+    const elVista = document.getElementById(id);
+    if (elVista) elVista.style.display = (STATE_impuestosTab === tab) ? '' : 'none';
+  });
+
+  if (!b) {
+    document.getElementById(mapaVistas[STATE_impuestosTab]).innerHTML = `<div class="empty">Selecciona un negocio.</div>`;
+    return;
+  }
+
+  if (STATE_impuestosTab === 'resumen') await renderImpuestosResumen(b);
+  else if (STATE_impuestosTab === 'iva') await renderIvaFiscal();
+  else if (STATE_impuestosTab === 'isr') await renderIsrProvisional();
+  else if (STATE_impuestosTab === 'retenciones') await renderImpuestosRetenciones(b);
+  else if (STATE_impuestosTab === 'pagos') await renderPagosImpuestos();
+}
+
+async function renderImpuestosResumen(b) {
+  const el = document.getElementById('impuestos-resumen');
+  el.innerHTML = `<div class="empty">Calculando…</div>`;
+  const ym = STATE.currentMonth;
+
+  const [{ data: delMes }, { data: todosPendientes }] = await Promise.all([
+    sb.from('fz_pagos_impuestos').select('*').eq('business_id', b.id).eq('periodo', ym),
+    sb.from('fz_pagos_impuestos').select('*').eq('business_id', b.id),
+  ]);
+
+  const buscar = (tipo, concepto=null) => (delMes||[]).find(p => p.tipo_impuesto===tipo && (p.concepto||null)===concepto);
+  const ivaFila = buscar('iva');
+  const isrFila = buscar('isr_provisional');
+  const retencionesDelMes = (delMes||[]).filter(p => p.tipo_impuesto === 'retencion_isr' || p.tipo_impuesto === 'retencion_iva');
+
+  const totalDeterminadoMes = (delMes||[]).reduce((s,p)=>s+Number(p.monto),0);
+  const totalPagado = (todosPendientes||[]).filter(p=>p.fecha_pago).reduce((s,p)=>s+Number(p.total_pagado||p.monto),0);
+  const pendientes = (todosPendientes||[]).filter(p=>!p.fecha_pago);
+  const totalPendiente = pendientes.reduce((s,p)=>s+Number(p.monto),0);
+  const hoy = todayStr();
+  const vencidos = pendientes.filter(p => p.fecha_limite < hoy);
+  const totalVencido = vencidos.reduce((s,p)=>s+Number(p.monto),0);
+  const totalRecargosHistorico = (todosPendientes||[]).filter(p=>p.fecha_pago && p.recargos).reduce((s,p)=>s+Number(p.recargos||0),0);
+
+  const filaResumen = (nombre, fila) => {
+    if (!fila) return `<tr><td>${nombre}</td><td colspan="4" class="empty">En cálculo — aún no se determina para este mes.</td></tr>`;
+    const est = estadosDeImpuesto(fila);
+    return `<tr>
+      <td>${nombre}</td>
+      <td class="num" style="font-weight:600;">${fmt(fila.monto)}</td>
+      <td style="color:${est.determinacion.color};font-size:12px;">${est.determinacion.texto}</td>
+      <td style="color:${est.declaracion.color};font-size:12px;">${est.declaracion.texto}</td>
+      <td style="color:${est.pago.color};font-size:12px;font-weight:600;">${est.pago.texto}</td>
+    </tr>`;
+  };
+
+  el.innerHTML = `
+    <div class="card">
+      <div class="card-head"><h3>Resumen fiscal — ${MESES_LARGO[Number(ym.slice(5,7))-1]} ${ym.slice(0,4)}</h3></div>
+      <div class="kpi-grid kpi-grid-compact">
+        <div class="kpi"><div class="label">Total determinado (este mes)</div><div class="value num">${fmt(totalDeterminadoMes)}</div></div>
+        <div class="kpi"><div class="label">Total pagado (histórico)</div><div class="value num green">${fmt(totalPagado)}</div></div>
+        <div class="kpi"><div class="label">Total pendiente</div><div class="value num ${totalPendiente>0.004?'red':''}">${fmt(totalPendiente)}</div></div>
+        <div class="kpi"><div class="label">Impuestos vencidos</div><div class="value num ${totalVencido>0.004?'red':''}">${fmt(totalVencido)}</div></div>
+        <div class="kpi"><div class="label">Recargos pagados (histórico)</div><div class="value num ${totalRecargosHistorico>0.004?'red':''}">${fmt(totalRecargosHistorico)}</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>Impuestos de ${MESES_LARGO[Number(ym.slice(5,7))-1]}</h3><span class="hint">Determinación · Declaración · Pago</span></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Impuesto</th><th>Monto</th><th>Determinación</th><th>Declaración</th><th>Pago</th></tr></thead>
+          <tbody>
+            ${filaResumen('IVA a cargo', ivaFila)}
+            ${filaResumen('ISR Provisional', isrFila)}
+            ${retencionesDelMes.length ? retencionesDelMes.map(p => filaResumen(`${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]} — ${p.concepto}`, p)).join('') : `<tr><td>Retenciones de ISR/IVA</td><td colspan="4" class="empty">Sin retenciones este mes.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin-top:10px;">Ve a las pestañas IVA, ISR, Retenciones o Pagos para el detalle y papel de trabajo completo de cada uno.</p>
+    </div>
+  `;
+}
+
 async function renderIvaFiscal() {
   const el = document.getElementById('sec-ivafiscal');
   const b = biz();
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
   el.innerHTML = '';
-  agregarBotonVolverConfig(el);
 
   if (b.modo !== 'fiscal_contable') {
     el.insertAdjacentHTML('beforeend', `<div class="empty">Este negocio está en modo Financiero — cambia a "Fiscal Contable" en Configuración → Negocios para activar este reporte.</div>`);
@@ -2473,7 +2595,6 @@ async function renderIsrProvisional() {
   const b = biz();
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
   el.innerHTML = '';
-  agregarBotonVolverConfig(el);
 
   el.insertAdjacentHTML('beforeend', `<div class="tag-row" style="margin-bottom:14px;">
     <div class="tag ${STATE_isrVista==='mes'?'active':''}" id="isrTabMes">Mes</div>
@@ -2861,12 +2982,73 @@ async function pintarIsrAnual(contenido, b) {
   });
 }
 
+let STATE_impRetAnio = todayStr().slice(0,4);
+async function renderImpuestosRetenciones(b) {
+  const el = document.getElementById('impuestos-retenciones');
+  el.innerHTML = `<div class="empty">Calculando…</div>`;
+  const anio = STATE_impRetAnio;
+
+  const [{ data: retenciones }, { data: facturasDetalle }] = await Promise.all([
+    sb.from('fz_pagos_impuestos').select('*').eq('business_id', b.id).in('tipo_impuesto', ['retencion_isr','retencion_iva']).like('periodo', `${anio}-%`).order('periodo'),
+    sb.from('fz_proveedores').select('proveedor,factura,fecha,subtotal,retencion_categoria,retencion_isr_monto,retencion_iva_monto').eq('business_id', b.id).eq('aplica_retencion', true).like('fecha', `${anio}-%`).order('fecha', { ascending: false }),
+  ]);
+
+  const anioActual = Number(todayStr().slice(0,4));
+  const anios = Array.from({length:6}, (_,i) => anioActual - 4 + i);
+
+  el.innerHTML = `
+    <div class="field" style="max-width:180px;margin-bottom:14px;">
+      <label>Año</label>
+      <select id="impRetAnioSel">${anios.map(a=>`<option value="${a}" ${String(a)===anio?'selected':''}>${a}</option>`).join('')}</select>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>Control por categoría — ${anio}</h3><span class="hint">Determinación · Declaración · Pago</span></div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Cada categoría se declara y se paga por separado ante el SAT — el control se mantiene consolidado por categoría, no factura por factura.</p>
+      <div class="table-wrap scroll-sticky">
+        <table>
+          <thead><tr><th>Periodo</th><th>Tipo</th><th>Categoría</th><th>Monto</th><th>Determinación</th><th>Declaración</th><th>Pago</th></tr></thead>
+          <tbody>
+            ${(retenciones||[]).length ? retenciones.map(p => {
+              const est = estadosDeImpuesto(p);
+              return `<tr>
+                <td>${p.periodo}</td><td>${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]}</td><td>${p.concepto||'Sin categoría'}</td>
+                <td class="num">${fmt(p.monto)}</td>
+                <td style="color:${est.determinacion.color};font-size:12px;">${est.determinacion.texto}</td>
+                <td style="color:${est.declaracion.color};font-size:12px;">${est.declaracion.texto}</td>
+                <td style="color:${est.pago.color};font-size:12px;font-weight:600;">${est.pago.texto}</td>
+              </tr>`;
+            }).join('') : `<tr><td colspan="7" class="empty">Sin retenciones determinadas en ${anio}.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>Detalle y trazabilidad — ${anio}</h3></div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">De dónde viene cada retención — solo para consulta y papel de trabajo; no genera obligaciones de pago independientes por factura.</p>
+      <div class="table-wrap scroll-sticky">
+        <table>
+          <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Categoría</th><th>Base</th><th>ISR retenido</th><th>IVA retenido</th></tr></thead>
+          <tbody>
+            ${(facturasDetalle||[]).length ? facturasDetalle.map(f => `<tr>
+                <td>${fechaCorta(f.fecha)}</td><td>${f.proveedor||''}</td><td>${f.factura||'s/f'}</td><td>${f.retencion_categoria||'Sin categoría'}</td>
+                <td class="num">${f.subtotal?fmt(f.subtotal):''}</td><td class="num">${fmt(f.retencion_isr_monto)}</td><td class="num">${fmt(f.retencion_iva_monto)}</td>
+              </tr>`).join('') : `<tr><td colspan="7" class="empty">Sin facturas con retención en ${anio}.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  document.getElementById('impRetAnioSel').addEventListener('change', (e) => {
+    STATE_impRetAnio = e.target.value;
+    renderImpuestosRetenciones(b);
+  });
+}
+
 async function renderPagosImpuestos() {
   const el = document.getElementById('sec-pagosimpuestos');
   const b = biz();
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
   el.innerHTML = '';
-  agregarBotonVolverConfig(el);
 
   const contenido = document.createElement('div');
   contenido.innerHTML = `<div class="empty">Calculando…</div>`;
@@ -2958,27 +3140,30 @@ async function pintarPagosImpuestos(contenido, b) {
       </div>
       <div class="table-wrap scroll-sticky">
         <table>
-          <thead><tr><th>Periodo</th><th>Tipo</th><th>Concepto</th><th>Monto principal</th><th>Fecha límite</th><th>Fecha de pago</th><th>Estatus</th><th>Actualización</th><th>Recargos</th><th>Total</th><th></th></tr></thead>
+          <thead><tr><th>Periodo</th><th>Tipo</th><th>Concepto</th><th>Monto principal</th><th>Fecha límite</th><th>Fecha de pago</th><th>Determinación</th><th>Declaración</th><th>Pago</th><th>Actualización</th><th>Recargos</th><th>Total</th><th></th></tr></thead>
           <tbody>
             ${(pagos||[]).length ? pagos.map(p => {
-              const est = estatusDe(p);
+              const est = estadosDeImpuesto(p);
               const deltaActualizacion = p.monto_actualizado ? Math.max(0, p.monto_actualizado - Number(p.monto)) : null;
               return `<tr>
                 <td>${p.periodo}</td><td>${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]||p.tipo_impuesto}</td><td class="wrap-text" style="max-width:220px;">${p.concepto||''}</td>
                 <td class="num">${fmt(p.monto)}</td><td>${fechaCorta(p.fecha_limite)}</td>
                 <td><input type="date" class="pi-fecha-pago-input" data-id="${p.id}" value="${p.fecha_pago||''}" style="border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12.5px;"></td>
-                <td style="color:${est.color};font-weight:600;">${est.texto}</td>
+                <td style="color:${est.determinacion.color};font-size:12px;">${est.determinacion.texto}</td>
+                <td style="color:${est.declaracion.color};font-size:12px;">${est.declaracion.texto}</td>
+                <td style="color:${est.pago.color};font-weight:600;font-size:12px;">${est.pago.texto}</td>
                 <td class="num">${deltaActualizacion!==null?fmt(deltaActualizacion):''}</td>
                 <td class="num">${p.recargos?fmt(p.recargos):''}</td>
                 <td class="num" style="font-weight:600;">${p.total_pagado?fmt(p.total_pagado):''}</td>
                 <td style="position:relative;">
                   <button class="btn btn-ghost btn-sm pi-menu-btn" data-id="${p.id}" style="padding:3px 10px;">⋯</button>
                   <div class="pi-menu-dropdown" data-menu="${p.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:110px;overflow:hidden;">
-                    <button class="pi-eliminar" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);">Eliminar</button>
+                    <button class="pi-editar" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Editar</button>
+                    <button class="pi-eliminar" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>
                   </div>
                 </td>
               </tr>`;
-            }).join('') : `<tr><td colspan="11" class="empty">No hay impuestos registrados en ${STATE_piAnio}.</td></tr>`}
+            }).join('') : `<tr><td colspan="13" class="empty">No hay impuestos registrados en ${STATE_piAnio}.</td></tr>`}
           </tbody>
         </table>
       </div>
@@ -2993,12 +3178,16 @@ async function pintarPagosImpuestos(contenido, b) {
   document.getElementById('piExcelBtn').addEventListener('click', () => {
     if (!(pagos||[]).length) { toast('No hay impuestos registrados en ' + STATE_piAnio + '.', 'error'); return; }
     const wb = XLSX.utils.book_new();
-    const filas = pagos.map(p => ({
-      Periodo: p.periodo, Tipo: TIPO_IMPUESTO_LABEL[p.tipo_impuesto]||p.tipo_impuesto, Concepto: p.concepto||'',
-      'Monto principal': p.monto, 'Fecha límite': p.fecha_limite, 'Fecha de pago': p.fecha_pago||'',
-      Estatus: estatusDe(p).texto, Actualización: p.monto_actualizado ? Math.max(0, p.monto_actualizado-Number(p.monto)) : '',
-      Recargos: p.recargos||'', Total: p.total_pagado||'',
-    }));
+    const filas = pagos.map(p => {
+      const est = estadosDeImpuesto(p);
+      return {
+        Periodo: p.periodo, Tipo: TIPO_IMPUESTO_LABEL[p.tipo_impuesto]||p.tipo_impuesto, Concepto: p.concepto||'',
+        'Monto principal': p.monto, 'Fecha límite': p.fecha_limite, 'Fecha de pago': p.fecha_pago||'',
+        Determinación: est.determinacion.texto, Declaración: est.declaracion.texto, Pago: est.pago.texto,
+        Actualización: p.monto_actualizado ? Math.max(0, p.monto_actualizado-Number(p.monto)) : '',
+        Recargos: p.recargos||'', Total: p.total_pagado||'',
+      };
+    });
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filas), 'Pagos de Impuestos');
     XLSX.writeFile(wb, `Pagos de Impuestos - ${b.name} - ${STATE_piAnio}.xlsx`);
   });
@@ -3007,13 +3196,17 @@ async function pintarPagosImpuestos(contenido, b) {
     const { doc, margin, y } = iniciarPdfConEncabezado(b, `Pagos de Impuestos — ${STATE_piAnio}`);
     doc.autoTable({
       startY: y, margin: { left: margin, right: margin },
-      head: [['Periodo', 'Tipo', 'Concepto', 'Monto principal', 'Fecha límite', 'Fecha de pago', 'Estatus', 'Actualización', 'Recargos', 'Total']],
-      body: pagos.map(p => [
-        p.periodo, TIPO_IMPUESTO_LABEL[p.tipo_impuesto]||p.tipo_impuesto, p.concepto||'',
-        fmt(p.monto), fechaCorta(p.fecha_limite), p.fecha_pago?fechaCorta(p.fecha_pago):'—', estatusDe(p).texto,
-        p.monto_actualizado ? fmt(Math.max(0, p.monto_actualizado-Number(p.monto))) : '', p.recargos?fmt(p.recargos):'', p.total_pagado?fmt(p.total_pagado):'',
-      ]),
-      styles: { fontSize: 7.5 }, headStyles: { fillColor: [10,31,61] },
+      head: [['Periodo', 'Tipo', 'Concepto', 'Monto principal', 'Fecha límite', 'Fecha de pago', 'Determinación', 'Declaración', 'Pago', 'Actualización', 'Recargos', 'Total']],
+      body: pagos.map(p => {
+        const est = estadosDeImpuesto(p);
+        return [
+          p.periodo, TIPO_IMPUESTO_LABEL[p.tipo_impuesto]||p.tipo_impuesto, p.concepto||'',
+          fmt(p.monto), fechaCorta(p.fecha_limite), p.fecha_pago?fechaCorta(p.fecha_pago):'—',
+          est.determinacion.texto, est.declaracion.texto, est.pago.texto,
+          p.monto_actualizado ? fmt(Math.max(0, p.monto_actualizado-Number(p.monto))) : '', p.recargos?fmt(p.recargos):'', p.total_pagado?fmt(p.total_pagado):'',
+        ];
+      }),
+      styles: { fontSize: 7 }, headStyles: { fillColor: [10,31,61] },
     });
     doc.save(`Pagos de Impuestos - ${b.name} - ${STATE_piAnio}.pdf`);
   });
@@ -3031,6 +3224,11 @@ async function pintarPagosImpuestos(contenido, b) {
     dropdown.style.display = abierto ? 'none' : 'block';
   }));
   document.addEventListener('click', () => contenido.querySelectorAll('.pi-menu-dropdown').forEach(d => d.style.display = 'none'));
+  contenido.querySelectorAll('.pi-editar').forEach(btn => btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const p = (pagos||[]).find(x => x.id === btn.dataset.id);
+    if (p) abrirModalPagoImpuesto(p, b);
+  }));
   contenido.querySelectorAll('.pi-eliminar').forEach(btn => btn.addEventListener('click', async (e) => {
     e.stopPropagation();
     if (!confirm('¿Eliminar este registro de impuesto?')) return;
@@ -3069,10 +3267,20 @@ function abrirModalPagoImpuesto(pago, b) {
   document.getElementById('piNotas').value = pago?.notas || '';
   document.getElementById('piRecargoPreview').innerHTML = '';
   document.getElementById('piEliminarBtn').style.display = pago ? '' : 'none';
+  // Declaración — control independiente del Pago
+  document.getElementById('piDeclarada').checked = !!pago?.declarada;
+  document.getElementById('piFechaPresentacion').value = pago?.fecha_presentacion || '';
+  document.getElementById('piTipoDeclaracion').value = pago?.tipo_declaracion || 'normal';
+  document.getElementById('piNumeroOperacion').value = pago?.numero_operacion || '';
+  document.getElementById('piImporteDeclarado').value = fmtInputVal(pago?.importe_declarado || pago?.monto || 0);
+  document.getElementById('piDeclaracionCampos').style.display = document.getElementById('piDeclarada').checked ? 'block' : 'none';
   actualizarVisibilidadTraerIva();
   if (!pago) sugerirFechaLimitePi();
   document.getElementById('modalPagoImpuesto').classList.add('show');
 }
+document.getElementById('piDeclarada').addEventListener('change', (e) => {
+  document.getElementById('piDeclaracionCampos').style.display = e.target.checked ? 'block' : 'none';
+});
 
 function sugerirFechaLimitePi() {
   const periodo = document.getElementById('piPeriodo').value;
@@ -3117,12 +3325,18 @@ document.getElementById('piGuardarBtn').addEventListener('click', async () => {
     }
   }
 
+  const declarada = document.getElementById('piDeclarada').checked;
   const payload = {
     business_id: b.id, periodo, tipo_impuesto: document.getElementById('piTipo').value,
     concepto: document.getElementById('piConcepto').value.trim() || null,
     monto, fecha_limite: fechaLimite, fecha_pago: fechaPago,
     monto_actualizado, recargos, total_pagado,
     notas: document.getElementById('piNotas').value.trim() || null,
+    declarada,
+    fecha_presentacion: declarada ? (document.getElementById('piFechaPresentacion').value || null) : null,
+    tipo_declaracion: declarada ? document.getElementById('piTipoDeclaracion').value : null,
+    numero_operacion: declarada ? (document.getElementById('piNumeroOperacion').value.trim() || null) : null,
+    importe_declarado: declarada ? (leerMonto(document.getElementById('piImporteDeclarado').value) || null) : null,
   };
   const { error } = STATE_piEditandoId
     ? await sb.from('fz_pagos_impuestos').update(payload).eq('id', STATE_piEditandoId)
@@ -3760,13 +3974,10 @@ async function renderConfiguracion() {
       ${tarjetaConfigHtml('cfgAuditoria', 'Auditoría', b ? `Quién creó, editó o eliminó cada registro en ${b.name}.` : 'Selecciona un negocio para ver su auditoría.')}
       ${tarjetaConfigHtml('cfgCierre', 'Cierre de periodo', b ? `Bloquea la captura de meses ya cerrados en ${b.name}.` : 'Selecciona un negocio para gestionar sus cierres.')}
       ${tarjetaConfigHtml('cfgActivosFijos', 'Activos Fijos', b ? `Equipo, mobiliario y su depreciación mensual automática en ${b.name}.` : 'Selecciona un negocio para gestionar sus activos.')}
-      ${b?.modo === 'fiscal_contable' ? tarjetaConfigHtml('cfgIvaFiscal', 'IVA y Retenciones', `IVA Acreditable/Trasladado y retenciones de ISR/IVA por categoría, en ${b.name}.`) : ''}
       ${b?.modo === 'fiscal_contable' ? tarjetaConfigHtml('cfgBalanza', 'Balanza de Comprobación', `Saldos iniciales, movimientos y saldos finales de todas las cuentas en ${b.name}.`) : ''}
       ${b ? tarjetaConfigHtml('cfgLibroDiario', 'Libro Diario', `Todos los movimientos de ${b.name} en formato Cargo/Abono, para auditorías o revisión completa por periodo.`) : ''}
       ${tarjetaConfigHtml('cfgComparativo', 'Comparativo entre negocios', 'Ingresos, gastos y utilidad de todos tus negocios, lado a lado, para el mismo mes.')}
       ${tarjetaConfigHtml('cfgRecargos', 'Recargos y Actualización', 'Calculadora de INPC y recargos para impuestos pagados fuera de tiempo — aplica a cualquier negocio.')}
-      ${b ? tarjetaConfigHtml('cfgPagosImpuestos', 'Pagos de Impuestos', `Control de IVA, ISR, Retenciones y otros impuestos federales de ${b.name}, mes a mes.`) : ''}
-      ${b ? tarjetaConfigHtml('cfgIsrProvisional', 'Pago Provisional de ISR', `Cálculo mensual del ISR Provisional de ${b.name}, con la misma estructura que la declaración del SAT.`) : ''}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgUsuarios', 'Usuarios autorizados', 'Quién puede entrar a Finanzas y a qué negocios.') : ''}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgMfa', 'Autenticación de dos pasos', 'Protege tu cuenta con un código adicional al iniciar sesión.') : ''}
     </div>
@@ -3778,13 +3989,10 @@ async function renderConfiguracion() {
   const cierreBtn = document.getElementById('cfgCierre');
   if (cierreBtn) cierreBtn.addEventListener('click', () => { if (b) abrirModalCierrePeriodo(b.id); else toast('Selecciona un negocio primero.', 'error'); });
   ir('cfgActivosFijos', 'activosfijos');
-  ir('cfgIvaFiscal', 'ivafiscal');
   ir('cfgBalanza', 'balanza');
   ir('cfgLibroDiario', 'librodiario');
   ir('cfgComparativo', 'comparativo');
   ir('cfgRecargos', 'recargos');
-  ir('cfgPagosImpuestos', 'pagosimpuestos');
-  ir('cfgIsrProvisional', 'isrprovisional');
   const usuariosBtn = document.getElementById('cfgUsuarios');
   if (usuariosBtn) usuariosBtn.addEventListener('click', openUsuariosModal);
   const mfaBtn = document.getElementById('cfgMfa');
