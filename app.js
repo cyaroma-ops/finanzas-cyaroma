@@ -3789,7 +3789,7 @@ async function renderLibroDiario() {
     const resultado = await getLibroDiario(b.id, desde, hasta);
     ultimoResultado = resultado;
     const { filas, totalCargo, totalAbono } = resultado;
-    const cuadra = Math.abs(totalCargo - totalAbono) < 0.5;
+    const cuadra = Math.abs(totalCargo - totalAbono) < 0.01;
     document.getElementById('ldResumen').innerHTML = `
       <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;">
         <span>Movimientos: <strong>${filas.length}</strong></span>
@@ -9440,94 +9440,11 @@ async function getMovimientosCuenta(businessId, subcuentaIds, startDate, endDate
    y agregar su saldo correctamente a través del tiempo.
    ============================================================ */
 async function getLibroPartidaDoble(businessId, hastaFecha) {
-  const filas = [];
-  const push = (clave, nombre, tipo, fecha, cargo, abono) => {
-    if (!(Number(cargo)||0) && !(Number(abono)||0)) return;
-    filas.push({ clave, nombre, tipo, fecha, cargo: Number(cargo)||0, abono: Number(abono)||0 });
-  };
-
-  const [subcuentas, mayores, cuentasBanco, monedas] = await Promise.all([
-    loadSubcuentas(businessId), loadCuentasMayor(businessId),
-    sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).then(r=>r.data||[]),
-    sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).then(r=>r.data||[]),
-  ]);
-  const mayorDeSub = (subId) => { const s = subcuentas.find(x=>x.id===subId); return s ? mayores.find(m=>m.id===s.cuenta_mayor_id) : null; };
-  const nombreSub = (id) => subcuentas.find(s=>s.id===id)?.nombre || '(cuenta eliminada)';
-  const tipoDeSub = (id) => mayorDeSub(id)?.tipo || 'activo';
-  const nombreBanco = (id) => cuentasBanco.find(c=>c.id===id)?.nombre || 'Banco';
-  const nombreMoneda = (id) => monedas.find(m=>m.id===id)?.nombre || 'Efectivo';
-  const pushSub = (subId, fecha, cargo, abono) => push('sub:'+subId, nombreSub(subId), tipoDeSub(subId), fecha, cargo, abono);
-
-  // 1. Pólizas de Diario (ya están en formato cargo/abono, se toman directo)
-  const { data: polizas } = await sb.from('fz_polizas').select('id,fecha').eq('business_id', businessId).lte('fecha', hastaFecha);
-  const polizaIds = (polizas||[]).map(p=>p.id);
-  const polizaFechaMap = Object.fromEntries((polizas||[]).map(p=>[p.id,p.fecha]));
-  const { data: lineasPoliza } = polizaIds.length ? await sb.from('fz_polizas_lineas').select('*').in('poliza_id', polizaIds) : { data: [] };
-  (lineasPoliza||[]).forEach(l => {
-    const fecha = polizaFechaMap[l.poliza_id];
-    if (!fecha) return;
-    if (l.cuenta_tipo === 'banco') push('banco:'+l.cuenta_ref_id, `Banco: ${nombreBanco(l.cuenta_ref_id)}`, 'activo', fecha, l.cargo, l.abono);
-    else if (l.cuenta_tipo === 'efectivo') push('efectivo:'+l.cuenta_ref_id, `Efectivo: ${nombreMoneda(l.cuenta_ref_id)}`, 'activo', fecha, l.cargo, l.abono);
-    else if (l.cuenta_tipo === 'proveedor' || l.cuenta_tipo === 'proveedor_provision') push('proveedores', 'Proveedores', 'pasivo', fecha, l.cargo, l.abono);
-    else if (l.cuenta_tipo === 'cliente') push('clientes', 'Clientes', 'activo', fecha, l.cargo, l.abono);
-    else pushSub(l.subcuenta_id, fecha, l.cargo, l.abono);
-  });
-
-  // 2. Facturas de Proveedores (al registrarse): Dr [desglose] + Dr IVA Acreditable + Cr Retenciones, Cr Proveedores.
-  const { data: facturasProv } = await sb.from('fz_proveedores').select('*').eq('business_id', businessId).lte('fecha', hastaFecha);
-  (facturasProv||[]).forEach(f => {
-    if (f.origen_poliza_id) return; // ya se contabilizó como provisión en Pólizas, no se duplica
-    desgloseLineas(f.desglose).forEach(linea => pushSub(linea.subcuenta_id, f.fecha, Number(linea.monto)||0, 0));
-    if (f.aplica_iva && Number(f.iva_monto)) push('iva_acreditable', 'IVA Acreditable', 'activo', f.fecha, Number(f.iva_monto), 0);
-    if (f.aplica_retencion && Number(f.retencion_isr_monto)) push('ret_isr:'+(f.retencion_categoria||'Sin categoría'), `Retención ISR — ${f.retencion_categoria||'Sin categoría'}`, 'pasivo', f.fecha, 0, Number(f.retencion_isr_monto));
-    if (f.aplica_retencion && Number(f.retencion_iva_monto)) push('ret_iva:'+(f.retencion_categoria||'Sin categoría'), `Retención IVA — ${f.retencion_categoria||'Sin categoría'}`, 'pasivo', f.fecha, 0, Number(f.retencion_iva_monto));
-    push('proveedores', 'Proveedores', 'pasivo', f.fecha, 0, Number(f.importe)||0);
-  });
-
-  // 3. Facturas de Clientes (al registrarse): Dr Clientes, Cr [líneas] + Cr IVA Trasladado.
-  const { data: facturasCli } = await sb.from('fz_facturas_clientes').select('*').eq('business_id', businessId).lte('fecha', hastaFecha);
-  if ((facturasCli||[]).length) {
-    const { data: lineasCli } = await sb.from('fz_facturas_clientes_lineas').select('*').in('factura_id', facturasCli.map(f=>f.id));
-    (facturasCli||[]).forEach(f => {
-      push('clientes', 'Clientes', 'activo', f.fecha, Number(f.total)||0, 0);
-      (lineasCli||[]).filter(l=>l.factura_id===f.id).forEach(l => pushSub(l.subcuenta_id, f.fecha, 0, Number(l.importe)||0));
-      if (f.aplica_iva && Number(f.iva_monto)) push('iva_trasladado', 'IVA Trasladado', 'pasivo', f.fecha, 0, Number(f.iva_monto));
-    });
-  }
-
-  // 4. Movimientos de Bancos y Efectivo: cada uno según cómo se clasificó al capturarlo.
-  const procesarMovimientos = (movs, esBanco) => {
-    (movs||[]).forEach(m => {
-      const claveOrigen = esBanco ? 'banco:'+m.cuenta_id : 'efectivo:'+m.moneda_id;
-      const nombreOrigen = esBanco ? `Banco: ${nombreBanco(m.cuenta_id)}` : `Efectivo: ${nombreMoneda(m.moneda_id)}`;
-      if (Number(m.cargos)) {
-        if (m.tipo_salida === 'proveedor') push('proveedores', 'Proveedores', 'pasivo', m.fecha, Number(m.cargos), 0);
-        else if (m.tipo_salida === 'gasto') {
-          const subtotal = m.aplica_iva ? (Number(m.subtotal)||0) : Number(m.cargos);
-          pushSub(m.subcuenta_id, m.fecha, subtotal, 0);
-          if (m.aplica_iva && Number(m.iva_monto)) push('iva_acreditable', 'IVA Acreditable', 'activo', m.fecha, Number(m.iva_monto), 0);
-        }
-        else if (m.tipo_salida === 'cliente') push('clientes', 'Clientes', 'activo', m.fecha, Number(m.cargos), 0);
-        else if (m.tipo_salida === 'traspaso') push('traspasos', 'Traspasos entre cuentas', 'activo', m.fecha, Number(m.cargos), 0);
-        else push('sin_clasificar', 'Sin clasificar (revisar)', 'gasto', m.fecha, Number(m.cargos), 0);
-        push(claveOrigen, nombreOrigen, 'activo', m.fecha, 0, Number(m.cargos));
-      }
-      if (Number(m.depositos)) {
-        push(claveOrigen, nombreOrigen, 'activo', m.fecha, Number(m.depositos), 0);
-        if (m.tipo_entrada === 'cliente') push('clientes', 'Clientes', 'activo', m.fecha, 0, Number(m.depositos));
-        else if (m.tipo_entrada === 'traspaso') push('traspasos', 'Traspasos entre cuentas', 'activo', m.fecha, 0, Number(m.depositos));
-        else push('sin_clasificar', 'Sin clasificar (revisar)', 'gasto', m.fecha, 0, Number(m.depositos));
-      }
-    });
-  };
-  const [bancosMovQ, efvoMovQ] = await Promise.all([
-    sb.from('fz_bancos_mov').select('*').eq('business_id', businessId).lte('fecha', hastaFecha),
-    sb.from('fz_efectivo_mov').select('*').eq('business_id', businessId).lte('fecha', hastaFecha),
-  ]);
-  procesarMovimientos(bancosMovQ.data, true);
-  procesarMovimientos(efvoMovQ.data, false);
-
-  return { filas, mayores, subcuentas };
+  // Envoltorio delgado: consume la misma reconstrucción que ahora usa el diagnóstico de
+  // descuadres, para que Balanza y el diagnóstico NUNCA puedan mostrar cifras distintas.
+  const { filas, mayores, subcuentas } = await getLibroPartidaDobleConOrigen(businessId, hastaFecha);
+  const filasBalanza = filas.map(f => ({ clave: f.clave, nombre: f.cuenta, tipo: f.tipo, fecha: f.fecha, cargo: f.cargo, abono: f.abono }));
+  return { filas: filasBalanza, mayores, subcuentas };
 }
 
 /* ============================================================
@@ -9539,9 +9456,9 @@ async function getLibroPartidaDoble(businessId, hastaFecha) {
    ============================================================ */
 async function getLibroPartidaDobleConOrigen(businessId, hastaFecha) {
   const filas = [];
-  const push = (origen, cargo, abono) => {
+  const push = (origen, clave, tipo, cargo, abono) => {
     if (!(Number(cargo)||0) && !(Number(abono)||0)) return;
-    filas.push({ ...origen, cargo: Number(cargo)||0, abono: Number(abono)||0 });
+    filas.push({ ...origen, clave, tipo, cargo: Number(cargo)||0, abono: Number(abono)||0 });
   };
 
   const [subcuentas, mayores, cuentasBanco, monedas, clientes] = await Promise.all([
@@ -9552,6 +9469,7 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha) {
   ]);
   const mayorDeSub = (subId) => { const s = subcuentas.find(x=>x.id===subId); return s ? mayores.find(m=>m.id===s.cuenta_mayor_id) : null; };
   const nombreSub = (id) => subcuentas.find(s=>s.id===id)?.nombre || '(cuenta eliminada)';
+  const tipoDeSub = (id) => mayorDeSub(id)?.tipo || 'activo';
   const nombreBanco = (id) => cuentasBanco.find(c=>c.id===id)?.nombre || 'Banco';
   const nombreMoneda = (id) => monedas.find(m=>m.id===id)?.nombre || 'Efectivo';
   const nombreCliente = (id) => { const c = clientes.find(x=>x.id===id); return c ? (c.razon_social || c.nombre_comercial) : '(cliente eliminado)'; };
@@ -9564,8 +9482,12 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha) {
   (lineasPoliza||[]).forEach(l => {
     const p = polizaMap[l.poliza_id];
     if (!p) return;
-    const origen = { modulo: 'Póliza de Diario', tipoOrigen: 'poliza', id: p.id, fecha: p.fecha, referencia: `Póliza #${p.numero ?? ''}`, detalle: p.concepto || '', cuenta: l.cuenta_tipo==='subcuenta' ? nombreSub(l.subcuenta_id) : (l.cuenta_tipo==='banco'?`Banco: ${nombreBanco(l.cuenta_ref_id)}`:(l.cuenta_tipo==='efectivo'?`Efectivo: ${nombreMoneda(l.cuenta_ref_id)}`:l.cuenta_tipo)) };
-    push(origen, l.cargo, l.abono);
+    const origen = { modulo: 'Póliza de Diario', tipoOrigen: 'poliza', id: p.id, fecha: p.fecha, referencia: `Póliza #${p.numero ?? ''}`, detalle: p.concepto || '' };
+    if (l.cuenta_tipo === 'banco') push({ ...origen, cuenta: `Banco: ${nombreBanco(l.cuenta_ref_id)}` }, 'banco:'+l.cuenta_ref_id, 'activo', l.cargo, l.abono);
+    else if (l.cuenta_tipo === 'efectivo') push({ ...origen, cuenta: `Efectivo: ${nombreMoneda(l.cuenta_ref_id)}` }, 'efectivo:'+l.cuenta_ref_id, 'activo', l.cargo, l.abono);
+    else if (l.cuenta_tipo === 'proveedor' || l.cuenta_tipo === 'proveedor_provision') push({ ...origen, cuenta: 'Proveedores' }, 'proveedores', 'pasivo', l.cargo, l.abono);
+    else if (l.cuenta_tipo === 'cliente') push({ ...origen, cuenta: 'Clientes' }, 'clientes', 'activo', l.cargo, l.abono);
+    else push({ ...origen, cuenta: nombreSub(l.subcuenta_id) }, 'sub:'+l.subcuenta_id, tipoDeSub(l.subcuenta_id), l.cargo, l.abono);
   });
 
   // 2. Facturas de Proveedores — Dr [desglose] + Dr IVA Acreditable + Cr Retenciones, Cr Proveedores.
@@ -9573,11 +9495,11 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha) {
   (facturasProv||[]).forEach(f => {
     if (f.origen_poliza_id) return; // ya se contabilizó como provisión en Pólizas
     const base = { modulo: 'Factura de Proveedor', tipoOrigen: 'factura_proveedor', id: f.id, fecha: f.fecha, referencia: f.factura || 's/f', detalle: f.proveedor || '' };
-    desgloseLineas(f.desglose).forEach(linea => push({ ...base, cuenta: nombreSub(linea.subcuenta_id) }, Number(linea.monto)||0, 0));
-    if (f.aplica_iva && Number(f.iva_monto)) push({ ...base, cuenta: 'IVA Acreditable' }, Number(f.iva_monto), 0);
-    if (f.aplica_retencion && Number(f.retencion_isr_monto)) push({ ...base, cuenta: `Retención ISR — ${f.retencion_categoria||'Sin categoría'}` }, 0, Number(f.retencion_isr_monto));
-    if (f.aplica_retencion && Number(f.retencion_iva_monto)) push({ ...base, cuenta: `Retención IVA — ${f.retencion_categoria||'Sin categoría'}` }, 0, Number(f.retencion_iva_monto));
-    push({ ...base, cuenta: 'Proveedores' }, 0, Number(f.importe)||0);
+    desgloseLineas(f.desglose).forEach(linea => push({ ...base, cuenta: nombreSub(linea.subcuenta_id) }, 'sub:'+linea.subcuenta_id, tipoDeSub(linea.subcuenta_id), Number(linea.monto)||0, 0));
+    if (f.aplica_iva && Number(f.iva_monto)) push({ ...base, cuenta: 'IVA Acreditable' }, 'iva_acreditable', 'activo', Number(f.iva_monto), 0);
+    if (f.aplica_retencion && Number(f.retencion_isr_monto)) push({ ...base, cuenta: `Retención ISR — ${f.retencion_categoria||'Sin categoría'}` }, 'ret_isr:'+(f.retencion_categoria||'Sin categoría'), 'pasivo', 0, Number(f.retencion_isr_monto));
+    if (f.aplica_retencion && Number(f.retencion_iva_monto)) push({ ...base, cuenta: `Retención IVA — ${f.retencion_categoria||'Sin categoría'}` }, 'ret_iva:'+(f.retencion_categoria||'Sin categoría'), 'pasivo', 0, Number(f.retencion_iva_monto));
+    push({ ...base, cuenta: 'Proveedores' }, 'proveedores', 'pasivo', 0, Number(f.importe)||0);
   });
 
   // 3. Facturas de Clientes — Dr Clientes, Cr [líneas] + Cr IVA Trasladado.
@@ -9586,9 +9508,9 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha) {
     const { data: lineasCli } = await sb.from('fz_facturas_clientes_lineas').select('*').in('factura_id', facturasCli.map(f=>f.id));
     (facturasCli||[]).forEach(f => {
       const base = { modulo: 'Factura de Cliente', tipoOrigen: 'factura_cliente', id: f.id, fecha: f.fecha, referencia: `Folio #${f.folio}`, detalle: nombreCliente(f.cliente_id) };
-      push({ ...base, cuenta: 'Clientes' }, Number(f.total)||0, 0);
-      (lineasCli||[]).filter(l=>l.factura_id===f.id).forEach(l => push({ ...base, cuenta: nombreSub(l.subcuenta_id) }, 0, Number(l.importe)||0));
-      if (f.aplica_iva && Number(f.iva_monto)) push({ ...base, cuenta: 'IVA Trasladado' }, 0, Number(f.iva_monto));
+      push({ ...base, cuenta: 'Clientes' }, 'clientes', 'activo', Number(f.total)||0, 0);
+      (lineasCli||[]).filter(l=>l.factura_id===f.id).forEach(l => push({ ...base, cuenta: nombreSub(l.subcuenta_id) }, 'sub:'+l.subcuenta_id, tipoDeSub(l.subcuenta_id), 0, Number(l.importe)||0));
+      if (f.aplica_iva && Number(f.iva_monto)) push({ ...base, cuenta: 'IVA Trasladado' }, 'iva_trasladado', 'pasivo', 0, Number(f.iva_monto));
     });
   }
 
@@ -9598,23 +9520,29 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha) {
   // real si el tipo de cambio usado en cada lado no fue idéntico.
   const procesarMovimientos = (movs, esBanco, tipoOrigenTag, moduloTag) => {
     (movs||[]).forEach(m => {
-      const claveOrigen = esBanco ? `Banco: ${nombreBanco(m.cuenta_id)}` : `Efectivo: ${nombreMoneda(m.moneda_id)}`;
+      const claveOrigenCuenta = esBanco ? 'banco:'+m.cuenta_id : 'efectivo:'+m.moneda_id;
+      const nombreOrigenCuenta = esBanco ? `Banco: ${nombreBanco(m.cuenta_id)}` : `Efectivo: ${nombreMoneda(m.moneda_id)}`;
       const base = { modulo: moduloTag, tipoOrigen: tipoOrigenTag, id: m.id, fecha: m.fecha, referencia: m.concepto || m.descripcion || 's/ref', detalle: m.proveedor || m.descripcion || '', cuentaId: m.cuenta_id, monedaId: m.moneda_id };
       if (Number(m.cargos)) {
-        let cuentaContraria = 'Sin clasificar (revisar)';
-        if (m.tipo_salida === 'proveedor') cuentaContraria = 'Proveedores';
-        else if (m.tipo_salida === 'gasto') cuentaContraria = nombreSub(m.subcuenta_id);
-        else if (m.tipo_salida === 'cliente') cuentaContraria = 'Clientes';
-        else if (m.tipo_salida === 'traspaso') cuentaContraria = 'Traspasos entre cuentas';
-        push({ ...base, cuenta: cuentaContraria }, Number(m.cargos), 0);
-        push({ ...base, cuenta: claveOrigen }, 0, Number(m.cargos));
+        let cuentaContraria = 'Sin clasificar (revisar)', claveContraria = 'sin_clasificar', tipoContraria = 'gasto';
+        let subtotalContraria = Number(m.cargos);
+        if (m.tipo_salida === 'proveedor') { cuentaContraria = 'Proveedores'; claveContraria = 'proveedores'; tipoContraria = 'pasivo'; }
+        else if (m.tipo_salida === 'gasto') {
+          cuentaContraria = nombreSub(m.subcuenta_id); claveContraria = 'sub:'+m.subcuenta_id; tipoContraria = tipoDeSub(m.subcuenta_id);
+          subtotalContraria = m.aplica_iva ? (Number(m.subtotal)||0) : Number(m.cargos);
+        }
+        else if (m.tipo_salida === 'cliente') { cuentaContraria = 'Clientes'; claveContraria = 'clientes'; tipoContraria = 'activo'; }
+        else if (m.tipo_salida === 'traspaso') { cuentaContraria = 'Traspasos entre cuentas'; claveContraria = 'traspasos'; tipoContraria = 'activo'; }
+        push({ ...base, cuenta: cuentaContraria }, claveContraria, tipoContraria, subtotalContraria, 0);
+        if (m.tipo_salida === 'gasto' && m.aplica_iva && Number(m.iva_monto)) push({ ...base, cuenta: 'IVA Acreditable' }, 'iva_acreditable', 'activo', Number(m.iva_monto), 0);
+        push({ ...base, cuenta: nombreOrigenCuenta }, claveOrigenCuenta, 'activo', 0, Number(m.cargos));
       }
       if (Number(m.depositos)) {
-        push({ ...base, cuenta: claveOrigen }, Number(m.depositos), 0);
-        let cuentaContraria = 'Sin clasificar (revisar)';
-        if (m.tipo_entrada === 'cliente') cuentaContraria = 'Clientes';
-        else if (m.tipo_entrada === 'traspaso') cuentaContraria = 'Traspasos entre cuentas';
-        push({ ...base, cuenta: cuentaContraria }, 0, Number(m.depositos));
+        push({ ...base, cuenta: nombreOrigenCuenta }, claveOrigenCuenta, 'activo', Number(m.depositos), 0);
+        let cuentaContraria = 'Sin clasificar (revisar)', claveContraria = 'sin_clasificar', tipoContraria = 'gasto';
+        if (m.tipo_entrada === 'cliente') { cuentaContraria = 'Clientes'; claveContraria = 'clientes'; tipoContraria = 'activo'; }
+        else if (m.tipo_entrada === 'traspaso') { cuentaContraria = 'Traspasos entre cuentas'; claveContraria = 'traspasos'; tipoContraria = 'activo'; }
+        push({ ...base, cuenta: cuentaContraria }, claveContraria, tipoContraria, 0, Number(m.depositos));
       }
     });
   };
@@ -9634,7 +9562,7 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha) {
   const traspasoGrupos = {};
   traspasos.forEach(m => { (traspasoGrupos[m.traspaso_id] = traspasoGrupos[m.traspaso_id] || []).push(m); });
 
-  return { filas, traspasoGrupos, polizas: polizaMap };
+  return { filas, traspasoGrupos, polizas: polizaMap, mayores, subcuentas };
 }
 
 // Agrupa por documento de origen y busca cuáles no cuadran internamente (Cargo ≠ Abono dentro
