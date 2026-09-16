@@ -235,6 +235,7 @@ h1,h2,h3,.serif{font-family:'Cormorant Garamond',serif;}
 }
 .pl-sticky-summary{position:sticky;top:79px;z-index:6;background:var(--paper);padding-top:10px;margin:-10px -32px 18px;padding-left:32px;padding-right:32px;padding-bottom:4px;}
 #impuestosTabBar{position:sticky;top:79px;z-index:6;background:var(--paper);padding:10px 32px 10px;margin:-10px -32px 14px;}
+#sec-isrprovisional > .tag-row,#sec-ivafiscal > .tag-row{position:sticky;top:131px;z-index:5;background:var(--paper);padding:10px 0;margin:-10px 0 4px;}
 .topbar h2{font-size:24px;color:var(--navy-1);}
 .topbar .sub{font-size:12.5px;color:var(--muted);margin-top:2px;}
 .topbar-actions{display:flex;align-items:center;gap:10px;}
@@ -1423,6 +1424,11 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <label>Fecha en que se pagó (vacío = pendiente)</label>
         <input type="date" id="piFechaPago">
       </div>
+    </div>
+    <div class="field" id="piPagadoDesdeWrap" style="display:none;">
+      <label>Pagado desde</label>
+      <select id="piPagadoDesde"></select>
+      <div style="font-size:11px;color:var(--muted);margin-top:3px;">Para reflejar el pago también en Bancos/Efectivo y en la póliza contable</div>
     </div>
     <div id="piRecargoPreview"></div>
     <div style="background:#f7f9fc;border:1px solid var(--line);border-radius:9px;padding:12px 14px;margin:14px 0;">

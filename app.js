@@ -1975,6 +1975,102 @@ document.getElementById('darDeBajaActivoFijo').addEventListener('click', async (
 
 // Genera la póliza de depreciación del mes en curso para cada activo activo que aún no la
 // tenga — línea recta, mismo patrón que las facturas recurrentes de Clientes.
+/* ============================================================
+   PROVISIÓN CONTABLE AUTOMÁTICA — ISR Provisional
+   Tratamiento: Pagos provisionales de ISR (Activo) / ISR provisional por
+   pagar (Pasivo). No toca Estado de Resultados. Idempotente por
+   negocio+periodo+tipo — solo ajusta la diferencia. Respeta cierre de periodo.
+   ============================================================ */
+const CUENTA_ISR_PROV_ACTIVO = 'Pagos provisionales de ISR';
+const CUENTA_ISR_PROV_PASIVO = 'ISR provisional por pagar';
+
+// Busca (o crea) una subcuenta por nombre — el nombre nunca queda amarrado a un
+// id fijo en código, así que después se puede remapear desde Configuración.
+async function obtenerOCrearSubcuentaPorNombre(businessId, nombre, tipo) {
+  const { data: mayorExistente } = await sb.from('fz_cuentas_mayor').select('id').eq('business_id', businessId).ilike('nombre', nombre).maybeSingle();
+  let mayorId = mayorExistente?.id;
+  if (!mayorId) {
+    const { data: nuevaMayor, error } = await sb.from('fz_cuentas_mayor').insert({ business_id: businessId, nombre, tipo }).select().single();
+    if (error) throw error;
+    mayorId = nuevaMayor.id;
+  }
+  const { data: subExistente } = await sb.from('fz_subcuentas').select('id').eq('cuenta_mayor_id', mayorId).ilike('nombre', nombre).maybeSingle();
+  if (subExistente) return subExistente.id;
+  const { data: nuevaSub, error: e2 } = await sb.from('fz_subcuentas').insert({ business_id: businessId, cuenta_mayor_id: mayorId, nombre }).select().single();
+  if (e2) throw e2;
+  return nuevaSub.id;
+}
+
+// Sincroniza la provisión contable de UN registro de ISR Provisional ya determinado.
+// Idempotente: compara lo ya provisionado (suma de fz_provisiones_fiscales) contra el
+// monto actual — si coincide, no hace nada; si cambió, ajusta SOLO la diferencia.
+// Respeta cierre de periodo: si el periodo de la provisión ya está cerrado, no toca
+// nada y regresa estado 'cerrado_pendiente' para que se revise manualmente.
+async function sincronizarProvisionIsr(pagoImpuesto, businessId) {
+  if (pagoImpuesto.tipo_impuesto !== 'isr_provisional') return { estado: 'no_aplica' };
+  const fechaProvision = pagoImpuesto.periodo + '-28'; // dentro del mes, antes de fin de mes en todos los casos
+  if (await periodoEstaCerrado(businessId, fechaProvision)) return { estado: 'cerrado_pendiente' };
+
+  const { data: existentes } = await sb.from('fz_provisiones_fiscales').select('*').eq('pago_impuesto_id', pagoImpuesto.id).in('tipo', ['provision','ajuste','reversion']);
+  const totalProvisionado = (existentes||[]).reduce((s,p)=>s+Number(p.monto),0);
+  const diferencia = Number(pagoImpuesto.monto) - totalProvisionado;
+  if (Math.abs(diferencia) < 0.005) return { estado: 'al_corriente' };
+
+  const esPrimera = !(existentes||[]).length;
+  const esPositivo = diferencia > 0;
+  const monto = Math.abs(diferencia);
+  const subActivo = await obtenerOCrearSubcuentaPorNombre(businessId, CUENTA_ISR_PROV_ACTIVO, 'activo');
+  const subPasivo = await obtenerOCrearSubcuentaPorNombre(businessId, CUENTA_ISR_PROV_PASIVO, 'pasivo');
+  const concepto = esPrimera
+    ? `[Auto] Provisión ISR Provisional — ${pagoImpuesto.periodo}`
+    : `[Auto] Ajuste de provisión ISR Provisional — ${pagoImpuesto.periodo} (${esPositivo?'+':'−'}${fmt(monto)})`;
+
+  const { data: nuevaPoliza, error: errPoliza } = await sb.from('fz_polizas').insert({ business_id: businessId, fecha: fechaProvision, concepto }).select().single();
+  if (errPoliza) return { estado: 'error', error: errPoliza.message };
+  const lineas = esPositivo
+    ? [{ subcuenta_id: subActivo, cargo: monto, abono: 0 }, { subcuenta_id: subPasivo, cargo: 0, abono: monto }]
+    : [{ subcuenta_id: subPasivo, cargo: monto, abono: 0 }, { subcuenta_id: subActivo, cargo: 0, abono: monto }];
+  await sb.from('fz_polizas_lineas').insert(lineas.map((l,i) => ({ ...l, business_id: businessId, poliza_id: nuevaPoliza.id, cuenta_tipo: 'subcuenta', descripcion: concepto, orden: i })));
+  await sb.from('fz_provisiones_fiscales').insert({ business_id: businessId, pago_impuesto_id: pagoImpuesto.id, tipo: esPrimera?'provision':(esPositivo?'ajuste':'reversion'), monto: diferencia, poliza_id: nuevaPoliza.id, fecha: fechaProvision });
+  return { estado: 'provisionado', monto: diferencia, poliza_id: nuevaPoliza.id };
+}
+
+// Para la vista previa de retroactivos: qué se crearía por cada periodo, SIN crear nada todavía.
+async function previsualizarProvisionesIsr(businessId, anio) {
+  const { data: pagos } = await sb.from('fz_pagos_impuestos').select('*').eq('business_id', businessId).eq('tipo_impuesto', 'isr_provisional').like('periodo', `${anio}-%`).order('periodo');
+  const resultado = [];
+  for (const p of (pagos||[])) {
+    const { data: existentes } = await sb.from('fz_provisiones_fiscales').select('monto').eq('pago_impuesto_id', p.id).in('tipo', ['provision','ajuste','reversion']);
+    const totalProvisionado = (existentes||[]).reduce((s,x)=>s+Number(x.monto),0);
+    const diferencia = Number(p.monto) - totalProvisionado;
+    if (Math.abs(diferencia) < 0.005) continue;
+    const fechaProvision = p.periodo + '-28';
+    const cerrado = await periodoEstaCerrado(businessId, fechaProvision);
+    resultado.push({ pago: p, diferencia, cerrado, esPrimera: !(existentes||[]).length });
+  }
+  return resultado;
+}
+
+// Al registrar el pago de un ISR Provisional ya provisionado: Debe ISR provisional por
+// pagar / Haber Banco o Efectivo elegido — liquida el pasivo, nunca vuelve a crear el
+// gasto ni afecta de nuevo el resultado fiscal.
+async function generarPolizaPagoIsr(pagoImpuesto, businessId, cuentaTipo, cuentaId) {
+  if (pagoImpuesto.tipo_impuesto !== 'isr_provisional' || !pagoImpuesto.fecha_pago) return;
+  if (!cuentaTipo || !cuentaId) return; // sin cuenta elegida, no se genera el asiento de pago
+  const { data: yaPagado } = await sb.from('fz_provisiones_fiscales').select('id').eq('pago_impuesto_id', pagoImpuesto.id).eq('tipo', 'pago').maybeSingle();
+  if (yaPagado) return; // idempotente — ya se generó antes
+  if (await periodoEstaCerrado(businessId, pagoImpuesto.fecha_pago)) return;
+  const subPasivo = await obtenerOCrearSubcuentaPorNombre(businessId, CUENTA_ISR_PROV_PASIVO, 'pasivo');
+  const monto = Number(pagoImpuesto.monto); // el principal — actualización/recargos se tratan aparte
+  const concepto = `[Auto] Pago ISR Provisional — ${pagoImpuesto.periodo}`;
+  const { data: nuevaPoliza, error } = await sb.from('fz_polizas').insert({ business_id: businessId, fecha: pagoImpuesto.fecha_pago, concepto }).select().single();
+  if (error) return;
+  const lineaPasivo = { business_id: businessId, poliza_id: nuevaPoliza.id, cuenta_tipo: 'subcuenta', subcuenta_id: subPasivo, cargo: monto, abono: 0, descripcion: concepto, orden: 0 };
+  const lineaBanco = { business_id: businessId, poliza_id: nuevaPoliza.id, cuenta_tipo: cuentaTipo, cuenta_ref_id: cuentaId, cargo: 0, abono: monto, descripcion: concepto, orden: 1 };
+  await sb.from('fz_polizas_lineas').insert([lineaPasivo, lineaBanco]);
+  await sb.from('fz_provisiones_fiscales').insert({ business_id: businessId, pago_impuesto_id: pagoImpuesto.id, tipo: 'pago', monto, poliza_id: nuevaPoliza.id, fecha: pagoImpuesto.fecha_pago });
+}
+
 async function generarDepreciacionesSiCorresponde(businessId) {
   const hoy = todayStr();
   const periodoActual = hoy.slice(0, 7);
@@ -3048,11 +3144,14 @@ async function autoGenerarPagosImpuestos(b, anio) {
       if (monto > 0.004) {
         const { data } = await sb.from('fz_pagos_impuestos').insert({ business_id: b.id, periodo, tipo_impuesto: tipo, concepto, monto, fecha_limite: fechaLimite, fecha_pago: null }).select().single();
         if (data) existentes.push(data);
+        return data || null;
       }
+      return null;
     } else if (!existente.fecha_pago && Math.abs(Number(existente.monto) - monto) > 0.5) {
       await sb.from('fz_pagos_impuestos').update({ monto }).eq('id', existente.id);
       existente.monto = monto;
     }
+    return existente;
   };
   let acumuladoIsr = 0;
   for (let m = 1; m <= hastaMes; m++) {
@@ -3070,12 +3169,16 @@ async function autoGenerarPagosImpuestos(b, anio) {
 
     const calcIsr = await computeIsrProvisional(b.id, periodo, acumuladoIsr);
     acumuladoIsr += calcIsr.ingresosMesAjustado;
-    await registrar(periodo, 'isr_provisional', null, calcIsr.impuestoACargo, fechaLimite);
+    const filaIsr = await registrar(periodo, 'isr_provisional', null, calcIsr.impuestoACargo, fechaLimite);
+    // Solo se provisiona automático, sin pedir confirmación, el MES ACTUAL — cualquier mes
+    // anterior (aunque esté abierto) pasa primero por la vista previa de retroactivos.
+    if (filaIsr && periodo === todayStr().slice(0,7)) await sincronizarProvisionIsr(filaIsr, b.id);
   }
 }
 
 async function pintarPagosImpuestos(contenido, b) {
   const { data: pagos } = await sb.from('fz_pagos_impuestos').select('*').eq('business_id', b.id).like('periodo', `${STATE_piAnio}-%`).order('periodo', { ascending: true });
+  const pendientesProvision = await previsualizarProvisionesIsr(b.id, STATE_piAnio);
   const hoy = todayStr();
 
   const estatusDe = (p) => {
@@ -3092,6 +3195,26 @@ async function pintarPagosImpuestos(contenido, b) {
 
   contenido.innerHTML = `
     <p style="font-size:12px;color:var(--muted);margin-bottom:14px;max-width:700px;">El IVA a cargo de cada mes se agrega solo (viene del cálculo de IVA y Retenciones) — los demás impuestos (ISR Provisional, Retenciones, Otro) los registras con el botón de abajo. Marca la fecha de pago directo en la tabla; si fue tarde, se calculan solos la actualización y los recargos.</p>
+    ${pendientesProvision.length ? `
+    <div class="card" style="background:#fff8ec;border:1px solid #f0d99a;">
+      <div class="card-head"><h3>Provisiones fiscales pendientes de contabilizar</h3></div>
+      <p style="font-size:12px;color:#6b5518;margin-bottom:10px;">El ISR Provisional de estos meses ya está determinado, pero su efecto contable (Activo/Pasivo) todavía no se ha registrado. Revisa cada uno antes de generarlo — sobre todo si el periodo pudo haberse usado como dato de prueba.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Periodo</th><th>Diferencia a provisionar</th><th>Póliza propuesta</th><th>Estatus</th><th></th></tr></thead>
+          <tbody>
+            ${pendientesProvision.map((pp,idx) => `<tr>
+              <td>${pp.pago.periodo}</td>
+              <td class="num" style="font-weight:600;">${pp.diferencia>=0?'+':'−'}${fmt(Math.abs(pp.diferencia))}</td>
+              <td style="font-size:12px;color:var(--muted);">Debe ${pp.diferencia>=0?CUENTA_ISR_PROV_ACTIVO:CUENTA_ISR_PROV_PASIVO} / Haber ${pp.diferencia>=0?CUENTA_ISR_PROV_PASIVO:CUENTA_ISR_PROV_ACTIVO} — ${fmt(Math.abs(pp.diferencia))}</td>
+              <td>${pp.cerrado ? '<span style="color:var(--red);font-size:12px;">Periodo cerrado — reabre para contabilizar</span>' : '<span style="color:var(--gold);font-size:12px;">Periodo abierto</span>'}</td>
+              <td>${pp.cerrado ? '' : `<button class="btn btn-gold btn-sm provision-generar-btn" data-idx="${idx}">Generar</button>`}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+      ${pendientesProvision.some(pp=>!pp.cerrado) ? `<button class="btn btn-ghost btn-sm" id="provisionGenerarTodasBtn" style="margin-top:10px;">Generar todas las abiertas</button>` : ''}
+    </div>` : ''}
     <div style="display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
       <div class="field" style="max-width:160px;margin-bottom:0;">
         <label>Año</label>
@@ -3146,6 +3269,26 @@ async function pintarPagosImpuestos(contenido, b) {
 
   document.getElementById('piAnioSel').addEventListener('change', async (e) => {
     STATE_piAnio = e.target.value;
+    renderPagosImpuestos();
+  });
+  contenido.querySelectorAll('.provision-generar-btn').forEach(btn => btn.addEventListener('click', async () => {
+    const pp = pendientesProvision[Number(btn.dataset.idx)];
+    if (!pp) return;
+    const r = await sincronizarProvisionIsr(pp.pago, b.id);
+    if (r.estado === 'error') { toast('Error: ' + r.error, 'error'); return; }
+    registrarAuditoria(b.id, 'crear', 'Impuestos', `Provisión de ISR Provisional ${pp.pago.periodo} generada — ${fmt(pp.diferencia)}`);
+    toast('Provisión generada.');
+    renderPagosImpuestos();
+  }));
+  const btnTodas = document.getElementById('provisionGenerarTodasBtn');
+  if (btnTodas) btnTodas.addEventListener('click', async () => {
+    if (!confirm(`Se generarán ${pendientesProvision.filter(pp=>!pp.cerrado).length} póliza(s) de provisión. ¿Continuar?`)) return;
+    for (const pp of pendientesProvision) {
+      if (pp.cerrado) continue;
+      await sincronizarProvisionIsr(pp.pago, b.id);
+    }
+    registrarAuditoria(b.id, 'crear', 'Impuestos', `Provisiones de ISR Provisional generadas en lote — ${STATE_piAnio}`);
+    toast('Provisiones generadas.');
     renderPagosImpuestos();
   });
   document.getElementById('piNuevoBtn').addEventListener('click', () => abrirModalPagoImpuesto(null, b));
@@ -3229,7 +3372,7 @@ async function guardarFechaPagoInline(p, fechaPago, b) {
   registrarAuditoria(b.id, 'editar', 'Pagos de Impuestos', `${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]} ${p.periodo} — fecha de pago actualizada`);
 }
 
-function abrirModalPagoImpuesto(pago, b) {
+async function abrirModalPagoImpuesto(pago, b) {
   STATE_piEditandoId = pago?.id || null;
   document.getElementById('piTitulo').textContent = pago ? 'Editar impuesto' : 'Registrar impuesto';
   document.getElementById('piTipo').value = pago?.tipo_impuesto || 'iva';
@@ -3248,6 +3391,24 @@ function abrirModalPagoImpuesto(pago, b) {
   document.getElementById('piNumeroOperacion').value = pago?.numero_operacion || '';
   document.getElementById('piImporteDeclarado').value = fmtInputVal(pago?.importe_declarado || pago?.monto || 0);
   document.getElementById('piDeclaracionCampos').style.display = document.getElementById('piDeclarada').checked ? 'block' : 'none';
+  // Pagado desde — solo aplica a ISR Provisional, para poder generar la póliza de pago
+  const [{ data: cuentasBanco }, { data: monedas }] = await Promise.all([
+    sb.from('fz_bancos_cuentas').select('*').eq('business_id', b.id).eq('activo', true),
+    sb.from('fz_efectivo_monedas').select('*').eq('business_id', b.id).eq('activo', true),
+  ]);
+  const selPagadoDesde = document.getElementById('piPagadoDesde');
+  selPagadoDesde.innerHTML = `<option value="">— elegir —</option>` +
+    (cuentasBanco||[]).map(c => `<option value="banco:${c.id}">Banco — ${c.nombre}</option>`).join('') +
+    (monedas||[]).map(m => `<option value="efectivo:${m.id}">Caja — ${m.nombre}</option>`).join('');
+  if (pago?.pagado_desde_tipo && pago?.pagado_desde_cuenta_id) selPagadoDesde.value = `${pago.pagado_desde_tipo}:${pago.pagado_desde_cuenta_id}`;
+  const actualizarVisibilidadPagadoDesde = () => {
+    const esIsr = document.getElementById('piTipo').value === 'isr_provisional';
+    const tienePago = !!document.getElementById('piFechaPago').value;
+    document.getElementById('piPagadoDesdeWrap').style.display = (esIsr && tienePago) ? 'block' : 'none';
+  };
+  document.getElementById('piTipo').onchange = actualizarVisibilidadPagadoDesde;
+  document.getElementById('piFechaPago').onchange = actualizarVisibilidadPagadoDesde;
+  actualizarVisibilidadPagadoDesde();
   actualizarVisibilidadTraerIva();
   if (!pago) sugerirFechaLimitePi();
   document.getElementById('modalPagoImpuesto').classList.add('show');
@@ -3300,6 +3461,8 @@ document.getElementById('piGuardarBtn').addEventListener('click', async () => {
   }
 
   const declarada = document.getElementById('piDeclarada').checked;
+  const pagadoDesdeVal = document.getElementById('piPagadoDesde').value; // "banco:id" | "efectivo:id" | ""
+  const [pagadoDesdeTipo, pagadoDesdeId] = pagadoDesdeVal ? pagadoDesdeVal.split(':') : [null, null];
   const payload = {
     business_id: b.id, periodo, tipo_impuesto: document.getElementById('piTipo').value,
     concepto: document.getElementById('piConcepto').value.trim() || null,
@@ -3311,11 +3474,21 @@ document.getElementById('piGuardarBtn').addEventListener('click', async () => {
     tipo_declaracion: declarada ? document.getElementById('piTipoDeclaracion').value : null,
     numero_operacion: declarada ? (document.getElementById('piNumeroOperacion').value.trim() || null) : null,
     importe_declarado: declarada ? (leerMonto(document.getElementById('piImporteDeclarado').value) || null) : null,
+    pagado_desde_tipo: pagadoDesdeTipo, pagado_desde_cuenta_id: pagadoDesdeId,
   };
-  const { error } = STATE_piEditandoId
-    ? await sb.from('fz_pagos_impuestos').update(payload).eq('id', STATE_piEditandoId)
-    : await sb.from('fz_pagos_impuestos').insert(payload);
-  if (error) { toast('Error: ' + error.message, 'error'); return; }
+  let filaGuardada;
+  if (STATE_piEditandoId) {
+    const { data, error } = await sb.from('fz_pagos_impuestos').update(payload).eq('id', STATE_piEditandoId).select().single();
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    filaGuardada = data;
+  } else {
+    const { data, error } = await sb.from('fz_pagos_impuestos').insert(payload).select().single();
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    filaGuardada = data;
+  }
+  if (filaGuardada && payload.tipo_impuesto === 'isr_provisional' && fechaPago && pagadoDesdeTipo) {
+    await generarPolizaPagoIsr(filaGuardada, b.id, pagadoDesdeTipo, pagadoDesdeId);
+  }
   registrarAuditoria(b.id, STATE_piEditandoId ? 'editar' : 'crear', 'Pagos de Impuestos', `${TIPO_IMPUESTO_LABEL[payload.tipo_impuesto]} — ${periodo}`);
   toast('Guardado.');
   document.getElementById('modalPagoImpuesto').classList.remove('show');
@@ -3746,17 +3919,17 @@ async function renderBalanza() {
   const totalSaldoActualD = listaCuentas.reduce((s,c)=>s+c.saldoActualDeudor,0);
   const totalSaldoActualA = listaCuentas.reduce((s,c)=>s+c.saldoActualAcreedor,0);
 
-  const cuadraCargos = Math.abs(totalCargos-totalAbonos) < 0.5;
-  const cuadraInicial = Math.abs(totalSaldoInicialD-totalSaldoInicialA) < 0.5;
-  const cuadraActual = Math.abs(totalSaldoActualD-totalSaldoActualA) < 0.5;
-  const cuadraPL = Math.abs(diferenciaVsPL) < 0.5;
+  const cuadraCargos = Math.abs(totalCargos-totalAbonos) < 0.01;
+  const cuadraInicial = Math.abs(totalSaldoInicialD-totalSaldoInicialA) < 0.01;
+  const cuadraActual = Math.abs(totalSaldoActualD-totalSaldoActualA) < 0.01;
+  const cuadraPL = Math.abs(diferenciaVsPL) < 0.01;
 
   // Activo = Pasivo + Capital Contable (con Resultado del ejercicio integrado)
   const totalActivoNeto = porTipo.activo.reduce((s,c)=>s+c.saldoActualNeto,0);
   const totalPasivoNeto = -porTipo.pasivo.reduce((s,c)=>s+c.saldoActualNeto,0);
   const totalCapitalRealNeto = -[...porTipo.capital, ...porTipo.resultados_anteriores, ...porTipo.resultado_manual].reduce((s,c)=>s+c.saldoActualNeto,0);
   const totalCapitalContable = totalCapitalRealNeto + utilidadEjercicio;
-  const cuadraBalanceGeneral = Math.abs(totalActivoNeto - (totalPasivoNeto + totalCapitalContable)) < 0.5;
+  const cuadraBalanceGeneral = Math.abs(totalActivoNeto - (totalPasivoNeto + totalCapitalContable)) < 0.01;
 
   const filaCuenta = (c) => `<tr>
     <td>${c.nombre}</td>
