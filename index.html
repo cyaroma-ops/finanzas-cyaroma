@@ -1387,6 +1387,18 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 </div>
 
 <!-- Modal: Pago de Impuesto -->
+<!-- Modal: Diagnóstico de descuadre (Balanza) -->
+<div class="modal-bg" id="modalDiagnosticoDescuadre">
+  <div class="modal" style="width:min(720px,96vw);max-height:88vh;overflow-y:auto;">
+    <h3>Origen de la diferencia</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px;">Herramienta de solo consulta — no corrige ni modifica nada. Encuentra qué documento(s) no cuadran internamente, usando la misma reconstrucción con la que se armó la Balanza.</p>
+    <div id="diagnosticoDescuadreBody"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="closeDiagnosticoDescuadre">Cerrar</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-bg" id="modalPagoImpuesto">
   <div class="modal" style="width:min(600px,95vw);">
     <h3 id="piTitulo">Registrar impuesto</h3>

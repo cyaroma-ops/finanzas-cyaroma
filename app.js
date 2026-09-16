@@ -4015,12 +4015,17 @@ async function renderBalanza() {
         <p style="font-size:12.5px;font-weight:700;color:var(--navy-1);margin-bottom:8px;">Verificaciones</p>
         <p style="font-size:12.5px;color:${cuadraInicial?'var(--green)':'var(--red)'};font-weight:600;margin-bottom:4px;">${cuadraInicial?'✓':'✗'} Total Saldo Inicial Deudor = Total Saldo Inicial Acreedor ${cuadraInicial?'':'— diferencia de '+fmt(Math.abs(totalSaldoInicialD-totalSaldoInicialA))}</p>
         <p style="font-size:12.5px;color:${cuadraCargos?'var(--green)':'var(--red)'};font-weight:600;margin-bottom:4px;">${cuadraCargos?'✓':'✗'} Total Cargos = Total Abonos ${cuadraCargos?'':'— diferencia de '+fmt(Math.abs(totalCargos-totalAbonos))}</p>
+        ${!cuadraCargos ? `<button class="btn btn-ghost btn-sm ver-origen-btn" style="margin-bottom:8px;">Ver origen de la diferencia</button>` : ''}
         <p style="font-size:12.5px;color:${cuadraActual?'var(--green)':'var(--red)'};font-weight:600;margin-bottom:4px;">${cuadraActual?'✓':'✗'} Total Saldo Actual Deudor = Total Saldo Actual Acreedor ${cuadraActual?'':'— diferencia de '+fmt(Math.abs(totalSaldoActualD-totalSaldoActualA))}</p>
+        ${!cuadraActual ? `<button class="btn btn-ghost btn-sm ver-origen-btn" style="margin-bottom:8px;">Ver origen de la diferencia</button>` : ''}
         <p style="font-size:12.5px;color:${cuadraPL?'var(--green)':'var(--gold)'};font-weight:600;margin-bottom:4px;">${cuadraPL?'✓':'⚠'} Resultado del ejercicio (${fmt(utilidadEjercicio)}) vs. Estado de Resultados Acumulado (${fmt(resumenPLCheck.utilidad)}) ${cuadraPL?'— coinciden exacto':'— diferencia de '+fmt(Math.abs(diferenciaVsPL))+'. Si usas el módulo de Ventas, esta diferencia es esperada: Ventas (y su ganancia cambiaria) todavía no pasan por partida doble, solo Pólizas/Facturas/Bancos/Efectivo. Si no usas Ventas para el ingreso, deberían coincidir exacto — avísame si no es así.'}</p>
         <p style="font-size:12.5px;color:${cuadraBalanceGeneral?'var(--green)':'var(--red)'};font-weight:600;">${cuadraBalanceGeneral?'✓':'✗'} Activo (${fmt(totalActivoNeto)}) = Pasivo + Capital Contable (${fmt(totalPasivoNeto+totalCapitalContable)}) ${cuadraBalanceGeneral?'':'— diferencia de '+fmt(Math.abs(totalActivoNeto-(totalPasivoNeto+totalCapitalContable)))}</p>
+        ${!cuadraBalanceGeneral ? `<button class="btn btn-ghost btn-sm ver-origen-btn" style="margin-top:8px;">Ver origen de la diferencia</button>` : ''}
       </div>
     </div>
   `;
+
+  contenido.querySelectorAll('.ver-origen-btn').forEach(btn => btn.addEventListener('click', () => abrirDiagnosticoDescuadre(b.id, end)));
 
   // Construye las filas para exportar (Excel/PDF), en el mismo orden y agrupación que la pantalla.
   const filasExport = [];
@@ -9524,6 +9529,214 @@ async function getLibroPartidaDoble(businessId, hastaFecha) {
 
   return { filas, mayores, subcuentas };
 }
+
+/* ============================================================
+   DIAGNÓSTICO DE DESCUADRES — "Ver origen de la diferencia"
+   Reconstruye lo mismo que getLibroPartidaDoble, pero etiquetando cada
+   renglón con su documento de origen, para poder agrupar y encontrar
+   exactamente qué documento (o par de traspaso) no cuadra internamente.
+   Es de solo lectura — nunca modifica nada, nunca corrige nada.
+   ============================================================ */
+async function getLibroPartidaDobleConOrigen(businessId, hastaFecha) {
+  const filas = [];
+  const push = (origen, cargo, abono) => {
+    if (!(Number(cargo)||0) && !(Number(abono)||0)) return;
+    filas.push({ ...origen, cargo: Number(cargo)||0, abono: Number(abono)||0 });
+  };
+
+  const [subcuentas, mayores, cuentasBanco, monedas, clientes] = await Promise.all([
+    loadSubcuentas(businessId), loadCuentasMayor(businessId),
+    sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).then(r=>r.data||[]),
+    sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).then(r=>r.data||[]),
+    loadClientes(businessId),
+  ]);
+  const mayorDeSub = (subId) => { const s = subcuentas.find(x=>x.id===subId); return s ? mayores.find(m=>m.id===s.cuenta_mayor_id) : null; };
+  const nombreSub = (id) => subcuentas.find(s=>s.id===id)?.nombre || '(cuenta eliminada)';
+  const nombreBanco = (id) => cuentasBanco.find(c=>c.id===id)?.nombre || 'Banco';
+  const nombreMoneda = (id) => monedas.find(m=>m.id===id)?.nombre || 'Efectivo';
+  const nombreCliente = (id) => { const c = clientes.find(x=>x.id===id); return c ? (c.razon_social || c.nombre_comercial) : '(cliente eliminado)'; };
+
+  // 1. Pólizas de Diario — cada póliza es un documento; sus líneas deberían cuadrar entre sí.
+  const { data: polizas } = await sb.from('fz_polizas').select('id,fecha,numero,concepto').eq('business_id', businessId).lte('fecha', hastaFecha);
+  const polizaIds = (polizas||[]).map(p=>p.id);
+  const polizaMap = Object.fromEntries((polizas||[]).map(p=>[p.id,p]));
+  const { data: lineasPoliza } = polizaIds.length ? await sb.from('fz_polizas_lineas').select('*').in('poliza_id', polizaIds) : { data: [] };
+  (lineasPoliza||[]).forEach(l => {
+    const p = polizaMap[l.poliza_id];
+    if (!p) return;
+    const origen = { modulo: 'Póliza de Diario', tipoOrigen: 'poliza', id: p.id, fecha: p.fecha, referencia: `Póliza #${p.numero ?? ''}`, detalle: p.concepto || '', cuenta: l.cuenta_tipo==='subcuenta' ? nombreSub(l.subcuenta_id) : (l.cuenta_tipo==='banco'?`Banco: ${nombreBanco(l.cuenta_ref_id)}`:(l.cuenta_tipo==='efectivo'?`Efectivo: ${nombreMoneda(l.cuenta_ref_id)}`:l.cuenta_tipo)) };
+    push(origen, l.cargo, l.abono);
+  });
+
+  // 2. Facturas de Proveedores — Dr [desglose] + Dr IVA Acreditable + Cr Retenciones, Cr Proveedores.
+  const { data: facturasProv } = await sb.from('fz_proveedores').select('*').eq('business_id', businessId).lte('fecha', hastaFecha);
+  (facturasProv||[]).forEach(f => {
+    if (f.origen_poliza_id) return; // ya se contabilizó como provisión en Pólizas
+    const base = { modulo: 'Factura de Proveedor', tipoOrigen: 'factura_proveedor', id: f.id, fecha: f.fecha, referencia: f.factura || 's/f', detalle: f.proveedor || '' };
+    desgloseLineas(f.desglose).forEach(linea => push({ ...base, cuenta: nombreSub(linea.subcuenta_id) }, Number(linea.monto)||0, 0));
+    if (f.aplica_iva && Number(f.iva_monto)) push({ ...base, cuenta: 'IVA Acreditable' }, Number(f.iva_monto), 0);
+    if (f.aplica_retencion && Number(f.retencion_isr_monto)) push({ ...base, cuenta: `Retención ISR — ${f.retencion_categoria||'Sin categoría'}` }, 0, Number(f.retencion_isr_monto));
+    if (f.aplica_retencion && Number(f.retencion_iva_monto)) push({ ...base, cuenta: `Retención IVA — ${f.retencion_categoria||'Sin categoría'}` }, 0, Number(f.retencion_iva_monto));
+    push({ ...base, cuenta: 'Proveedores' }, 0, Number(f.importe)||0);
+  });
+
+  // 3. Facturas de Clientes — Dr Clientes, Cr [líneas] + Cr IVA Trasladado.
+  const { data: facturasCli } = await sb.from('fz_facturas_clientes').select('*').eq('business_id', businessId).lte('fecha', hastaFecha);
+  if ((facturasCli||[]).length) {
+    const { data: lineasCli } = await sb.from('fz_facturas_clientes_lineas').select('*').in('factura_id', facturasCli.map(f=>f.id));
+    (facturasCli||[]).forEach(f => {
+      const base = { modulo: 'Factura de Cliente', tipoOrigen: 'factura_cliente', id: f.id, fecha: f.fecha, referencia: `Folio #${f.folio}`, detalle: nombreCliente(f.cliente_id) };
+      push({ ...base, cuenta: 'Clientes' }, Number(f.total)||0, 0);
+      (lineasCli||[]).filter(l=>l.factura_id===f.id).forEach(l => push({ ...base, cuenta: nombreSub(l.subcuenta_id) }, 0, Number(l.importe)||0));
+      if (f.aplica_iva && Number(f.iva_monto)) push({ ...base, cuenta: 'IVA Trasladado' }, 0, Number(f.iva_monto));
+    });
+  }
+
+  // 4. Movimientos de Bancos y Efectivo — cada movimiento, individualmente, siempre cuadra por
+  // construcción (mismo monto en ambos lados). Los traspasos se revisan aparte, por pares
+  // (misma traspaso_id, dos movimientos en tablas distintas) porque ahí sí puede haber diferencia
+  // real si el tipo de cambio usado en cada lado no fue idéntico.
+  const procesarMovimientos = (movs, esBanco, tipoOrigenTag, moduloTag) => {
+    (movs||[]).forEach(m => {
+      const claveOrigen = esBanco ? `Banco: ${nombreBanco(m.cuenta_id)}` : `Efectivo: ${nombreMoneda(m.moneda_id)}`;
+      const base = { modulo: moduloTag, tipoOrigen: tipoOrigenTag, id: m.id, fecha: m.fecha, referencia: m.concepto || m.descripcion || 's/ref', detalle: m.proveedor || m.descripcion || '', cuentaId: m.cuenta_id, monedaId: m.moneda_id };
+      if (Number(m.cargos)) {
+        let cuentaContraria = 'Sin clasificar (revisar)';
+        if (m.tipo_salida === 'proveedor') cuentaContraria = 'Proveedores';
+        else if (m.tipo_salida === 'gasto') cuentaContraria = nombreSub(m.subcuenta_id);
+        else if (m.tipo_salida === 'cliente') cuentaContraria = 'Clientes';
+        else if (m.tipo_salida === 'traspaso') cuentaContraria = 'Traspasos entre cuentas';
+        push({ ...base, cuenta: cuentaContraria }, Number(m.cargos), 0);
+        push({ ...base, cuenta: claveOrigen }, 0, Number(m.cargos));
+      }
+      if (Number(m.depositos)) {
+        push({ ...base, cuenta: claveOrigen }, Number(m.depositos), 0);
+        let cuentaContraria = 'Sin clasificar (revisar)';
+        if (m.tipo_entrada === 'cliente') cuentaContraria = 'Clientes';
+        else if (m.tipo_entrada === 'traspaso') cuentaContraria = 'Traspasos entre cuentas';
+        push({ ...base, cuenta: cuentaContraria }, 0, Number(m.depositos));
+      }
+    });
+  };
+  const [bancosMovQ, efvoMovQ] = await Promise.all([
+    sb.from('fz_bancos_mov').select('*').eq('business_id', businessId).lte('fecha', hastaFecha),
+    sb.from('fz_efectivo_mov').select('*').eq('business_id', businessId).lte('fecha', hastaFecha),
+  ]);
+  procesarMovimientos(bancosMovQ.data, true, 'banco_mov', 'Movimiento de Banco');
+  procesarMovimientos(efvoMovQ.data, false, 'efectivo_mov', 'Movimiento de Efectivo');
+
+  // Traspasos por pares (misma traspaso_id, en cualquiera de las 2 tablas) — aquí sí puede
+  // haber una diferencia real y legítima si el monto destino no fue idéntico al monto origen.
+  const traspasos = [
+    ...(bancosMovQ.data||[]).filter(m=>m.traspaso_id).map(m=>({...m, _tabla:'fz_bancos_mov', _cuenta:`Banco: ${nombreBanco(m.cuenta_id)}`})),
+    ...(efvoMovQ.data||[]).filter(m=>m.traspaso_id).map(m=>({...m, _tabla:'fz_efectivo_mov', _cuenta:`Efectivo: ${nombreMoneda(m.moneda_id)}`})),
+  ];
+  const traspasoGrupos = {};
+  traspasos.forEach(m => { (traspasoGrupos[m.traspaso_id] = traspasoGrupos[m.traspaso_id] || []).push(m); });
+
+  return { filas, traspasoGrupos, polizas: polizaMap };
+}
+
+// Agrupa por documento de origen y busca cuáles no cuadran internamente (Cargo ≠ Abono dentro
+// del mismo documento). Si no encuentra ninguno así, revisa los pares de traspaso. Si tampoco,
+// dice honestamente que no pudo aislar un origen único — nunca inventa uno.
+async function diagnosticarDescuadreBalanza(businessId, hastaFecha) {
+  const { filas, traspasoGrupos } = await getLibroPartidaDobleConOrigen(businessId, hastaFecha);
+  const grupos = {};
+  filas.forEach(f => {
+    const key = f.tipoOrigen + ':' + f.id;
+    if (!grupos[key]) grupos[key] = { modulo: f.modulo, tipoOrigen: f.tipoOrigen, id: f.id, fecha: f.fecha, referencia: f.referencia, detalle: f.detalle, cuentaId: f.cuentaId, monedaId: f.monedaId, lineas: [], cargo: 0, abono: 0 };
+    grupos[key].lineas.push({ cuenta: f.cuenta, cargo: f.cargo, abono: f.abono });
+    grupos[key].cargo += f.cargo;
+    grupos[key].abono += f.abono;
+  });
+  const documentosDescuadrados = Object.values(grupos).filter(g => Math.abs(g.cargo - g.abono) > 0.001);
+
+  const paresTraspasoDescuadrados = [];
+  Object.entries(traspasoGrupos).forEach(([traspasoId, movs]) => {
+    if (movs.length < 2) return; // par incompleto — no se puede comparar, se omite (no se inventa)
+    const totalCargo = movs.reduce((s,m)=>s+(Number(m.cargos)||0),0);
+    const totalDeposito = movs.reduce((s,m)=>s+(Number(m.depositos)||0),0);
+    if (Math.abs(totalCargo - totalDeposito) > 0.001) {
+      paresTraspasoDescuadrados.push({ traspasoId, movs, diferencia: totalCargo - totalDeposito });
+    }
+  });
+
+  return { documentosDescuadrados, paresTraspasoDescuadrados };
+}
+
+// Mapea el tipoOrigen del diagnóstico al formato que ya entiende abrirOrigenDesdeDetalle,
+// para reutilizar la misma navegación "Ver documento" que ya existe en otras pantallas.
+function verDocumentoDesdeOrigen(item, businessId) {
+  const mapa = {
+    poliza: { tipo: 'poliza', id: item.id },
+    factura_proveedor: { tipo: 'proveedor', id: item.id, fecha: item.fecha },
+    factura_cliente: { tipo: 'factura_cliente', id: item.id, fecha: item.fecha },
+    banco_mov: { tipo: 'bancos', id: item.id, cuentaId: item.cuentaId, fecha: item.fecha },
+    efectivo_mov: { tipo: 'efectivo', id: item.id, monedaId: item.monedaId, fecha: item.fecha },
+  };
+  const origen = mapa[item.tipoOrigen];
+  if (!origen) { toast('No se puede abrir este documento directamente.', 'error'); return; }
+  document.getElementById('modalDiagnosticoDescuadre').classList.remove('show');
+  abrirOrigenDesdeDetalle(origen, businessId);
+}
+
+async function abrirDiagnosticoDescuadre(businessId, hastaFecha) {
+  const body = document.getElementById('diagnosticoDescuadreBody');
+  body.innerHTML = `<div class="empty">Buscando el origen…</div>`;
+  document.getElementById('modalDiagnosticoDescuadre').classList.add('show');
+
+  const { documentosDescuadrados, paresTraspasoDescuadrados } = await diagnosticarDescuadreBalanza(businessId, hastaFecha);
+  window.STATE_diagnosticoActual = { documentosDescuadrados, paresTraspasoDescuadrados, businessId };
+
+  const filaDocumento = (g, idx) => `
+    <div class="card" style="margin-bottom:12px;">
+      <p style="font-size:12px;color:var(--muted);margin-bottom:4px;">Origen detectado: <strong style="color:var(--navy-1);">${g.modulo}</strong></p>
+      <p style="font-size:13.5px;margin-bottom:2px;"><strong>${g.referencia}</strong>${g.detalle ? ' — ' + g.detalle : ''}</p>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">${fechaCorta(g.fecha)}</p>
+      <div class="table-wrap" style="margin-bottom:8px;">
+        <table>
+          <thead><tr><th>Cuenta</th><th>Cargo</th><th>Abono</th></tr></thead>
+          <tbody>${g.lineas.map(l => `<tr><td>${l.cuenta}</td><td class="num">${l.cargo?fmt(l.cargo):''}</td><td class="num">${l.abono?fmt(l.abono):''}</td></tr>`).join('')}</tbody>
+        </table>
+      </div>
+      <p style="font-size:13px;font-weight:700;color:var(--red);">Diferencia generada: ${fmt(Math.abs(g.cargo-g.abono))}</p>
+      <button class="btn btn-gold btn-sm diag-ver-documento" data-idx="${idx}" style="margin-top:8px;">Ver documento</button>
+    </div>`;
+
+  const filaTraspaso = (t, idx) => `
+    <div class="card" style="margin-bottom:12px;">
+      <p style="font-size:12px;color:var(--muted);margin-bottom:4px;">Origen detectado: <strong style="color:var(--navy-1);">Traspaso entre cuentas</strong></p>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">Este par de movimientos vinculados no tiene el mismo monto en origen y destino (frecuente si hubo conversión de moneda con tipos de cambio distintos).</p>
+      <div class="table-wrap" style="margin-bottom:8px;">
+        <table>
+          <thead><tr><th>Cuenta</th><th>Fecha</th><th>Cargo</th><th>Depósito</th><th></th></tr></thead>
+          <tbody>${t.movs.map((m,i) => `<tr><td>${m._cuenta}</td><td>${fechaCorta(m.fecha)}</td><td class="num">${m.cargos?fmt(m.cargos):''}</td><td class="num">${m.depositos?fmt(m.depositos):''}</td><td><button class="btn btn-ghost btn-sm diag-ver-traspaso" data-tidx="${idx}" data-midx="${i}" style="font-size:11px;padding:3px 8px;">Ver documento</button></td></tr>`).join('')}</tbody>
+        </table>
+      </div>
+      <p style="font-size:13px;font-weight:700;color:var(--red);">Diferencia generada: ${fmt(Math.abs(t.diferencia))}</p>
+    </div>`;
+
+  if (!documentosDescuadrados.length && !paresTraspasoDescuadrados.length) {
+    body.innerHTML = `<div class="empty">No se logró aislar un documento único responsable — la diferencia puede estar repartida entre varios movimientos con redondeos muy pequeños cada uno. No se muestra un origen inventado.</div>`;
+    return;
+  }
+  body.innerHTML = `
+    ${documentosDescuadrados.length ? `<p style="font-size:12.5px;font-weight:700;color:var(--navy-1);margin-bottom:8px;">${documentosDescuadrados.length} documento(s) que no cuadran internamente:</p>${documentosDescuadrados.map(filaDocumento).join('')}` : ''}
+    ${paresTraspasoDescuadrados.length ? `<p style="font-size:12.5px;font-weight:700;color:var(--navy-1);margin-bottom:8px;">${paresTraspasoDescuadrados.length} traspaso(s) con diferencia entre origen y destino:</p>${paresTraspasoDescuadrados.map(filaTraspaso).join('')}` : ''}
+  `;
+  body.querySelectorAll('.diag-ver-documento').forEach(btn => btn.addEventListener('click', () => {
+    verDocumentoDesdeOrigen(documentosDescuadrados[Number(btn.dataset.idx)], businessId);
+  }));
+  body.querySelectorAll('.diag-ver-traspaso').forEach(btn => btn.addEventListener('click', () => {
+    const t = paresTraspasoDescuadrados[Number(btn.dataset.tidx)];
+    const m = t.movs[Number(btn.dataset.midx)];
+    verDocumentoDesdeOrigen({ tipoOrigen: m._tabla==='fz_bancos_mov'?'banco_mov':'efectivo_mov', id: m.id, fecha: m.fecha, cuentaId: m.cuenta_id, monedaId: m.moneda_id }, businessId);
+  }));
+}
+document.getElementById('closeDiagnosticoDescuadre').addEventListener('click', () => {
+  document.getElementById('modalDiagnosticoDescuadre').classList.remove('show');
+});
 
 async function getLibroDiario(businessId, startDate, endDate) {
   const filas = [];
