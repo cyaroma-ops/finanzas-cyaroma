@@ -37,11 +37,13 @@
   --shadow:0 8px 24px rgba(10,31,61,.08);
 }
 *{box-sizing:border-box;margin:0;padding:0;}
+html{overflow-x:hidden;}
 body{
   font-family:'Inter',sans-serif;
   background:var(--paper);
   color:var(--ink);
   -webkit-font-smoothing:antialiased;
+  overflow-x:hidden;
 }
 h1,h2,h3,.serif{font-family:'Cormorant Garamond',serif;}
 .num{font-variant-numeric:tabular-nums;text-align:right;}
@@ -316,10 +318,42 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 @media(max-width:900px){
   .sidebar{position:fixed;left:-260px;z-index:100;transition:left .2s;}
   .sidebar.open{left:0;}
-  .content{padding:18px;}
-  .topbar{padding:14px 18px;}
-  .grid-2,.grid-3{grid-template-columns:1fr;}
+  .content{padding:16px;}
+  .topbar{padding:14px 16px;flex-wrap:wrap;gap:8px;}
+  .topbar h2{font-size:19px;}
+  .topbar-actions{flex-wrap:wrap;}
+  .grid-2,.grid-3,.grid-4{grid-template-columns:1fr;}
   #menuToggleBtn{display:block !important;color:var(--navy-1);}
+
+  /* Cualquier grupo de botones/acciones dentro del encabezado de una tarjeta (Excel, PDF,
+     selectores de año/mes, "+ Agregar", etc.) debe poder acomodarse en varias líneas — sin esto,
+     se salen del marco en vez de bajar de renglón. */
+  .card-head{gap:8px;}
+  .card-head > div{flex-wrap:wrap;gap:6px !important;}
+  .card-head h3{font-size:16.5px;}
+  .card{padding:16px 14px;margin-bottom:16px;}
+
+  .kpi{padding:13px 14px;}
+  .kpi-grid{grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px;}
+  .kpi .label{font-size:11px;}
+  .kpi .value{font-size:18px;}
+
+  /* Las tablas anchas (Balanza, ISR, Pagos de Impuestos, etc.) deben desplazarse de lado en vez
+     de forzar que toda la página se estire o se vea aplastada. */
+  .table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  table{font-size:12px;}
+  td,th{padding:7px 8px;}
+
+  .btn{padding:9px 14px;font-size:12.5px;}
+  .modal{padding:18px;}
+  input[type="month"],input[type="date"]{min-width:0;width:100%;}
+}
+@media(max-width:480px){
+  .content{padding:12px;}
+  .card{padding:14px 12px;}
+  .topbar h2{font-size:17px;}
+  .kpi-grid{grid-template-columns:repeat(auto-fit,minmax(120px,1fr));}
+  .btn{padding:9px 12px;font-size:12px;}
 }
 #sidebarOverlay{display:none;position:fixed;inset:0;background:rgba(10,20,40,.5);z-index:99;}
 #sidebarOverlay.show{display:block;}
