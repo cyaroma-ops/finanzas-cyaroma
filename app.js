@@ -588,8 +588,9 @@ function setupBizControls() {
     const name = document.getElementById('editBizName').value.trim();
     const razon_social = document.getElementById('editBizRazonSocial').value.trim() || null;
     const modo = document.getElementById('editBizModo').value;
+    const iva_realizacion_desde = document.getElementById('editBizIvaRealizacionDesde').value || null;
     if (!name) { toast('Escribe el nombre comercial.', 'error'); return; }
-    const { error } = await sb.from('businesses').update({ name, razon_social, modo }).eq('id', bizId);
+    const { error } = await sb.from('businesses').update({ name, razon_social, modo, iva_realizacion_desde }).eq('id', bizId);
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     document.getElementById('modalEditBiz').classList.remove('show');
     await loadBusinesses();
@@ -604,6 +605,7 @@ function abrirEditarNegocio(negocio) {
   document.getElementById('editBizName').value = negocio.name || '';
   document.getElementById('editBizRazonSocial').value = negocio.razon_social || '';
   document.getElementById('editBizModo').value = negocio.modo || 'financiero';
+  document.getElementById('editBizIvaRealizacionDesde').value = negocio.iva_realizacion_desde || '';
   document.getElementById('modalEditBiz').dataset.bizId = negocio.id;
   document.getElementById('modalEditBiz').classList.add('show');
 }
@@ -2054,6 +2056,63 @@ async function sincronizarProvisionIsr(pagoImpuesto, businessId) {
   return { estado: 'provisionado', monto: diferencia, poliza_id: nuevaPoliza.id };
 }
 
+const CUENTA_IVA_POR_PAGAR = 'IVA por pagar';
+const CUENTA_IVA_A_FAVOR = 'IVA a favor';
+// Cierre mensual de IVA: junta lo ya REALIZADO (Trasladado — Cobrado, Acreditable — Pagado) en el
+// neto "IVA por pagar"/"IVA a favor" — usando el mismo monto ya determinado en Pagos de Impuestos
+// (nunca el saldo devengado/pendiente). Cada uno de los 3 componentes se rastrea y ajusta por
+// separado, para que un cambio posterior en la determinación solo mueva la diferencia exacta.
+async function sincronizarProvisionIva(pagoImpuesto, businessId) {
+  if (pagoImpuesto.tipo_impuesto !== 'iva') return { estado: 'no_aplica' };
+  const fechaProvision = pagoImpuesto.periodo + '-28';
+  if (await periodoEstaCerrado(businessId, fechaProvision)) return { estado: 'cerrado_pendiente' };
+
+  const resumen = await computeResumenIvaMesLigero(businessId, monthBounds(pagoImpuesto.periodo));
+  const componentes = [
+    { tipo: 'iva_neto_trasladado', montoDebeSer: resumen.ivaTrasladadoCobrado, cuenta: 'IVA Trasladado — Cobrado', naturaleza: 'pasivo' },
+    { tipo: 'iva_neto_acreditable', montoDebeSer: resumen.ivaAcreditablePagado, cuenta: 'IVA Acreditable — Pagado', naturaleza: 'activo' },
+  ];
+
+  const lineas = [];
+  const registros = [];
+  for (const c of componentes) {
+    const { data: existentes } = await sb.from('fz_provisiones_fiscales').select('monto').eq('pago_impuesto_id', pagoImpuesto.id).eq('tipo', c.tipo);
+    const yaRegistrado = (existentes||[]).reduce((s,p)=>s+Number(p.monto),0);
+    const diff = c.montoDebeSer - yaRegistrado;
+    if (Math.abs(diff) < 0.005) continue;
+    const sub = await obtenerOCrearSubcuentaPorNombre(businessId, c.cuenta, c.naturaleza);
+    const esAumento = diff > 0;
+    const monto = Math.abs(diff);
+    // Pasivo (Trasladado): aumentar el neto tomado = Debe (lo clarea). Activo (Acreditable): Haber.
+    if (c.naturaleza === 'pasivo') lineas.push(esAumento ? { subcuenta_id: sub, cargo: monto, abono: 0 } : { subcuenta_id: sub, cargo: 0, abono: monto });
+    else lineas.push(esAumento ? { subcuenta_id: sub, cargo: 0, abono: monto } : { subcuenta_id: sub, cargo: monto, abono: 0 });
+    registros.push({ tipo: c.tipo, monto: diff });
+  }
+  if (!lineas.length) return { estado: 'al_corriente' };
+
+  // El neto (IVA por pagar o a favor) balancea lo que las líneas de arriba ya tomaron de
+  // Trasladado/Acreditable — positivo = a cargo (Trasladado clareado > Acreditable clareado),
+  // negativo = a favor.
+  const netoAjuste = lineas.reduce((s,l)=>s+(l.cargo||0)-(l.abono||0), 0);
+  if (Math.abs(netoAjuste) > 0.004) {
+    const esCargo = netoAjuste > 0;
+    const cuentaNeto = esCargo ? CUENTA_IVA_POR_PAGAR : CUENTA_IVA_A_FAVOR;
+    const naturalezaNeto = esCargo ? 'pasivo' : 'activo';
+    const subNeto = await obtenerOCrearSubcuentaPorNombre(businessId, cuentaNeto, naturalezaNeto);
+    const montoNeto = Math.abs(netoAjuste);
+    // Para que la póliza balancee, esta línea debe tener signo contrario a lo ya acumulado arriba.
+    if (esCargo) lineas.push({ subcuenta_id: subNeto, cargo: 0, abono: montoNeto }); // Haber IVA por pagar (pasivo aumenta)
+    else lineas.push({ subcuenta_id: subNeto, cargo: montoNeto, abono: 0 }); // Debe IVA a favor (activo aumenta)
+  }
+
+  const concepto = `[Auto] Determinación IVA — ${pagoImpuesto.periodo}`;
+  const { data: nuevaPoliza, error } = await sb.from('fz_polizas').insert({ business_id: businessId, fecha: fechaProvision, concepto }).select().single();
+  if (error) return { estado: 'error', error: error.message };
+  await sb.from('fz_polizas_lineas').insert(lineas.map((l,i) => ({ ...l, business_id: businessId, poliza_id: nuevaPoliza.id, cuenta_tipo: 'subcuenta', descripcion: concepto, orden: i })));
+  await sb.from('fz_provisiones_fiscales').insert(registros.map(r => ({ business_id: businessId, pago_impuesto_id: pagoImpuesto.id, tipo: r.tipo, monto: r.monto, poliza_id: nuevaPoliza.id, fecha: fechaProvision })));
+  return { estado: 'provisionado', poliza_id: nuevaPoliza.id };
+}
+
 // Para la vista previa de retroactivos: qué se crearía por cada periodo, SIN crear nada todavía.
 async function previsualizarProvisionesIsr(businessId, anio) {
   const { data: pagos } = await sb.from('fz_pagos_impuestos').select('*').eq('business_id', businessId).eq('tipo_impuesto', 'isr_provisional').like('periodo', `${anio}-%`).order('periodo');
@@ -2076,6 +2135,79 @@ async function previsualizarProvisionesIsr(businessId, anio) {
 // Al registrar el pago de un ISR Provisional ya provisionado: Debe ISR provisional por
 // pagar / Haber Banco o Efectivo elegido — liquida el pasivo, nunca vuelve a crear el
 // gasto ni afecta de nuevo el resultado fiscal.
+/* ============================================================
+   REALIZACIÓN FISCAL DE IVA Y RETENCIONES
+   Reclasifica de "Pendiente" a "Realizado" (Cobrado/Pagado/Retenida) la
+   proporción exacta de IVA/Retención que corresponde a los pagos/cobros
+   REALES aplicados a una factura — nunca por el simple paso del tiempo.
+   Se recalcula el ACUMULADO completo cada vez (nunca se suman prorrateos
+   redondeados por separado), y se ajusta solo la diferencia — funciona
+   igual si el pago se creó, se modificó o se eliminó.
+   ============================================================ */
+async function sincronizarRealizacionFactura(facturaId, tipoFactura, businessId, fechaEvento) {
+  const tabla = tipoFactura === 'proveedor' ? 'fz_proveedores' : 'fz_facturas_clientes';
+  const { data: f } = await sb.from(tabla).select('*').eq('id', facturaId).maybeSingle();
+  if (!f) return; // la factura ya no existe (se eliminó) — no hay nada que reclasificar
+
+  const { data: negocioRow } = await sb.from('businesses').select('iva_realizacion_desde').eq('id', businessId).maybeSingle();
+  const fechaCorte = negocioRow?.iva_realizacion_desde;
+  if (!fechaCorte || f.fecha < fechaCorte) return; // fuera del alcance de esta arquitectura — histórico intacto
+
+  const importeTotal = Number(tipoFactura === 'proveedor' ? f.importe : f.total) || 0;
+  if (!importeTotal) return;
+  const tablaAplicados = tipoFactura === 'proveedor' ? 'fz_pagos_aplicados' : 'fz_cobros_aplicados';
+  const { data: aplicados } = await sb.from(tablaAplicados).select('monto').eq('factura_id', facturaId);
+  const totalAplicado = (aplicados||[]).reduce((s,a)=>s+Number(a.monto||0), 0);
+  const proporcion = Math.min(1, totalAplicado / importeTotal);
+
+  // Cada renglón: qué monto base tiene la factura, y los nombres de sus cuentas Pendiente/Realizado.
+  // "activo" (IVA Acreditable) y "pasivo" (IVA Trasladado, Retenciones) usan polaridad distinta.
+  const items = [];
+  if (tipoFactura === 'proveedor') {
+    if (f.aplica_iva && Number(f.iva_monto)) items.push({ tipo: 'iva_acreditable', categoria: null, montoBase: Number(f.iva_monto), naturaleza: 'activo', pendiente: 'IVA Acreditable — Pendiente de pago', realizado: 'IVA Acreditable — Pagado' });
+    if (f.aplica_retencion && Number(f.retencion_isr_monto)) { const cat = f.retencion_categoria||'Sin categoría'; items.push({ tipo: 'retencion_isr', categoria: cat, montoBase: Number(f.retencion_isr_monto), naturaleza: 'pasivo', pendiente: `Retención ISR — ${cat} — Pendiente de pago`, realizado: `Retención ISR — ${cat} — Retenida` }); }
+    if (f.aplica_retencion && Number(f.retencion_iva_monto)) { const cat = f.retencion_categoria||'Sin categoría'; items.push({ tipo: 'retencion_iva', categoria: cat, montoBase: Number(f.retencion_iva_monto), naturaleza: 'pasivo', pendiente: `Retención IVA — ${cat} — Pendiente de pago`, realizado: `Retención IVA — ${cat} — Retenida` }); }
+  } else {
+    if (f.aplica_iva && Number(f.iva_monto)) items.push({ tipo: 'iva_trasladado', categoria: null, montoBase: Number(f.iva_monto), naturaleza: 'pasivo', pendiente: 'IVA Trasladado — Pendiente de cobro', realizado: 'IVA Trasladado — Cobrado' });
+  }
+
+  for (const item of items) {
+    const montoDebeSer = Math.round(item.montoBase * proporcion * 100) / 100;
+    const { data: existente } = await sb.from('fz_iva_realizaciones').select('*').eq('business_id', businessId).eq('factura_tabla', tabla).eq('factura_id', facturaId).eq('tipo', item.tipo).eq('categoria', item.categoria).maybeSingle();
+    const yaRealizado = Number(existente?.monto_realizado_acumulado) || 0;
+    const diff = montoDebeSer - yaRealizado;
+    if (Math.abs(diff) < 0.005) continue; // sin cambio real, no se genera nada
+
+    const fechaPoliza = fechaEvento || todayStr();
+    if (await periodoEstaCerrado(businessId, fechaPoliza)) continue; // periodo cerrado — no se toca, queda pendiente de revisión manual
+
+    const subPendiente = await obtenerOCrearSubcuentaPorNombre(businessId, item.pendiente, item.naturaleza);
+    const subRealizado = await obtenerOCrearSubcuentaPorNombre(businessId, item.realizado, item.naturaleza);
+    const esAumento = diff > 0;
+    const monto = Math.abs(diff);
+    // Activo (IVA Acreditable): aumentar Realizado = Debe; disminuir = Debe Pendiente.
+    // Pasivo (IVA Trasladado, Retenciones): aumentar Realizado = Haber; disminuir = Haber Pendiente.
+    let lineas;
+    if (item.naturaleza === 'activo') {
+      lineas = esAumento
+        ? [{ subcuenta_id: subRealizado, cargo: monto, abono: 0 }, { subcuenta_id: subPendiente, cargo: 0, abono: monto }]
+        : [{ subcuenta_id: subPendiente, cargo: monto, abono: 0 }, { subcuenta_id: subRealizado, cargo: 0, abono: monto }];
+    } else {
+      lineas = esAumento
+        ? [{ subcuenta_id: subPendiente, cargo: monto, abono: 0 }, { subcuenta_id: subRealizado, cargo: 0, abono: monto }]
+        : [{ subcuenta_id: subRealizado, cargo: monto, abono: 0 }, { subcuenta_id: subPendiente, cargo: 0, abono: monto }];
+    }
+    const concepto = `[Auto] Realización fiscal — ${item.tipo}${item.categoria?' — '+item.categoria:''} — ${tipoFactura === 'proveedor' ? f.factura||'s/f' : 'Folio #'+f.folio}`;
+    const { data: nuevaPoliza, error } = await sb.from('fz_polizas').insert({ business_id: businessId, fecha: fechaPoliza, concepto }).select().single();
+    if (error) continue;
+    await sb.from('fz_polizas_lineas').insert(lineas.map((l,i) => ({ ...l, business_id: businessId, poliza_id: nuevaPoliza.id, cuenta_tipo: 'subcuenta', descripcion: concepto, orden: i })));
+    await sb.from('fz_iva_realizaciones').upsert({
+      business_id: businessId, factura_tabla: tabla, factura_id: facturaId, tipo: item.tipo, categoria: item.categoria,
+      monto_realizado_acumulado: montoDebeSer, poliza_id: nuevaPoliza.id, fecha: fechaPoliza, updated_at: new Date().toISOString(),
+    }, { onConflict: 'business_id,factura_tabla,factura_id,tipo,categoria' });
+  }
+}
+
 async function generarPolizaPagoIsr(pagoImpuesto, businessId, cuentaTipo, cuentaId) {
   if (pagoImpuesto.tipo_impuesto !== 'isr_provisional' || !pagoImpuesto.fecha_pago) return;
   if (!cuentaTipo || !cuentaId) return; // sin cuenta elegida, no se genera el asiento de pago
@@ -3220,7 +3352,8 @@ async function autoGenerarPagosImpuestos(b, anio) {
     const fechaLimite = `${y}-${String(mm).padStart(2, '0')}-17`;
     const resumen = resumenesIva[i];
 
-    await registrar(periodo, 'iva', null, resumen.ivaCargoFavor, fechaLimite);
+    const filaIva = await registrar(periodo, 'iva', null, resumen.ivaCargoFavor, fechaLimite);
+    if (filaIva && periodo === todayStr().slice(0,7)) await sincronizarProvisionIva(filaIva, b.id);
     for (const [k, monto] of Object.entries(resumen.retencionesPorCategoria || {})) {
       const [tipoImp, cat] = k.split('|');
       const tipo = tipoImp === 'ISR' ? 'retencion_isr' : 'retencion_iva';
@@ -5603,7 +5736,7 @@ async function openVentaDiaModal(businessId, onDone) {
 
 /* ---------- Aplicación inteligente de pagos: FIFO + crédito a favor ---------- */
 /* ---------- Revertir un pago (al eliminar el movimiento que lo aplicó) ---------- */
-async function revertirPagoAFacturas(idsAfectados, montoMovimiento) {
+async function revertirPagoAFacturas(idsAfectados, montoMovimiento, businessId, origenTabla, origenId) {
   if (!idsAfectados || !idsAfectados.length) return;
   const { data: facturas } = await sb.from('fz_proveedores').select('*').in('id', idsAfectados);
   if (!facturas || !facturas.length) return;
@@ -5633,6 +5766,12 @@ async function revertirPagoAFacturas(idsAfectados, montoMovimiento) {
       await sb.from('fz_proveedores').update({ estatus: 'Pendiente', fecha_pago: null }).eq('id', c.id);
     }
   }
+  // El registro de "pago aplicado" ligado a este movimiento debe desaparecer con él — si no se
+  // borra, queda huérfano y el motor de realización fiscal seguiría contándolo de más.
+  if (businessId && origenTabla && origenId) {
+    await sb.from('fz_pagos_aplicados').delete().eq('origen_tabla', origenTabla).eq('origen_id', origenId);
+    for (const f of facturas) await sincronizarRealizacionFactura(f.id, 'proveedor', businessId, todayStr());
+  }
 }
 
 async function confirmarYEliminarMovimiento(table, row, onDone) {
@@ -5643,12 +5782,12 @@ async function confirmarYEliminarMovimiento(table, row, onDone) {
     const ok = confirm(`Este movimiento tiene un pago aplicado a ${idsAfectados.length} factura(s) de Proveedores. Al eliminarlo, se revertirá ese pago (regresarán a Pendiente/Parcial según corresponda). ¿Continuar?`);
     if (!ok) return;
     const montoMovimiento = Number(row.cargos) > 0 ? Number(row.cargos) : Number(row.depositos) || 0;
-    await revertirPagoAFacturas(idsAfectados, montoMovimiento);
+    await revertirPagoAFacturas(idsAfectados, montoMovimiento, row.business_id, table, row.id);
   }
   if (row.tipo_entrada === 'cliente' && idsAfectadosCliente.length) {
     const ok = confirm(`Este movimiento tiene un cobro aplicado a ${idsAfectadosCliente.length} factura(s) de Clientes. Al eliminarlo, se revertirá ese cobro (regresarán a Pendiente/Parcial según corresponda). ¿Continuar?`);
     if (!ok) return;
-    await revertirCobroPorOrigen(table, row.id);
+    await revertirCobroPorOrigen(table, row.id, row.business_id);
   }
   await sb.from(table).delete().eq('id', row.id);
   const modulo = table === 'fz_bancos_mov' ? 'Bancos' : 'Efectivo';
@@ -5657,7 +5796,7 @@ async function confirmarYEliminarMovimiento(table, row, onDone) {
   onDone();
 }
 
-async function revertirCobroPorOrigen(origenTabla, origenId) {
+async function revertirCobroPorOrigen(origenTabla, origenId, businessId) {
   const { data: cobros } = await sb.from('fz_cobros_aplicados').select('*').eq('origen_tabla', origenTabla).eq('origen_id', origenId);
   for (const cobro of (cobros || [])) {
     const { data: f } = await sb.from('fz_facturas_clientes').select('total,importe_pagado').eq('id', cobro.factura_id).single();
@@ -5668,6 +5807,7 @@ async function revertirCobroPorOrigen(origenTabla, origenId) {
     }
   }
   await sb.from('fz_cobros_aplicados').delete().eq('origen_tabla', origenTabla).eq('origen_id', origenId);
+  if (businessId) for (const cobro of (cobros || [])) await sincronizarRealizacionFactura(cobro.factura_id, 'cliente', businessId, todayStr());
 }
 
 async function aplicarPagoFacturas(idsSeleccionados, montoDisponibleInicial, fechaMov, businessId, origenInfo) {
@@ -5684,6 +5824,7 @@ async function aplicarPagoFacturas(idsSeleccionados, montoDisponibleInicial, fec
       }
     }
     await sb.from('fz_pagos_aplicados').delete().eq('origen_tabla', origenInfo.origen_tabla).eq('origen_id', origenInfo.origen_id);
+    for (const prev of (previos || [])) await sincronizarRealizacionFactura(prev.factura_id, 'proveedor', businessId, fechaMov);
   }
 
   if (!idsSeleccionados.length) return { idsAfectados: [], creadoCredito: false, sobrante: 0 };
@@ -5698,6 +5839,7 @@ async function aplicarPagoFacturas(idsSeleccionados, montoDisponibleInicial, fec
   const registrarPago = async (facturaId, monto) => {
     if (!origenInfo.origen_tabla || !origenInfo.origen_id || !monto) return;
     await sb.from('fz_pagos_aplicados').insert({ business_id: businessId, factura_id: facturaId, monto, origen_tabla: origenInfo.origen_tabla, origen_id: origenInfo.origen_id, fecha: fechaMov });
+    await sincronizarRealizacionFactura(facturaId, 'proveedor', businessId, fechaMov);
   };
 
   for (const c of creditos) {
@@ -5753,6 +5895,7 @@ async function aplicarCobroFacturas(idsSeleccionados, montoDisponibleInicial, fe
       }
     }
     await sb.from('fz_cobros_aplicados').delete().eq('origen_tabla', origenInfo.origen_tabla).eq('origen_id', origenInfo.origen_id);
+    for (const prev of (previos || [])) await sincronizarRealizacionFactura(prev.factura_id, 'cliente', businessId, fecha);
   }
 
   if (!idsSeleccionados.length) return { idsAfectados: [] };
@@ -5775,6 +5918,7 @@ async function aplicarCobroFacturas(idsSeleccionados, montoDisponibleInicial, fe
     if (origenInfo.origen_tabla && origenInfo.origen_id) {
       const tcReal = f.moneda === 'USD' ? (origenInfo.tipo_cambio_real || f.tipo_cambio) : null;
       await sb.from('fz_cobros_aplicados').insert({ business_id: businessId, factura_id: f.id, monto: aplicar, origen_tabla: origenInfo.origen_tabla, origen_id: origenInfo.origen_id, fecha, tipo_cambio: tcReal });
+      await sincronizarRealizacionFactura(f.id, 'cliente', businessId, fecha);
     }
   }
   return { idsAfectados, sobrante: disponible };
@@ -8459,6 +8603,11 @@ async function eliminarFacturaProveedorConCascada(facturaId, businessId) {
     else await sb.from('fz_activos_fijos').delete().eq('id', info.activo_fijo_id);
   }
   await sb.from('fz_adjuntos').delete().eq('tabla', 'fz_proveedores').eq('registro_id', facturaId);
+  // Igual que con clientes: si esta factura ya tenía reclasificaciones de IVA/Retenciones (por
+  // pagos aplicados), sus pólizas automáticas deben desaparecer con ella.
+  const { data: realizaciones } = await sb.from('fz_iva_realizaciones').select('poliza_id').eq('factura_tabla', 'fz_proveedores').eq('factura_id', facturaId);
+  for (const r of (realizaciones||[])) if (r.poliza_id) await sb.from('fz_polizas').delete().eq('id', r.poliza_id);
+  await sb.from('fz_iva_realizaciones').delete().eq('factura_tabla', 'fz_proveedores').eq('factura_id', facturaId);
   const { error } = await sb.from('fz_proveedores').delete().eq('id', facturaId);
   if (error) { toast('No se pudo eliminar: ' + error.message, 'error'); return { ok: false }; }
   registrarAuditoria(businessId, 'eliminar', 'Proveedores', `${info.proveedor||'(sin proveedor)'} · factura ${info.factura||'s/f'} · ${fmt(info.importe||0)}`);
@@ -8474,6 +8623,12 @@ async function eliminarFacturaCliente(facturaId, businessId) {
   }
   await sb.from('fz_cobros_aplicados').delete().eq('factura_id', facturaId);
   await sb.from('fz_facturas_clientes_lineas').delete().eq('factura_id', facturaId);
+  // Si esta factura ya tenía reclasificaciones de IVA (por cobros aplicados), sus pólizas
+  // automáticas también deben desaparecer — de lo contrario quedarían huérfanas, mostrando
+  // un asiento contable de un documento que ya no existe.
+  const { data: realizaciones } = await sb.from('fz_iva_realizaciones').select('poliza_id').eq('factura_tabla', 'fz_facturas_clientes').eq('factura_id', facturaId);
+  for (const r of (realizaciones||[])) if (r.poliza_id) await sb.from('fz_polizas').delete().eq('id', r.poliza_id);
+  await sb.from('fz_iva_realizaciones').delete().eq('factura_tabla', 'fz_facturas_clientes').eq('factura_id', facturaId);
   const { data: f } = await sb.from('fz_facturas_clientes').select('folio').eq('id', facturaId).single();
   await sb.from('fz_facturas_clientes').delete().eq('id', facturaId);
   registrarAuditoria(businessId, 'eliminar', 'Facturas de clientes', `Factura #${f?.folio ?? ''} eliminada`);
@@ -8711,6 +8866,7 @@ async function eliminarCobro(businessId, cobroId, facturaId) {
     const nuevoEstatus = nuevoPagado <= 0.004 ? 'Pendiente' : (nuevoPagado >= Number(f.total) - 0.01 ? 'Pagado' : 'Parcial');
     await sb.from('fz_facturas_clientes').update({ importe_pagado: nuevoPagado, estatus: nuevoEstatus }).eq('id', facturaId);
   }
+  await sincronizarRealizacionFactura(facturaId, 'cliente', businessId, todayStr());
 }
 
 document.getElementById('registrarCobroBtn').addEventListener('click', async () => {
@@ -8748,6 +8904,7 @@ document.getElementById('registrarCobroBtn').addEventListener('click', async () 
   const nuevoPagado = Number(factura.importe_pagado||0) + monto;
   const nuevoEstatus = nuevoPagado >= Number(factura.total) - 0.01 ? 'Pagado' : 'Parcial';
   await sb.from('fz_facturas_clientes').update({ importe_pagado: nuevoPagado, estatus: nuevoEstatus, fecha_pago: fecha }).eq('id', facturaId);
+  await sincronizarRealizacionFactura(facturaId, 'cliente', b.id, fecha);
 
   registrarAuditoria(b.id, 'editar', 'Facturas de clientes', `Cobro de ${fmt(monto)} aplicado a factura #${factura.folio}`);
   toast('Cobro registrado.');
@@ -9768,6 +9925,9 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   const nombreBanco = (id) => cuentasBanco.find(c=>c.id===id)?.nombre || 'Banco';
   const nombreMoneda = (id) => monedas.find(m=>m.id===id)?.nombre || 'Efectivo';
   const nombreCliente = (id) => { const c = clientes.find(x=>x.id===id); return c ? (c.razon_social || c.nombre_comercial) : '(cliente eliminado)'; };
+  const { data: negocioRow } = await sb.from('businesses').select('iva_realizacion_desde').eq('id', businessId).maybeSingle();
+  const fechaCorteRealizacion = negocioRow?.iva_realizacion_desde || null;
+  const esRealizacionActiva = (fecha) => fechaCorteRealizacion && fecha >= fechaCorteRealizacion;
 
   // 1. Pólizas de Diario — cada póliza es un documento; sus líneas deberían cuadrar entre sí.
   const { data: polizas } = await conDesde(sb.from('fz_polizas').select('id,fecha,numero,concepto').eq('business_id', businessId).lte('fecha', hastaFecha));
@@ -9791,9 +9951,20 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
     if (f.origen_poliza_id) return; // ya se contabilizó como provisión en Pólizas
     const base = { modulo: 'Factura de Proveedor', tipoOrigen: 'factura_proveedor', id: f.id, fecha: f.fecha, referencia: f.factura || 's/f', detalle: f.proveedor || '' };
     desgloseLineas(f.desglose).forEach(linea => push({ ...base, cuenta: nombreSub(linea.subcuenta_id) }, 'sub:'+linea.subcuenta_id, tipoDeSub(linea.subcuenta_id), Number(linea.monto)||0, 0));
-    if (f.aplica_iva && Number(f.iva_monto)) push({ ...base, cuenta: 'IVA Acreditable' }, 'iva_acreditable', 'activo', Number(f.iva_monto), 0);
-    if (f.aplica_retencion && Number(f.retencion_isr_monto)) push({ ...base, cuenta: `Retención ISR — ${f.retencion_categoria||'Sin categoría'}` }, 'ret_isr:'+(f.retencion_categoria||'Sin categoría'), 'pasivo', 0, Number(f.retencion_isr_monto));
-    if (f.aplica_retencion && Number(f.retencion_iva_monto)) push({ ...base, cuenta: `Retención IVA — ${f.retencion_categoria||'Sin categoría'}` }, 'ret_iva:'+(f.retencion_categoria||'Sin categoría'), 'pasivo', 0, Number(f.retencion_iva_monto));
+    if (f.aplica_iva && Number(f.iva_monto)) {
+      if (esRealizacionActiva(f.fecha)) push({ ...base, cuenta: 'IVA Acreditable — Pendiente de pago' }, 'iva_acreditable_pend', 'activo', Number(f.iva_monto), 0);
+      else push({ ...base, cuenta: 'IVA Acreditable' }, 'iva_acreditable', 'activo', Number(f.iva_monto), 0);
+    }
+    if (f.aplica_retencion && Number(f.retencion_isr_monto)) {
+      const cat = f.retencion_categoria||'Sin categoría';
+      if (esRealizacionActiva(f.fecha)) push({ ...base, cuenta: `Retención ISR — ${cat} — Pendiente de pago` }, 'ret_isr_pend:'+cat, 'pasivo', 0, Number(f.retencion_isr_monto));
+      else push({ ...base, cuenta: `Retención ISR — ${cat}` }, 'ret_isr:'+cat, 'pasivo', 0, Number(f.retencion_isr_monto));
+    }
+    if (f.aplica_retencion && Number(f.retencion_iva_monto)) {
+      const cat = f.retencion_categoria||'Sin categoría';
+      if (esRealizacionActiva(f.fecha)) push({ ...base, cuenta: `Retención IVA — ${cat} — Pendiente de pago` }, 'ret_iva_pend:'+cat, 'pasivo', 0, Number(f.retencion_iva_monto));
+      else push({ ...base, cuenta: `Retención IVA — ${cat}` }, 'ret_iva:'+cat, 'pasivo', 0, Number(f.retencion_iva_monto));
+    }
     push({ ...base, cuenta: 'Proveedores' }, 'proveedores', 'pasivo', 0, Number(f.importe)||0);
   });
 
@@ -9805,7 +9976,10 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
       const base = { modulo: 'Factura de Cliente', tipoOrigen: 'factura_cliente', id: f.id, fecha: f.fecha, referencia: `Folio #${f.folio}`, detalle: nombreCliente(f.cliente_id) };
       push({ ...base, cuenta: 'Clientes' }, 'clientes', 'activo', Number(f.total)||0, 0);
       (lineasCli||[]).filter(l=>l.factura_id===f.id).forEach(l => push({ ...base, cuenta: nombreSub(l.subcuenta_id) }, 'sub:'+l.subcuenta_id, tipoDeSub(l.subcuenta_id), 0, Number(l.importe)||0));
-      if (f.aplica_iva && Number(f.iva_monto)) push({ ...base, cuenta: 'IVA Trasladado' }, 'iva_trasladado', 'pasivo', 0, Number(f.iva_monto));
+      if (f.aplica_iva && Number(f.iva_monto)) {
+        if (esRealizacionActiva(f.fecha)) push({ ...base, cuenta: 'IVA Trasladado — Pendiente de cobro' }, 'iva_trasladado_pend', 'pasivo', 0, Number(f.iva_monto));
+        else push({ ...base, cuenta: 'IVA Trasladado' }, 'iva_trasladado', 'pasivo', 0, Number(f.iva_monto));
+      }
     });
   }
 

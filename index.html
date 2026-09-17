@@ -722,6 +722,11 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <option value="fiscal_contable">Fiscal Contable (además, rastrea IVA acreditable y trasladado)</option>
       </select>
     </div>
+    <div class="field">
+      <label>Realización fiscal de IVA/Retenciones — vigente desde</label>
+      <input type="date" id="editBizIvaRealizacionDesde">
+      <div style="font-size:11px;color:var(--muted);margin-top:3px;">Facturas a partir de esta fecha separan IVA/Retenciones en "Pendiente" y "Realizado", reclasificando solo cuando se aplica un pago/cobro real. Vacío = apagado (sigue como hoy). Las facturas anteriores no se tocan.</div>
+    </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="cancelEditBiz">Cancelar</button>
       <button class="btn btn-gold" id="saveEditBiz">Guardar</button>
