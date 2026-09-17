@@ -10719,110 +10719,62 @@ async function renderBalanceGeneral() {
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
   const scrollY = window.scrollY;
 
-  const [subcuentas, mayores, monedasQ, cuentasQ, provQ, conceptosEfvoQ, conceptosTarjQ] = await Promise.all([
-    loadSubcuentas(b.id), loadCuentasMayor(b.id),
-    sb.from('fz_efectivo_monedas').select('*').eq('business_id', b.id).eq('activo', true),
-    sb.from('fz_bancos_cuentas').select('*').eq('business_id', b.id).eq('activo', true),
-    sb.from('fz_proveedores').select('id,fecha,importe,importe_pagado,estatus').eq('business_id', b.id),
-    sb.from('fz_conceptos').select('*').eq('business_id', b.id).eq('categoria', 'efectivo'),
-    sb.from('fz_conceptos').select('*').eq('business_id', b.id).in('categoria', ['tarjetas','bancos']),
-  ]);
-  const monedas = monedasQ.data || [];
-  const cuentasBanco = cuentasQ.data || [];
-  const conceptosEfectivo = conceptosEfvoQ.data || [];
-  const conceptosTarjetas = conceptosTarjQ.data || [];
-
   const hastaYm = STATE_balanceHastaYm || STATE.currentMonth;
   const hastaFecha = monthBounds(hastaYm).end;
   const esHoy = hastaYm === STATE.currentMonth && hastaFecha >= todayStr();
 
-  let totalEfectivo = 0;
-  const detalleEfectivo = [];
-  for (const m of monedas) {
-    const saldo = await computeMonedaSaldo(b.id, m, conceptosEfectivo, hastaFecha);
-    const pesoEquiv = saldo * (Number(m.tc_reporte) || 1);
-    totalEfectivo += pesoEquiv;
-    if (Math.abs(pesoEquiv) > 0.004) detalleEfectivo.push({ id: m.id, nombre: m.nombre, monto: pesoEquiv });
-  }
-  let totalBancos = 0;
-  const detalleBancos = [];
-  for (const c of cuentasBanco) {
-    const saldo = await computeBancoSaldo(b.id, c, conceptosTarjetas, hastaFecha);
-    totalBancos += saldo;
-    if (Math.abs(saldo) > 0.004) detalleBancos.push({ id: c.id, nombre: c.nombre, monto: saldo });
-  }
+  // Única fuente contable: el mismo motor consolidado que usan Libro Diario, Auxiliares y
+  // Balanza. Balance General ya NO reconstruye nada por su cuenta desde facturas, bancos,
+  // efectivo, proveedores o clientes — solo clasifica y presenta lo que el motor ya calculó.
+  const { filas } = await getLibroPartidaDobleConOrigen(b.id, hastaFecha);
+  const porClave = {};
+  filas.forEach(f => {
+    if (!['activo','pasivo','capital'].includes(f.tipo)) return; // Ingresos/Gastos son de P&L, no de Balance General
+    if (!porClave[f.clave]) porClave[f.clave] = { clave: f.clave, nombre: f.cuenta, tipo: f.tipo, cargo: 0, abono: 0 };
+    porClave[f.clave].cargo += f.cargo;
+    porClave[f.clave].abono += f.abono;
+  });
+  const cuentas = Object.values(porClave).map(c => ({
+    ...c,
+    saldoNeto: c.tipo === 'activo' ? (c.cargo - c.abono) : (c.abono - c.cargo), // deudora vs acreedora
+  })).filter(c => Math.abs(c.saldoNeto) > 0.004);
 
-  const otrosActivos = [];
-  for (const m of mayores.filter(m => m.tipo === 'activo')) {
-    const r = await computeSaldoCuentaMayorPolizas(b.id, m.id, subcuentas, 'debe', hastaFecha);
-    if (Math.abs(r.total) > 0.004) otrosActivos.push({ id: m.id, nombre: m.nombre, subs: r.subs, total: r.total });
-  }
-  const totalOtrosActivos = otrosActivos.reduce((s,x)=>s+x.total,0);
+  const esBanco = c => c.clave.startsWith('banco:');
+  const esEfectivo = c => c.clave.startsWith('efectivo:');
+  const nombreCorto = (c) => c.nombre.replace(/^Banco:\s*/, '').replace(/^Efectivo:\s*/, '');
 
-  const { data: facturasClientesData } = await sb.from('fz_facturas_clientes').select('total,importe_pagado,moneda,tipo_cambio,aplica_iva,iva_monto').eq('business_id', b.id).lte('fecha', hastaFecha);
-  const cuentasPorCobrar = (facturasClientesData || []).reduce((s,f) => {
-    const tc = f.moneda === 'USD' ? (Number(f.tipo_cambio) || 1) : 1;
-    return s + ((Number(f.total) || 0) - (Number(f.importe_pagado) || 0)) * tc;
-  }, 0);
+  const cuentasActivo = cuentas.filter(c => c.tipo === 'activo');
+  const detalleBancos = cuentasActivo.filter(esBanco).map(c => ({ clave: c.clave, nombre: nombreCorto(c), monto: c.saldoNeto }));
+  const detalleEfectivo = cuentasActivo.filter(esEfectivo).map(c => ({ clave: c.clave, nombre: nombreCorto(c), monto: c.saldoNeto }));
+  const totalBancos = detalleBancos.reduce((s,x)=>s+x.monto,0);
+  const totalEfectivo = detalleEfectivo.reduce((s,x)=>s+x.monto,0);
+  const cuentasPorCobrar = cuentasActivo.find(c => c.clave === 'clientes')?.saldoNeto || 0;
+  const otrosActivos = cuentasActivo.filter(c => !esBanco(c) && !esEfectivo(c) && c.clave !== 'clientes');
+  const totalOtrosActivos = otrosActivos.reduce((s,x)=>s+x.saldoNeto,0);
+  const totalActivo = totalBancos + totalEfectivo + cuentasPorCobrar + totalOtrosActivos;
 
-  const esFiscalContable = b.modo === 'fiscal_contable';
-  let ivaAcreditable = 0;
-  if (esFiscalContable) {
-    const [ivaProvQ, ivaBancosQ, ivaEfvoQ] = await Promise.all([
-      sb.from('fz_proveedores').select('iva_monto').eq('business_id', b.id).eq('aplica_iva', true).lte('fecha', hastaFecha),
-      sb.from('fz_bancos_mov').select('iva_monto').eq('business_id', b.id).eq('aplica_iva', true).lte('fecha', hastaFecha),
-      sb.from('fz_efectivo_mov').select('iva_monto').eq('business_id', b.id).eq('aplica_iva', true).lte('fecha', hastaFecha),
-    ]);
-    ivaAcreditable = [...(ivaProvQ.data||[]), ...(ivaBancosQ.data||[]), ...(ivaEfvoQ.data||[])].reduce((s,f) => s + (Number(f.iva_monto)||0), 0);
-  }
+  const cuentasPasivo = cuentas.filter(c => c.tipo === 'pasivo');
+  const proveedoresPendiente = cuentasPasivo.find(c => c.clave === 'proveedores')?.saldoNeto || 0;
+  const otrosPasivos = cuentasPasivo.filter(c => c.clave !== 'proveedores');
+  const totalOtrosPasivos = otrosPasivos.reduce((s,x)=>s+x.saldoNeto,0);
+  const totalPasivo = proveedoresPendiente + totalOtrosPasivos;
 
-  const totalActivo = totalEfectivo + totalBancos + totalOtrosActivos + cuentasPorCobrar + ivaAcreditable;
-
-  const prov = (provQ.data || []).filter(p => p.fecha <= hastaFecha);
-  const proveedoresPendiente = prov.filter(p => p.estatus === 'Pendiente' || p.estatus === 'Parcial').reduce((s,p)=>s+(Number(p.importe)-Number(p.importe_pagado||0)),0);
-
-  const ivaTrasladado = !esFiscalContable ? 0 : (facturasClientesData||[]).filter(f=>f.aplica_iva).reduce((s,f)=>s+(Number(f.iva_monto)||0),0);
-
-  const retencionesPorCategoria = {};
-  if (esFiscalContable) {
-    const { data: retData } = await sb.from('fz_proveedores').select('retencion_categoria,retencion_isr_monto,retencion_iva_monto').eq('business_id', b.id).eq('aplica_retencion', true).lte('fecha', hastaFecha);
-    (retData||[]).forEach(f => {
-      const cat = f.retencion_categoria || 'Sin categoría';
-      if (Number(f.retencion_isr_monto) > 0.004) { const k = `ISR|${cat}`; retencionesPorCategoria[k] = (retencionesPorCategoria[k]||0) + Number(f.retencion_isr_monto); }
-      if (Number(f.retencion_iva_monto) > 0.004) { const k = `IVA|${cat}`; retencionesPorCategoria[k] = (retencionesPorCategoria[k]||0) + Number(f.retencion_iva_monto); }
-    });
-  }
-  const retencionesIsr = Object.entries(retencionesPorCategoria).filter(([k])=>k.startsWith('ISR|')).reduce((s,[,v])=>s+v,0);
-  const retencionesIva = Object.entries(retencionesPorCategoria).filter(([k])=>k.startsWith('IVA|')).reduce((s,[,v])=>s+v,0);
-
-  const otrosPasivos = [];
-  for (const m of mayores.filter(m => m.tipo === 'pasivo')) {
-    const r = await computeSaldoCuentaMayorPolizas(b.id, m.id, subcuentas, 'haber', hastaFecha);
-    if (Math.abs(r.total) > 0.004) otrosPasivos.push({ id: m.id, nombre: m.nombre, subs: r.subs, total: r.total });
-  }
-  const totalOtrosPasivos = otrosPasivos.reduce((s,x)=>s+x.total,0);
-  const totalPasivo = proveedoresPendiente + totalOtrosPasivos + ivaTrasladado + retencionesIsr + retencionesIva;
-
-  const cuentasCapital = [];
-  for (const m of mayores.filter(m => m.tipo === 'capital')) {
-    const r = await computeSaldoCuentaMayorPolizas(b.id, m.id, subcuentas, 'haber', hastaFecha);
-    if (Math.abs(r.total) > 0.004) cuentasCapital.push({ id: m.id, nombre: m.nombre, subs: r.subs, total: r.total });
-  }
-  const totalCapitalCuentas = cuentasCapital.reduce((s,x)=>s+x.total,0);
+  const cuentasCapital = cuentas.filter(c => c.tipo === 'capital');
+  const totalCapitalCuentas = cuentasCapital.reduce((s,x)=>s+x.saldoNeto,0);
+  // El Resultado del ejercicio sigue viniendo del rollup de Estado de Resultados — es un concepto
+  // de P&L, no una cuenta de mayor del Balance, y Balanza ya valida que ambos coincidan exacto.
   const utilidadAcumulada = await computeUtilidadAcumulada(b.id, hastaYm);
   const totalCapital = totalCapitalCuentas + utilidadAcumulada;
 
   const totalPasivoCapital = totalPasivo + totalCapital;
   const diferenciaCuadre = totalActivo - totalPasivoCapital;
-  const cuadra = Math.abs(diferenciaCuadre) < 1;
+  const cuadra = Math.abs(diferenciaCuadre) < 0.01;
 
-  // Si hay una subcuenta con el detalle desplegado, traer sus movimientos de una vez
-  let detalleAbiertoHtml = '';
-  if (STATE_balanceDetalleAbierto) {
-    const filasDetalle = await getDetallePolizasSubcuenta(b.id, STATE_balanceDetalleAbierto, hastaFecha);
-    detalleAbiertoHtml = detalleSubcuentaHtml(filasDetalle, 2);
-  }
-  const filaArbolBalanceConDetalle = (nodo, nivel) => filaArbolBalanceHtml(nodo, nivel, detalleAbiertoHtml);
+  const filaCuentaBalance = (c) => `
+    <tr class="balance-cuenta-row" data-clave="${c.clave}" style="cursor:pointer;">
+      <td style="padding-left:22px;color:var(--muted);font-size:12.5px;">${c.nombre} ↗</td>
+      <td class="num">${fmtNeg(c.saldoNeto)}</td>
+    </tr>`;
 
   el.innerHTML = `
     <div class="grid-3" style="margin-bottom:12px;max-width:340px;">
@@ -10847,35 +10799,20 @@ async function renderBalanceGeneral() {
         <tbody>
           <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">ACTIVO</td></tr>
           <tr><td style="padding-left:22px;font-weight:600;">Efectivo y equivalentes</td><td class="num" style="font-weight:600;">${fmtNeg(totalEfectivo)}</td></tr>
-          ${detalleEfectivo.map(d => `<tr class="balance-link-efectivo" data-id="${d.id}" style="cursor:pointer;"><td style="padding-left:40px;color:var(--muted);font-size:12.5px;">${d.nombre} ↗</td><td class="num">${fmtNeg(d.monto)}</td></tr>`).join('')}
+          ${detalleEfectivo.map(d => `<tr class="balance-cuenta-row" data-clave="${d.clave}" style="cursor:pointer;"><td style="padding-left:40px;color:var(--muted);font-size:12.5px;">${d.nombre} ↗</td><td class="num">${fmtNeg(d.monto)}</td></tr>`).join('')}
           <tr><td style="padding-left:22px;font-weight:600;">Bancos</td><td class="num" style="font-weight:600;">${fmtNeg(totalBancos)}</td></tr>
-          ${detalleBancos.map(d => `<tr class="balance-link-banco" data-id="${d.id}" style="cursor:pointer;"><td style="padding-left:40px;color:var(--muted);font-size:12.5px;">${d.nombre} ↗</td><td class="num">${fmtNeg(d.monto)}</td></tr>`).join('')}
-          <tr class="balance-link-clientes" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">Cuentas por cobrar (Clientes) ↗</td><td class="num" style="font-weight:600;">${fmtNeg(cuentasPorCobrar)}</td></tr>
-          ${esFiscalContable && Math.abs(ivaAcreditable) > 0.004 ? `<tr><td style="padding-left:22px;font-weight:600;">IVA Acreditable</td><td class="num" style="font-weight:600;">${fmtNeg(ivaAcreditable)}</td></tr>` : ''}
-          ${otrosActivos.map(m => `
-            <tr class="balance-mayor-row" data-mayor="${m.id}" data-nombre="${m.nombre.replace(/"/g,'&quot;')}" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.total)}</td></tr>
-            ${m.subs.map(s => filaArbolBalanceConDetalle(s, 1)).join('')}
-          `).join('')}
+          ${detalleBancos.map(d => `<tr class="balance-cuenta-row" data-clave="${d.clave}" style="cursor:pointer;"><td style="padding-left:40px;color:var(--muted);font-size:12.5px;">${d.nombre} ↗</td><td class="num">${fmtNeg(d.monto)}</td></tr>`).join('')}
+          <tr class="balance-cuenta-row" data-clave="clientes" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">Cuentas por cobrar (Clientes) ↗</td><td class="num" style="font-weight:600;">${fmtNeg(cuentasPorCobrar)}</td></tr>
+          ${otrosActivos.map(filaCuentaBalance).join('')}
           <tr class="total-row"><td>Total Activo</td><td class="num">${fmtNeg(totalActivo)}</td></tr>
 
           <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">PASIVO</td></tr>
-          <tr class="balance-link-proveedores" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">Proveedores por pagar ↗</td><td class="num" style="font-weight:600;">${fmtNeg(proveedoresPendiente)}</td></tr>
-          ${esFiscalContable && Math.abs(ivaTrasladado) > 0.004 ? `<tr><td style="padding-left:22px;font-weight:600;">IVA Trasladado por pagar</td><td class="num" style="font-weight:600;">${fmtNeg(ivaTrasladado)}</td></tr>` : ''}
-          ${Object.entries(retencionesPorCategoria).filter(([,v])=>Math.abs(v)>0.004).map(([k,v]) => {
-            const [tipoImp, cat] = k.split('|');
-            return `<tr><td style="padding-left:22px;font-weight:600;">Retención ${tipoImp} — ${cat}</td><td class="num" style="font-weight:600;">${fmtNeg(v)}</td></tr>`;
-          }).join('')}
-          ${otrosPasivos.map(m => `
-            <tr class="balance-mayor-row" data-mayor="${m.id}" data-nombre="${m.nombre.replace(/"/g,'&quot;')}" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.total)}</td></tr>
-            ${m.subs.map(s => filaArbolBalanceConDetalle(s, 1)).join('')}
-          `).join('')}
+          <tr class="balance-cuenta-row" data-clave="proveedores" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">Proveedores por pagar ↗</td><td class="num" style="font-weight:600;">${fmtNeg(proveedoresPendiente)}</td></tr>
+          ${otrosPasivos.map(filaCuentaBalance).join('')}
           <tr class="total-row"><td>Total Pasivo</td><td class="num">${fmtNeg(totalPasivo)}</td></tr>
 
           <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">CAPITAL</td></tr>
-          ${cuentasCapital.map(m => `
-            <tr class="balance-mayor-row" data-mayor="${m.id}" data-nombre="${m.nombre.replace(/"/g,'&quot;')}" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.total)}</td></tr>
-            ${m.subs.map(s => filaArbolBalanceConDetalle(s, 1)).join('')}
-          `).join('')}
+          ${cuentasCapital.map(filaCuentaBalance).join('')}
           <tr><td style="padding-left:22px;">Utilidad acumulada del ejercicio ${hastaYm.slice(0,4)}</td><td class="num">${fmtSigno(utilidadAcumulada)}</td></tr>
           <tr class="total-row"><td>Total Capital</td><td class="num">${fmtSigno(totalCapital)}</td></tr>
 
@@ -10883,38 +10820,16 @@ async function renderBalanceGeneral() {
         </tbody>
       </table>
       </div>
-      <p style="font-size:11.5px;color:var(--muted);margin-top:12px;">Efectivo, Bancos y Proveedores se calculan en automático desde sus módulos. Las demás cuentas (Activos fijos, Acreedores, Capital, etc.) se alimentan desde Pólizas de Diario — usa el Catálogo de Cuentas para crearlas.</p>
+      <p style="font-size:11.5px;color:var(--muted);margin-top:12px;">Todas las cuentas provienen del mismo motor contable consolidado que usan Libro Diario, Auxiliares y Balanza — da clic en cualquier renglón (↗) para ver su Auxiliar completo. La Utilidad acumulada viene del Estado de Resultados.</p>
     </div>
   `;
   document.getElementById('balanceHastaMes').addEventListener('change', (e) => { STATE_balanceHastaYm = e.target.value; renderBalanceGeneral(); });
   const hoyBtn = document.getElementById('balanceHastaHoy');
   if (hoyBtn) hoyBtn.addEventListener('click', () => { STATE_balanceHastaYm = ''; renderBalanceGeneral(); });
-  const nombresPorIdSubcuenta = Object.fromEntries(subcuentas.map(s => [s.id, s.nombre]));
-  el.querySelectorAll('.balance-subcuenta-row').forEach(tr => tr.addEventListener('click', () => {
-    const ids = recolectarSubcuentaIds(tr.dataset.subcuenta, subcuentas);
-    abrirModalMovimientosCuenta(tr.dataset.nombre, ids, b.id, nombresPorIdSubcuenta);
+  el.querySelectorAll('.balance-cuenta-row').forEach(tr => tr.addEventListener('click', () => {
+    STATE_auxiliarClave = tr.dataset.clave;
+    irASeccion('auxiliares');
   }));
-  el.querySelectorAll('.balance-mayor-row').forEach(tr => tr.addEventListener('click', () => {
-    const ids = subcuentas.filter(s => s.cuenta_mayor_id === tr.dataset.mayor).map(s => s.id);
-    if (ids.length) abrirModalMovimientosCuenta(tr.dataset.nombre, ids, b.id, nombresPorIdSubcuenta);
-  }));
-  el.querySelectorAll('.abrir-origen-btn').forEach(btn => btn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const origen = JSON.parse(btn.dataset.origen.replace(/&apos;/g, "'"));
-    abrirOrigenDesdeDetalle(origen, b.id);
-  }));
-  el.querySelectorAll('.balance-link-efectivo').forEach(tr => tr.addEventListener('click', () => {
-    STATE_monedaAbierta = tr.dataset.id;
-    irASeccion('efectivo');
-  }));
-  el.querySelectorAll('.balance-link-banco').forEach(tr => tr.addEventListener('click', () => {
-    STATE_bancoCuentaAbierta = tr.dataset.id;
-    irASeccion('bancos');
-  }));
-  const provLink = el.querySelector('.balance-link-proveedores');
-  if (provLink) provLink.addEventListener('click', () => irASeccion('proveedores'));
-  const clientesLink = el.querySelector('.balance-link-clientes');
-  if (clientesLink) clientesLink.addEventListener('click', () => { STATE_clientesVista = 'directorio'; irASeccion('clientes'); });
   window.scrollTo(0, scrollY);
 }
 
