@@ -2320,6 +2320,44 @@ async function ejecutarLimpiezaCuentasDuplicadas(businessId, nombres) {
   return reporte;
 }
 
+// Caso distinto al anterior: la cuenta mayor ya es única, pero tiene varias SUBCUENTAS
+// hermanas con el mismo nombre debajo de ella (el mismo bug de carrera, pero atrapado en el
+// segundo SELECT de obtenerOCrearSubcuentaPorNombre en vez del primero). Nunca toca la mayor —
+// solo revisa/limpia las subcuentas duplicadas bajo ella, con la misma verificación de
+// referencias reales en las 7 tablas antes de borrar cualquiera.
+async function verificarLimpiezaSubcuentasHermanas(businessId, nombre) {
+  const { data: mayores } = await sb.from('fz_cuentas_mayor').select('id').eq('business_id', businessId).ilike('nombre', nombre);
+  if (!mayores || mayores.length !== 1) return { nombre, estado: 'requiere_revision_manual', mayoresEncontrados: mayores?.length||0, duplicados: [], abortar: true };
+  const mayorId = mayores[0].id;
+  const { data: subs } = await sb.from('fz_subcuentas').select('*').eq('cuenta_mayor_id', mayorId).ilike('nombre', nombre).order('created_at', { ascending: true });
+  if (!subs || subs.length < 2) return { nombre, mayorId, estado: 'sin_duplicados', duplicados: [], abortar: false };
+  const canonica = subs[0];
+  const duplicadas = [];
+  let abortar = false;
+  for (const dup of subs.slice(1)) {
+    const referencias = [];
+    for (const tabla of TABLAS_CON_SUBCUENTA) {
+      const { count } = await sb.from(tabla).select('id', { count: 'exact', head: true }).eq('subcuenta_id', dup.id);
+      if (count > 0) referencias.push({ tabla, count });
+    }
+    const { count: countHijos } = await sb.from('fz_subcuentas').select('id', { count: 'exact', head: true }).eq('subcuenta_padre_id', dup.id);
+    if (countHijos > 0) referencias.push({ tabla: 'fz_subcuentas (como padre de otra)', count: countHijos });
+    if (referencias.length) abortar = true;
+    duplicadas.push({ subId: dup.id, referencias, seguro: !referencias.length });
+  }
+  return { nombre, mayorId, estado: 'con_duplicados', canonicaId: canonica.id, duplicados: duplicadas, abortar };
+}
+
+async function ejecutarLimpiezaSubcuentasHermanas(businessId, nombre) {
+  const v = await verificarLimpiezaSubcuentasHermanas(businessId, nombre);
+  if (v.estado === 'requiere_revision_manual') return { accion: `Se encontraron ${v.mayoresEncontrados} cuentas mayor con este nombre — este caso es de subcuentas hermanas bajo UNA sola mayor; revisa manualmente antes de continuar.` };
+  if (v.estado === 'sin_duplicados') return { accion: 'Sin duplicados — nada que hacer.' };
+  if (v.abortar) return { accion: 'ABORTADO — al menos una subcuenta duplicada tiene referencias reales; no se borró nada.', detalle: v.duplicados.filter(d=>!d.seguro) };
+  const idsABorrar = v.duplicados.map(d=>d.subId);
+  await sb.from('fz_subcuentas').delete().in('id', idsABorrar);
+  return { accion: `${idsABorrar.length} subcuenta(s) hermana(s) duplicada(s) eliminada(s) — canónica conservada: ${v.canonicaId}. La cuenta mayor no se tocó.` };
+}
+
 async function diagnosticarCuentasDuplicadas(businessId, nombres) {
   const resultado = [];
   for (const nombre of nombres) {
@@ -11120,6 +11158,24 @@ async function abrirDiagnosticoFiscal(businessId, periodo) {
       const reporte = await ejecutarLimpiezaCuentasDuplicadas(businessId, nombres);
       registrarAuditoria(businessId, 'eliminar', 'Configuración', `Limpieza de cuentas duplicadas: ${reporte.map(r=>`${r.nombre} — ${r.accion}`).join(' | ')}`);
       zona.innerHTML = `<p style="font-size:12px;font-weight:700;color:var(--green);">Listo:</p>` + reporte.map(r=>`<p style="font-size:12px;">${r.nombre}: ${r.accion}</p>`).join('');
+      toast('Limpieza completada.');
+    };
+  };
+
+  document.getElementById('limpiarSubcuentasHermanasBtn').onclick = async () => {
+    const zona = document.getElementById('duplicadosCatalogoResultado');
+    zona.innerHTML = `<div class="empty">Verificando subcuentas hermanas de Diferencias por redondeo fiscal…</div>`;
+    const v = await verificarLimpiezaSubcuentasHermanas(businessId, 'Diferencias por redondeo fiscal');
+    if (v.estado === 'sin_duplicados') { zona.innerHTML = `<div class="empty">No hay subcuentas hermanas duplicadas — nada que limpiar.</div>`; return; }
+    if (v.estado === 'requiere_revision_manual') { zona.innerHTML = `<p style="font-size:12px;color:var(--red);">Se encontraron ${v.mayoresEncontrados} cuentas mayor con este nombre — este botón es específico para el caso de UNA sola mayor con subcuentas hermanas. Revisa manualmente.</p>`; return; }
+    zona.innerHTML = `<p style="font-size:12px;">${v.duplicados.length} subcuenta(s) hermana(s) encontrada(s)${v.abortar?' — <span style="color:var(--red);">al menos una TIENE referencias reales, se abortará</span>':' — todas verificadas sin ninguna referencia, seguras de borrar'}</p>` +
+      (v.abortar ? '' : `<button class="btn btn-gold btn-sm" id="confirmarLimpiezaHermanasBtn">Confirmar limpieza</button>`);
+    const btn = document.getElementById('confirmarLimpiezaHermanasBtn');
+    if (btn) btn.onclick = async () => {
+      if (!confirm(`Se eliminarán ${v.duplicados.length} subcuenta(s) hermana(s) duplicada(s), conservando la más antigua. La cuenta mayor no se toca. ¿Continuar?`)) return;
+      const r = await ejecutarLimpiezaSubcuentasHermanas(businessId, 'Diferencias por redondeo fiscal');
+      registrarAuditoria(businessId, 'eliminar', 'Configuración', `Limpieza de subcuentas hermanas — Diferencias por redondeo fiscal: ${r.accion}`);
+      zona.innerHTML = `<p style="font-size:12px;font-weight:700;color:var(--green);">Listo:</p><p style="font-size:12px;">${r.accion}</p>`;
       toast('Limpieza completada.');
     };
   };
