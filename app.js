@@ -2561,25 +2561,56 @@ async function recalcularImportePagadoImpuesto(pagoImpuestoId) {
 // pendiente), el remanente se reparte proporcionalmente entre principal y actualización (misma
 // "contribución actualizada" — nunca uno antes del otro, solo trazabilidad/contabilidad).
 // saldoPrincipalPendiente = lo que aún no se ha aplicado a principal, de aplicaciones anteriores.
-async function calcularDesglosePagoParcial(saldoPrincipalPendiente, mesVencimiento, fechaPago, montoAAplicar, recargosYaPagados) {
+// Ajuste SAT a pesos enteros — únicamente al momento de pagar, nunca en la determinación.
+// 1-50 centavos baja, 51-99 sube. Math.round() no sirve porque .50 debe bajar, no subir.
+function ajustarRedondeoSAT(monto) {
+  const piso = Math.floor(monto);
+  const centavos = Math.round((monto - piso) * 100);
+  return centavos <= 50 ? piso : piso + 1;
+}
+
+// Desglosa UN monto que se está aplicando a una obligación entre recargos / principal /
+// actualización / redondeo SAT, siguiendo el orden real del Art. 20 CFF: primero recargos
+// (hasta agotar lo pendiente), el remanente se reparte proporcionalmente entre principal y
+// actualización (misma "contribución actualizada"). El ajuste de redondeo SOLO se reconoce
+// cuando el monto aplicado corresponde a LIQUIDAR el total exigible (ajustado a pesos) — un
+// pago parcial genuino, menor a eso, nunca genera redondeo (evita que cada parcialidad invente
+// su propio ajuste y desfigure el total determinado).
+// saldoPrincipalPendiente = lo que aún no se ha aplicado a principal, de aplicaciones anteriores.
+async function calcularDesglosePagoParcial(saldoPrincipalPendiente, mesVencimiento, fechaPago, montoAAplicar, recargosYaPagados, actualizacionYaPagada) {
   const mesPago = fechaPago.slice(0,7);
-  if (mesPago <= mesVencimiento || saldoPrincipalPendiente <= 0.004) {
-    // No vencido (o ya no queda principal pendiente que actualizar) — todo va a principal.
-    return { monto_principal: Math.round(montoAAplicar*100)/100, monto_actualizacion: 0, monto_recargos: 0 };
+  let actualizacionPendiente = 0, recargosPendientes = 0, aviso = null;
+  if (mesPago > mesVencimiento && saldoPrincipalPendiente > 0.004) {
+    const r = await calcularRecargosActualizacion(saldoPrincipalPendiente, mesVencimiento, mesPago);
+    if (r.error) aviso = r.error;
+    else {
+      actualizacionPendiente = Math.max(0, (r.montoActualizado - saldoPrincipalPendiente) - Number(actualizacionYaPagada||0));
+      recargosPendientes = Math.max(0, r.recargos - Number(recargosYaPagados||0));
+    }
   }
-  const r = await calcularRecargosActualizacion(saldoPrincipalPendiente, mesVencimiento, mesPago);
-  if (r.error) {
-    // Faltan tasas/INPC capturados — no se puede calcular con certeza; se aplica todo a
-    // principal en vez de adivinar un accesorio.
-    return { monto_principal: Math.round(montoAAplicar*100)/100, monto_actualizacion: 0, monto_recargos: 0, avisoSinTasas: r.error };
+  const totalExigible = saldoPrincipalPendiente + actualizacionPendiente + recargosPendientes;
+  const montoRedondeado = ajustarRedondeoSAT(totalExigible);
+  const esLiquidacionCompleta = totalExigible > 0.004 && Math.abs(montoAAplicar - montoRedondeado) < 0.005;
+
+  if (esLiquidacionCompleta) {
+    // Se liquida el total exigible completo — el ajuste SAT absorbe la diferencia de centavos;
+    // principal/actualización/recargos quedan en $0 de saldo, exactos, sin residuo.
+    return {
+      monto_principal: Math.round(saldoPrincipalPendiente*100)/100,
+      monto_actualizacion: Math.round(actualizacionPendiente*100)/100,
+      monto_recargos: Math.round(recargosPendientes*100)/100,
+      monto_redondeo: Math.round((montoAAplicar - totalExigible)*100)/100,
+      aviso,
+    };
   }
-  const recargosPendientes = Math.max(0, r.recargos - Number(recargosYaPagados||0));
+  // Pago parcial genuino (no cierra la obligación esta vez) — nunca lleva ajuste de redondeo.
   const aRecargos = Math.min(montoAAplicar, recargosPendientes);
   const remanente = montoAAplicar - aRecargos;
-  const proporcionPrincipal = 1 / r.factorActualizacion;
+  const bloque = saldoPrincipalPendiente + actualizacionPendiente;
+  const proporcionPrincipal = bloque > 0.004 ? saldoPrincipalPendiente / bloque : 1;
   const aPrincipal = Math.round(remanente * proporcionPrincipal * 100) / 100;
   const aActualizacion = Math.round((remanente - aPrincipal) * 100) / 100; // por diferencia, para que sume exacto
-  return { monto_principal: aPrincipal, monto_actualizacion: aActualizacion, monto_recargos: Math.round(aRecargos*100)/100 };
+  return { monto_principal: aPrincipal, monto_actualizacion: aActualizacion, monto_recargos: Math.round(aRecargos*100)/100, monto_redondeo: 0, aviso };
 }
 
 async function aplicarPagoFiscal(businessId, fecha, cuentaTipo, cuentaId, aplicaciones) {
@@ -2609,14 +2640,15 @@ async function aplicarPagoFiscal(businessId, fecha, cuentaTipo, cuentaId, aplica
   // que las identifica de forma inequívoca como parte del mismo pago maestro. Cada una congela
   // su propio desglose (principal/actualización/recargos), calculado a la fecha de este pago.
   for (const a of aplicaciones) {
-    const { data: previas } = await sb.from('fz_aplicaciones_pago_fiscal').select('monto_principal,monto_recargos').eq('pago_impuesto_id', a.pagoImpuesto.id);
+    const { data: previas } = await sb.from('fz_aplicaciones_pago_fiscal').select('monto_principal,monto_actualizacion,monto_recargos').eq('pago_impuesto_id', a.pagoImpuesto.id);
     const principalYaPagado = (previas||[]).reduce((s,p)=>s+Number(p.monto_principal||0),0);
+    const actualizacionYaPagada = (previas||[]).reduce((s,p)=>s+Number(p.monto_actualizacion||0),0);
     const recargosYaPagados = (previas||[]).reduce((s,p)=>s+Number(p.monto_recargos||0),0);
     const saldoPrincipalPendiente = Number(a.pagoImpuesto.monto) - principalYaPagado;
-    const desglose = await calcularDesglosePagoParcial(saldoPrincipalPendiente, a.pagoImpuesto.fecha_limite.slice(0,7), fecha, Number(a.monto), recargosYaPagados);
+    const desglose = await calcularDesglosePagoParcial(saldoPrincipalPendiente, a.pagoImpuesto.fecha_limite.slice(0,7), fecha, Number(a.monto), recargosYaPagados, actualizacionYaPagada);
     await sb.from('fz_aplicaciones_pago_fiscal').insert({
       business_id: businessId, pago_impuesto_id: a.pagoImpuesto.id, monto: Number(a.monto),
-      monto_principal: desglose.monto_principal, monto_actualizacion: desglose.monto_actualizacion, monto_recargos: desglose.monto_recargos,
+      monto_principal: desglose.monto_principal, monto_actualizacion: desglose.monto_actualizacion, monto_recargos: desglose.monto_recargos, monto_redondeo: desglose.monto_redondeo || 0,
       origen_tabla: tabla, origen_id: movimiento.id, poliza_id: null, fecha,
     });
     await recalcularImportePagadoImpuesto(a.pagoImpuesto.id);
@@ -4168,16 +4200,19 @@ async function abrirModalAplicarPagoFiscal(b) {
         }
       }
       const totalExigible = saldoPrincipal + actualizacionPendiente + recargosPendientes;
-      filasConTotal.push({ p, saldoPrincipal, actualizacionPendiente, recargosPendientes, totalExigible, aviso });
+      const montoRedondeado = ajustarRedondeoSAT(totalExigible);
+      const ajusteSAT = Math.round((montoRedondeado - totalExigible)*100)/100;
+      filasConTotal.push({ p, saldoPrincipal, actualizacionPendiente, recargosPendientes, totalExigible, montoRedondeado, ajusteSAT, aviso });
     }
-    lista.innerHTML = filasConTotal.length ? filasConTotal.map(({p, saldoPrincipal, actualizacionPendiente, recargosPendientes, totalExigible, aviso}) => `
+    lista.innerHTML = filasConTotal.length ? filasConTotal.map(({p, saldoPrincipal, actualizacionPendiente, recargosPendientes, totalExigible, montoRedondeado, ajusteSAT, aviso}) => `
       <div style="padding:5px 2px;border-bottom:1px solid var(--line);">
         <label style="display:flex;align-items:center;gap:7px;cursor:pointer;">
-          <input type="checkbox" class="apf-check" value="${p.id}" data-saldo="${totalExigible}">
+          <input type="checkbox" class="apf-check" value="${p.id}" data-saldo="${montoRedondeado}">
           <span style="flex:1;font-size:12px;">${p.periodo} · ${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]}${p.concepto?' — '+p.concepto:''}</span>
-          <input type="text" class="apf-monto-aplicar" data-id="${p.id}" inputmode="decimal" value="${fmtInputVal(totalExigible)}" style="width:100px;padding:4px 6px;font-size:12px;border:1px solid var(--line);border-radius:6px;" disabled>
+          <input type="text" class="apf-monto-aplicar" data-id="${p.id}" inputmode="decimal" value="${fmtInputVal(montoRedondeado)}" style="width:100px;padding:4px 6px;font-size:12px;border:1px solid var(--line);border-radius:6px;" disabled>
         </label>
-        ${(actualizacionPendiente>0.004||recargosPendientes>0.004) ? `<div style="font-size:11px;color:var(--muted);padding-left:26px;">Principal ${fmt(saldoPrincipal)}${actualizacionPendiente>0.004?' · Actualización '+fmt(actualizacionPendiente):''}${recargosPendientes>0.004?' · Recargos '+fmt(recargosPendientes):''} · Total ${fmt(totalExigible)}</div>` : ''}
+        ${(actualizacionPendiente>0.004||recargosPendientes>0.004) ? `<div style="font-size:11px;color:var(--muted);padding-left:26px;">Principal ${fmt(saldoPrincipal)}${actualizacionPendiente>0.004?' · Actualización '+fmt(actualizacionPendiente):''}${recargosPendientes>0.004?' · Recargos '+fmt(recargosPendientes):''} · Subtotal calculado ${fmt(totalExigible)}</div>` : ''}
+        ${Math.abs(ajusteSAT)>0.004 ? `<div style="font-size:11px;color:var(--gold);padding-left:26px;">Importe determinado/calculado: ${fmt(totalExigible)} · Ajuste SAT: ${ajusteSAT>0?'+':''}${fmt(ajusteSAT)} · Importe a pagar SAT: <strong>${fmt(montoRedondeado)}</strong></div>` : ''}
         ${aviso ? `<div style="font-size:11px;color:var(--red);padding-left:26px;">${aviso}</div>` : ''}
       </div>`).join('') : `<div class="empty" style="padding:8px;font-size:12px;">No hay obligaciones con saldo pendiente.</div>`;
     lista.querySelectorAll('.apf-check').forEach(chk => chk.addEventListener('change', () => {
@@ -10711,8 +10746,10 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   }
   const CUENTA_ACTUALIZACION_FISCAL = 'Actualización fiscal';
   const CUENTA_RECARGOS_FISCALES = 'Recargos fiscales';
+  const CUENTA_REDONDEO_FISCAL = 'Diferencias por redondeo fiscal';
   if ((todasAplicacionesFiscales||[]).some(a => Number(a.monto_actualizacion) > 0.004)) subcuentaObligacionCache[CUENTA_ACTUALIZACION_FISCAL] = await subRealizacion(CUENTA_ACTUALIZACION_FISCAL, 'gasto');
   if ((todasAplicacionesFiscales||[]).some(a => Number(a.monto_recargos) > 0.004)) subcuentaObligacionCache[CUENTA_RECARGOS_FISCALES] = await subRealizacion(CUENTA_RECARGOS_FISCALES, 'gasto');
+  if ((todasAplicacionesFiscales||[]).some(a => Math.abs(Number(a.monto_redondeo)) > 0.004)) subcuentaObligacionCache[CUENTA_REDONDEO_FISCAL] = await subRealizacion(CUENTA_REDONDEO_FISCAL, 'gasto');
 
   const procesarMovimientos = (movs, esBanco, tipoOrigenTag, moduloTag, tablaOrigenNombre) => {
     (movs||[]).forEach(m => {
@@ -10736,13 +10773,17 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
               // Aplicaciones de antes de este desglose (las 3 columnas en 0 pese a tener monto):
               // todo su monto ya era principal en su momento — mismo respaldo que el resto del
               // motor, para no alterar los pagos ya probados.
-              const desglosado = Number(ap.monto_principal||0) + Number(ap.monto_actualizacion||0) + Number(ap.monto_recargos||0);
+              const desglosado = Number(ap.monto_principal||0) + Number(ap.monto_actualizacion||0) + Number(ap.monto_recargos||0) + Math.abs(Number(ap.monto_redondeo||0));
               if (desglosado <= 0.004) {
                 push({ ...base, cuenta }, clave, tipoCta, Number(ap.monto), 0);
               } else {
                 if (Number(ap.monto_principal) > 0.004) push({ ...base, cuenta }, clave, tipoCta, Number(ap.monto_principal), 0);
                 if (Number(ap.monto_actualizacion) > 0.004) push({ ...base, cuenta: CUENTA_ACTUALIZACION_FISCAL }, 'sub:'+subcuentaObligacionCache[CUENTA_ACTUALIZACION_FISCAL], 'gasto', Number(ap.monto_actualizacion), 0);
                 if (Number(ap.monto_recargos) > 0.004) push({ ...base, cuenta: CUENTA_RECARGOS_FISCALES }, 'sub:'+subcuentaObligacionCache[CUENTA_RECARGOS_FISCALES], 'gasto', Number(ap.monto_recargos), 0);
+                // Redondeo SAT: positivo (se pagó más) = Debe; negativo (se pagó menos) = Haber.
+                // Una sola cuenta, con cargo o abono según el sentido — nunca siempre gasto.
+                if (Number(ap.monto_redondeo) > 0.004) push({ ...base, cuenta: CUENTA_REDONDEO_FISCAL }, 'sub:'+subcuentaObligacionCache[CUENTA_REDONDEO_FISCAL], 'gasto', Number(ap.monto_redondeo), 0);
+                else if (Number(ap.monto_redondeo) < -0.004) push({ ...base, cuenta: CUENTA_REDONDEO_FISCAL }, 'sub:'+subcuentaObligacionCache[CUENTA_REDONDEO_FISCAL], 'gasto', 0, Math.abs(Number(ap.monto_redondeo)));
               }
             });
           } else {
