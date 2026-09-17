@@ -2164,15 +2164,19 @@ async function sincronizarRealizacionFactura(facturaId, tipoFactura, businessId,
   // "activo" (IVA Acreditable) y "pasivo" (IVA Trasladado, Retenciones) usan polaridad distinta.
   const items = [];
   if (tipoFactura === 'proveedor') {
-    if (f.aplica_iva && Number(f.iva_monto)) items.push({ tipo: 'iva_acreditable', categoria: null, montoBase: Number(f.iva_monto), naturaleza: 'activo', pendiente: 'IVA Acreditable — Pendiente de pago', realizado: 'IVA Acreditable — Pagado' });
+    if (f.aplica_iva && Number(f.iva_monto)) items.push({ tipo: 'iva_acreditable', categoria: '', montoBase: Number(f.iva_monto), naturaleza: 'activo', pendiente: 'IVA Acreditable — Pendiente de pago', realizado: 'IVA Acreditable — Pagado' });
     if (f.aplica_retencion && Number(f.retencion_isr_monto)) { const cat = f.retencion_categoria||'Sin categoría'; items.push({ tipo: 'retencion_isr', categoria: cat, montoBase: Number(f.retencion_isr_monto), naturaleza: 'pasivo', pendiente: `Retención ISR — ${cat} — Pendiente de pago`, realizado: `Retención ISR — ${cat} — Retenida` }); }
     if (f.aplica_retencion && Number(f.retencion_iva_monto)) { const cat = f.retencion_categoria||'Sin categoría'; items.push({ tipo: 'retencion_iva', categoria: cat, montoBase: Number(f.retencion_iva_monto), naturaleza: 'pasivo', pendiente: `Retención IVA — ${cat} — Pendiente de pago`, realizado: `Retención IVA — ${cat} — Retenida` }); }
   } else {
-    if (f.aplica_iva && Number(f.iva_monto)) items.push({ tipo: 'iva_trasladado', categoria: null, montoBase: Number(f.iva_monto), naturaleza: 'pasivo', pendiente: 'IVA Trasladado — Pendiente de cobro', realizado: 'IVA Trasladado — Cobrado' });
+    if (f.aplica_iva && Number(f.iva_monto)) items.push({ tipo: 'iva_trasladado', categoria: '', montoBase: Number(f.iva_monto), naturaleza: 'pasivo', pendiente: 'IVA Trasladado — Pendiente de cobro', realizado: 'IVA Trasladado — Cobrado' });
   }
 
   for (const item of items) {
     const montoDebeSer = Math.round(item.montoBase * proporcion * 100) / 100;
+    // OJO: la búsqueda y el guardado deben usar SIEMPRE cadena vacía (nunca null) para "sin
+    // categoría" — en SQL, columna=NULL nunca es verdadero (se necesita IS NULL), así que
+    // comparar contra null aquí nunca encontraba el registro anterior y duplicaba la póliza
+    // cada vez que se aplicaba un nuevo pago. Con cadena vacía, la comparación normal funciona.
     const { data: existente } = await sb.from('fz_iva_realizaciones').select('*').eq('business_id', businessId).eq('factura_tabla', tabla).eq('factura_id', facturaId).eq('tipo', item.tipo).eq('categoria', item.categoria).maybeSingle();
     const yaRealizado = Number(existente?.monto_realizado_acumulado) || 0;
     const diff = montoDebeSer - yaRealizado;
@@ -2201,11 +2205,87 @@ async function sincronizarRealizacionFactura(facturaId, tipoFactura, businessId,
     const { data: nuevaPoliza, error } = await sb.from('fz_polizas').insert({ business_id: businessId, fecha: fechaPoliza, concepto }).select().single();
     if (error) continue;
     await sb.from('fz_polizas_lineas').insert(lineas.map((l,i) => ({ ...l, business_id: businessId, poliza_id: nuevaPoliza.id, cuenta_tipo: 'subcuenta', descripcion: concepto, orden: i })));
-    await sb.from('fz_iva_realizaciones').upsert({
-      business_id: businessId, factura_tabla: tabla, factura_id: facturaId, tipo: item.tipo, categoria: item.categoria,
-      monto_realizado_acumulado: montoDebeSer, poliza_id: nuevaPoliza.id, fecha: fechaPoliza, updated_at: new Date().toISOString(),
-    }, { onConflict: 'business_id,factura_tabla,factura_id,tipo,categoria' });
+    // Se actualiza el registro existente por su id (si lo hay) en vez de confiar en el upsert
+    // por restricción única — más seguro, ya no depende de cómo Postgres trate columnas vacías.
+    if (existente) {
+      await sb.from('fz_iva_realizaciones').update({ monto_realizado_acumulado: montoDebeSer, poliza_id: nuevaPoliza.id, fecha: fechaPoliza, updated_at: new Date().toISOString() }).eq('id', existente.id);
+    } else {
+      await sb.from('fz_iva_realizaciones').insert({
+        business_id: businessId, factura_tabla: tabla, factura_id: facturaId, tipo: item.tipo, categoria: item.categoria,
+        monto_realizado_acumulado: montoDebeSer, poliza_id: nuevaPoliza.id, fecha: fechaPoliza,
+      });
+    }
   }
+}
+
+// Detecta facturas con MÁS de un registro de realización para el mismo tipo (el rastro del bug de
+// categoría null: cada pago aplicado generaba una póliza nueva en vez de ajustar la existente).
+// Es de solo detección — no corrige nada hasta que el usuario confirme cada caso.
+async function detectarDuplicadosRealizacion(businessId) {
+  const { data: filas } = await sb.from('fz_iva_realizaciones').select('*').eq('business_id', businessId);
+  const grupos = {};
+  (filas||[]).forEach(r => {
+    const key = `${r.factura_tabla}|${r.factura_id}|${r.tipo}|${r.categoria}`;
+    (grupos[key] = grupos[key] || []).push(r);
+  });
+  const duplicados = [];
+  for (const [key, filasGrupo] of Object.entries(grupos)) {
+    if (filasGrupo.length < 2) continue;
+    const [tabla, facturaId, tipo] = key.split('|');
+    const { data: f } = await sb.from(tabla).select('*').eq('id', facturaId).maybeSingle();
+    if (!f) continue;
+    const importeTotal = Number(tabla === 'fz_proveedores' ? f.importe : f.total) || 0;
+    const tablaAplicados = tabla === 'fz_proveedores' ? 'fz_pagos_aplicados' : 'fz_cobros_aplicados';
+    const { data: aplicados } = await sb.from(tablaAplicados).select('monto').eq('factura_id', facturaId);
+    const totalAplicado = (aplicados||[]).reduce((s,a)=>s+Number(a.monto||0), 0);
+    const proporcion = importeTotal ? Math.min(1, totalAplicado / importeTotal) : 0;
+    const montoBaseMap = { iva_acreditable: 'iva_monto', iva_trasladado: 'iva_monto', retencion_isr: 'retencion_isr_monto', retencion_iva: 'retencion_iva_monto' };
+    const montoBase = Number(f[montoBaseMap[tipo]]) || 0;
+    const correcto = Math.round(montoBase * proporcion * 100) / 100;
+    const actualEnLibro = filasGrupo.reduce((s,r)=>s+Number(r.monto_realizado_acumulado||0), 0);
+    duplicados.push({
+      tabla, facturaId, tipo, categoria: filasGrupo[0].categoria, filas: filasGrupo,
+      referencia: tabla === 'fz_proveedores' ? (f.factura||'s/f') : `Folio #${f.folio}`,
+      detalle: tabla === 'fz_proveedores' ? f.proveedor : null,
+      correcto, actualEnLibro, diferencia: correcto - actualEnLibro,
+    });
+  }
+  return duplicados;
+}
+
+// Corrige UN caso confirmado: genera (si hace falta) una póliza de ajuste por la diferencia entre
+// lo que el libro ya refleja (suma de las pólizas duplicadas) y lo que matemáticamente debería
+// haber — y consolida el rastreo en un solo registro limpio.
+async function corregirDuplicadoRealizacion(dup, businessId) {
+  const nombresCuentas = {
+    iva_acreditable: { pendiente: 'IVA Acreditable — Pendiente de pago', realizado: 'IVA Acreditable — Pagado', naturaleza: 'activo' },
+    iva_trasladado: { pendiente: 'IVA Trasladado — Pendiente de cobro', realizado: 'IVA Trasladado — Cobrado', naturaleza: 'pasivo' },
+    retencion_isr: { pendiente: `Retención ISR — ${dup.categoria} — Pendiente de pago`, realizado: `Retención ISR — ${dup.categoria} — Retenida`, naturaleza: 'pasivo' },
+    retencion_iva: { pendiente: `Retención IVA — ${dup.categoria} — Pendiente de pago`, realizado: `Retención IVA — ${dup.categoria} — Retenida`, naturaleza: 'pasivo' },
+  };
+  const cfg = nombresCuentas[dup.tipo];
+  if (Math.abs(dup.diferencia) > 0.005 && !(await periodoEstaCerrado(businessId, todayStr()))) {
+    const subPendiente = await obtenerOCrearSubcuentaPorNombre(businessId, cfg.pendiente, cfg.naturaleza);
+    const subRealizado = await obtenerOCrearSubcuentaPorNombre(businessId, cfg.realizado, cfg.naturaleza);
+    const esAumento = dup.diferencia > 0;
+    const monto = Math.abs(dup.diferencia);
+    let lineas;
+    if (cfg.naturaleza === 'activo') {
+      lineas = esAumento ? [{ subcuenta_id: subRealizado, cargo: monto, abono: 0 }, { subcuenta_id: subPendiente, cargo: 0, abono: monto }]
+                          : [{ subcuenta_id: subPendiente, cargo: monto, abono: 0 }, { subcuenta_id: subRealizado, cargo: 0, abono: monto }];
+    } else {
+      lineas = esAumento ? [{ subcuenta_id: subPendiente, cargo: monto, abono: 0 }, { subcuenta_id: subRealizado, cargo: 0, abono: monto }]
+                          : [{ subcuenta_id: subRealizado, cargo: monto, abono: 0 }, { subcuenta_id: subPendiente, cargo: 0, abono: monto }];
+    }
+    const concepto = `[Auto] Corrección de duplicado — ${dup.tipo} — ${dup.referencia}`;
+    const { data: poliza } = await sb.from('fz_polizas').insert({ business_id: businessId, fecha: todayStr(), concepto }).select().single();
+    await sb.from('fz_polizas_lineas').insert(lineas.map((l,i)=>({ ...l, business_id: businessId, poliza_id: poliza.id, cuenta_tipo:'subcuenta', descripcion: concepto, orden: i })));
+  }
+  // Deja un solo registro de rastreo limpio con el total correcto, y borra los duplicados.
+  const primero = dup.filas[0];
+  await sb.from('fz_iva_realizaciones').update({ monto_realizado_acumulado: dup.correcto, fecha: todayStr(), updated_at: new Date().toISOString() }).eq('id', primero.id);
+  const idsSobrantes = dup.filas.slice(1).map(r=>r.id);
+  if (idsSobrantes.length) await sb.from('fz_iva_realizaciones').delete().in('id', idsSobrantes);
 }
 
 async function generarPolizaPagoIsr(pagoImpuesto, businessId, cuentaTipo, cuentaId) {
@@ -3370,6 +3450,7 @@ async function autoGenerarPagosImpuestos(b, anio) {
 async function pintarPagosImpuestos(contenido, b) {
   const { data: pagos } = await sb.from('fz_pagos_impuestos').select('*').eq('business_id', b.id).like('periodo', `${STATE_piAnio}-%`).order('periodo', { ascending: true });
   const pendientesProvision = await previsualizarProvisionesIsr(b.id, STATE_piAnio);
+  const duplicadosRealizacion = await detectarDuplicadosRealizacion(b.id);
   const hoy = todayStr();
 
   const estatusDe = (p) => {
@@ -3387,6 +3468,28 @@ async function pintarPagosImpuestos(contenido, b) {
 
   contenido.innerHTML = `
     <p style="font-size:12px;color:var(--muted);margin-bottom:14px;max-width:700px;">El IVA a cargo de cada mes se agrega solo (viene del cálculo de IVA y Retenciones) — los demás impuestos (ISR Provisional, Retenciones, Otro) los registras con el botón de abajo. Marca la fecha de pago directo en la tabla; si fue tarde, se calculan solos la actualización y los recargos.</p>
+    ${duplicadosRealizacion.length ? `
+    <div class="card" style="background:#fdeeee;border:1px solid #e8b4b4;">
+      <div class="card-head"><h3>Realizaciones fiscales duplicadas detectadas</h3></div>
+      <p style="font-size:12px;color:#8a2f2f;margin-bottom:10px;">Se encontraron pólizas automáticas de más para el mismo documento (rastro de un bug ya corregido). No se ha tocado nada — revisa cada caso y confirma antes de generar el ajuste.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Documento</th><th>Tipo</th><th># pólizas encontradas</th><th>En el libro actualmente</th><th>Debería ser</th><th>Diferencia a ajustar</th><th></th></tr></thead>
+          <tbody>
+            ${duplicadosRealizacion.map((d,idx) => `<tr>
+              <td>${d.referencia}${d.detalle?' — '+d.detalle:''}</td>
+              <td>${d.tipo}${d.categoria?' — '+d.categoria:''}</td>
+              <td class="num">${d.filas.length}</td>
+              <td class="num">${fmt(d.actualEnLibro)}</td>
+              <td class="num">${fmt(d.correcto)}</td>
+              <td class="num" style="font-weight:600;color:${Math.abs(d.diferencia)>0.005?'var(--red)':'var(--green)'};">${fmt(Math.abs(d.diferencia))}</td>
+              <td><button class="btn btn-gold btn-sm dup-corregir-btn" data-idx="${idx}">Corregir</button></td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+      <button class="btn btn-ghost btn-sm" id="dupCorregirTodosBtn" style="margin-top:10px;">Corregir todos</button>
+    </div>` : ''}
     ${pendientesProvision.length ? `
     <div class="card" style="background:#fff8ec;border:1px solid #f0d99a;">
       <div class="card-head"><h3>Provisiones fiscales pendientes de contabilizar</h3></div>
@@ -3462,6 +3565,22 @@ async function pintarPagosImpuestos(contenido, b) {
 
   document.getElementById('piAnioSel').addEventListener('change', async (e) => {
     STATE_piAnio = e.target.value;
+    renderPagosImpuestos();
+  });
+  contenido.querySelectorAll('.dup-corregir-btn').forEach(btn => btn.addEventListener('click', async () => {
+    const dup = duplicadosRealizacion[Number(btn.dataset.idx)];
+    if (!dup) return;
+    await corregirDuplicadoRealizacion(dup, b.id);
+    registrarAuditoria(b.id, 'editar', 'Impuestos', `Corrección de realización duplicada — ${dup.tipo} — ${dup.referencia}`);
+    toast('Corregido.');
+    renderPagosImpuestos();
+  }));
+  const btnDupTodos = document.getElementById('dupCorregirTodosBtn');
+  if (btnDupTodos) btnDupTodos.addEventListener('click', async () => {
+    if (!confirm(`Se corregirán ${duplicadosRealizacion.length} caso(s) detectado(s). ¿Continuar?`)) return;
+    for (const dup of duplicadosRealizacion) await corregirDuplicadoRealizacion(dup, b.id);
+    registrarAuditoria(b.id, 'editar', 'Impuestos', `Corrección de realizaciones duplicadas en lote — ${duplicadosRealizacion.length} caso(s)`);
+    toast('Corregidos.');
     renderPagosImpuestos();
   });
   contenido.querySelectorAll('.provision-generar-btn').forEach(btn => btn.addEventListener('click', async () => {
