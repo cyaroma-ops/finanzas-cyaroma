@@ -2446,6 +2446,48 @@ async function ejecutarReinicioFiscal(businessId, desde, hasta, usuarioEmail) {
   return { borradas: idsPolizas.length, regeneradas };
 }
 
+// Qué cuenta EXIGIBLE se cancela al pagar cada tipo de impuesto — nunca la de "Pendiente de
+// pago" (esa todavía no es exigible), siempre la que ya representa la obligación realizada.
+function cuentaObligacionPago(pagoImpuesto) {
+  if (pagoImpuesto.tipo_impuesto === 'isr_provisional') return { nombre: CUENTA_ISR_PROV_PASIVO, naturaleza: 'pasivo' };
+  if (pagoImpuesto.tipo_impuesto === 'iva') return { nombre: CUENTA_IVA_POR_PAGAR, naturaleza: 'pasivo' };
+  if (pagoImpuesto.tipo_impuesto === 'retencion_isr') return { nombre: `Retención ISR — ${pagoImpuesto.concepto||'Sin categoría'} — Retenida`, naturaleza: 'pasivo' };
+  if (pagoImpuesto.tipo_impuesto === 'retencion_iva') return { nombre: `Retención IVA — ${pagoImpuesto.concepto||'Sin categoría'} — Retenida`, naturaleza: 'pasivo' };
+  return null; // "Otro" — sin cuenta de obligación identificada, no se genera nada
+}
+
+// Generaliza generarPolizaPagoIsr a los 4 tipos — misma arquitectura, mismo patrón de
+// idempotencia (un solo registro 'pago' en fz_provisiones_fiscales por pago_impuesto_id).
+async function generarPolizaPagoImpuesto(pagoImpuesto, businessId, cuentaTipo, cuentaId) {
+  if (!pagoImpuesto.fecha_pago || !cuentaTipo || !cuentaId) return;
+  const obligacion = cuentaObligacionPago(pagoImpuesto);
+  if (!obligacion) return; // "Otro" sin cuenta identificada — no rompe, simplemente no genera nada
+  const { data: yaPagado } = await sb.from('fz_provisiones_fiscales').select('id').eq('pago_impuesto_id', pagoImpuesto.id).eq('tipo', 'pago').maybeSingle();
+  if (yaPagado) return; // idempotente — ya se generó antes
+  if (await periodoEstaCerrado(businessId, pagoImpuesto.fecha_pago)) return;
+  const subObligacion = await obtenerOCrearSubcuentaPorNombre(businessId, obligacion.nombre, obligacion.naturaleza);
+  const monto = Number(pagoImpuesto.monto); // el principal — actualización/recargos se tratan aparte
+  const concepto = `[Auto] Pago ${TIPO_IMPUESTO_LABEL[pagoImpuesto.tipo_impuesto]}${pagoImpuesto.concepto?' — '+pagoImpuesto.concepto:''} — ${pagoImpuesto.periodo}`;
+  const { data: nuevaPoliza, error } = await sb.from('fz_polizas').insert({ business_id: businessId, fecha: pagoImpuesto.fecha_pago, concepto }).select().single();
+  if (error) return;
+  const lineaObligacion = { business_id: businessId, poliza_id: nuevaPoliza.id, cuenta_tipo: 'subcuenta', subcuenta_id: subObligacion, cargo: monto, abono: 0, descripcion: concepto, orden: 0 };
+  const lineaBanco = { business_id: businessId, poliza_id: nuevaPoliza.id, cuenta_tipo: cuentaTipo, cuenta_ref_id: cuentaId, cargo: 0, abono: monto, descripcion: concepto, orden: 1 };
+  await sb.from('fz_polizas_lineas').insert([lineaObligacion, lineaBanco]);
+  await sb.from('fz_provisiones_fiscales').insert({ business_id: businessId, pago_impuesto_id: pagoImpuesto.id, tipo: 'pago', monto, poliza_id: nuevaPoliza.id, fecha: pagoImpuesto.fecha_pago });
+}
+
+// Revierte el pago ya generado de un registro de fz_pagos_impuestos (si existe) — borra su
+// póliza y su rastreo, para que modificar o eliminar el registro nunca deje nada huérfano.
+async function revertirPagoImpuesto(pagoImpuestoId) {
+  const { data: registro } = await sb.from('fz_provisiones_fiscales').select('id,poliza_id').eq('pago_impuesto_id', pagoImpuestoId).eq('tipo', 'pago').maybeSingle();
+  if (!registro) return;
+  if (registro.poliza_id) {
+    await sb.from('fz_polizas_lineas').delete().eq('poliza_id', registro.poliza_id);
+    await sb.from('fz_polizas').delete().eq('id', registro.poliza_id);
+  }
+  await sb.from('fz_provisiones_fiscales').delete().eq('id', registro.id);
+}
+
 async function generarPolizaPagoIsr(pagoImpuesto, businessId, cuentaTipo, cuentaId) {
   if (pagoImpuesto.tipo_impuesto !== 'isr_provisional' || !pagoImpuesto.fecha_pago) return;
   if (!cuentaTipo || !cuentaId) return; // sin cuenta elegida, no se genera el asiento de pago
@@ -3941,9 +3983,10 @@ async function abrirModalPagoImpuesto(pago, b) {
     (monedas||[]).map(m => `<option value="efectivo:${m.id}">Caja — ${m.nombre}</option>`).join('');
   if (pago?.pagado_desde_tipo && pago?.pagado_desde_cuenta_id) selPagadoDesde.value = `${pago.pagado_desde_tipo}:${pago.pagado_desde_cuenta_id}`;
   const actualizarVisibilidadPagadoDesde = () => {
-    const esIsr = document.getElementById('piTipo').value === 'isr_provisional';
+    const tipoActual = document.getElementById('piTipo').value;
+    const tieneCuentaIdentificada = ['isr_provisional','iva','retencion_isr','retencion_iva'].includes(tipoActual);
     const tienePago = !!document.getElementById('piFechaPago').value;
-    document.getElementById('piPagadoDesdeWrap').style.display = (esIsr && tienePago) ? 'block' : 'none';
+    document.getElementById('piPagadoDesdeWrap').style.display = (tieneCuentaIdentificada && tienePago) ? 'block' : 'none';
   };
   document.getElementById('piTipo').onchange = actualizarVisibilidadPagadoDesde;
   document.getElementById('piFechaPago').onchange = actualizarVisibilidadPagadoDesde;
@@ -4015,6 +4058,9 @@ document.getElementById('piGuardarBtn').addEventListener('click', async () => {
     importe_declarado: declarada ? (leerMonto(document.getElementById('piImporteDeclarado').value) || null) : null,
     pagado_desde_tipo: pagadoDesdeTipo, pagado_desde_cuenta_id: pagadoDesdeId,
   };
+  // Si este registro ya tenía un pago generado antes, se revierte primero — así modificar el
+  // monto, la cuenta o quitar la fecha de pago nunca deja una póliza vieja huérfana ni duplicada.
+  if (STATE_piEditandoId) await revertirPagoImpuesto(STATE_piEditandoId);
   let filaGuardada;
   if (STATE_piEditandoId) {
     const { data, error } = await sb.from('fz_pagos_impuestos').update(payload).eq('id', STATE_piEditandoId).select().single();
@@ -4025,8 +4071,8 @@ document.getElementById('piGuardarBtn').addEventListener('click', async () => {
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     filaGuardada = data;
   }
-  if (filaGuardada && payload.tipo_impuesto === 'isr_provisional' && fechaPago && pagadoDesdeTipo) {
-    await generarPolizaPagoIsr(filaGuardada, b.id, pagadoDesdeTipo, pagadoDesdeId);
+  if (filaGuardada && fechaPago && pagadoDesdeTipo) {
+    await generarPolizaPagoImpuesto(filaGuardada, b.id, pagadoDesdeTipo, pagadoDesdeId);
   }
   registrarAuditoria(b.id, STATE_piEditandoId ? 'editar' : 'crear', 'Pagos de Impuestos', `${TIPO_IMPUESTO_LABEL[payload.tipo_impuesto]} — ${periodo}`);
   toast('Guardado.');
@@ -4036,6 +4082,7 @@ document.getElementById('piGuardarBtn').addEventListener('click', async () => {
 document.getElementById('piEliminarBtn').addEventListener('click', async () => {
   if (!STATE_piEditandoId || !confirm('¿Eliminar este registro de impuesto?')) return;
   const b = biz();
+  await revertirPagoImpuesto(STATE_piEditandoId);
   await sb.from('fz_pagos_impuestos').delete().eq('id', STATE_piEditandoId);
   registrarAuditoria(b.id, 'eliminar', 'Pagos de Impuestos', 'Registro eliminado');
   document.getElementById('modalPagoImpuesto').classList.remove('show');
