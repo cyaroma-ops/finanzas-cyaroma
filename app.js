@@ -10461,9 +10461,15 @@ async function computeIsrProvisional(businessId, ym, ingresosAnterioresOverride 
   const anio = ym.slice(0,4);
   const mesNum = Number(ym.slice(5,7));
 
-  const { ingresosFacturadosMes, disminuir, adicional, ingresosMesAjustado } = await computeIngresosAjustadosMes(businessId, ym);
-
-  const { data: conceptos } = await sb.from('fz_isr_conceptos').select('*').eq('business_id', businessId).eq('periodo', ym);
+  // Estas 4 consultas no dependen entre sí — se piden todas a la vez en vez de una por una.
+  const [datosIngresosMes, conceptosQ, datosAnualesArr, pagosAnterioresQ] = await Promise.all([
+    computeIngresosAjustadosMes(businessId, ym),
+    sb.from('fz_isr_conceptos').select('*').eq('business_id', businessId).eq('periodo', ym).then(r=>r.data),
+    sb.from('fz_isr_datos_anuales').select('*').eq('business_id', businessId).lte('vigente_desde', ym).order('vigente_desde', { ascending: false }).limit(1).then(r=>r.data),
+    sb.from('fz_pagos_impuestos').select('monto').eq('business_id', businessId).eq('tipo_impuesto', 'isr_provisional').like('periodo', `${anio}-%`).lt('periodo', ym).then(r=>r.data),
+  ]);
+  const { ingresosFacturadosMes, disminuir, adicional, ingresosMesAjustado } = datosIngresosMes;
+  const conceptos = conceptosQ;
   const sumaPorTipo = (tipo) => (conceptos||[]).filter(c=>c.tipo===tipo).reduce((s,c)=>s+Number(c.monto),0);
   const estimulo = sumaPorTipo('estimulo');
   const dividendos = sumaPorTipo('dividendos'), retenido = sumaPorTipo('retenido');
@@ -10475,16 +10481,12 @@ async function computeIsrProvisional(businessId, ym, ingresosAnterioresOverride 
   if (ingresosAnterioresOverride !== null) {
     ingresosAnteriores = ingresosAnterioresOverride;
   } else {
-    ingresosAnteriores = 0;
-    for (let mm = 1; mm < mesNum; mm++) {
-      const ymPrev = `${anio}-${String(mm).padStart(2,'0')}`;
-      const r = await computeIngresosAjustadosMes(businessId, ymPrev);
-      ingresosAnteriores += r.ingresosMesAjustado;
-    }
+    const mesesPrevios = Array.from({ length: mesNum - 1 }, (_, i) => `${anio}-${String(i+1).padStart(2,'0')}`);
+    const resultadosPrevios = await Promise.all(mesesPrevios.map(ymPrev => computeIngresosAjustadosMes(businessId, ymPrev)));
+    ingresosAnteriores = resultadosPrevios.reduce((s,r) => s + r.ingresosMesAjustado, 0);
   }
   const totalIngresosNominales = ingresosMesAjustado + ingresosAnteriores;
 
-  const { data: datosAnualesArr } = await sb.from('fz_isr_datos_anuales').select('*').eq('business_id', businessId).lte('vigente_desde', ym).order('vigente_desde', { ascending: false }).limit(1);
   const datosAnuales = (datosAnualesArr||[])[0];
   const coeficiente = Number(datosAnuales?.coeficiente_utilidad) || 0;
   const perdidasPendientes = Number(datosAnuales?.perdidas_fiscales_pendientes) || 0;
@@ -10494,8 +10496,7 @@ async function computeIsrProvisional(businessId, ym, ingresosAnterioresOverride 
   const impuestoCausado = baseGravable * 0.30;
   const impuestoDelPeriodo = Math.max(0, impuestoCausado - estimulo);
 
-  const { data: pagosAnteriores } = await sb.from('fz_pagos_impuestos').select('monto').eq('business_id', businessId).eq('tipo_impuesto', 'isr_provisional').like('periodo', `${anio}-%`).lt('periodo', ym);
-  const pagosPrevios = (pagosAnteriores||[]).reduce((s,p)=>s+Number(p.monto),0);
+  const pagosPrevios = (pagosAnterioresQ||[]).reduce((s,p)=>s+Number(p.monto),0);
 
   const impuestoACargo = Math.max(0, impuestoDelPeriodo - dividendos - pagosPrevios - retenido);
 
