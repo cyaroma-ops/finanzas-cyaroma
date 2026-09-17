@@ -2534,8 +2534,16 @@ async function revertirPagoHistoricoLegacy(businessId, periodo, tipoImpuesto) {
 }
 
 async function recalcularImportePagadoImpuesto(pagoImpuestoId) {
-  const { data: aplicaciones } = await sb.from('fz_aplicaciones_pago_fiscal').select('monto,fecha').eq('pago_impuesto_id', pagoImpuestoId);
-  const total = (aplicaciones||[]).reduce((s,a)=>s+Number(a.monto||0), 0);
+  const { data: aplicaciones } = await sb.from('fz_aplicaciones_pago_fiscal').select('monto,monto_principal,monto_actualizacion,monto_recargos,fecha').eq('pago_impuesto_id', pagoImpuestoId);
+  // importe_pagado representa el PRINCIPAL pagado — nunca se mezcla con recargos/actualización.
+  // Las aplicaciones creadas ANTES de este desglose quedaron con las 3 columnas en 0 (el valor
+  // por defecto de Postgres al agregar la columna, no null) — para esas, todo su "monto" ya era
+  // principal en su momento, así que se usa como respaldo exacto, sin perder esos pagos ya
+  // probados.
+  const total = (aplicaciones||[]).reduce((s,a)=>{
+    const desglosado = Number(a.monto_principal||0) + Number(a.monto_actualizacion||0) + Number(a.monto_recargos||0);
+    return s + (desglosado > 0.004 ? Number(a.monto_principal||0) : Number(a.monto||0));
+  }, 0);
   // fecha_pago también es una caché derivada — se toma la fecha del aplicación más reciente,
   // nunca se establece independiente de las aplicaciones reales.
   const fechaMasReciente = (aplicaciones||[]).length ? aplicaciones.reduce((max,a)=>a.fecha>max?a.fecha:max, aplicaciones[0].fecha) : null;
@@ -2548,6 +2556,32 @@ async function recalcularImportePagadoImpuesto(pagoImpuestoId) {
 // solo una referencia de póliza), una aplicación por obligación cubierta, y una sola póliza con
 // tantos "Debe" como obligaciones y un solo "Haber Banco/Efectivo".
 // aplicaciones: [{ pagoImpuesto: <fila completa de fz_pagos_impuestos>, monto: <a aplicar> }]
+// Desglosa UN monto que se está aplicando a una obligación entre recargos / principal /
+// actualización, siguiendo el orden real del Art. 20 CFF: primero recargos (hasta agotar lo
+// pendiente), el remanente se reparte proporcionalmente entre principal y actualización (misma
+// "contribución actualizada" — nunca uno antes del otro, solo trazabilidad/contabilidad).
+// saldoPrincipalPendiente = lo que aún no se ha aplicado a principal, de aplicaciones anteriores.
+async function calcularDesglosePagoParcial(saldoPrincipalPendiente, mesVencimiento, fechaPago, montoAAplicar, recargosYaPagados) {
+  const mesPago = fechaPago.slice(0,7);
+  if (mesPago <= mesVencimiento || saldoPrincipalPendiente <= 0.004) {
+    // No vencido (o ya no queda principal pendiente que actualizar) — todo va a principal.
+    return { monto_principal: Math.round(montoAAplicar*100)/100, monto_actualizacion: 0, monto_recargos: 0 };
+  }
+  const r = await calcularRecargosActualizacion(saldoPrincipalPendiente, mesVencimiento, mesPago);
+  if (r.error) {
+    // Faltan tasas/INPC capturados — no se puede calcular con certeza; se aplica todo a
+    // principal en vez de adivinar un accesorio.
+    return { monto_principal: Math.round(montoAAplicar*100)/100, monto_actualizacion: 0, monto_recargos: 0, avisoSinTasas: r.error };
+  }
+  const recargosPendientes = Math.max(0, r.recargos - Number(recargosYaPagados||0));
+  const aRecargos = Math.min(montoAAplicar, recargosPendientes);
+  const remanente = montoAAplicar - aRecargos;
+  const proporcionPrincipal = 1 / r.factorActualizacion;
+  const aPrincipal = Math.round(remanente * proporcionPrincipal * 100) / 100;
+  const aActualizacion = Math.round((remanente - aPrincipal) * 100) / 100; // por diferencia, para que sume exacto
+  return { monto_principal: aPrincipal, monto_actualizacion: aActualizacion, monto_recargos: Math.round(aRecargos*100)/100 };
+}
+
 async function aplicarPagoFiscal(businessId, fecha, cuentaTipo, cuentaId, aplicaciones) {
   if (!aplicaciones || !aplicaciones.length || !cuentaTipo || !cuentaId) return { estado: 'sin_datos' };
   if (await periodoEstaCerrado(businessId, fecha)) return { estado: 'cerrado' };
@@ -2572,10 +2606,17 @@ async function aplicarPagoFiscal(businessId, fecha, cuentaTipo, cuentaId, aplica
   if (errMov) return { estado: 'error', error: errMov.message };
 
   // Una aplicación por obligación — todas comparten el mismo origen (el movimiento), que es lo
-  // que las identifica de forma inequívoca como parte del mismo pago maestro.
+  // que las identifica de forma inequívoca como parte del mismo pago maestro. Cada una congela
+  // su propio desglose (principal/actualización/recargos), calculado a la fecha de este pago.
   for (const a of aplicaciones) {
+    const { data: previas } = await sb.from('fz_aplicaciones_pago_fiscal').select('monto_principal,monto_recargos').eq('pago_impuesto_id', a.pagoImpuesto.id);
+    const principalYaPagado = (previas||[]).reduce((s,p)=>s+Number(p.monto_principal||0),0);
+    const recargosYaPagados = (previas||[]).reduce((s,p)=>s+Number(p.monto_recargos||0),0);
+    const saldoPrincipalPendiente = Number(a.pagoImpuesto.monto) - principalYaPagado;
+    const desglose = await calcularDesglosePagoParcial(saldoPrincipalPendiente, a.pagoImpuesto.fecha_limite.slice(0,7), fecha, Number(a.monto), recargosYaPagados);
     await sb.from('fz_aplicaciones_pago_fiscal').insert({
       business_id: businessId, pago_impuesto_id: a.pagoImpuesto.id, monto: Number(a.monto),
+      monto_principal: desglose.monto_principal, monto_actualizacion: desglose.monto_actualizacion, monto_recargos: desglose.monto_recargos,
       origen_tabla: tabla, origen_id: movimiento.id, poliza_id: null, fecha,
     });
     await recalcularImportePagadoImpuesto(a.pagoImpuesto.id);
@@ -4107,14 +4148,47 @@ async function abrirModalAplicarPagoFiscal(b) {
   const conSaldo = (pendientes||[]).filter(p => Number(p.monto) - (Number(p.importe_pagado)||0) > 0.009);
 
   const lista = document.getElementById('apfLista');
-  lista.innerHTML = conSaldo.length ? conSaldo.map(p => {
-    const saldo = Number(p.monto) - (Number(p.importe_pagado)||0);
-    return `<label style="display:flex;align-items:center;gap:7px;padding:3px 2px;font-size:12px;cursor:pointer;">
-      <input type="checkbox" class="apf-check" value="${p.id}" data-saldo="${saldo}">
-      <span style="flex:1;">${p.periodo} · ${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]}${p.concepto?' — '+p.concepto:''} · saldo ${fmt(saldo)}</span>
-      <input type="text" class="apf-monto-aplicar" data-id="${p.id}" inputmode="decimal" value="${fmtInputVal(saldo)}" style="width:100px;padding:4px 6px;font-size:12px;border:1px solid var(--line);border-radius:6px;" disabled>
-    </label>`;
-  }).join('') : `<div class="empty" style="padding:8px;font-size:12px;">No hay obligaciones con saldo pendiente.</div>`;
+  const construirLista = async () => {
+    const fechaPago = document.getElementById('apfFecha').value || todayStr();
+    // Total exigible = principal pendiente + actualización/recargos pendientes, recalculados a
+    // esta fecha — nunca un valor guardado de antes, porque los accesorios crecen con el tiempo.
+    const filasConTotal = [];
+    for (const p of conSaldo) {
+      const saldoPrincipal = Number(p.monto) - (Number(p.importe_pagado)||0);
+      let actualizacionPendiente = 0, recargosPendientes = 0, aviso = null;
+      if (fechaPago.slice(0,7) > p.fecha_limite.slice(0,7) && saldoPrincipal > 0.004) {
+        const { data: previas } = await sb.from('fz_aplicaciones_pago_fiscal').select('monto_actualizacion,monto_recargos').eq('pago_impuesto_id', p.id);
+        const actualizacionYaPagada = (previas||[]).reduce((s,a)=>s+Number(a.monto_actualizacion||0),0);
+        const recargosYaPagados = (previas||[]).reduce((s,a)=>s+Number(a.monto_recargos||0),0);
+        const r = await calcularRecargosActualizacion(saldoPrincipal, p.fecha_limite.slice(0,7), fechaPago.slice(0,7));
+        if (r.error) aviso = r.error;
+        else {
+          actualizacionPendiente = Math.max(0, (r.montoActualizado - saldoPrincipal) - actualizacionYaPagada);
+          recargosPendientes = Math.max(0, r.recargos - recargosYaPagados);
+        }
+      }
+      const totalExigible = saldoPrincipal + actualizacionPendiente + recargosPendientes;
+      filasConTotal.push({ p, saldoPrincipal, actualizacionPendiente, recargosPendientes, totalExigible, aviso });
+    }
+    lista.innerHTML = filasConTotal.length ? filasConTotal.map(({p, saldoPrincipal, actualizacionPendiente, recargosPendientes, totalExigible, aviso}) => `
+      <div style="padding:5px 2px;border-bottom:1px solid var(--line);">
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;">
+          <input type="checkbox" class="apf-check" value="${p.id}" data-saldo="${totalExigible}">
+          <span style="flex:1;font-size:12px;">${p.periodo} · ${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]}${p.concepto?' — '+p.concepto:''}</span>
+          <input type="text" class="apf-monto-aplicar" data-id="${p.id}" inputmode="decimal" value="${fmtInputVal(totalExigible)}" style="width:100px;padding:4px 6px;font-size:12px;border:1px solid var(--line);border-radius:6px;" disabled>
+        </label>
+        ${(actualizacionPendiente>0.004||recargosPendientes>0.004) ? `<div style="font-size:11px;color:var(--muted);padding-left:26px;">Principal ${fmt(saldoPrincipal)}${actualizacionPendiente>0.004?' · Actualización '+fmt(actualizacionPendiente):''}${recargosPendientes>0.004?' · Recargos '+fmt(recargosPendientes):''} · Total ${fmt(totalExigible)}</div>` : ''}
+        ${aviso ? `<div style="font-size:11px;color:var(--red);padding-left:26px;">${aviso}</div>` : ''}
+      </div>`).join('') : `<div class="empty" style="padding:8px;font-size:12px;">No hay obligaciones con saldo pendiente.</div>`;
+    lista.querySelectorAll('.apf-check').forEach(chk => chk.addEventListener('change', () => {
+      const input = lista.querySelector(`.apf-monto-aplicar[data-id="${chk.value}"]`);
+      input.disabled = !chk.checked;
+      if (chk.checked) input.value = fmtInputVal(Number(chk.dataset.saldo));
+      actualizarResumen();
+    }));
+    lista.querySelectorAll('.apf-monto-aplicar').forEach(inp => inp.addEventListener('input', actualizarResumen));
+    actualizarResumen();
+  };
 
   const actualizarResumen = () => {
     const montoTotal = leerMonto(document.getElementById('apfMontoTotal').value) || 0;
@@ -4129,15 +4203,10 @@ async function abrirModalAplicarPagoFiscal(b) {
       <div style="display:flex;justify-content:space-between;color:${Math.abs(diferencia)<0.005?'var(--green)':'var(--red)'};font-weight:700;"><span>Diferencia</span><span>${Math.abs(diferencia)<0.005?'$0.00 ✓':fmt(diferencia)}</span></div>
     `;
   };
-  lista.querySelectorAll('.apf-check').forEach(chk => chk.addEventListener('change', () => {
-    const input = lista.querySelector(`.apf-monto-aplicar[data-id="${chk.value}"]`);
-    input.disabled = !chk.checked;
-    if (chk.checked) input.value = fmtInputVal(Number(chk.dataset.saldo));
-    actualizarResumen();
-  }));
   lista.querySelectorAll('.apf-monto-aplicar').forEach(inp => inp.addEventListener('input', actualizarResumen));
   document.getElementById('apfMontoTotal').oninput = actualizarResumen;
-  actualizarResumen();
+  document.getElementById('apfFecha').onchange = construirLista;
+  await construirLista();
   document.getElementById('modalAplicarPagoFiscal').classList.add('show');
 }
 document.getElementById('apfCancelar').addEventListener('click', () => document.getElementById('modalAplicarPagoFiscal').classList.remove('show'));
@@ -10640,6 +10709,10 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
       subcuentaObligacionCache[obligacion.nombre] = await subRealizacion(obligacion.nombre, obligacion.naturaleza);
     }
   }
+  const CUENTA_ACTUALIZACION_FISCAL = 'Actualización fiscal';
+  const CUENTA_RECARGOS_FISCALES = 'Recargos fiscales';
+  if ((todasAplicacionesFiscales||[]).some(a => Number(a.monto_actualizacion) > 0.004)) subcuentaObligacionCache[CUENTA_ACTUALIZACION_FISCAL] = await subRealizacion(CUENTA_ACTUALIZACION_FISCAL, 'gasto');
+  if ((todasAplicacionesFiscales||[]).some(a => Number(a.monto_recargos) > 0.004)) subcuentaObligacionCache[CUENTA_RECARGOS_FISCALES] = await subRealizacion(CUENTA_RECARGOS_FISCALES, 'gasto');
 
   const procesarMovimientos = (movs, esBanco, tipoOrigenTag, moduloTag, tablaOrigenNombre) => {
     (movs||[]).forEach(m => {
@@ -10660,7 +10733,17 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
               const cuenta = obligacion ? obligacion.nombre : 'Sin clasificar (revisar)';
               const clave = obligacion ? 'sub:'+subcuentaObligacionCache[obligacion.nombre] : 'sin_clasificar';
               const tipoCta = obligacion ? obligacion.naturaleza : 'gasto';
-              push({ ...base, cuenta }, clave, tipoCta, Number(ap.monto), 0);
+              // Aplicaciones de antes de este desglose (las 3 columnas en 0 pese a tener monto):
+              // todo su monto ya era principal en su momento — mismo respaldo que el resto del
+              // motor, para no alterar los pagos ya probados.
+              const desglosado = Number(ap.monto_principal||0) + Number(ap.monto_actualizacion||0) + Number(ap.monto_recargos||0);
+              if (desglosado <= 0.004) {
+                push({ ...base, cuenta }, clave, tipoCta, Number(ap.monto), 0);
+              } else {
+                if (Number(ap.monto_principal) > 0.004) push({ ...base, cuenta }, clave, tipoCta, Number(ap.monto_principal), 0);
+                if (Number(ap.monto_actualizacion) > 0.004) push({ ...base, cuenta: CUENTA_ACTUALIZACION_FISCAL }, 'sub:'+subcuentaObligacionCache[CUENTA_ACTUALIZACION_FISCAL], 'gasto', Number(ap.monto_actualizacion), 0);
+                if (Number(ap.monto_recargos) > 0.004) push({ ...base, cuenta: CUENTA_RECARGOS_FISCALES }, 'sub:'+subcuentaObligacionCache[CUENTA_RECARGOS_FISCALES], 'gasto', Number(ap.monto_recargos), 0);
+              }
             });
           } else {
             push({ ...base, cuenta: 'Sin clasificar (revisar)' }, 'sin_clasificar', 'gasto', Number(m.cargos), 0);
