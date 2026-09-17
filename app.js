@@ -2481,6 +2481,34 @@ async function limpiarPolizasDuplicadasPagoFiscal(businessId) {
   return (aplicacionesConPoliza||[]).length;
 }
 
+// Migración puntual e idempotente: movimientos que YA están vinculados a una obligación fiscal
+// mediante fz_aplicaciones_pago_fiscal (creados antes de que aplicarPagoFiscal() clasificara el
+// movimiento desde origen), pero que se quedaron con tipo_salida/Tercero/descripción sin
+// actualizar. Se identifican EXCLUSIVAMENTE por esa relación real — nunca por texto, fecha o
+// importe — y se detiene sola en cuanto ya no encuentra ninguno (tipo_salida ya es 'impuesto').
+async function migrarMovimientosPagoFiscalExistentes(businessId) {
+  const { data: aplicaciones } = await sb.from('fz_aplicaciones_pago_fiscal').select('*').eq('business_id', businessId);
+  if (!aplicaciones || !aplicaciones.length) return 0;
+  const porMovimiento = {};
+  aplicaciones.forEach(a => { const k = `${a.origen_tabla}|${a.origen_id}`; (porMovimiento[k]=porMovimiento[k]||[]).push(a); });
+  const idsPagoImpuesto = [...new Set(aplicaciones.map(a=>a.pago_impuesto_id))];
+  const { data: pagosImpuesto } = await sb.from('fz_pagos_impuestos').select('id,tipo_impuesto,concepto,periodo').in('id', idsPagoImpuesto);
+  const pagoMap = Object.fromEntries((pagosImpuesto||[]).map(p=>[p.id,p]));
+  let migrados = 0;
+  for (const [key, apps] of Object.entries(porMovimiento)) {
+    const [tabla, movId] = key.split('|');
+    const { data: mov } = await sb.from(tabla).select('id,tipo_salida').eq('id', movId).maybeSingle();
+    if (!mov || mov.tipo_salida === 'impuesto') continue; // no existe, o ya está migrado — idempotente
+    const primero = pagoMap[apps[0].pago_impuesto_id];
+    const descripcion = apps.length === 1 && primero
+      ? `Pago de impuestos SAT — ${TIPO_IMPUESTO_LABEL[primero.tipo_impuesto]} — ${primero.periodo}`
+      : `Pago de impuestos SAT — ${apps.length} obligaciones`;
+    await sb.from(tabla).update({ tipo_salida: 'impuesto', proveedor: 'SAT', descripcion, concepto: descripcion }).eq('id', movId);
+    migrados++;
+  }
+  return migrados;
+}
+
 async function recalcularImportePagadoImpuesto(pagoImpuestoId) {
   const { data: aplicaciones } = await sb.from('fz_aplicaciones_pago_fiscal').select('monto,fecha').eq('pago_impuesto_id', pagoImpuestoId);
   const total = (aplicaciones||[]).reduce((s,a)=>s+Number(a.monto||0), 0);
@@ -3688,6 +3716,7 @@ async function renderPagosImpuestos() {
 // del año elegido que aún no tengan registro — usando el mismo cálculo de IVA y Retenciones.
 async function autoGenerarPagosImpuestos(b, anio) {
   await limpiarPolizasDuplicadasPagoFiscal(b.id);
+  await migrarMovimientosPagoFiscalExistentes(b.id);
   const { data: existentesIniciales } = await sb.from('fz_pagos_impuestos').select('id,periodo,tipo_impuesto,concepto,monto,fecha_pago').eq('business_id', b.id).like('periodo', `${anio}-%`);
   const existentes = existentesIniciales || [];
   const buscarExistente = (periodo, tipo, concepto) => existentes.find(p => p.periodo===periodo && p.tipo_impuesto===tipo && (p.concepto||null)===(concepto||null));
