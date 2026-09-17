@@ -2268,10 +2268,25 @@ async function diagnosticoTecnicoFiscal(businessId, periodo) {
   const gruposDuplicados = Object.values(grupos).filter(g => g.length > 1);
   const huerfanas = realizacionesDetalle.filter(r => !r.facturaExiste || r.polizaExiste === false);
 
-  // 3. Pólizas automáticas del periodo, para ver qué generó cada mecanismo.
+  // 3. Pólizas automáticas del periodo, con sus líneas EXACTAS (cuenta, cargo, abono) para ver
+  // qué generó cada una, sin tener que abrirlas una por una.
   const { data: polizasAuto } = await sb.from('fz_polizas').select('*').eq('business_id', businessId).gte('fecha', start).lte('fecha', end).ilike('concepto', '[Auto]%').order('created_at');
+  const idsPolizasAuto = (polizasAuto||[]).map(p=>p.id);
+  const [{ data: lineasPolizasAuto }, subcuentas] = await Promise.all([
+    idsPolizasAuto.length ? sb.from('fz_polizas_lineas').select('*').in('poliza_id', idsPolizasAuto) : Promise.resolve({ data: [] }),
+    loadSubcuentas(businessId),
+  ]);
+  const nombreSubDiag = (id) => subcuentas.find(s=>s.id===id)?.nombre || '(cuenta eliminada)';
+  const polizasAutoConLineas = (polizasAuto||[]).map(p => ({
+    ...p,
+    lineas: (lineasPolizasAuto||[]).filter(l=>l.poliza_id===p.id).map(l => ({ cuenta: nombreSubDiag(l.subcuenta_id), cargo: Number(l.cargo)||0, abono: Number(l.abono)||0 })),
+  }));
 
-  return { pagosDetalle, cobrosDetalle, realizacionesDetalle, gruposDuplicados, huerfanas, polizasAuto: polizasAuto||[] };
+  // 4. Registros de retención en Pagos de Impuestos — con su periodo EXACTO, para confirmar si
+  // el importe que se ve en pantalla es el de julio o si de verdad quedó etiquetado septiembre.
+  const { data: pagosRetencion } = await sb.from('fz_pagos_impuestos').select('periodo,tipo_impuesto,concepto,monto,fecha_pago').eq('business_id', businessId).in('tipo_impuesto', ['retencion_isr','retencion_iva']).order('periodo');
+
+  return { pagosDetalle, cobrosDetalle, realizacionesDetalle, gruposDuplicados, huerfanas, polizasAuto: polizasAutoConLineas, pagosRetencion: pagosRetencion||[] };
 }
 
 async function detectarDuplicadosRealizacion(businessId) {
@@ -10365,8 +10380,19 @@ async function abrirDiagnosticoFiscal(businessId, periodo) {
     <p style="font-size:12px;margin-bottom:14px;"><strong style="color:${d.gruposDuplicados.length?'var(--red)':'var(--green)'};">${d.gruposDuplicados.length} grupo(s) con más de un registro</strong> · <strong style="color:${d.huerfanas.length?'var(--red)':'var(--green)'};">${d.huerfanas.length} huérfana(s) (factura o póliza ya no existe)</strong></p>
 
     <p style="font-size:12.5px;font-weight:700;color:var(--navy-1);margin-bottom:6px;">4. Pólizas automáticas generadas en ${periodo} (${d.polizasAuto.length})</p>
-    <div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Concepto</th><th></th></tr></thead>
-      <tbody>${d.polizasAuto.length ? d.polizasAuto.map(p=>`<tr><td>${fechaCorta(p.fecha)}</td><td style="font-size:12px;">${p.concepto}</td><td><button class="btn btn-ghost btn-sm diag-fiscal-ver-poliza" data-id="${p.id}" style="font-size:11px;padding:3px 8px;">Ver póliza</button></td></tr>`).join('') : '<tr><td colspan="3" class="empty">Ninguna.</td></tr>'}</tbody></table></div>
+    ${d.polizasAuto.length ? d.polizasAuto.map(p => `
+      <div class="card" style="margin-bottom:8px;padding:10px 12px;">
+        <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:6px;">
+          <span style="font-size:12px;"><strong>${fechaCorta(p.fecha)}</strong> — ${p.concepto}</span>
+          <button class="btn btn-ghost btn-sm diag-fiscal-ver-poliza" data-id="${p.id}" style="font-size:11px;padding:3px 8px;">Ver póliza</button>
+        </div>
+        <div class="table-wrap"><table><thead><tr><th>Cuenta</th><th>Cargo</th><th>Abono</th></tr></thead>
+          <tbody>${p.lineas.map(l=>`<tr><td style="font-size:11.5px;">${l.cuenta}</td><td class="num">${l.cargo?fmt(l.cargo):''}</td><td class="num">${l.abono?fmt(l.abono):''}</td></tr>`).join('')}</tbody></table></div>
+      </div>`).join('') : '<div class="empty">Ninguna.</div>'}
+
+    <p style="font-size:12.5px;font-weight:700;color:var(--navy-1);margin:14px 0 6px;">5. Registros de Retención en Pagos de Impuestos (TODOS los periodos, para ver la etiqueta exacta)</p>
+    <div class="table-wrap"><table><thead><tr><th>Periodo</th><th>Tipo</th><th>Categoría</th><th>Monto</th><th>Fecha de pago</th></tr></thead>
+      <tbody>${d.pagosRetencion.length ? d.pagosRetencion.map(p=>`<tr><td><strong>${p.periodo}</strong></td><td>${p.tipo_impuesto}</td><td>${p.concepto||''}</td><td class="num">${fmt(p.monto)}</td><td>${p.fecha_pago?fechaCorta(p.fecha_pago):'—'}</td></tr>`).join('') : '<tr><td colspan="5" class="empty">Ninguno.</td></tr>'}</tbody></table></div>
   `;
   body.querySelectorAll('.diag-fiscal-ver-poliza').forEach(btn => btn.addEventListener('click', () => openPolizaModal(btn.dataset.id, businessId)));
 
