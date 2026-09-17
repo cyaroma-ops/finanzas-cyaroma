@@ -2029,7 +2029,7 @@ async function obtenerOCrearSubcuentaPorNombre(businessId, nombre, tipo) {
 // nada y regresa estado 'cerrado_pendiente' para que se revise manualmente.
 async function sincronizarProvisionIsr(pagoImpuesto, businessId) {
   if (pagoImpuesto.tipo_impuesto !== 'isr_provisional') return { estado: 'no_aplica' };
-  const fechaProvision = pagoImpuesto.periodo + '-28'; // dentro del mes, antes de fin de mes en todos los casos
+  const fechaProvision = monthBounds(pagoImpuesto.periodo).end; // último día calendario real del periodo
   if (await periodoEstaCerrado(businessId, fechaProvision)) return { estado: 'cerrado_pendiente' };
 
   const { data: existentes } = await sb.from('fz_provisiones_fiscales').select('*').eq('pago_impuesto_id', pagoImpuesto.id).in('tipo', ['provision','ajuste','reversion']);
@@ -2064,7 +2064,7 @@ const CUENTA_IVA_A_FAVOR = 'IVA a favor';
 // separado, para que un cambio posterior en la determinación solo mueva la diferencia exacta.
 async function sincronizarProvisionIva(pagoImpuesto, businessId) {
   if (pagoImpuesto.tipo_impuesto !== 'iva') return { estado: 'no_aplica' };
-  const fechaProvision = pagoImpuesto.periodo + '-28';
+  const fechaProvision = monthBounds(pagoImpuesto.periodo).end; // último día calendario real del periodo
   if (await periodoEstaCerrado(businessId, fechaProvision)) return { estado: 'cerrado_pendiente' };
 
   const resumen = await computeResumenIvaMesLigero(businessId, monthBounds(pagoImpuesto.periodo));
@@ -2120,7 +2120,7 @@ async function previsualizarProvisionesIva(businessId, anio) {
   const { data: pagos } = await sb.from('fz_pagos_impuestos').select('*').eq('business_id', businessId).eq('tipo_impuesto', 'iva').like('periodo', `${anio}-%`).order('periodo');
   const resultado = [];
   for (const p of (pagos||[])) {
-    const fechaProvision = p.periodo + '-28';
+    const fechaProvision = monthBounds(p.periodo).end;
     const resumen = await computeResumenIvaMesLigero(businessId, monthBounds(p.periodo));
     const netoDeseado = resumen.ivaTrasladadoCobrado - resumen.ivaAcreditablePagado;
     const componentes = [
@@ -2150,7 +2150,7 @@ async function previsualizarProvisionesIsr(businessId, anio) {
   const lista = pagos || [];
   const [provisionesPorPago, cierres] = await Promise.all([
     Promise.all(lista.map(p => sb.from('fz_provisiones_fiscales').select('monto').eq('pago_impuesto_id', p.id).in('tipo', ['provision','ajuste','reversion']).then(r => r.data || []))),
-    Promise.all(lista.map(p => periodoEstaCerrado(businessId, p.periodo + '-28'))),
+    Promise.all(lista.map(p => periodoEstaCerrado(businessId, monthBounds(p.periodo).end))),
   ]);
   const resultado = [];
   lista.forEach((p, i) => {
@@ -2318,7 +2318,11 @@ async function diagnosticoTecnicoFiscal(businessId, periodo) {
   // el importe que se ve en pantalla es el de julio o si de verdad quedó etiquetado septiembre.
   const { data: pagosRetencion } = await sb.from('fz_pagos_impuestos').select('periodo,tipo_impuesto,concepto,monto,fecha_pago').eq('business_id', businessId).in('tipo_impuesto', ['retencion_isr','retencion_iva']).order('periodo');
 
-  return { pagosDetalle, cobrosDetalle, realizacionesDetalle, gruposDuplicados, huerfanas, polizasAuto: polizasAutoConLineas, pagosRetencion: pagosRetencion||[] };
+  // 5. Pólizas automáticas de CUALQUIER fecha que quedaron fechadas al día 28 fijo (la convención
+  // vieja, ya reemplazada por el fin de mes real) — de solo lectura, para decidir si migrarlas.
+  const { data: polizasDia28 } = await sb.from('fz_polizas').select('id,fecha,concepto').eq('business_id', businessId).ilike('concepto', '[Auto]%').filter('fecha', 'like', '%-28');
+
+  return { pagosDetalle, cobrosDetalle, realizacionesDetalle, gruposDuplicados, huerfanas, polizasAuto: polizasAutoConLineas, pagosRetencion: pagosRetencion||[], polizasDia28: polizasDia28||[] };
 }
 
 async function detectarDuplicadosRealizacion(businessId) {
@@ -10569,6 +10573,11 @@ async function abrirDiagnosticoFiscal(businessId, periodo) {
     <p style="font-size:12.5px;font-weight:700;color:var(--navy-1);margin:14px 0 6px;">5. Registros de Retención en Pagos de Impuestos (TODOS los periodos, para ver la etiqueta exacta)</p>
     <div class="table-wrap"><table><thead><tr><th>Periodo</th><th>Tipo</th><th>Categoría</th><th>Monto</th><th>Fecha de pago</th></tr></thead>
       <tbody>${d.pagosRetencion.length ? d.pagosRetencion.map(p=>`<tr><td><strong>${p.periodo}</strong></td><td>${p.tipo_impuesto}</td><td>${p.concepto||''}</td><td class="num">${fmt(p.monto)}</td><td>${p.fecha_pago?fechaCorta(p.fecha_pago):'—'}</td></tr>`).join('') : '<tr><td colspan="5" class="empty">Ninguno.</td></tr>'}</tbody></table></div>
+
+    <p style="font-size:12.5px;font-weight:700;color:var(--navy-1);margin:14px 0 6px;">6. Pólizas automáticas históricas fechadas al día 28 fijo (convención vieja, ya reemplazada por fin de mes real) — ${d.polizasDia28.length}</p>
+    <p style="font-size:11.5px;color:var(--muted);margin-bottom:6px;">Ninguna se movió automáticamente — esto es solo para que decidas si migrarlas.</p>
+    <div class="table-wrap"><table><thead><tr><th>Fecha actual</th><th>Concepto</th><th>Fecha correcta propuesta</th></tr></thead>
+      <tbody>${d.polizasDia28.length ? d.polizasDia28.map(p=>`<tr><td>${fechaCorta(p.fecha)}</td><td style="font-size:12px;">${p.concepto}</td><td>${fechaCorta(monthBounds(p.fecha.slice(0,7)).end)}</td></tr>`).join('') : '<tr><td colspan="3" class="empty">Ninguna encontrada.</td></tr>'}</tbody></table></div>
   `;
   body.querySelectorAll('.diag-fiscal-ver-poliza').forEach(btn => btn.addEventListener('click', () => openPolizaModal(btn.dataset.id, businessId)));
 
