@@ -11354,44 +11354,37 @@ async function renderBalanceGeneral() {
 
 async function fetchDatosGastosCostos(businessId, periodo) {
   const { start, end, mesStart, mesEnd } = periodo;
-  const [provQ, bancosMovQ, efvoMovQ, plGastosQ, lineasPoliza] = await Promise.all([
-    sb.from('fz_proveedores').select('desglose,origen_poliza_id').eq('business_id', businessId).gte('fecha', start).lte('fecha', end),
-    sb.from('fz_bancos_mov').select('cargos,subcuenta_id,aplica_iva,subtotal').eq('business_id', businessId).eq('tipo_salida', 'gasto').gte('fecha', start).lte('fecha', end),
-    sb.from('fz_efectivo_mov').select('cargos,subcuenta_id,aplica_iva,subtotal').eq('business_id', businessId).eq('tipo_salida', 'gasto').gte('fecha', start).lte('fecha', end),
+  const [plGastosQ, motor] = await Promise.all([
     sb.from('fz_pl_gastos').select('*').eq('business_id', businessId).gte('mes', mesStart).lte('mes', mesEnd),
-    getPolizasLineasPeriodo(businessId, periodo),
+    getLibroPartidaDobleConOrigen(businessId, end, start),
   ]);
-  return { provQ, bancosMovQ, efvoMovQ, plGastosQ, lineasPoliza };
+  return { plGastosQ, filasMotor: motor.filas };
 }
 
+// Gasto/Costo del Estado de Resultados: fz_pl_gastos se conserva exactamente igual (es la
+// excepción operativa ya acordada — captura manual que no vive en el motor). Todo lo demás
+// (facturas de proveedor, Bancos/Efectivo, pólizas) ya NO se reconstruye aparte — se lee
+// directo del motor consolidado, filtrado únicamente por su clasificación real (tipo), nunca
+// por nombre de cuenta ni por el módulo que originó el movimiento. Así cualquier cuenta nueva
+// de gasto/costo (presente o futura) llega sola, sin tocar este código.
 async function computeGastosClasificados(businessId, periodo, subcuentas, mayores, tipoFiltro = 'gasto', incluirSinMovimiento = false, datosCompartidos = null) {
   const porSubcuenta = {}; // subcuenta_id -> monto
   let sinClasificar = 0;
 
-  const { provQ, bancosMovQ, efvoMovQ, plGastosQ, lineasPoliza } = datosCompartidos || await fetchDatosGastosCostos(businessId, periodo);
+  const { plGastosQ, filasMotor } = datosCompartidos || await fetchDatosGastosCostos(businessId, periodo);
 
-  (provQ.data || []).forEach(f => {
-    if (f.origen_poliza_id) return; // ya se contabilizó vía la línea de la póliza que la generó — no se duplica
-    desgloseLineas(f.desglose).forEach(linea => {
-      porSubcuenta[linea.subcuenta_id] = (porSubcuenta[linea.subcuenta_id] || 0) + (Number(linea.monto) || 0);
-    });
-  });
-  [...(bancosMovQ.data || []), ...(efvoMovQ.data || [])].forEach(m => {
-    const monto = m.aplica_iva ? (Number(m.subtotal) || 0) : (Number(m.cargos) || 0);
-    if (m.subcuenta_id) porSubcuenta[m.subcuenta_id] = (porSubcuenta[m.subcuenta_id] || 0) + monto;
-    else if (tipoFiltro === 'gasto') sinClasificar += monto;
-  });
   const gastosManuales = plGastosQ.data || [];
   gastosManuales.forEach(g => {
     if (g.subcuenta_id) porSubcuenta[g.subcuenta_id] = (porSubcuenta[g.subcuenta_id] || 0) + (Number(g.monto) || 0);
     else if (tipoFiltro === 'gasto') sinClasificar += Number(g.monto) || 0;
   });
-  lineasPoliza.forEach(l => {
-    if (!l.subcuenta_id) return;
-    const sub = subcuentas.find(s => s.id === l.subcuenta_id);
-    const mayor = sub && mayores.find(m => m.id === sub.cuenta_mayor_id);
-    if (mayor && (mayor.tipo === 'gasto' || mayor.tipo === 'costo')) {
-      porSubcuenta[l.subcuenta_id] = (porSubcuenta[l.subcuenta_id] || 0) + ((Number(l.cargo)||0) - (Number(l.abono)||0));
+
+  filasMotor.filter(f => f.tipo === tipoFiltro).forEach(f => {
+    const neto = f.cargo - f.abono; // naturaleza deudora, como cualquier gasto/costo
+    if (f.clave === 'sin_clasificar') { if (tipoFiltro === 'gasto') sinClasificar += neto; return; }
+    if (f.clave.startsWith('sub:')) {
+      const subId = f.clave.slice(4);
+      porSubcuenta[subId] = (porSubcuenta[subId] || 0) + neto;
     }
   });
 
@@ -11529,36 +11522,18 @@ async function computeGananciaCambiaria(businessId, periodo) {
   }, 0);
 }
 
+// Ingresos ya representados en el motor consolidado (facturas de clientes, pólizas manuales,
+// Ganancia Cambiaria, y cualquier cuenta de Ingreso futura) — se leen de una sola fuente,
+// filtrada por clasificación real, nunca reconstruidos aparte por módulo de origen. fz_ventas
+// (los ingresos diarios del corte de caja) sigue siendo la excepción operativa acordada, y se
+// suma por separado en computeResumenNegocio, sin tocar esta función.
 async function computeIngresosPoliza(businessId, periodo, subcuentas, mayores, incluirSinMovimiento = false) {
-  const [lineasPoliza, facturasClientes] = await Promise.all([
-    getPolizasLineasPeriodo(businessId, periodo),
-    sb.from('fz_facturas_clientes').select('id,moneda,tipo_cambio').eq('business_id', businessId).gte('fecha', periodo.start).lte('fecha', periodo.end).then(r => r.data || []),
-  ]);
+  const { filas } = await getLibroPartidaDobleConOrigen(businessId, periodo.end, periodo.start);
   const porSubcuenta = {};
-  lineasPoliza.forEach(l => {
-    if (!l.subcuenta_id) return;
-    const sub = subcuentas.find(s => s.id === l.subcuenta_id);
-    const mayor = sub && mayores.find(m => m.id === sub.cuenta_mayor_id);
-    if (mayor && mayor.tipo === 'ingreso') {
-      porSubcuenta[l.subcuenta_id] = (porSubcuenta[l.subcuenta_id] || 0) + ((Number(l.abono)||0) - (Number(l.cargo)||0));
-    }
+  filas.filter(f => f.tipo === 'ingreso' && f.clave.startsWith('sub:')).forEach(f => {
+    const subId = f.clave.slice(4);
+    porSubcuenta[subId] = (porSubcuenta[subId] || 0) + (f.abono - f.cargo); // naturaleza acreedora
   });
-
-  // Facturas de clientes clasificadas contra una cuenta de Ingreso (el IVA no cuenta como
-  // ingreso propio, solo el importe de cada línea; se convierte a pesos si la factura es en USD).
-  if (facturasClientes.length) {
-    const tcPorFactura = Object.fromEntries(facturasClientes.map(f => [f.id, f.moneda === 'USD' ? (Number(f.tipo_cambio) || 1) : 1]));
-    const { data: lineasFacturas } = await sb.from('fz_facturas_clientes_lineas').select('factura_id,subcuenta_id,importe').in('factura_id', facturasClientes.map(f => f.id));
-    (lineasFacturas || []).forEach(l => {
-      if (!l.subcuenta_id) return;
-      const sub = subcuentas.find(s => s.id === l.subcuenta_id);
-      const mayor = sub && mayores.find(m => m.id === sub.cuenta_mayor_id);
-      if (mayor && mayor.tipo === 'ingreso') {
-        const monto = (Number(l.importe) || 0) * (tcPorFactura[l.factura_id] || 1);
-        porSubcuenta[l.subcuenta_id] = (porSubcuenta[l.subcuenta_id] || 0) + monto;
-      }
-    });
-  }
 
   const porMayor = mayores.filter(m=>m.tipo==='ingreso').map(m => {
     const subs = subcuentasRaiz(m.id, subcuentas)
