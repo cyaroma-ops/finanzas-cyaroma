@@ -790,10 +790,13 @@ function updateTopbar() {
 // (nombre de negocio largo, tamaño de ventana, etc.) para que nunca quede un hueco por donde se
 // asome el contenido de abajo.
 function actualizarAlturaTopbar() {
-  const topbar = document.querySelector('.topbar');
-  if (topbar) document.documentElement.style.setProperty('--topbar-h', topbar.offsetHeight + 'px');
+  requestAnimationFrame(() => {
+    const topbar = document.querySelector('.topbar');
+    if (topbar) document.documentElement.style.setProperty('--topbar-h', topbar.offsetHeight + 'px');
+  });
 }
 window.addEventListener('resize', actualizarAlturaTopbar);
+actualizarAlturaTopbar();
 
 async function renderCurrentSection() {
   updateTopbar();
