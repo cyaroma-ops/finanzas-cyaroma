@@ -2462,34 +2462,95 @@ function cuentaObligacionPago(pagoImpuesto) {
 
 // Generaliza generarPolizaPagoIsr a los 4 tipos — misma arquitectura, mismo patrón de
 // idempotencia (un solo registro 'pago' en fz_provisiones_fiscales por pago_impuesto_id).
-async function generarPolizaPagoImpuesto(pagoImpuesto, businessId, cuentaTipo, cuentaId) {
-  if (!pagoImpuesto.fecha_pago || !cuentaTipo || !cuentaId) return;
-  const obligacion = cuentaObligacionPago(pagoImpuesto);
-  if (!obligacion) return; // "Otro" sin cuenta identificada — no rompe, simplemente no genera nada
-  const { data: yaPagado } = await sb.from('fz_provisiones_fiscales').select('id').eq('pago_impuesto_id', pagoImpuesto.id).eq('tipo', 'pago').maybeSingle();
-  if (yaPagado) return; // idempotente — ya se generó antes
-  if (await periodoEstaCerrado(businessId, pagoImpuesto.fecha_pago)) return;
-  const subObligacion = await obtenerOCrearSubcuentaPorNombre(businessId, obligacion.nombre, obligacion.naturaleza);
-  const monto = Number(pagoImpuesto.monto); // el principal — actualización/recargos se tratan aparte
-  const concepto = `[Auto] Pago ${TIPO_IMPUESTO_LABEL[pagoImpuesto.tipo_impuesto]}${pagoImpuesto.concepto?' — '+pagoImpuesto.concepto:''} — ${pagoImpuesto.periodo}`;
-  const { data: nuevaPoliza, error } = await sb.from('fz_polizas').insert({ business_id: businessId, fecha: pagoImpuesto.fecha_pago, concepto }).select().single();
-  if (error) return;
-  const lineaObligacion = { business_id: businessId, poliza_id: nuevaPoliza.id, cuenta_tipo: 'subcuenta', subcuenta_id: subObligacion, cargo: monto, abono: 0, descripcion: concepto, orden: 0 };
-  const lineaBanco = { business_id: businessId, poliza_id: nuevaPoliza.id, cuenta_tipo: cuentaTipo, cuenta_ref_id: cuentaId, cargo: 0, abono: monto, descripcion: concepto, orden: 1 };
-  await sb.from('fz_polizas_lineas').insert([lineaObligacion, lineaBanco]);
-  await sb.from('fz_provisiones_fiscales').insert({ business_id: businessId, pago_impuesto_id: pagoImpuesto.id, tipo: 'pago', monto, poliza_id: nuevaPoliza.id, fecha: pagoImpuesto.fecha_pago });
+// Recalcula la caché de importe_pagado desde su ÚNICA fuente de verdad: la suma de las
+// aplicaciones reales. Nunca se establece independiente — siempre se deriva.
+async function recalcularImportePagadoImpuesto(pagoImpuestoId) {
+  const { data: aplicaciones } = await sb.from('fz_aplicaciones_pago_fiscal').select('monto,fecha').eq('pago_impuesto_id', pagoImpuestoId);
+  const total = (aplicaciones||[]).reduce((s,a)=>s+Number(a.monto||0), 0);
+  // fecha_pago también es una caché derivada — se toma la fecha del aplicación más reciente,
+  // nunca se establece independiente de las aplicaciones reales.
+  const fechaMasReciente = (aplicaciones||[]).length ? aplicaciones.reduce((max,a)=>a.fecha>max?a.fecha:max, aplicaciones[0].fecha) : null;
+  await sb.from('fz_pagos_impuestos').update({ importe_pagado: total, fecha_pago: fechaMasReciente }).eq('id', pagoImpuestoId);
+  return total;
 }
 
-// Revierte el pago ya generado de un registro de fz_pagos_impuestos (si existe) — borra su
-// póliza y su rastreo, para que modificar o eliminar el registro nunca deje nada huérfano.
-async function revertirPagoImpuesto(pagoImpuestoId) {
-  const { data: registro } = await sb.from('fz_provisiones_fiscales').select('id,poliza_id').eq('pago_impuesto_id', pagoImpuestoId).eq('tipo', 'pago').maybeSingle();
-  if (!registro) return;
-  if (registro.poliza_id) {
-    await sb.from('fz_polizas_lineas').delete().eq('poliza_id', registro.poliza_id);
-    await sb.from('fz_polizas').delete().eq('id', registro.poliza_id);
+// MOTOR ÚNICO de pagos fiscales. Un pago individual es simplemente el caso de 1 aplicación;
+// un pago conjunto, el caso de N. Genera SIEMPRE: un movimiento real en Banco/Efectivo (nunca
+// solo una referencia de póliza), una aplicación por obligación cubierta, y una sola póliza con
+// tantos "Debe" como obligaciones y un solo "Haber Banco/Efectivo".
+// aplicaciones: [{ pagoImpuesto: <fila completa de fz_pagos_impuestos>, monto: <a aplicar> }]
+async function aplicarPagoFiscal(businessId, fecha, cuentaTipo, cuentaId, aplicaciones, conceptoMov) {
+  if (!aplicaciones || !aplicaciones.length || !cuentaTipo || !cuentaId) return { estado: 'sin_datos' };
+  if (await periodoEstaCerrado(businessId, fecha)) return { estado: 'cerrado' };
+  const totalPago = aplicaciones.reduce((s,a)=>s+Number(a.monto||0), 0);
+  if (totalPago <= 0.004) return { estado: 'sin_datos' };
+
+  // 1. El movimiento REAL en Banco/Efectivo — esto es lo que lo hace visible en el estado de
+  // cuenta del módulo Bancos/Efectivo, no solo en la contabilidad.
+  const tabla = cuentaTipo === 'banco' ? 'fz_bancos_mov' : 'fz_efectivo_mov';
+  const campoCuenta = cuentaTipo === 'banco' ? 'cuenta_id' : 'moneda_id';
+  const concepto = conceptoMov || 'Pago de impuestos SAT';
+  const { data: movimiento, error: errMov } = await sb.from(tabla).insert({
+    business_id: businessId, fecha, [campoCuenta]: cuentaId, cargos: totalPago, depositos: 0,
+    concepto, tipo_salida: 'otro',
+  }).select().single();
+  if (errMov) return { estado: 'error', error: errMov.message };
+
+  // 2. Una sola póliza: Debe la cuenta exigible de cada obligación cubierta, Haber Banco/Efectivo.
+  const conceptoPoliza = `[Auto] ${concepto} — ${aplicaciones.map(a=>TIPO_IMPUESTO_LABEL[a.pagoImpuesto.tipo_impuesto]).join(', ')}`;
+  const { data: poliza, error: errPol } = await sb.from('fz_polizas').insert({ business_id: businessId, fecha, concepto: conceptoPoliza }).select().single();
+  if (errPol) return { estado: 'error', error: errPol.message };
+  const lineasDebe = [];
+  for (const a of aplicaciones) {
+    const obligacion = cuentaObligacionPago(a.pagoImpuesto);
+    if (!obligacion) continue; // "Otro" sin cuenta identificada — se salta, no rompe
+    const subObligacion = await obtenerOCrearSubcuentaPorNombre(businessId, obligacion.nombre, obligacion.naturaleza);
+    lineasDebe.push({ business_id: businessId, poliza_id: poliza.id, cuenta_tipo: 'subcuenta', subcuenta_id: subObligacion, cargo: Number(a.monto), abono: 0, descripcion: conceptoPoliza });
   }
-  await sb.from('fz_provisiones_fiscales').delete().eq('id', registro.id);
+  const lineaBanco = { business_id: businessId, poliza_id: poliza.id, cuenta_tipo: cuentaTipo, cuenta_ref_id: cuentaId, cargo: 0, abono: totalPago, descripcion: conceptoPoliza };
+  await sb.from('fz_polizas_lineas').insert([...lineasDebe, lineaBanco].map((l,i)=>({ ...l, orden: i })));
+
+  // 3. Una aplicación por obligación — todas comparten el mismo origen (el movimiento) y la
+  // misma póliza, lo que las identifica inequívocamente como parte del mismo pago maestro.
+  for (const a of aplicaciones) {
+    await sb.from('fz_aplicaciones_pago_fiscal').insert({
+      business_id: businessId, pago_impuesto_id: a.pagoImpuesto.id, monto: Number(a.monto),
+      origen_tabla: tabla, origen_id: movimiento.id, poliza_id: poliza.id, fecha,
+    });
+    await recalcularImportePagadoImpuesto(a.pagoImpuesto.id);
+  }
+  return { estado: 'pagado', movimientoId: movimiento.id, polizaId: poliza.id };
+}
+
+// Revierte un pago fiscal desde su ORIGEN (el movimiento real que lo generó) — localiza todas
+// sus aplicaciones, recalcula el saldo de cada obligación afectada, borra la póliza compartida,
+// y borra las aplicaciones. NO borra el movimiento — eso lo hace quien llama (el flujo normal de
+// eliminar un movimiento de Banco/Efectivo), para no duplicar esa responsabilidad.
+async function revertirPagoFiscalPorOrigen(origenTabla, origenId) {
+  const { data: aplicaciones } = await sb.from('fz_aplicaciones_pago_fiscal').select('*').eq('origen_tabla', origenTabla).eq('origen_id', origenId);
+  if (!aplicaciones || !aplicaciones.length) return;
+  const polizaId = aplicaciones[0].poliza_id;
+  if (polizaId) {
+    await sb.from('fz_polizas_lineas').delete().eq('poliza_id', polizaId);
+    await sb.from('fz_polizas').delete().eq('id', polizaId);
+  }
+  const idsObligaciones = [...new Set(aplicaciones.map(a=>a.pago_impuesto_id))];
+  await sb.from('fz_aplicaciones_pago_fiscal').delete().eq('origen_tabla', origenTabla).eq('origen_id', origenId);
+  for (const id of idsObligaciones) await recalcularImportePagadoImpuesto(id);
+}
+
+// Revierte el pago de UNA obligación desde el modal individual — pero solo si de verdad fue un
+// pago individual (su movimiento no tiene ninguna otra aplicación). Si resulta ser parte de un
+// pago conjunto, NO toca nada y regresa true (bloqueado), para no desarmar el pago de otra
+// obligación por accidente.
+async function intentarRevertirPagoIndividual(pagoImpuestoId) {
+  const { data: aplicacion } = await sb.from('fz_aplicaciones_pago_fiscal').select('*').eq('pago_impuesto_id', pagoImpuestoId).maybeSingle();
+  if (!aplicacion) return false; // no tenía ningún pago generado — nada que revertir, no bloquea
+  const { data: todas } = await sb.from('fz_aplicaciones_pago_fiscal').select('id').eq('origen_tabla', aplicacion.origen_tabla).eq('origen_id', aplicacion.origen_id);
+  if ((todas||[]).length > 1) return true; // es parte de un pago conjunto — bloqueado
+  await revertirPagoFiscalPorOrigen(aplicacion.origen_tabla, aplicacion.origen_id);
+  await sb.from(aplicacion.origen_tabla).delete().eq('id', aplicacion.origen_id); // era individual — se borra también el movimiento
+  return false;
 }
 
 async function generarPolizaPagoIsr(pagoImpuesto, businessId, cuentaTipo, cuentaId) {
@@ -2561,8 +2622,11 @@ function estadosDeImpuesto(p) {
     ? { texto: 'Declarada' + (p.tipo_declaracion === 'complementaria' ? ' (Complementaria)' : ''), color: 'var(--green)' }
     : { texto: 'No presentada', color: 'var(--gold)' };
   let pago;
+  const importePagado = Number(p.importe_pagado) || 0;
   if (Number(p.monto) <= 0.004) pago = { texto: 'No aplica', color: 'var(--muted)' };
-  else if (!p.fecha_pago) pago = hoy > p.fecha_limite ? { texto: 'Pendiente (vencido)', color: 'var(--red)' } : { texto: 'Pendiente', color: 'var(--gold)' };
+  else if (importePagado > 0.004 && importePagado < Number(p.monto) - 0.004) {
+    pago = { texto: `Parcial (${fmt(importePagado)} de ${fmt(p.monto)})`, color: 'var(--gold)' };
+  } else if (!p.fecha_pago) pago = hoy > p.fecha_limite ? { texto: 'Pendiente (vencido)', color: 'var(--red)' } : { texto: 'Pendiente', color: 'var(--gold)' };
   else if (p.fecha_pago <= p.fecha_limite) pago = { texto: 'Pagado a tiempo', color: 'var(--green)' };
   else pago = { texto: 'Pagado con recargos', color: 'var(--red)' };
   return { determinacion, declaracion, pago };
@@ -3766,6 +3830,7 @@ async function pintarPagosImpuestos(contenido, b) {
       </div>
       <div style="display:flex;gap:8px;">
         <button class="btn btn-ghost btn-sm" id="piDiagnosticoFiscalBtn">Diagnóstico técnico IVA/Retenciones</button>
+        <button class="btn btn-ghost btn-sm" id="piAplicarPagoBtn">Aplicar pago de impuestos</button>
         <button class="btn btn-gold btn-sm" id="piNuevoBtn">+ Registrar otro impuesto</button>
       </div>
     </div>
@@ -3877,6 +3942,7 @@ async function pintarPagosImpuestos(contenido, b) {
   });
   document.getElementById('piNuevoBtn').addEventListener('click', () => abrirModalPagoImpuesto(null, b));
   document.getElementById('piDiagnosticoFiscalBtn').addEventListener('click', () => abrirDiagnosticoFiscal(b.id, STATE.currentMonth));
+  document.getElementById('piAplicarPagoBtn').addEventListener('click', () => abrirModalAplicarPagoFiscal(b));
   document.getElementById('piExcelBtn').addEventListener('click', () => {
     if (!(pagos||[]).length) { toast('No hay impuestos registrados en ' + STATE_piAnio + '.', 'error'); return; }
     const wb = XLSX.utils.book_new();
@@ -3956,6 +4022,78 @@ async function guardarFechaPagoInline(p, fechaPago, b) {
   if (error) { toast('Error: ' + error.message, 'error'); return; }
   registrarAuditoria(b.id, 'editar', 'Pagos de Impuestos', `${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]} ${p.periodo} — fecha de pago actualizada`);
 }
+
+async function abrirModalAplicarPagoFiscal(b) {
+  document.getElementById('apfFecha').value = todayStr();
+  document.getElementById('apfMontoTotal').value = '';
+  const [{ data: cuentasBanco }, { data: monedas }] = await Promise.all([
+    sb.from('fz_bancos_cuentas').select('*').eq('business_id', b.id).eq('activo', true),
+    sb.from('fz_efectivo_monedas').select('*').eq('business_id', b.id).eq('activo', true),
+  ]);
+  document.getElementById('apfCuenta').innerHTML = `<option value="">— elegir —</option>` +
+    (cuentasBanco||[]).map(c=>`<option value="banco:${c.id}">Banco — ${c.nombre}</option>`).join('') +
+    (monedas||[]).map(m=>`<option value="efectivo:${m.id}">Caja — ${m.nombre}</option>`).join('');
+
+  const { data: pendientes } = await sb.from('fz_pagos_impuestos').select('*').eq('business_id', b.id).order('periodo', { ascending: false });
+  const conSaldo = (pendientes||[]).filter(p => Number(p.monto) - (Number(p.importe_pagado)||0) > 0.009);
+
+  const lista = document.getElementById('apfLista');
+  lista.innerHTML = conSaldo.length ? conSaldo.map(p => {
+    const saldo = Number(p.monto) - (Number(p.importe_pagado)||0);
+    return `<label style="display:flex;align-items:center;gap:7px;padding:3px 2px;font-size:12px;cursor:pointer;">
+      <input type="checkbox" class="apf-check" value="${p.id}" data-saldo="${saldo}">
+      <span style="flex:1;">${p.periodo} · ${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]}${p.concepto?' — '+p.concepto:''} · saldo ${fmt(saldo)}</span>
+      <input type="text" class="apf-monto-aplicar" data-id="${p.id}" inputmode="decimal" value="${fmtInputVal(saldo)}" style="width:100px;padding:4px 6px;font-size:12px;border:1px solid var(--line);border-radius:6px;" disabled>
+    </label>`;
+  }).join('') : `<div class="empty" style="padding:8px;font-size:12px;">No hay obligaciones con saldo pendiente.</div>`;
+
+  const actualizarResumen = () => {
+    const montoTotal = leerMonto(document.getElementById('apfMontoTotal').value) || 0;
+    let totalSeleccionado = 0;
+    lista.querySelectorAll('.apf-check:checked').forEach(chk => {
+      totalSeleccionado += leerMonto(lista.querySelector(`.apf-monto-aplicar[data-id="${chk.value}"]`).value) || 0;
+    });
+    const diferencia = montoTotal - totalSeleccionado;
+    document.getElementById('apfResumen').innerHTML = `
+      <div style="display:flex;justify-content:space-between;"><span>Monto del pago</span><strong>${fmt(montoTotal)}</strong></div>
+      <div style="display:flex;justify-content:space-between;"><span>Aplicado a obligaciones</span><strong>${fmt(totalSeleccionado)}</strong></div>
+      <div style="display:flex;justify-content:space-between;color:${Math.abs(diferencia)<0.005?'var(--green)':'var(--red)'};font-weight:700;"><span>Diferencia</span><span>${Math.abs(diferencia)<0.005?'$0.00 ✓':fmt(diferencia)}</span></div>
+    `;
+  };
+  lista.querySelectorAll('.apf-check').forEach(chk => chk.addEventListener('change', () => {
+    const input = lista.querySelector(`.apf-monto-aplicar[data-id="${chk.value}"]`);
+    input.disabled = !chk.checked;
+    if (chk.checked) input.value = fmtInputVal(Number(chk.dataset.saldo));
+    actualizarResumen();
+  }));
+  lista.querySelectorAll('.apf-monto-aplicar').forEach(inp => inp.addEventListener('input', actualizarResumen));
+  document.getElementById('apfMontoTotal').oninput = actualizarResumen;
+  actualizarResumen();
+  document.getElementById('modalAplicarPagoFiscal').classList.add('show');
+}
+document.getElementById('apfCancelar').addEventListener('click', () => document.getElementById('modalAplicarPagoFiscal').classList.remove('show'));
+document.getElementById('apfGuardar').addEventListener('click', async () => {
+  const b = biz();
+  const fecha = document.getElementById('apfFecha').value;
+  const cuentaVal = document.getElementById('apfCuenta').value;
+  if (!fecha || !cuentaVal) { toast('Elige fecha y cuenta.', 'error'); return; }
+  const [cuentaTipo, cuentaId] = cuentaVal.split(':');
+  const lista = document.getElementById('apfLista');
+  const seleccionados = [...lista.querySelectorAll('.apf-check:checked')];
+  if (!seleccionados.length) { toast('Selecciona al menos una obligación.', 'error'); return; }
+  const { data: pagosImpuestos } = await sb.from('fz_pagos_impuestos').select('*').in('id', seleccionados.map(c=>c.value));
+  const aplicaciones = seleccionados.map(chk => ({
+    pagoImpuesto: pagosImpuestos.find(p=>p.id===chk.value),
+    monto: leerMonto(lista.querySelector(`.apf-monto-aplicar[data-id="${chk.value}"]`).value) || 0,
+  })).filter(a => a.pagoImpuesto && a.monto > 0.004);
+  const r = await aplicarPagoFiscal(b.id, fecha, cuentaTipo, cuentaId, aplicaciones);
+  if (r.estado === 'error') { toast('Error: ' + r.error, 'error'); return; }
+  if (r.estado === 'cerrado') { toast('El periodo de esa fecha está cerrado.', 'error'); return; }
+  registrarAuditoria(b.id, 'crear', 'Pagos de Impuestos', `Pago de impuestos aplicado a ${aplicaciones.length} obligación(es) — ${fmt(aplicaciones.reduce((s,a)=>s+a.monto,0))}`);
+  toast('Pago aplicado.');
+  document.getElementById('modalAplicarPagoFiscal').classList.remove('show');
+  renderPagosImpuestos();
+});
 
 async function abrirModalPagoImpuesto(pago, b) {
   STATE_piEditandoId = pago?.id || null;
@@ -4064,7 +4202,12 @@ document.getElementById('piGuardarBtn').addEventListener('click', async () => {
   };
   // Si este registro ya tenía un pago generado antes, se revierte primero — así modificar el
   // monto, la cuenta o quitar la fecha de pago nunca deja una póliza vieja huérfana ni duplicada.
-  if (STATE_piEditandoId) await revertirPagoImpuesto(STATE_piEditandoId);
+  // Protección: si ese pago es parte de un pago CONJUNTO (comparte movimiento con otras
+  // obligaciones), no se toca desde aquí — se administra desde el pago agrupado / Bancos.
+  if (STATE_piEditandoId) {
+    const bloqueado = await intentarRevertirPagoIndividual(STATE_piEditandoId);
+    if (bloqueado) { toast('Este pago es parte de un pago conjunto — modifícalo desde Bancos/Efectivo o el pago agrupado.', 'error'); return; }
+  }
   let filaGuardada;
   if (STATE_piEditandoId) {
     const { data, error } = await sb.from('fz_pagos_impuestos').update(payload).eq('id', STATE_piEditandoId).select().single();
@@ -4076,7 +4219,7 @@ document.getElementById('piGuardarBtn').addEventListener('click', async () => {
     filaGuardada = data;
   }
   if (filaGuardada && fechaPago && pagadoDesdeTipo) {
-    await generarPolizaPagoImpuesto(filaGuardada, b.id, pagadoDesdeTipo, pagadoDesdeId);
+    await aplicarPagoFiscal(b.id, fechaPago, pagadoDesdeTipo, pagadoDesdeId, [{ pagoImpuesto: filaGuardada, monto: Number(filaGuardada.monto) }], `Pago ${TIPO_IMPUESTO_LABEL[filaGuardada.tipo_impuesto]} — ${filaGuardada.periodo}`);
   }
   registrarAuditoria(b.id, STATE_piEditandoId ? 'editar' : 'crear', 'Pagos de Impuestos', `${TIPO_IMPUESTO_LABEL[payload.tipo_impuesto]} — ${periodo}`);
   toast('Guardado.');
@@ -4086,7 +4229,8 @@ document.getElementById('piGuardarBtn').addEventListener('click', async () => {
 document.getElementById('piEliminarBtn').addEventListener('click', async () => {
   if (!STATE_piEditandoId || !confirm('¿Eliminar este registro de impuesto?')) return;
   const b = biz();
-  await revertirPagoImpuesto(STATE_piEditandoId);
+  const bloqueado = await intentarRevertirPagoIndividual(STATE_piEditandoId);
+  if (bloqueado) { toast('Este pago es parte de un pago conjunto — no se puede eliminar así. Adminístralo desde Bancos/Efectivo.', 'error'); return; }
   await sb.from('fz_pagos_impuestos').delete().eq('id', STATE_piEditandoId);
   registrarAuditoria(b.id, 'eliminar', 'Pagos de Impuestos', 'Registro eliminado');
   document.getElementById('modalPagoImpuesto').classList.remove('show');
@@ -6185,6 +6329,12 @@ async function confirmarYEliminarMovimiento(table, row, onDone) {
     const ok = confirm(`Este movimiento tiene un cobro aplicado a ${idsAfectadosCliente.length} factura(s) de Clientes. Al eliminarlo, se revertirá ese cobro (regresarán a Pendiente/Parcial según corresponda). ¿Continuar?`);
     if (!ok) return;
     await revertirCobroPorOrigen(table, row.id, row.business_id);
+  }
+  const { data: aplicacionesFiscales } = await sb.from('fz_aplicaciones_pago_fiscal').select('id').eq('origen_tabla', table).eq('origen_id', row.id);
+  if (aplicacionesFiscales && aplicacionesFiscales.length) {
+    const ok = confirm(`Este movimiento es un pago de impuestos aplicado a ${aplicacionesFiscales.length} obligación(es) fiscal(es). Al eliminarlo, se revertirá ese pago (regresarán a Pendiente/Parcial). ¿Continuar?`);
+    if (!ok) return;
+    await revertirPagoFiscalPorOrigen(table, row.id);
   }
   await sb.from(table).delete().eq('id', row.id);
   const modulo = table === 'fz_bancos_mov' ? 'Bancos' : 'Efectivo';

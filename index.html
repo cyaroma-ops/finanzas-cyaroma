@@ -1436,6 +1436,25 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   </div>
 </div>
 
+<div class="modal-bg" id="modalAplicarPagoFiscal">
+  <div class="modal" style="width:min(680px,96vw);max-height:90vh;overflow-y:auto;">
+    <h3>Aplicar pago de impuestos</h3>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:14px;">Un solo pago real (Banco/Efectivo) puede cubrir varias obligaciones a la vez — se genera un único movimiento y una sola póliza.</p>
+    <div class="grid-2" style="margin-bottom:8px;">
+      <div class="field" style="margin-bottom:0;"><label>Fecha del pago</label><input type="date" id="apfFecha"></div>
+      <div class="field" style="margin-bottom:0;"><label>Pagado desde</label><select id="apfCuenta"></select></div>
+    </div>
+    <div class="field" style="max-width:220px;"><label>Monto total del pago</label><input type="text" id="apfMontoTotal" inputmode="decimal" placeholder="0.00"></div>
+    <label style="font-size:12.5px;font-weight:600;">Obligaciones pendientes</label>
+    <div id="apfLista" style="max-height:260px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:6px 8px;margin:4px 0 10px;"></div>
+    <div id="apfResumen" style="background:#f7f9fc;border-radius:8px;padding:7px 10px;font-size:12px;margin-bottom:10px;"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="apfCancelar">Cancelar</button>
+      <button class="btn btn-gold" id="apfGuardar">Aplicar pago</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-bg" id="modalPagoImpuesto">
   <div class="modal" style="width:min(600px,95vw);">
     <h3 id="piTitulo">Registrar impuesto</h3>
