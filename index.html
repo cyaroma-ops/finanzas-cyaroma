@@ -1887,16 +1887,14 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
     </div>
     <div class="field" id="movFacturasWrap" style="display:none;">
       <label>Facturas a pagar</label>
-      <div id="movFacturasResumen" style="background:#f7f9fc;border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:12.5px;"></div>
-      <div class="field" style="margin-bottom:6px;">
-        <input type="text" id="movFacturasBuscarProv" placeholder="🔎 Buscar proveedor…">
-      </div>
-      <div class="field" style="margin-bottom:8px;">
-        <select id="movFacturasSelectProv">
+      <div id="movFacturasResumen" style="background:#f7f9fc;border-radius:8px;padding:7px 10px;margin-bottom:6px;font-size:12px;"></div>
+      <div class="grid-2" style="margin-bottom:6px;gap:6px;">
+        <input type="text" id="movFacturasBuscarProv" placeholder="🔎 Buscar proveedor…" style="margin:0;">
+        <select id="movFacturasSelectProv" style="margin:0;">
           <option value="">— todos los proveedores —</option>
         </select>
       </div>
-      <div id="movFacturasList" style="max-height:200px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:8px;"></div>
+      <div id="movFacturasList" style="max-height:160px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:6px 8px;"></div>
     </div>
     <div class="field" id="movFacturasClienteWrap" style="display:none;">
       <label>Facturas a cobrar</label>

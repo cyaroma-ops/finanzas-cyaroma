@@ -6232,18 +6232,18 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   const nombresProveedorMov = Object.keys(porProveedor).sort((a,b)=>a.localeCompare(b));
   const movFacturasBox = document.getElementById('movFacturasList');
   movFacturasBox.innerHTML = nombresProveedorMov.map(prov => `
-    <div class="factura-provgroup" data-prov="${prov.toLowerCase()}" style="margin-bottom:8px;">
-      <div style="font-weight:700;font-size:12px;color:var(--navy-1);">${prov}</div>
+    <div class="factura-provgroup" data-prov="${prov.toLowerCase()}" style="margin-bottom:6px;">
+      <div style="font-weight:700;font-size:11.5px;color:var(--navy-1);">${prov}</div>
       ${porProveedor[prov].map(f => {
         const saldo = Number(f.importe) - Number(f.importe_pagado||0);
         const esCredito = Number(f.importe) < 0;
         return `
-        <label style="display:flex;align-items:center;gap:8px;padding:4px 2px;font-size:12.5px;cursor:pointer;">
+        <label style="display:flex;align-items:center;gap:7px;padding:2px 2px;font-size:12px;cursor:pointer;">
           <input type="checkbox" class="mov-factura-check" value="${f.id}" data-importe="${saldo}" ${idsProvYaVinculados.includes(f.id)?'checked':''}>
           <span>${f.fecha} · ${f.factura||'s/f'} · ${esCredito?`<span style="color:var(--green);">crédito ${fmt(saldo)}</span>`:fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}</span>
         </label>`;
       }).join('')}
-    </div>`).join('') || `<div class="empty" style="padding:8px;">No hay facturas pendientes.</div>`;
+    </div>`).join('') || `<div class="empty" style="padding:6px;font-size:12px;">No hay facturas pendientes.</div>`;
 
   const movSelectProv = document.getElementById('movFacturasSelectProv');
   const movBuscarProv = document.getElementById('movFacturasBuscarProv');
@@ -6269,9 +6269,9 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     const diferencia = montoMovimiento - totalSeleccionado;
     const cuadra = Math.abs(diferencia) < 0.01;
     document.getElementById('movFacturasResumen').innerHTML = `
-      <div style="display:flex;justify-content:space-between;margin-bottom:2px;"><span>Cargo capturado</span><strong>${fmt(montoMovimiento)}</strong></div>
-      <div style="display:flex;justify-content:space-between;margin-bottom:2px;"><span>Total seleccionado (${marcadas.length})</span><strong>${fmt(totalSeleccionado)}</strong></div>
-      <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--muted)'};font-weight:700;"><span>${cuadra?'✓ Cuadra exacto':(diferencia>0?'Sobrará como crédito a favor':'Quedará pendiente/parcial')}</span><span>${cuadra?'':fmt(Math.abs(diferencia))}</span></div>
+      <div style="display:flex;justify-content:space-between;"><span>Monto del movimiento</span><strong>${fmt(montoMovimiento)}</strong></div>
+      <div style="display:flex;justify-content:space-between;"><span>Aplicado a facturas (${marcadas.length})</span><strong>${fmt(totalSeleccionado)}</strong></div>
+      <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--muted)'};font-weight:700;"><span>${cuadra?'Diferencia':(diferencia>0?'Sobrará como crédito a favor':'Quedará pendiente/parcial')}</span><span>${cuadra?'$0.00 ✓':fmt(Math.abs(diferencia))}</span></div>
     `;
   };
   document.querySelectorAll('.mov-factura-check').forEach(chk => chk.addEventListener('change', actualizarResumenMovFacturas));
@@ -9946,41 +9946,49 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   });
 
   // 2. Facturas de Proveedores — Dr [desglose] + Dr IVA Acreditable + Cr Retenciones, Cr Proveedores.
+  // Las cuentas "Pendiente"/"Realizado" deben ser subcuentas REALES (no claves de texto sueltas),
+  // porque la póliza de reclasificación automática también las referencia por su id real — si no
+  // coinciden, Balanza las ve como dos cuentas distintas aunque tengan el mismo nombre.
+  const cacheSubRealizacion = {};
+  const subRealizacion = async (nombre, tipo) => {
+    if (!cacheSubRealizacion[nombre]) cacheSubRealizacion[nombre] = await obtenerOCrearSubcuentaPorNombre(businessId, nombre, tipo);
+    return cacheSubRealizacion[nombre];
+  };
   const { data: facturasProv } = await conDesde(sb.from('fz_proveedores').select('*').eq('business_id', businessId).lte('fecha', hastaFecha));
-  (facturasProv||[]).forEach(f => {
-    if (f.origen_poliza_id) return; // ya se contabilizó como provisión en Pólizas
+  for (const f of (facturasProv||[])) {
+    if (f.origen_poliza_id) continue; // ya se contabilizó como provisión en Pólizas
     const base = { modulo: 'Factura de Proveedor', tipoOrigen: 'factura_proveedor', id: f.id, fecha: f.fecha, referencia: f.factura || 's/f', detalle: f.proveedor || '' };
     desgloseLineas(f.desglose).forEach(linea => push({ ...base, cuenta: nombreSub(linea.subcuenta_id) }, 'sub:'+linea.subcuenta_id, tipoDeSub(linea.subcuenta_id), Number(linea.monto)||0, 0));
     if (f.aplica_iva && Number(f.iva_monto)) {
-      if (esRealizacionActiva(f.fecha)) push({ ...base, cuenta: 'IVA Acreditable — Pendiente de pago' }, 'iva_acreditable_pend', 'activo', Number(f.iva_monto), 0);
+      if (esRealizacionActiva(f.fecha)) { const id = await subRealizacion('IVA Acreditable — Pendiente de pago', 'activo'); push({ ...base, cuenta: 'IVA Acreditable — Pendiente de pago' }, 'sub:'+id, 'activo', Number(f.iva_monto), 0); }
       else push({ ...base, cuenta: 'IVA Acreditable' }, 'iva_acreditable', 'activo', Number(f.iva_monto), 0);
     }
     if (f.aplica_retencion && Number(f.retencion_isr_monto)) {
       const cat = f.retencion_categoria||'Sin categoría';
-      if (esRealizacionActiva(f.fecha)) push({ ...base, cuenta: `Retención ISR — ${cat} — Pendiente de pago` }, 'ret_isr_pend:'+cat, 'pasivo', 0, Number(f.retencion_isr_monto));
+      if (esRealizacionActiva(f.fecha)) { const id = await subRealizacion(`Retención ISR — ${cat} — Pendiente de pago`, 'pasivo'); push({ ...base, cuenta: `Retención ISR — ${cat} — Pendiente de pago` }, 'sub:'+id, 'pasivo', 0, Number(f.retencion_isr_monto)); }
       else push({ ...base, cuenta: `Retención ISR — ${cat}` }, 'ret_isr:'+cat, 'pasivo', 0, Number(f.retencion_isr_monto));
     }
     if (f.aplica_retencion && Number(f.retencion_iva_monto)) {
       const cat = f.retencion_categoria||'Sin categoría';
-      if (esRealizacionActiva(f.fecha)) push({ ...base, cuenta: `Retención IVA — ${cat} — Pendiente de pago` }, 'ret_iva_pend:'+cat, 'pasivo', 0, Number(f.retencion_iva_monto));
+      if (esRealizacionActiva(f.fecha)) { const id = await subRealizacion(`Retención IVA — ${cat} — Pendiente de pago`, 'pasivo'); push({ ...base, cuenta: `Retención IVA — ${cat} — Pendiente de pago` }, 'sub:'+id, 'pasivo', 0, Number(f.retencion_iva_monto)); }
       else push({ ...base, cuenta: `Retención IVA — ${cat}` }, 'ret_iva:'+cat, 'pasivo', 0, Number(f.retencion_iva_monto));
     }
     push({ ...base, cuenta: 'Proveedores' }, 'proveedores', 'pasivo', 0, Number(f.importe)||0);
-  });
+  }
 
   // 3. Facturas de Clientes — Dr Clientes, Cr [líneas] + Cr IVA Trasladado.
   const { data: facturasCli } = await conDesde(sb.from('fz_facturas_clientes').select('*').eq('business_id', businessId).lte('fecha', hastaFecha));
   if ((facturasCli||[]).length) {
     const { data: lineasCli } = await sb.from('fz_facturas_clientes_lineas').select('*').in('factura_id', facturasCli.map(f=>f.id));
-    (facturasCli||[]).forEach(f => {
+    for (const f of facturasCli) {
       const base = { modulo: 'Factura de Cliente', tipoOrigen: 'factura_cliente', id: f.id, fecha: f.fecha, referencia: `Folio #${f.folio}`, detalle: nombreCliente(f.cliente_id) };
       push({ ...base, cuenta: 'Clientes' }, 'clientes', 'activo', Number(f.total)||0, 0);
       (lineasCli||[]).filter(l=>l.factura_id===f.id).forEach(l => push({ ...base, cuenta: nombreSub(l.subcuenta_id) }, 'sub:'+l.subcuenta_id, tipoDeSub(l.subcuenta_id), 0, Number(l.importe)||0));
       if (f.aplica_iva && Number(f.iva_monto)) {
-        if (esRealizacionActiva(f.fecha)) push({ ...base, cuenta: 'IVA Trasladado — Pendiente de cobro' }, 'iva_trasladado_pend', 'pasivo', 0, Number(f.iva_monto));
+        if (esRealizacionActiva(f.fecha)) { const id = await subRealizacion('IVA Trasladado — Pendiente de cobro', 'pasivo'); push({ ...base, cuenta: 'IVA Trasladado — Pendiente de cobro' }, 'sub:'+id, 'pasivo', 0, Number(f.iva_monto)); }
         else push({ ...base, cuenta: 'IVA Trasladado' }, 'iva_trasladado', 'pasivo', 0, Number(f.iva_monto));
       }
-    });
+    }
   }
 
   // 4. Movimientos de Bancos y Efectivo — cada movimiento, individualmente, siempre cuadra por
