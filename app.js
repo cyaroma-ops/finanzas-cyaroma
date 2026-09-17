@@ -2255,6 +2255,30 @@ async function sincronizarRealizacionFactura(facturaId, tipoFactura, businessId,
 // Diagnóstico técnico de solo lectura: reconstruye la cadena completa (Banco/Efectivo → pago
 // aplicado → factura → realización fiscal → póliza) para un periodo, detectando huérfanos y
 // duplicados SIN modificar nada. Es la base de datos real para decidir qué sanear.
+// Diagnóstico de solo lectura: para una lista de nombres, encuentra TODAS las cuentas mayor y
+// subcuentas que coincidan (detecta duplicados reales), y para cada subcuenta cuenta cuántas
+// líneas de póliza la referencian y su saldo neto — sin tocar ni reasignar nada todavía.
+async function diagnosticarCuentasDuplicadas(businessId, nombres) {
+  const resultado = [];
+  for (const nombre of nombres) {
+    const { data: mayores } = await sb.from('fz_cuentas_mayor').select('*').eq('business_id', businessId).ilike('nombre', nombre);
+    const grupo = { nombre, mayores: [] };
+    for (const m of (mayores||[])) {
+      const { data: subs } = await sb.from('fz_subcuentas').select('*').eq('cuenta_mayor_id', m.id);
+      const subsConDetalle = [];
+      for (const s of (subs||[])) {
+        const { data: lineas } = await sb.from('fz_polizas_lineas').select('cargo,abono,poliza_id').eq('subcuenta_id', s.id);
+        const cargo = (lineas||[]).reduce((sum,l)=>sum+Number(l.cargo||0),0);
+        const abono = (lineas||[]).reduce((sum,l)=>sum+Number(l.abono||0),0);
+        subsConDetalle.push({ id: s.id, nombre: s.nombre, created_at: s.created_at, numMovimientos: (lineas||[]).length, cargo, abono, saldoNeto: cargo - abono });
+      }
+      grupo.mayores.push({ id: m.id, nombre: m.nombre, tipo: m.tipo, created_at: m.created_at, subs: subsConDetalle });
+    }
+    resultado.push(grupo);
+  }
+  return resultado;
+}
+
 async function diagnosticoTecnicoFiscal(businessId, periodo) {
   const { start, end } = monthBounds(periodo);
 
@@ -10998,6 +11022,23 @@ async function abrirDiagnosticoFiscal(businessId, periodo) {
       await abrirDiagnosticoFiscal(businessId, periodo);
     });
   });
+
+  document.getElementById('verDuplicadosCatalogoBtn').onclick = async () => {
+    const zona = document.getElementById('duplicadosCatalogoResultado');
+    zona.innerHTML = `<div class="empty">Buscando…</div>`;
+    const grupos = await diagnosticarCuentasDuplicadas(businessId, ['Actualización fiscal', 'Recargos fiscales', 'Diferencias por redondeo fiscal']);
+    zona.innerHTML = grupos.map(g => `
+      <div style="margin-bottom:10px;">
+        <p style="font-size:12px;font-weight:700;">${g.nombre} — ${g.mayores.length} cuenta(s) mayor encontrada(s)${g.mayores.length>1?' <span style="color:var(--red);">← DUPLICADO</span>':''}</p>
+        ${g.mayores.map(m => `
+          <div style="margin-left:14px;margin-bottom:6px;font-size:11.5px;">
+            <div style="color:var(--muted);">Cuenta mayor id: ${m.id} · tipo: ${m.tipo} · creada: ${m.created_at ? fechaCorta(m.created_at.slice(0,10)) : '—'}</div>
+            <div class="table-wrap"><table><thead><tr><th>Subcuenta id</th><th>Nombre</th><th>Creada</th><th># líneas de póliza</th><th>Cargo</th><th>Abono</th><th>Saldo neto</th></tr></thead>
+              <tbody>${m.subs.map(s=>`<tr><td style="font-size:10.5px;">${s.id}</td><td>${s.nombre}</td><td>${s.created_at?fechaCorta(s.created_at.slice(0,10)):'—'}</td><td class="num">${s.numMovimientos}</td><td class="num">${fmt(s.cargo)}</td><td class="num">${fmt(s.abono)}</td><td class="num" style="font-weight:700;">${fmtNeg(s.saldoNeto)}</td></tr>`).join('')}</tbody>
+            </table></div>
+          </div>`).join('')}
+      </div>`).join('');
+  };
 }
 document.getElementById('closeDiagnosticoFiscal').addEventListener('click', () => document.getElementById('modalDiagnosticoFiscal').classList.remove('show'));
 

@@ -1430,6 +1430,11 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
     <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px;">Herramienta de solo consulta — reconstruye Banco/Efectivo → pago/cobro aplicado → factura → realización fiscal → póliza, y marca cualquier huérfano o duplicado. No corrige ni modifica nada por sí sola.</p>
     <div id="diagnosticoFiscalBody"></div>
     <div id="reinicioFiscalZona" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line);"></div>
+    <div id="duplicadosCatalogoZona" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line);">
+      <p style="font-size:12.5px;font-weight:700;color:var(--navy-1);margin-bottom:6px;">Cuentas duplicadas en el catálogo (Actualización fiscal / Recargos fiscales / Diferencias por redondeo fiscal)</p>
+      <button class="btn btn-ghost btn-sm" id="verDuplicadosCatalogoBtn">Ver cuentas y saldos exactos</button>
+      <div id="duplicadosCatalogoResultado" style="margin-top:8px;"></div>
+    </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="closeDiagnosticoFiscal">Cerrar</button>
     </div>
