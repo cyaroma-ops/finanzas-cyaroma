@@ -2776,6 +2776,7 @@ async function pintarIsrMes(contenido, b) {
       <div style="display:flex;justify-content:space-between;padding:10px 0;background:#f7f9fc;margin-left:-24px;margin-right:-24px;padding-left:24px;padding-right:24px;">
         <span style="font-weight:700;font-size:13.5px;">Utilidad fiscal para pago provisional</span><span style="font-weight:700;">${fmt(calc.utilidadFiscal)}</span>
       </div>
+      <p style="font-size:11px;color:var(--muted);margin:6px 0 0;">Coeficiente aplicado: ${fmtCoef(calc.coeficiente)}${calc.coeficienteVigenteDesde ? ' · Vigente desde ' + calc.coeficienteVigenteDesde : ''}</p>
       <div style="margin-top:8px;">
         ${unicoHtml('ptu', 'PTU del periodo', 'Aplica a partir de mayo')}
         ${unicoHtml('perdida_aplicada', 'Pérdidas fiscales de ejercicios anteriores por aplicar', calc.perdidasPendientes ? `Pendiente total capturado: ${fmt(calc.perdidasPendientes)}` : 'Captura primero el monto pendiente arriba en "Datos del ejercicio"')}
@@ -2980,7 +2981,7 @@ async function pintarIsrAnual(contenido, b) {
     datos.push(calc);
     acumulado += calc.ingresosMesAjustado;
   }
-  const filaHtml = (nombre, valores, opts={}) => `<tr class="${opts.total?'total-row':''}"><td class="wrap-text" style="max-width:200px;${opts.op?'color:var(--muted);font-style:italic;font-size:11px;':''}">${nombre}</td>${valores.map(v=>`<td class="num">${opts.coef ? fmtCoef(v) : opts.pct ? (v*100).toFixed(2)+'%' : fmt(v)}</td>`).join('')}</tr>`;
+  const filaHtml = (nombre, valores, opts={}) => `<tr class="${opts.total?'total-row':''}"><td class="wrap-text" style="max-width:200px;${opts.op?'color:var(--muted);font-style:italic;font-size:11px;':''}">${nombre}</td>${valores.map((v,i)=>`<td class="num">${opts.click ? `<span class="isr-anual-ir-mes" data-mes="${i+1}" style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted;">${fmt(v)}</span>` : opts.coef ? fmtCoef(v) : opts.pct ? (v*100).toFixed(2)+'%' : fmt(v)}</td>`).join('')}</tr>`;
   const filasExport = [
     ['Ingresos nominales facturados', datos.map(d=>d.ingresosFacturadosMes)],
     ['(−) Ingresos a disminuir', datos.map(d=>d.disminuir)],
@@ -3029,7 +3030,7 @@ async function pintarIsrAnual(contenido, b) {
             ${filaHtml('(−) Impuesto acreditable dividendos', datos.map(d=>d.dividendos), {op:true})}
             ${filaHtml('(−) Total impuesto retenido', datos.map(d=>d.retenido), {op:true})}
             ${filaHtml('Pagos provisionales anteriores', datos.map(d=>d.pagosPrevios))}
-            ${filaHtml('Impuesto a cargo del mes', datos.map(d=>d.impuestoACargo), {total:true})}
+            ${filaHtml('Impuesto a cargo del mes', datos.map(d=>d.impuestoACargo), {total:true, click:true})}
           </tbody>
         </table>
       </div>
@@ -3037,6 +3038,12 @@ async function pintarIsrAnual(contenido, b) {
     </div>
   `;
 
+  contenido.querySelectorAll('.isr-anual-ir-mes').forEach(sp => sp.addEventListener('click', () => {
+    STATE.currentMonth = `${anio}-${String(sp.dataset.mes).padStart(2,'0')}`;
+    document.getElementById('monthPicker').value = STATE.currentMonth;
+    STATE_isrVista = 'mes';
+    renderImpuestos();
+  }));
   document.getElementById('isrAnualExcelBtn').addEventListener('click', () => {
     const encabezados = ['Concepto', ...mesesLabel.slice(0,hastaMes)];
     const wb = XLSX.utils.book_new();
@@ -3058,15 +3065,18 @@ async function pintarIsrAnual(contenido, b) {
 }
 
 let STATE_impRetAnio = todayStr().slice(0,4);
+let STATE_impRetFiltroCategoria = null;
 async function renderImpuestosRetenciones(b) {
   const el = document.getElementById('impuestos-retenciones');
   el.innerHTML = `<div class="empty">Calculando…</div>`;
   const anio = STATE_impRetAnio;
+  const filtroCat = STATE_impRetFiltroCategoria;
 
-  const [{ data: retenciones }, { data: facturasDetalle }] = await Promise.all([
+  const [{ data: retenciones }, { data: facturasDetalleTodas }] = await Promise.all([
     sb.from('fz_pagos_impuestos').select('*').eq('business_id', b.id).in('tipo_impuesto', ['retencion_isr','retencion_iva']).like('periodo', `${anio}-%`).order('periodo'),
     sb.from('fz_proveedores').select('proveedor,factura,fecha,subtotal,retencion_categoria,retencion_isr_monto,retencion_iva_monto').eq('business_id', b.id).eq('aplica_retencion', true).gte('fecha', `${anio}-01-01`).lte('fecha', `${anio}-12-31`).order('fecha', { ascending: false }),
   ]);
+  const facturasDetalle = filtroCat ? (facturasDetalleTodas||[]).filter(f => (f.retencion_categoria||'Sin categoría') === filtroCat) : facturasDetalleTodas;
 
   const anioActual = Number(todayStr().slice(0,4));
   const anios = Array.from({length:6}, (_,i) => anioActual - 4 + i);
@@ -3078,14 +3088,14 @@ async function renderImpuestosRetenciones(b) {
     </div>
     <div class="card">
       <div class="card-head"><h3>Control por categoría — ${anio}</h3><span class="hint">Determinación · Declaración · Pago</span></div>
-      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Cada categoría se declara y se paga por separado ante el SAT — el control se mantiene consolidado por categoría, no factura por factura.</p>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Cada categoría se declara y se paga por separado ante el SAT — el control se mantiene consolidado por categoría, no factura por factura. Da clic en una fila para filtrar el detalle de abajo.</p>
       <div class="table-wrap scroll-sticky">
         <table>
           <thead><tr><th>Periodo</th><th>Tipo</th><th>Categoría</th><th>Monto</th><th>Determinación</th><th>Declaración</th><th>Pago</th></tr></thead>
           <tbody>
             ${(retenciones||[]).length ? retenciones.map(p => {
               const est = estadosDeImpuesto(p);
-              return `<tr>
+              return `<tr class="ret-filtro-cat" data-cat="${p.concepto||'Sin categoría'}" style="cursor:pointer;${filtroCat===(p.concepto||'Sin categoría')?'background:#eef2f8;':''}">
                 <td>${p.periodo}</td><td>${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]}</td><td>${p.concepto||'Sin categoría'}</td>
                 <td class="num">${fmt(p.monto)}</td>
                 <td style="color:${est.determinacion.color};font-size:12px;">${est.determinacion.texto}</td>
@@ -3098,7 +3108,10 @@ async function renderImpuestosRetenciones(b) {
       </div>
     </div>
     <div class="card">
-      <div class="card-head"><h3>Detalle y trazabilidad — ${anio}</h3></div>
+      <div class="card-head">
+        <h3>Detalle y trazabilidad — ${anio}${filtroCat ? ` · ${filtroCat}` : ''}</h3>
+        ${filtroCat ? `<button class="btn btn-ghost btn-sm" id="retQuitarFiltroBtn">Ver todas</button>` : ''}
+      </div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">De dónde viene cada retención — solo para consulta y papel de trabajo; no genera obligaciones de pago independientes por factura.</p>
       <div class="table-wrap scroll-sticky">
         <table>
@@ -3117,6 +3130,12 @@ async function renderImpuestosRetenciones(b) {
     STATE_impRetAnio = e.target.value;
     renderImpuestosRetenciones(b);
   });
+  el.querySelectorAll('.ret-filtro-cat').forEach(tr => tr.addEventListener('click', () => {
+    STATE_impRetFiltroCategoria = tr.dataset.cat;
+    renderImpuestosRetenciones(b);
+  }));
+  const btnQuitar = document.getElementById('retQuitarFiltroBtn');
+  if (btnQuitar) btnQuitar.addEventListener('click', () => { STATE_impRetFiltroCategoria = null; renderImpuestosRetenciones(b); });
 }
 
 async function renderPagosImpuestos() {
@@ -3195,6 +3214,7 @@ async function pintarPagosImpuestos(contenido, b) {
   const totalPendiente = (pagos||[]).filter(p=>!p.fecha_pago).reduce((s,p)=>s+Number(p.monto),0);
   const totalPagado = (pagos||[]).filter(p=>p.fecha_pago).reduce((s,p)=>s+Number(p.total_pagado||p.monto),0);
   const totalRecargosPagados = (pagos||[]).filter(p=>p.fecha_pago && p.recargos).reduce((s,p)=>s+Number(p.recargos||0),0);
+  const declaracionesPendientes = (pagos||[]).filter(p=>!p.declarada).length;
   const anioActual = Number(todayStr().slice(0,4));
   const anios = Array.from({length:6}, (_,i) => anioActual - 4 + i);
 
@@ -3231,6 +3251,7 @@ async function pintarPagosImpuestos(contenido, b) {
       <div class="kpi"><div class="label">Pendiente de pagar</div><div class="value num ${totalPendiente>0.004?'red':''}">${fmt(totalPendiente)}</div></div>
       <div class="kpi"><div class="label">Ya pagado</div><div class="value num green">${fmt(totalPagado)}</div></div>
       <div class="kpi"><div class="label">Recargos pagados (histórico)</div><div class="value num ${totalRecargosPagados>0.004?'red':''}">${fmt(totalRecargosPagados)}</div></div>
+      <div class="kpi"><div class="label">Declaraciones pendientes</div><div class="value" style="${declaracionesPendientes>0?'color:var(--gold);':''}">${declaracionesPendientes}</div></div>
     </div>
     <div class="card">
       <div class="card-head">
@@ -3854,7 +3875,7 @@ async function renderDiariosPolizasVista() {
   const { start: inicioMes, end: finMes } = monthBounds(STATE.currentMonth);
   const desde = STATE_dpFiltros.desde || inicioMes;
   const hasta = STATE_dpFiltros.hasta || finMes;
-  const { filas } = await getLibroPartidaDobleConOrigen(b.id, hasta);
+  const { filas } = await getLibroPartidaDobleConOrigen(b.id, hasta, desde);
 
   const grupos = {};
   filas.filter(f => f.fecha >= desde && f.fecha <= hasta).forEach(f => {
@@ -4343,18 +4364,29 @@ async function renderBalanza() {
 async function renderConfiguracion() {
   const el = document.getElementById('sec-configuracion');
   const b = biz();
+  const grid = (html) => `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;margin-bottom:24px;">${html}</div>`;
   el.innerHTML = `
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;">
+    <p style="font-size:13px;font-weight:700;color:var(--navy-1);margin-bottom:10px;">Contabilidad</p>
+    ${grid(`
       ${tarjetaConfigHtml('cfgCatalogo', 'Catálogo de Cuentas', b ? `Cuenta mayor, subcuentas y su estructura contable para ${b.name}.` : 'Selecciona un negocio para configurar su catálogo.')}
-      ${STATE.esAdministrador ? tarjetaConfigHtml('cfgNegocios', 'Negocios (todos)', 'Alta, edición y respaldo de cada negocio del grupo.') : ''}
-      ${tarjetaConfigHtml('cfgAuditoria', 'Auditoría', b ? `Quién creó, editó o eliminó cada registro en ${b.name}.` : 'Selecciona un negocio para ver su auditoría.')}
       ${tarjetaConfigHtml('cfgCierre', 'Cierre de periodo', b ? `Bloquea la captura de meses ya cerrados en ${b.name}.` : 'Selecciona un negocio para gestionar sus cierres.')}
       ${tarjetaConfigHtml('cfgActivosFijos', 'Activos Fijos', b ? `Equipo, mobiliario y su depreciación mensual automática en ${b.name}.` : 'Selecciona un negocio para gestionar sus activos.')}
-      ${tarjetaConfigHtml('cfgComparativo', 'Comparativo entre negocios', 'Ingresos, gastos y utilidad de todos tus negocios, lado a lado, para el mismo mes.')}
+    `)}
+    <p style="font-size:13px;font-weight:700;color:var(--navy-1);margin-bottom:10px;">Fiscal</p>
+    ${grid(`
       ${tarjetaConfigHtml('cfgRecargos', 'Recargos y Actualización', 'Calculadora de INPC y recargos para impuestos pagados fuera de tiempo — aplica a cualquier negocio.')}
+    `)}
+    <p style="font-size:13px;font-weight:700;color:var(--navy-1);margin-bottom:10px;">Administración</p>
+    ${grid(`
+      ${STATE.esAdministrador ? tarjetaConfigHtml('cfgNegocios', 'Negocios (todos)', 'Alta, edición y respaldo de cada negocio del grupo.') : ''}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgUsuarios', 'Usuarios autorizados', 'Quién puede entrar a Finanzas y a qué negocios.') : ''}
+      ${tarjetaConfigHtml('cfgAuditoria', 'Auditoría', b ? `Quién creó, editó o eliminó cada registro en ${b.name}.` : 'Selecciona un negocio para ver su auditoría.')}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgMfa', 'Autenticación de dos pasos', 'Protege tu cuenta con un código adicional al iniciar sesión.') : ''}
-    </div>
+    `)}
+    <p style="font-size:13px;font-weight:700;color:var(--navy-1);margin-bottom:10px;">Análisis</p>
+    ${grid(`
+      ${tarjetaConfigHtml('cfgComparativo', 'Comparativo entre negocios', 'Ingresos, gastos y utilidad de todos tus negocios, lado a lado, para el mismo mes.')}
+    `)}
   `;
   const ir = (idBtn, seccion) => { const e = document.getElementById(idBtn); if (e) e.addEventListener('click', () => irASeccion(seccion)); };
   ir('cfgCatalogo', 'catalogo');
@@ -9674,12 +9706,13 @@ async function getLibroPartidaDoble(businessId, hastaFecha) {
    exactamente qué documento (o par de traspaso) no cuadra internamente.
    Es de solo lectura — nunca modifica nada, nunca corrige nada.
    ============================================================ */
-async function getLibroPartidaDobleConOrigen(businessId, hastaFecha) {
+async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha = null) {
   const filas = [];
   const push = (origen, clave, tipo, cargo, abono) => {
     if (!(Number(cargo)||0) && !(Number(abono)||0)) return;
     filas.push({ ...origen, clave, tipo, cargo: Number(cargo)||0, abono: Number(abono)||0 });
   };
+  const conDesde = (q) => desdeFecha ? q.gte('fecha', desdeFecha) : q;
 
   const [subcuentas, mayores, cuentasBanco, monedas, clientes] = await Promise.all([
     loadSubcuentas(businessId), loadCuentasMayor(businessId),
@@ -9695,7 +9728,7 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha) {
   const nombreCliente = (id) => { const c = clientes.find(x=>x.id===id); return c ? (c.razon_social || c.nombre_comercial) : '(cliente eliminado)'; };
 
   // 1. Pólizas de Diario — cada póliza es un documento; sus líneas deberían cuadrar entre sí.
-  const { data: polizas } = await sb.from('fz_polizas').select('id,fecha,numero,concepto').eq('business_id', businessId).lte('fecha', hastaFecha);
+  const { data: polizas } = await conDesde(sb.from('fz_polizas').select('id,fecha,numero,concepto').eq('business_id', businessId).lte('fecha', hastaFecha));
   const polizaIds = (polizas||[]).map(p=>p.id);
   const polizaMap = Object.fromEntries((polizas||[]).map(p=>[p.id,p]));
   const { data: lineasPoliza } = polizaIds.length ? await sb.from('fz_polizas_lineas').select('*').in('poliza_id', polizaIds) : { data: [] };
@@ -9711,7 +9744,7 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha) {
   });
 
   // 2. Facturas de Proveedores — Dr [desglose] + Dr IVA Acreditable + Cr Retenciones, Cr Proveedores.
-  const { data: facturasProv } = await sb.from('fz_proveedores').select('*').eq('business_id', businessId).lte('fecha', hastaFecha);
+  const { data: facturasProv } = await conDesde(sb.from('fz_proveedores').select('*').eq('business_id', businessId).lte('fecha', hastaFecha));
   (facturasProv||[]).forEach(f => {
     if (f.origen_poliza_id) return; // ya se contabilizó como provisión en Pólizas
     const base = { modulo: 'Factura de Proveedor', tipoOrigen: 'factura_proveedor', id: f.id, fecha: f.fecha, referencia: f.factura || 's/f', detalle: f.proveedor || '' };
@@ -9723,7 +9756,7 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha) {
   });
 
   // 3. Facturas de Clientes — Dr Clientes, Cr [líneas] + Cr IVA Trasladado.
-  const { data: facturasCli } = await sb.from('fz_facturas_clientes').select('*').eq('business_id', businessId).lte('fecha', hastaFecha);
+  const { data: facturasCli } = await conDesde(sb.from('fz_facturas_clientes').select('*').eq('business_id', businessId).lte('fecha', hastaFecha));
   if ((facturasCli||[]).length) {
     const { data: lineasCli } = await sb.from('fz_facturas_clientes_lineas').select('*').in('factura_id', facturasCli.map(f=>f.id));
     (facturasCli||[]).forEach(f => {
@@ -9767,8 +9800,8 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha) {
     });
   };
   const [bancosMovQ, efvoMovQ] = await Promise.all([
-    sb.from('fz_bancos_mov').select('*').eq('business_id', businessId).lte('fecha', hastaFecha),
-    sb.from('fz_efectivo_mov').select('*').eq('business_id', businessId).lte('fecha', hastaFecha),
+    conDesde(sb.from('fz_bancos_mov').select('*').eq('business_id', businessId).lte('fecha', hastaFecha)),
+    conDesde(sb.from('fz_efectivo_mov').select('*').eq('business_id', businessId).lte('fecha', hastaFecha)),
   ]);
   procesarMovimientos(bancosMovQ.data, true, 'banco_mov', 'Movimiento de Banco');
   procesarMovimientos(efvoMovQ.data, false, 'efectivo_mov', 'Movimiento de Efectivo');
@@ -9889,7 +9922,7 @@ document.getElementById('closeDiagnosticoDescuadre').addEventListener('click', (
 async function getLibroDiario(businessId, startDate, endDate) {
   // Envoltorio delgado sobre el mismo motor que usan Balanza y el diagnóstico — ya no es una
   // reconstrucción aparte, así que nunca podrá mostrar "cuadra" cuando Balanza dice que no cuadra.
-  const { filas: filasOrigen } = await getLibroPartidaDobleConOrigen(businessId, endDate);
+  const { filas: filasOrigen } = await getLibroPartidaDobleConOrigen(businessId, endDate, startDate);
   const referenciaDe = (f) => {
     if (f.tipoOrigen === 'poliza') return f.referencia; // ya viene como "Póliza #N"
     if (f.tipoOrigen === 'factura_proveedor') return `Factura proveedor ${f.referencia}`;
@@ -10424,7 +10457,7 @@ async function computeIsrProvisional(businessId, ym, ingresosAnterioresOverride 
 
   return {
     ingresosFacturadosMes, disminuir, adicional, ingresosMesAjustado, ingresosAnteriores, totalIngresosNominales,
-    coeficiente, perdidasPendientes, utilidadFiscal, ptu, perdidaAplicada, baseGravable, impuestoCausado,
+    coeficiente, coeficienteVigenteDesde: datosAnuales?.vigente_desde || null, perdidasPendientes, utilidadFiscal, ptu, perdidaAplicada, baseGravable, impuestoCausado,
     estimulo, impuestoDelPeriodo, dividendos, pagosPrevios, retenido, impuestoACargo,
   };
 }
