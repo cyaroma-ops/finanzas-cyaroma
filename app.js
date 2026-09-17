@@ -2112,6 +2112,38 @@ async function sincronizarProvisionIva(pagoImpuesto, businessId) {
   return { estado: 'provisionado', poliza_id: nuevaPoliza.id };
 }
 
+// Vista previa de meses con IVA realizado pero cuya determinación contable (Trasladado/Acreditable
+// clareados + neto) no está al corriente — de solo lectura, no escribe nada. Mismo principio que
+// la vista previa de ISR: se revisa periodo por periodo antes de generar nada, especialmente para
+// no arrastrar automáticamente meses que pudieron usarse como datos de prueba.
+async function previsualizarProvisionesIva(businessId, anio) {
+  const { data: pagos } = await sb.from('fz_pagos_impuestos').select('*').eq('business_id', businessId).eq('tipo_impuesto', 'iva').like('periodo', `${anio}-%`).order('periodo');
+  const resultado = [];
+  for (const p of (pagos||[])) {
+    const fechaProvision = p.periodo + '-28';
+    const resumen = await computeResumenIvaMesLigero(businessId, monthBounds(p.periodo));
+    const netoDeseado = resumen.ivaTrasladadoCobrado - resumen.ivaAcreditablePagado;
+    const componentes = [
+      { tipo: 'iva_neto_trasladado', label: 'IVA Trasladado — Cobrado', montoDebeSer: resumen.ivaTrasladadoCobrado, naturaleza: 'pasivo' },
+      { tipo: 'iva_neto_acreditable', label: 'IVA Acreditable — Pagado', montoDebeSer: resumen.ivaAcreditablePagado, naturaleza: 'activo' },
+      { tipo: 'iva_neto_por_pagar', label: CUENTA_IVA_POR_PAGAR, montoDebeSer: Math.max(0, netoDeseado), naturaleza: 'pasivo' },
+      { tipo: 'iva_neto_a_favor', label: CUENTA_IVA_A_FAVOR, montoDebeSer: Math.max(0, -netoDeseado), naturaleza: 'activo' },
+    ];
+    const cambios = [];
+    for (const c of componentes) {
+      const { data: existentes } = await sb.from('fz_provisiones_fiscales').select('monto').eq('pago_impuesto_id', p.id).eq('tipo', c.tipo);
+      const yaRegistrado = (existentes||[]).reduce((s,x)=>s+Number(x.monto),0);
+      const diff = c.montoDebeSer - yaRegistrado;
+      if (Math.abs(diff) < 0.005) continue;
+      cambios.push({ cuenta: c.label, diferencia: diff });
+    }
+    if (!cambios.length) continue;
+    const cerrado = await periodoEstaCerrado(businessId, fechaProvision);
+    resultado.push({ pago: p, cambios, cerrado });
+  }
+  return resultado;
+}
+
 // Para la vista previa de retroactivos: qué se crearía por cada periodo, SIN crear nada todavía.
 async function previsualizarProvisionesIsr(businessId, anio) {
   const { data: pagos } = await sb.from('fz_pagos_impuestos').select('*').eq('business_id', businessId).eq('tipo_impuesto', 'isr_provisional').like('periodo', `${anio}-%`).order('periodo');
@@ -3601,6 +3633,7 @@ async function autoGenerarPagosImpuestos(b, anio) {
 async function pintarPagosImpuestos(contenido, b) {
   const { data: pagos } = await sb.from('fz_pagos_impuestos').select('*').eq('business_id', b.id).like('periodo', `${STATE_piAnio}-%`).order('periodo', { ascending: true });
   const pendientesProvision = await previsualizarProvisionesIsr(b.id, STATE_piAnio);
+  const pendientesProvisionIva = await previsualizarProvisionesIva(b.id, STATE_piAnio);
   const duplicadosRealizacion = await detectarDuplicadosRealizacion(b.id);
   const hoy = todayStr();
 
@@ -3660,6 +3693,25 @@ async function pintarPagosImpuestos(contenido, b) {
         </table>
       </div>
       ${pendientesProvision.some(pp=>!pp.cerrado) ? `<button class="btn btn-ghost btn-sm" id="provisionGenerarTodasBtn" style="margin-top:10px;">Generar todas las abiertas</button>` : ''}
+    </div>` : ''}
+    ${pendientesProvisionIva.length ? `
+    <div class="card" style="background:#fff8ec;border:1px solid #f0d99a;">
+      <div class="card-head"><h3>Determinaciones de IVA pendientes de contabilizar</h3></div>
+      <p style="font-size:12px;color:#6b5518;margin-bottom:10px;">El IVA de estos meses ya está realizado (cobrado/pagado), pero su reclasificación contable (Trasladado/Acreditable clareados → IVA por pagar o a favor) todavía no está al corriente. Revisa cada uno antes de generarlo.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Periodo</th><th>Cambios propuestos</th><th>Estatus</th><th></th></tr></thead>
+          <tbody>
+            ${pendientesProvisionIva.map((pp,idx) => `<tr>
+              <td>${pp.pago.periodo}</td>
+              <td style="font-size:12px;color:var(--muted);">${pp.cambios.map(c=>`${c.diferencia>=0?'Debe':'Haber'} ${c.cuenta} — ${fmt(Math.abs(c.diferencia))}`).join('<br>')}</td>
+              <td>${pp.cerrado ? '<span style="color:var(--red);font-size:12px;">Periodo cerrado — reabre para contabilizar</span>' : '<span style="color:var(--gold);font-size:12px;">Periodo abierto</span>'}</td>
+              <td>${pp.cerrado ? '' : `<button class="btn btn-gold btn-sm provision-iva-generar-btn" data-idx="${idx}">Generar</button>`}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+      ${pendientesProvisionIva.some(pp=>!pp.cerrado) ? `<button class="btn btn-ghost btn-sm" id="provisionIvaGenerarTodasBtn" style="margin-top:10px;">Generar todas las abiertas</button>` : ''}
     </div>` : ''}
     <div style="display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
       <div class="field" style="max-width:160px;margin-bottom:0;">
@@ -3755,6 +3807,26 @@ async function pintarPagosImpuestos(contenido, b) {
     }
     registrarAuditoria(b.id, 'crear', 'Impuestos', `Provisiones de ISR Provisional generadas en lote — ${STATE_piAnio}`);
     toast('Provisiones generadas.');
+    renderPagosImpuestos();
+  });
+  contenido.querySelectorAll('.provision-iva-generar-btn').forEach(btn => btn.addEventListener('click', async () => {
+    const pp = pendientesProvisionIva[Number(btn.dataset.idx)];
+    if (!pp) return;
+    const r = await sincronizarProvisionIva(pp.pago, b.id);
+    if (r.estado === 'error') { toast('Error: ' + r.error, 'error'); return; }
+    registrarAuditoria(b.id, 'crear', 'Impuestos', `Determinación de IVA ${pp.pago.periodo} generada/actualizada`);
+    toast('Determinación generada.');
+    renderPagosImpuestos();
+  }));
+  const btnTodasIva = document.getElementById('provisionIvaGenerarTodasBtn');
+  if (btnTodasIva) btnTodasIva.addEventListener('click', async () => {
+    if (!confirm(`Se generarán/actualizarán ${pendientesProvisionIva.filter(pp=>!pp.cerrado).length} determinación(es) de IVA. ¿Continuar?`)) return;
+    for (const pp of pendientesProvisionIva) {
+      if (pp.cerrado) continue;
+      await sincronizarProvisionIva(pp.pago, b.id);
+    }
+    registrarAuditoria(b.id, 'crear', 'Impuestos', `Determinaciones de IVA generadas en lote — ${STATE_piAnio}`);
+    toast('Determinaciones generadas.');
     renderPagosImpuestos();
   });
   document.getElementById('piNuevoBtn').addEventListener('click', () => abrirModalPagoImpuesto(null, b));
@@ -11832,7 +11904,7 @@ async function renderFlujo() {
   // se resta lo que todavía está "Pendiente de cobro/pago" (esa parte ni siquiera es exigible
   // todavía, según la misma arquitectura de realización fiscal que ya construimos), para no
   // restar dos veces la misma obligación en dos estados distintos de su ciclo de vida.
-  const otrosPasivosDetalle = cuentas.filter(c => c.tipo === 'pasivo' && c.clave !== 'proveedores' && !c.nombre.includes('Pendiente de'))
+  const otrosPasivosDetalle = cuentas.filter(c => c.tipo === 'pasivo' && c.clave !== 'proveedores' && !c.nombre.includes('Pendiente de') && c.nombre !== 'IVA Trasladado — Cobrado')
     .map(c => ({ nombre: c.nombre, monto: c.saldoNeto }));
   const otrosPasivosTotal = otrosPasivosDetalle.reduce((s,x)=>s+x.monto,0);
   const posicionNeta = efectivoTotal + bancosTotal - proveedoresPendientes - otrosPasivosTotal;
