@@ -2509,6 +2509,25 @@ async function migrarMovimientosPagoFiscalExistentes(businessId) {
   return migrados;
 }
 
+// Revierte SOLO el mecanismo viejo de "pagado" (fecha_pago + póliza vía fz_provisiones_fiscales
+// tipo='pago') de UN registro identificado por su periodo+tipo real — nunca por texto/importe.
+// No toca monto, periodo, fecha_limite, declarada ni ningún otro dato fiscal. Idempotente: si ya
+// no tiene fecha_pago, no hace nada.
+async function revertirPagoHistoricoLegacy(businessId, periodo, tipoImpuesto) {
+  const { data: pago } = await sb.from('fz_pagos_impuestos').select('*').eq('business_id', businessId).eq('periodo', periodo).eq('tipo_impuesto', tipoImpuesto).maybeSingle();
+  if (!pago || !pago.fecha_pago) return { estado: 'sin_cambio' }; // no existe, o ya está pendiente
+  const { data: provisionPago } = await sb.from('fz_provisiones_fiscales').select('id,poliza_id').eq('pago_impuesto_id', pago.id).eq('tipo', 'pago').maybeSingle();
+  if (provisionPago) {
+    if (provisionPago.poliza_id) {
+      await sb.from('fz_polizas_lineas').delete().eq('poliza_id', provisionPago.poliza_id);
+      await sb.from('fz_polizas').delete().eq('id', provisionPago.poliza_id);
+    }
+    await sb.from('fz_provisiones_fiscales').delete().eq('id', provisionPago.id);
+  }
+  await sb.from('fz_pagos_impuestos').update({ fecha_pago: null, pagado_desde_tipo: null, pagado_desde_cuenta_id: null }).eq('id', pago.id);
+  return { estado: 'revertido', monto: pago.monto };
+}
+
 async function recalcularImportePagadoImpuesto(pagoImpuestoId) {
   const { data: aplicaciones } = await sb.from('fz_aplicaciones_pago_fiscal').select('monto,fecha').eq('pago_impuesto_id', pagoImpuestoId);
   const total = (aplicaciones||[]).reduce((s,a)=>s+Number(a.monto||0), 0);
@@ -3717,6 +3736,11 @@ async function renderPagosImpuestos() {
 async function autoGenerarPagosImpuestos(b, anio) {
   await limpiarPolizasDuplicadasPagoFiscal(b.id);
   await migrarMovimientosPagoFiscalExistentes(b.id);
+  // Limpieza puntual y única de los dos pagos de prueba de agosto (ISR $189.75, IVA $4,000) —
+  // identificados por su periodo+tipo real, nunca por texto. Es idempotente: en cuanto ya no
+  // tienen fecha_pago, no vuelve a hacer nada.
+  await revertirPagoHistoricoLegacy(b.id, '2026-08', 'isr_provisional');
+  await revertirPagoHistoricoLegacy(b.id, '2026-08', 'iva');
   const { data: existentesIniciales } = await sb.from('fz_pagos_impuestos').select('id,periodo,tipo_impuesto,concepto,monto,fecha_pago').eq('business_id', b.id).like('periodo', `${anio}-%`);
   const existentes = existentesIniciales || [];
   const buscarExistente = (periodo, tipo, concepto) => existentes.find(p => p.periodo===periodo && p.tipo_impuesto===tipo && (p.concepto||null)===(concepto||null));
