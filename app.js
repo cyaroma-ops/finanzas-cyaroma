@@ -2859,7 +2859,17 @@ async function computeResumenIvaMesLigero(businessId, periodo) {
   }, 0);
   // Retenciones — mismo principio: la parte exigible del periodo es la proporción efectivamente
   // pagada de la factura que la originó, NUNCA el importe nominal completo por su sola fecha.
+  // IMPORTANTE: se inicializan primero TODAS las categorías que tengan alguna factura con
+  // retención en el negocio, aunque sea en $0 — si una categoría desaparece del resultado solo
+  // porque no tuvo pagos este mes, el paso que actualiza Pagos de Impuestos nunca la vuelve a
+  // tocar, y deja congelado para siempre el importe determinado la última vez que sí tuvo pago.
   const retencionesPorCategoria = {};
+  Object.values(facturasProvMap).forEach(f => {
+    if (!f.aplica_retencion) return;
+    const cat = f.retencion_categoria || 'Sin categoría';
+    if (Number(f.retencion_isr_monto) > 0.004) retencionesPorCategoria[`ISR|${cat}`] = retencionesPorCategoria[`ISR|${cat}`] || 0;
+    if (Number(f.retencion_iva_monto) > 0.004) retencionesPorCategoria[`IVA|${cat}`] = retencionesPorCategoria[`IVA|${cat}`] || 0;
+  });
   (pagosDelMes||[]).forEach(p => {
     const f = facturasProvMap[p.factura_id];
     if (!f || !f.aplica_retencion) return;
@@ -10236,16 +10246,21 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   }
 
   // 3. Facturas de Clientes — Dr Clientes, Cr [líneas] + Cr IVA Trasladado.
+  // Moneda extranjera: el reconocimiento contable siempre es en MXN (moneda funcional), usando
+  // el tipo de cambio de reconocimiento — el importe/moneda original se conserva en la propia
+  // factura para trazabilidad, nunca se pierde, solo no se usa directo para la cuenta Clientes.
   const { data: facturasCli } = await conDesde(sb.from('fz_facturas_clientes').select('*').eq('business_id', businessId).lte('fecha', hastaFecha));
+  const facturasCliMapGlobal = Object.fromEntries((facturasCli||[]).map(f => [f.id, f]));
   if ((facturasCli||[]).length) {
     const { data: lineasCli } = await sb.from('fz_facturas_clientes_lineas').select('*').in('factura_id', facturasCli.map(f=>f.id));
     for (const f of facturasCli) {
-      const base = { modulo: 'Factura de Cliente', tipoOrigen: 'factura_cliente', id: f.id, fecha: f.fecha, referencia: `Folio #${f.folio}`, detalle: nombreCliente(f.cliente_id) };
-      push({ ...base, cuenta: 'Clientes' }, 'clientes', 'activo', Number(f.total)||0, 0);
-      (lineasCli||[]).filter(l=>l.factura_id===f.id).forEach(l => push({ ...base, cuenta: nombreSub(l.subcuenta_id) }, 'sub:'+l.subcuenta_id, tipoDeSub(l.subcuenta_id), 0, Number(l.importe)||0));
+      const tc = Number(f.tipo_cambio) || 1;
+      const base = { modulo: 'Factura de Cliente', tipoOrigen: 'factura_cliente', id: f.id, fecha: f.fecha, referencia: `Folio #${f.folio}${f.moneda==='USD'?` (USD ${fmt(f.total)} @ TC ${tc})`:''}`, detalle: nombreCliente(f.cliente_id) };
+      push({ ...base, cuenta: 'Clientes' }, 'clientes', 'activo', (Number(f.total)||0) * tc, 0);
+      (lineasCli||[]).filter(l=>l.factura_id===f.id).forEach(l => push({ ...base, cuenta: nombreSub(l.subcuenta_id) }, 'sub:'+l.subcuenta_id, tipoDeSub(l.subcuenta_id), 0, (Number(l.importe)||0) * tc));
       if (f.aplica_iva && Number(f.iva_monto)) {
-        if (esRealizacionActiva(f.fecha)) { const id = await subRealizacion('IVA Trasladado — Pendiente de cobro', 'pasivo'); push({ ...base, cuenta: 'IVA Trasladado — Pendiente de cobro' }, 'sub:'+id, 'pasivo', 0, Number(f.iva_monto)); }
-        else push({ ...base, cuenta: 'IVA Trasladado' }, 'iva_trasladado', 'pasivo', 0, Number(f.iva_monto));
+        if (esRealizacionActiva(f.fecha)) { const id = await subRealizacion('IVA Trasladado — Pendiente de cobro', 'pasivo'); push({ ...base, cuenta: 'IVA Trasladado — Pendiente de cobro' }, 'sub:'+id, 'pasivo', 0, (Number(f.iva_monto)||0) * tc); }
+        else push({ ...base, cuenta: 'IVA Trasladado' }, 'iva_trasladado', 'pasivo', 0, (Number(f.iva_monto)||0) * tc);
       }
     }
   }
@@ -10254,7 +10269,11 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   // construcción (mismo monto en ambos lados). Los traspasos se revisan aparte, por pares
   // (misma traspaso_id, dos movimientos en tablas distintas) porque ahí sí puede haber diferencia
   // real si el tipo de cambio usado en cada lado no fue idéntico.
-  const procesarMovimientos = (movs, esBanco, tipoOrigenTag, moduloTag) => {
+  const { data: todosCobrosAplicados } = await sb.from('fz_cobros_aplicados').select('*').eq('business_id', businessId).lte('fecha', hastaFecha);
+  const cobrosPorOrigen = {};
+  (todosCobrosAplicados||[]).forEach(c => { const k = `${c.origen_tabla}|${c.origen_id}`; (cobrosPorOrigen[k] = cobrosPorOrigen[k]||[]).push(c); });
+
+  const procesarMovimientos = (movs, esBanco, tipoOrigenTag, moduloTag, tablaOrigenNombre) => {
     (movs||[]).forEach(m => {
       const claveOrigenCuenta = esBanco ? 'banco:'+m.cuenta_id : 'efectivo:'+m.moneda_id;
       const nombreOrigenCuenta = esBanco ? `Banco: ${nombreBanco(m.cuenta_id)}` : `Efectivo: ${nombreMoneda(m.moneda_id)}`;
@@ -10275,10 +10294,33 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
       }
       if (Number(m.depositos)) {
         push({ ...base, cuenta: nombreOrigenCuenta }, claveOrigenCuenta, 'activo', Number(m.depositos), 0);
-        let cuentaContraria = 'Sin clasificar (revisar)', claveContraria = 'sin_clasificar', tipoContraria = 'gasto';
-        if (m.tipo_entrada === 'cliente') { cuentaContraria = 'Clientes'; claveContraria = 'clientes'; tipoContraria = 'activo'; }
-        else if (m.tipo_entrada === 'traspaso') { cuentaContraria = 'Traspasos entre cuentas'; claveContraria = 'traspasos'; tipoContraria = 'activo'; }
-        push({ ...base, cuenta: cuentaContraria }, claveContraria, tipoContraria, 0, Number(m.depositos));
+        if (m.tipo_entrada === 'cliente') {
+          const cobros = cobrosPorOrigen[`${tablaOrigenNombre}|${m.id}`] || [];
+          if (cobros.length) {
+            cobros.forEach(c => {
+              const f = facturasCliMapGlobal[c.factura_id];
+              const tcOriginal = f ? (Number(f.tipo_cambio)||1) : 1;
+              const tcReal = Number(c.tipo_cambio) || tcOriginal;
+              const montoOriginal = Number(c.monto)||0;
+              // Clientes se liquida al TC de RECONOCIMIENTO (el mismo con el que se registró la
+              // factura) — así la cuenta siempre cierra exacto, sin importar cuánto cambió el TC.
+              push({ ...base, cuenta: 'Clientes' }, 'clientes', 'activo', 0, montoOriginal * tcOriginal);
+              const diferencia = montoOriginal * (tcReal - tcOriginal);
+              if (Math.abs(diferencia) > 0.004) {
+                if (diferencia > 0) push({ ...base, cuenta: 'Ganancia Cambiaria' }, 'ganancia_cambiaria', 'ingreso', 0, diferencia);
+                else push({ ...base, cuenta: 'Pérdida Cambiaria' }, 'perdida_cambiaria', 'gasto', -diferencia, 0);
+              }
+            });
+          } else {
+            // Cobro sin registro en fz_cobros_aplicados — no debería pasar en el flujo normal;
+            // por seguridad se liquida tal cual, sin inventar un tipo de cambio que no existe.
+            push({ ...base, cuenta: 'Clientes' }, 'clientes', 'activo', 0, Number(m.depositos));
+          }
+        } else if (m.tipo_entrada === 'traspaso') {
+          push({ ...base, cuenta: 'Traspasos entre cuentas' }, 'traspasos', 'activo', 0, Number(m.depositos));
+        } else {
+          push({ ...base, cuenta: 'Sin clasificar (revisar)' }, 'sin_clasificar', 'gasto', 0, Number(m.depositos));
+        }
       }
     });
   };
@@ -10286,8 +10328,8 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
     conDesde(sb.from('fz_bancos_mov').select('*').eq('business_id', businessId).lte('fecha', hastaFecha)),
     conDesde(sb.from('fz_efectivo_mov').select('*').eq('business_id', businessId).lte('fecha', hastaFecha)),
   ]);
-  procesarMovimientos(bancosMovQ.data, true, 'banco_mov', 'Movimiento de Banco');
-  procesarMovimientos(efvoMovQ.data, false, 'efectivo_mov', 'Movimiento de Efectivo');
+  procesarMovimientos(bancosMovQ.data, true, 'banco_mov', 'Movimiento de Banco', 'fz_bancos_mov');
+  procesarMovimientos(efvoMovQ.data, false, 'efectivo_mov', 'Movimiento de Efectivo', 'fz_efectivo_mov');
 
   // Traspasos por pares (misma traspaso_id, en cualquiera de las 2 tablas) — aquí sí puede
   // haber una diferencia real y legítima si el monto destino no fue idéntico al monto origen.
@@ -11762,30 +11804,60 @@ async function renderFlujo() {
   const el = document.getElementById('sec-flujo');
   const b = biz();
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
-  const s = await computeBusinessSummary(b.id, STATE.currentMonth);
+
+  const hastaFecha = todayStr();
+  // Misma fuente única que Balanza/Balance General — nada se reconstruye aparte aquí.
+  const { filas } = await getLibroPartidaDobleConOrigen(b.id, hastaFecha);
+  const porClave = {};
+  filas.forEach(f => {
+    if (f.tipo !== 'activo' && f.tipo !== 'pasivo') return;
+    if (!porClave[f.clave]) porClave[f.clave] = { clave: f.clave, nombre: f.cuenta, tipo: f.tipo, cargo: 0, abono: 0 };
+    porClave[f.clave].cargo += f.cargo;
+    porClave[f.clave].abono += f.abono;
+  });
+  const cuentas = Object.values(porClave).map(c => ({ ...c, saldoNeto: c.tipo === 'activo' ? (c.cargo - c.abono) : (c.abono - c.cargo) })).filter(c => Math.abs(c.saldoNeto) > 0.004);
+
+  const efectivoDetalle = cuentas.filter(c => c.clave.startsWith('efectivo:')).map(c => ({ clave: c.clave, nombre: c.nombre.replace(/^Efectivo:\s*/,''), monto: c.saldoNeto }));
+  const bancosDetalle = cuentas.filter(c => c.clave.startsWith('banco:')).map(c => ({ clave: c.clave, nombre: c.nombre.replace(/^Banco:\s*/,''), monto: c.saldoNeto }));
+  const efectivoTotal = efectivoDetalle.reduce((s,d)=>s+d.monto,0);
+  const bancosTotal = bancosDetalle.reduce((s,d)=>s+d.monto,0);
+
+  const proveedoresPendientes = cuentas.find(c => c.clave === 'proveedores')?.saldoNeto || 0;
+  // "Posición neta de efectivo" = disponible menos SOLO las obligaciones ya EXIGIBLES hoy — no
+  // se resta lo que todavía está "Pendiente de cobro/pago" (esa parte ni siquiera es exigible
+  // todavía, según la misma arquitectura de realización fiscal que ya construimos), para no
+  // restar dos veces la misma obligación en dos estados distintos de su ciclo de vida.
+  const otrosPasivosDetalle = cuentas.filter(c => c.tipo === 'pasivo' && c.clave !== 'proveedores' && !c.nombre.includes('Pendiente de'))
+    .map(c => ({ nombre: c.nombre, monto: c.saldoNeto }));
+  const otrosPasivosTotal = otrosPasivosDetalle.reduce((s,x)=>s+x.monto,0);
+  const posicionNeta = efectivoTotal + bancosTotal - proveedoresPendientes - otrosPasivosTotal;
+
+  // Ventas/Gastos del mes: misma fuente que ya usa Estado de Resultados — nunca fz_ventas directo.
+  const resumenMes = await computeResumenNegocio(b.id, monthBounds(STATE.currentMonth));
 
   el.innerHTML = `
     <div class="card">
       <div class="card-head"><h3>Cash Position — ${b.name}</h3><span class="hint">Al día de hoy</span></div>
       <table>
         <tbody>
-          ${s.efectivoDetalle.map(m => `<tr class="flujo-link-efectivo" data-id="${m.id}" style="cursor:pointer;"><td>Caja — ${m.nombre} (${fmtNum(m.saldo)} × TC ${fmtNum(m.tc)}) ↗</td><td class="num">${fmt(m.pesoEquiv)}</td></tr>`).join('')}
-          ${s.bancosDetalle.map(d => `<tr class="flujo-link-banco" data-id="${d.id}" style="cursor:pointer;"><td>Banco — ${d.nombre}${d.activo?'':' (inactiva)'} ↗</td><td class="num">${fmt(d.saldo)}</td></tr>`).join('')}
-          <tr class="total-row"><td>Total disponible (caja + bancos)</td><td class="num">${fmt(s.efectivoTotal + s.bancosTotal)}</td></tr>
-          <tr><td>Menos: proveedores pendientes de pago</td><td class="num" style="color:var(--red);">-${fmt(s.proveedoresPendientes)}</td></tr>
-          ${s.otrosPasivosDetalle.map(p => `<tr><td>Menos: ${p.nombre}</td><td class="num" style="color:var(--red);">-${fmt(p.monto)}</td></tr>`).join('')}
-          <tr class="total-row"><td>Posición neta de efectivo</td><td class="num" style="color:${s.posicionNeta>=0?'var(--green)':'var(--red)'};font-size:16px;">${fmt(s.posicionNeta)}</td></tr>
+          ${efectivoDetalle.map(m => `<tr class="flujo-link-efectivo" data-id="${m.clave.replace('efectivo:','')}" style="cursor:pointer;"><td>Caja — ${m.nombre} ↗</td><td class="num">${fmt(m.monto)}</td></tr>`).join('')}
+          ${bancosDetalle.map(d => `<tr class="flujo-link-banco" data-id="${d.clave.replace('banco:','')}" style="cursor:pointer;"><td>Banco — ${d.nombre} ↗</td><td class="num">${fmt(d.monto)}</td></tr>`).join('')}
+          <tr class="total-row"><td>Total disponible (caja + bancos)</td><td class="num">${fmt(efectivoTotal + bancosTotal)}</td></tr>
+          <tr><td>Menos: proveedores pendientes de pago</td><td class="num" style="color:var(--red);">-${fmt(proveedoresPendientes)}</td></tr>
+          ${otrosPasivosDetalle.map(p => `<tr><td>Menos: ${p.nombre}</td><td class="num" style="color:var(--red);">-${fmt(p.monto)}</td></tr>`).join('')}
+          <tr class="total-row"><td>Posición neta de efectivo</td><td class="num" style="color:${posicionNeta>=0?'var(--green)':'var(--red)'};font-size:16px;">${fmt(posicionNeta)}</td></tr>
         </tbody>
       </table>
+      <p style="font-size:11px;color:var(--muted);margin-top:10px;">Posición neta = Efectivo + Bancos − Proveedores por pagar − obligaciones fiscales ya <strong>exigibles</strong> hoy (Retenciones ya retenidas, IVA por pagar, ISR provisional por pagar). Lo que todavía está "Pendiente de cobro/pago" no se resta aquí, porque todavía no es una obligación exigible — se restaría dos veces si se contara en ambos estados.</p>
     </div>
     <div class="card">
       <div class="card-head"><h3>Resumen del mes — ${STATE.currentMonth}</h3></div>
       <div class="kpi-grid">
-        <div class="kpi"><div class="label">Ventas del mes</div><div class="value num">${fmt(s.ventasMes)}</div></div>
-        <div class="kpi"><div class="label">Total gastos y costos del mes</div><div class="value num red">${fmt(s.gastosTotalMes)}</div></div>
-        <div class="kpi"><div class="label">Gastos capturados en Ventas</div><div class="value num red">${fmt(s.gastosOperativosMes)}</div></div>
+        <div class="kpi"><div class="label">Ventas del mes</div><div class="value num">${fmt(resumenMes.totalIngresos)}</div></div>
+        <div class="kpi"><div class="label">Total gastos y costos del mes</div><div class="value num red">${fmt(resumenMes.totalGastos)}</div></div>
+        <div class="kpi"><div class="label">Utilidad del mes</div><div class="value num ${resumenMes.utilidad>=0?'green':'red'}">${fmt(resumenMes.utilidad)}</div></div>
       </div>
-      <p style="font-size:11px;color:var(--muted);margin-top:10px;">"Total gastos y costos" incluye todo lo clasificado en Proveedores, Bancos, Efectivo, Pólizas y Costo de Ventas — igual que en el Estado de Resultados. "Gastos capturados en Ventas" es solo lo que se anota manualmente en la casilla de Gastos al capturar el día en Ventas.</p>
+      <p style="font-size:11px;color:var(--muted);margin-top:10px;">Ventas y Gastos usan exactamente la misma fuente que el Estado de Resultados — deben coincidir siempre.</p>
     </div>
   `;
   el.querySelectorAll('.flujo-link-efectivo').forEach(tr => tr.addEventListener('click', () => {
