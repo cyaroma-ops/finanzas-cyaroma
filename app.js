@@ -2221,6 +2221,60 @@ async function sincronizarRealizacionFactura(facturaId, tipoFactura, businessId,
 // Detecta facturas con MÁS de un registro de realización para el mismo tipo (el rastro del bug de
 // categoría null: cada pago aplicado generaba una póliza nueva en vez de ajustar la existente).
 // Es de solo detección — no corrige nada hasta que el usuario confirme cada caso.
+// Diagnóstico técnico de solo lectura: reconstruye la cadena completa (Banco/Efectivo → pago
+// aplicado → factura → realización fiscal → póliza) para un periodo, detectando huérfanos y
+// duplicados SIN modificar nada. Es la base de datos real para decidir qué sanear.
+async function diagnosticoTecnicoFiscal(businessId, periodo) {
+  const { start, end } = monthBounds(periodo);
+
+  const verificarOrigen = async (origenTabla, origenId) => {
+    if (!origenTabla || !origenId) return { tipo: 'manual', existe: true };
+    const { data } = await sb.from(origenTabla).select('id').eq('id', origenId).maybeSingle();
+    return { tipo: origenTabla, existe: !!data };
+  };
+
+  // 1. Pagos/cobros aplicados REALES del periodo, con su origen y factura verificados uno por uno.
+  const [pagosQ, cobrosQ] = await Promise.all([
+    sb.from('fz_pagos_aplicados').select('*').eq('business_id', businessId).gte('fecha', start).lte('fecha', end),
+    sb.from('fz_cobros_aplicados').select('*').eq('business_id', businessId).gte('fecha', start).lte('fecha', end),
+  ]);
+  const pagosDetalle = [];
+  for (const p of (pagosQ.data||[])) {
+    const origen = await verificarOrigen(p.origen_tabla, p.origen_id);
+    const { data: f } = await sb.from('fz_proveedores').select('factura,proveedor,importe,iva_monto,aplica_iva').eq('id', p.factura_id).maybeSingle();
+    pagosDetalle.push({ ...p, origenExiste: origen.existe, origenTipo: origen.tipo, facturaExiste: !!f, factura: f });
+  }
+  const cobrosDetalle = [];
+  for (const c of (cobrosQ.data||[])) {
+    const origen = await verificarOrigen(c.origen_tabla, c.origen_id);
+    const { data: f } = await sb.from('fz_facturas_clientes').select('folio,total,iva_monto,aplica_iva').eq('id', c.factura_id).maybeSingle();
+    cobrosDetalle.push({ ...c, origenExiste: origen.existe, origenTipo: origen.tipo, facturaExiste: !!f, factura: f });
+  }
+
+  // 2. Realizaciones fiscales existentes (de CUALQUIER fecha, para detectar huérfanas y duplicadas
+  // completas, no solo las del periodo) — con su factura, póliza y pagos/cobros verificados.
+  const { data: realizaciones } = await sb.from('fz_iva_realizaciones').select('*').eq('business_id', businessId);
+  const realizacionesDetalle = [];
+  for (const r of (realizaciones||[])) {
+    const { data: f } = await sb.from(r.factura_tabla).select('*').eq('id', r.factura_id).maybeSingle();
+    let polizaExiste = null;
+    if (r.poliza_id) { const { data: p } = await sb.from('fz_polizas').select('id').eq('id', r.poliza_id).maybeSingle(); polizaExiste = !!p; }
+    const tablaAplicados = r.factura_tabla === 'fz_proveedores' ? 'fz_pagos_aplicados' : 'fz_cobros_aplicados';
+    const { data: aplicadosDeFactura } = f ? await sb.from(tablaAplicados).select('monto').eq('factura_id', r.factura_id) : { data: [] };
+    realizacionesDetalle.push({ ...r, facturaExiste: !!f, factura: f, polizaExiste, numPagosAplicados: (aplicadosDeFactura||[]).length, totalAplicado: (aplicadosDeFactura||[]).reduce((s,a)=>s+Number(a.monto||0),0) });
+  }
+  // Agrupar por (factura_tabla, factura_id, tipo, categoria) para ver cuáles tienen más de 1 registro.
+  const grupos = {};
+  realizacionesDetalle.forEach(r => { const k = `${r.factura_tabla}|${r.factura_id}|${r.tipo}|${r.categoria}`; (grupos[k]=grupos[k]||[]).push(r); });
+  const gruposDuplicados = Object.values(grupos).filter(g => g.length > 1);
+  const huerfanas = realizacionesDetalle.filter(r => !r.facturaExiste || r.polizaExiste === false);
+
+  // 3. Pólizas automáticas del periodo, para ver qué generó cada mecanismo.
+  const { data: polizasAuto } = await sb.from('fz_polizas').select('*').eq('business_id', businessId).gte('fecha', start).lte('fecha', end).ilike('concepto', '[Auto]%').order('created_at');
+
+  return { pagosDetalle, cobrosDetalle, realizacionesDetalle, gruposDuplicados, huerfanas, polizasAuto: polizasAuto||[] };
+}
+
 async function detectarDuplicadosRealizacion(businessId) {
   const { data: filas } = await sb.from('fz_iva_realizaciones').select('*').eq('business_id', businessId);
   const grupos = {};
@@ -3515,7 +3569,10 @@ async function pintarPagosImpuestos(contenido, b) {
         <label>Año</label>
         <select id="piAnioSel">${anios.map(a=>`<option value="${a}" ${String(a)===STATE_piAnio?'selected':''}>${a}</option>`).join('')}</select>
       </div>
-      <button class="btn btn-gold btn-sm" id="piNuevoBtn">+ Registrar otro impuesto</button>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-ghost btn-sm" id="piDiagnosticoFiscalBtn">Diagnóstico técnico IVA/Retenciones</button>
+        <button class="btn btn-gold btn-sm" id="piNuevoBtn">+ Registrar otro impuesto</button>
+      </div>
     </div>
     <div class="kpi-grid kpi-grid-compact" style="margin-bottom:14px;">
       <div class="kpi"><div class="label">Pendiente de pagar</div><div class="value num ${totalPendiente>0.004?'red':''}">${fmt(totalPendiente)}</div></div>
@@ -3604,6 +3661,7 @@ async function pintarPagosImpuestos(contenido, b) {
     renderPagosImpuestos();
   });
   document.getElementById('piNuevoBtn').addEventListener('click', () => abrirModalPagoImpuesto(null, b));
+  document.getElementById('piDiagnosticoFiscalBtn').addEventListener('click', () => abrirDiagnosticoFiscal(b.id, STATE.currentMonth));
   document.getElementById('piExcelBtn').addEventListener('click', () => {
     if (!(pagos||[]).length) { toast('No hay impuestos registrados en ' + STATE_piAnio + '.', 'error'); return; }
     const wb = XLSX.utils.book_new();
@@ -10204,6 +10262,58 @@ function verDocumentoDesdeOrigen(item, businessId) {
   document.getElementById('modalDiagnosticoDescuadre').classList.remove('show');
   abrirOrigenDesdeDetalle(origen, businessId);
 }
+
+async function abrirDiagnosticoFiscal(businessId, periodo) {
+  const body = document.getElementById('diagnosticoFiscalBody');
+  body.innerHTML = `<div class="empty">Reconstruyendo la cadena completa…</div>`;
+  document.getElementById('modalDiagnosticoFiscal').classList.add('show');
+
+  const d = await diagnosticoTecnicoFiscal(businessId, periodo);
+
+  const filaAplicado = (a, tipoLabel) => `
+    <tr>
+      <td>${fechaCorta(a.fecha)}</td>
+      <td>${a.factura ? (a.factura.factura || `Folio #${a.factura.folio}`) : '(factura no encontrada)'}</td>
+      <td>${a.factura?.proveedor || ''}</td>
+      <td class="num">${fmt(a.monto)}</td>
+      <td style="font-size:11.5px;">${a.origen_tabla||'manual'}</td>
+      <td>${a.origenExiste ? '<span style="color:var(--green);">✓ existe</span>' : '<span style="color:var(--red);font-weight:700;">✗ NO existe (huérfano)</span>'}</td>
+      <td>${a.facturaExiste ? '<span style="color:var(--green);">✓ existe</span>' : '<span style="color:var(--red);font-weight:700;">✗ NO existe</span>'}</td>
+    </tr>`;
+
+  const filaRealizacion = (r, idx) => `
+    <tr style="${!r.facturaExiste || r.polizaExiste===false ? 'background:#fdeeee;' : ''}">
+      <td>${r.tipo}${r.categoria?' — '+r.categoria:''}</td>
+      <td>${r.factura ? (r.factura.factura || `Folio #${r.factura.folio}`) : '(factura eliminada)'}</td>
+      <td class="num">${fmt(r.monto_realizado_acumulado)}</td>
+      <td class="num">${r.numPagosAplicados}</td>
+      <td class="num">${fmt(r.totalAplicado)}</td>
+      <td>${fechaCorta(r.fecha)}</td>
+      <td>${r.facturaExiste ? '✓' : '<span style="color:var(--red);font-weight:700;">✗ factura no existe</span>'}</td>
+      <td>${r.polizaExiste===false ? '<span style="color:var(--red);font-weight:700;">✗ póliza no existe</span>' : (r.polizaExiste===null?'—':'✓')}</td>
+    </tr>`;
+
+  body.innerHTML = `
+    <p style="font-size:12.5px;font-weight:700;color:var(--navy-1);margin-bottom:6px;">1. Pagos aplicados a Proveedores en ${periodo} (${d.pagosDetalle.length})</p>
+    <div class="table-wrap" style="margin-bottom:14px;"><table><thead><tr><th>Fecha</th><th>Factura</th><th>Proveedor</th><th>Monto</th><th>Origen</th><th>¿Origen existe?</th><th>¿Factura existe?</th></tr></thead>
+      <tbody>${d.pagosDetalle.length ? d.pagosDetalle.map(a=>filaAplicado(a)).join('') : '<tr><td colspan="7" class="empty">Ninguno.</td></tr>'}</tbody></table></div>
+
+    <p style="font-size:12.5px;font-weight:700;color:var(--navy-1);margin-bottom:6px;">2. Cobros aplicados a Clientes en ${periodo} (${d.cobrosDetalle.length})</p>
+    <div class="table-wrap" style="margin-bottom:14px;"><table><thead><tr><th>Fecha</th><th>Factura</th><th></th><th>Monto</th><th>Origen</th><th>¿Origen existe?</th><th>¿Factura existe?</th></tr></thead>
+      <tbody>${d.cobrosDetalle.length ? d.cobrosDetalle.map(a=>filaAplicado(a)).join('') : '<tr><td colspan="7" class="empty">Ninguno.</td></tr>'}</tbody></table></div>
+
+    <p style="font-size:12.5px;font-weight:700;color:var(--navy-1);margin-bottom:6px;">3. TODAS las realizaciones fiscales existentes (de cualquier fecha) — ${d.realizacionesDetalle.length} registro(s)</p>
+    <div class="table-wrap" style="margin-bottom:8px;"><table><thead><tr><th>Tipo</th><th>Factura</th><th>Monto registrado</th><th># pagos de la factura</th><th>Total aplicado a la factura</th><th>Fecha</th><th>¿Factura existe?</th><th>¿Póliza existe?</th></tr></thead>
+      <tbody>${d.realizacionesDetalle.length ? d.realizacionesDetalle.map(filaRealizacion).join('') : '<tr><td colspan="8" class="empty">Ninguna.</td></tr>'}</tbody></table></div>
+    <p style="font-size:12px;margin-bottom:14px;"><strong style="color:${d.gruposDuplicados.length?'var(--red)':'var(--green)'};">${d.gruposDuplicados.length} grupo(s) con más de un registro</strong> · <strong style="color:${d.huerfanas.length?'var(--red)':'var(--green)'};">${d.huerfanas.length} huérfana(s) (factura o póliza ya no existe)</strong></p>
+
+    <p style="font-size:12.5px;font-weight:700;color:var(--navy-1);margin-bottom:6px;">4. Pólizas automáticas generadas en ${periodo} (${d.polizasAuto.length})</p>
+    <div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Concepto</th><th></th></tr></thead>
+      <tbody>${d.polizasAuto.length ? d.polizasAuto.map(p=>`<tr><td>${fechaCorta(p.fecha)}</td><td style="font-size:12px;">${p.concepto}</td><td><button class="btn btn-ghost btn-sm diag-fiscal-ver-poliza" data-id="${p.id}" style="font-size:11px;padding:3px 8px;">Ver póliza</button></td></tr>`).join('') : '<tr><td colspan="3" class="empty">Ninguna.</td></tr>'}</tbody></table></div>
+  `;
+  body.querySelectorAll('.diag-fiscal-ver-poliza').forEach(btn => btn.addEventListener('click', () => openPolizaModal(btn.dataset.id, businessId)));
+}
+document.getElementById('closeDiagnosticoFiscal').addEventListener('click', () => document.getElementById('modalDiagnosticoFiscal').classList.remove('show'));
 
 async function abrirDiagnosticoDescuadre(businessId, hastaFecha) {
   const body = document.getElementById('diagnosticoDescuadreBody');
