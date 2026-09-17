@@ -2516,6 +2516,11 @@ async function migrarMovimientosPagoFiscalExistentes(businessId) {
 async function revertirPagoHistoricoLegacy(businessId, periodo, tipoImpuesto) {
   const { data: pago } = await sb.from('fz_pagos_impuestos').select('*').eq('business_id', businessId).eq('periodo', periodo).eq('tipo_impuesto', tipoImpuesto).maybeSingle();
   if (!pago || !pago.fecha_pago) return { estado: 'sin_cambio' }; // no existe, o ya está pendiente
+  // Salvaguarda: si este registro ya tiene CUALQUIER aplicación del mecanismo nuevo, el
+  // fecha_pago que tiene es una caché legítima derivada de esa aplicación real — no es del
+  // mecanismo viejo, y no se toca.
+  const { data: aplicacionesNuevas } = await sb.from('fz_aplicaciones_pago_fiscal').select('id').eq('pago_impuesto_id', pago.id).limit(1);
+  if (aplicacionesNuevas && aplicacionesNuevas.length) return { estado: 'protegido_mecanismo_nuevo' };
   const { data: provisionPago } = await sb.from('fz_provisiones_fiscales').select('id,poliza_id').eq('pago_impuesto_id', pago.id).eq('tipo', 'pago').maybeSingle();
   if (provisionPago) {
     if (provisionPago.poliza_id) {
@@ -2679,12 +2684,18 @@ function estadosDeImpuesto(p) {
     : { texto: 'No presentada', color: 'var(--gold)' };
   let pago;
   const importePagado = Number(p.importe_pagado) || 0;
-  if (Number(p.monto) <= 0.004) pago = { texto: 'No aplica', color: 'var(--muted)' };
-  else if (importePagado > 0.004 && importePagado < Number(p.monto) - 0.004) {
-    pago = { texto: `Parcial (${fmt(importePagado)} de ${fmt(p.monto)})`, color: 'var(--gold)' };
-  } else if (!p.fecha_pago) pago = hoy > p.fecha_limite ? { texto: 'Pendiente (vencido)', color: 'var(--red)' } : { texto: 'Pendiente', color: 'var(--gold)' };
-  else if (p.fecha_pago <= p.fecha_limite) pago = { texto: 'Pagado a tiempo', color: 'var(--green)' };
-  else pago = { texto: 'Pagado con recargos', color: 'var(--red)' };
+  const monto = Number(p.monto);
+  if (monto <= 0.004) pago = { texto: 'No aplica', color: 'var(--muted)' };
+  else if (importePagado >= monto - 0.004) {
+    // Cubierto al 100% según sus aplicaciones reales — SIEMPRE "Pagado"; fecha_pago (si existe)
+    // solo decide el matiz de a tiempo/con recargos, nunca bloquea este estado.
+    if (p.fecha_pago && p.fecha_pago > p.fecha_limite) pago = { texto: 'Pagado con recargos', color: 'var(--red)' };
+    else pago = { texto: 'Pagado a tiempo', color: 'var(--green)' };
+  } else if (importePagado > 0.004) {
+    pago = { texto: `Parcial (${fmt(importePagado)} de ${fmt(monto)})`, color: 'var(--gold)' };
+  } else {
+    pago = hoy > p.fecha_limite ? { texto: 'Pendiente (vencido)', color: 'var(--red)' } : { texto: 'Pendiente', color: 'var(--gold)' };
+  }
   return { determinacion, declaracion, pago };
 }
 
@@ -3736,11 +3747,6 @@ async function renderPagosImpuestos() {
 async function autoGenerarPagosImpuestos(b, anio) {
   await limpiarPolizasDuplicadasPagoFiscal(b.id);
   await migrarMovimientosPagoFiscalExistentes(b.id);
-  // Limpieza puntual y única de los dos pagos de prueba de agosto (ISR $189.75, IVA $4,000) —
-  // identificados por su periodo+tipo real, nunca por texto. Es idempotente: en cuanto ya no
-  // tienen fecha_pago, no vuelve a hacer nada.
-  await revertirPagoHistoricoLegacy(b.id, '2026-08', 'isr_provisional');
-  await revertirPagoHistoricoLegacy(b.id, '2026-08', 'iva');
   const { data: existentesIniciales } = await sb.from('fz_pagos_impuestos').select('id,periodo,tipo_impuesto,concepto,monto,fecha_pago').eq('business_id', b.id).like('periodo', `${anio}-%`);
   const existentes = existentesIniciales || [];
   const buscarExistente = (periodo, tipo, concepto) => existentes.find(p => p.periodo===periodo && p.tipo_impuesto===tipo && (p.concepto||null)===(concepto||null));
