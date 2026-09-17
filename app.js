@@ -4014,8 +4014,8 @@ async function renderLibroDiario() {
       <div id="ldResumen" style="background:#f7f9fc;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px;"></div>
       <div class="table-wrap scroll-sticky">
         <table>
-          <thead><tr><th>Fecha</th><th>Referencia</th><th>Cuenta</th><th>Concepto</th><th>Cargo</th><th>Abono</th></tr></thead>
-          <tbody id="ldLista"><tr><td colspan="6" class="empty">Elige un rango y dale "Buscar".</td></tr></tbody>
+          <thead><tr><th>Fecha</th><th>Referencia</th><th>Cuenta</th><th>Concepto</th><th>Cargo</th><th>Abono</th><th></th></tr></thead>
+          <tbody id="ldLista"><tr><td colspan="7" class="empty">Elige un rango y dale "Buscar".</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -4040,7 +4040,7 @@ async function renderLibroDiario() {
         <span style="color:${cuadra?'var(--green)':'var(--red)'};font-weight:700;">${cuadra?'✓ Cuadra exacto':'⚠ No cuadra — diferencia de '+fmt(Math.abs(totalCargo-totalAbono))}</span>
       </div>
     `;
-    document.getElementById('ldLista').innerHTML = filas.length ? filas.map(f => `
+    document.getElementById('ldLista').innerHTML = filas.length ? filas.map((f,idx) => `
       <tr>
         <td>${fechaCorta(f.fecha)}</td>
         <td>${f.referencia}</td>
@@ -4048,7 +4048,9 @@ async function renderLibroDiario() {
         <td>${f.concepto}</td>
         <td class="num">${f.cargo ? fmt(f.cargo) : ''}</td>
         <td class="num">${f.abono ? fmt(f.abono) : ''}</td>
-      </tr>`).join('') : `<tr><td colspan="6" class="empty">No hay movimientos en este rango.</td></tr>`;
+        <td>${f.origen ? `<button class="btn btn-ghost btn-sm ld-ver-documento" data-idx="${idx}" style="font-size:11px;padding:3px 8px;">Ver documento</button>` : ''}</td>
+      </tr>`).join('') : `<tr><td colspan="7" class="empty">No hay movimientos en este rango.</td></tr>`;
+    document.getElementById('ldLista').querySelectorAll('.ld-ver-documento').forEach(btn => btn.addEventListener('click', () => abrirOrigenDesdeDetalle(filas[Number(btn.dataset.idx)].origen, b.id)));
   };
   document.getElementById('ldBuscar').addEventListener('click', buscar);
   document.getElementById('ldExportar').addEventListener('click', () => {
@@ -9933,7 +9935,7 @@ async function getLibroDiario(businessId, startDate, endDate) {
     const mapa = {
       poliza: { tipo: 'poliza' },
       factura_proveedor: { tipo: 'proveedor' },
-      factura_cliente: { tipo: 'clienteFactura' },
+      factura_cliente: { tipo: 'factura_cliente' },
       banco_mov: { tipo: 'bancos', cuentaId: f.cuentaId },
       efectivo_mov: { tipo: 'efectivo', monedaId: f.monedaId },
     };
@@ -10671,12 +10673,43 @@ function resaltarFilaPorId(id, intentos) {
 async function abrirOrigenDesdeDetalle(origen, businessId) {
   if (!origen) return;
   if (origen.tipo === 'poliza') {
+    // Si esta póliza fue generada automáticamente por una provisión fiscal, "Ver documento"
+    // debe llevar a la determinación que la originó (ISR → Mes → periodo), no a la póliza
+    // misma — la póliza es el efecto, no el origen.
+    const { data: provisionLigada } = await sb.from('fz_provisiones_fiscales').select('pago_impuesto_id').eq('poliza_id', origen.id).limit(1).maybeSingle();
+    if (provisionLigada?.pago_impuesto_id) {
+      const { data: obligacion } = await sb.from('fz_pagos_impuestos').select('periodo,tipo_impuesto').eq('id', provisionLigada.pago_impuesto_id).maybeSingle();
+      if (obligacion?.periodo) {
+        STATE.currentMonth = obligacion.periodo;
+        document.getElementById('monthPicker').value = STATE.currentMonth;
+        STATE_impuestosTab = obligacion.tipo_impuesto === 'isr_provisional' ? 'isr' : (obligacion.tipo_impuesto === 'iva' ? 'iva' : 'retenciones');
+        STATE_isrVista = 'mes';
+        await irASeccion('impuestos');
+        return;
+      }
+    }
     await openPolizaModal(origen.id, businessId);
     return;
   }
   if (origen.tipo === 'factura_cliente') {
     const { data: f } = await sb.from('fz_facturas_clientes').select('*').eq('id', origen.id).single();
     if (f) await openModalFactura(f, businessId);
+    return;
+  }
+  if (origen.tipo === 'proveedor') {
+    // Abre directamente la factura específica — nunca solo el directorio general.
+    const { data: factura } = await sb.from('fz_proveedores').select('*').eq('id', origen.id).single();
+    if (!factura) { toast('No se encontró la factura original.', 'error'); return; }
+    const [catalogo, cuentasBancoQ, monedasQ] = await Promise.all([
+      loadProveedoresCatalogo(businessId),
+      sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
+      sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
+    ]);
+    const opcionesPagoDesde = [
+      ...(cuentasBancoQ.data || []).map(c => ({ value: 'banco:' + c.id, label: 'Banco — ' + c.nombre })),
+      ...(monedasQ.data || []).map(m => ({ value: 'efectivo:' + m.id, label: 'Caja — ' + m.nombre })),
+    ];
+    await openModalFacturaProveedor(factura, businessId, catalogo, opcionesPagoDesde);
     return;
   }
   if (origen.fecha) STATE.currentMonth = origen.fecha.slice(0, 7);
@@ -10686,8 +10719,6 @@ async function abrirOrigenDesdeDetalle(origen, businessId) {
   } else if (origen.tipo === 'efectivo') {
     STATE_monedaAbierta = origen.monedaId;
     await irASeccion('efectivo');
-  } else if (origen.tipo === 'proveedor') {
-    await irASeccion('proveedores');
   } else {
     return;
   }
