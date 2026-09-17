@@ -2007,16 +2007,22 @@ const CUENTA_ISR_PROV_PASIVO = 'ISR provisional por pagar';
 
 // Busca (o crea) una subcuenta por nombre — el nombre nunca queda amarrado a un
 // id fijo en código, así que después se puede remapear desde Configuración.
+// Busca o crea una cuenta mayor/subcuenta por nombre. NO usa .maybeSingle() — si hoy existen
+// duplicados (mismo nombre, varias filas), .maybeSingle() los trata como error y ese error se
+// perdía silenciosamente, haciendo que la función pensara "no existe" y creara uno más. En su
+// lugar, se pide la lista ordenada por antigüedad y se toma la primera (la más vieja) como
+// canónica — determinístico, nunca falla, y no crea nada nuevo si ya hay algo, aunque haya
+// duplicados pendientes de limpiar.
 async function obtenerOCrearSubcuentaPorNombre(businessId, nombre, tipo) {
-  const { data: mayorExistente } = await sb.from('fz_cuentas_mayor').select('id').eq('business_id', businessId).ilike('nombre', nombre).maybeSingle();
-  let mayorId = mayorExistente?.id;
+  const { data: mayoresExistentes } = await sb.from('fz_cuentas_mayor').select('id').eq('business_id', businessId).ilike('nombre', nombre).order('created_at', { ascending: true });
+  let mayorId = mayoresExistentes && mayoresExistentes.length ? mayoresExistentes[0].id : null;
   if (!mayorId) {
     const { data: nuevaMayor, error } = await sb.from('fz_cuentas_mayor').insert({ business_id: businessId, nombre, tipo }).select().single();
     if (error) throw error;
     mayorId = nuevaMayor.id;
   }
-  const { data: subExistente } = await sb.from('fz_subcuentas').select('id').eq('cuenta_mayor_id', mayorId).ilike('nombre', nombre).maybeSingle();
-  if (subExistente) return subExistente.id;
+  const { data: subsExistentes } = await sb.from('fz_subcuentas').select('id').eq('cuenta_mayor_id', mayorId).ilike('nombre', nombre).order('created_at', { ascending: true });
+  if (subsExistentes && subsExistentes.length) return subsExistentes[0].id;
   const { data: nuevaSub, error: e2 } = await sb.from('fz_subcuentas').insert({ business_id: businessId, cuenta_mayor_id: mayorId, nombre }).select().single();
   if (e2) throw e2;
   return nuevaSub.id;
@@ -2258,6 +2264,62 @@ async function sincronizarRealizacionFactura(facturaId, tipoFactura, businessId,
 // Diagnóstico de solo lectura: para una lista de nombres, encuentra TODAS las cuentas mayor y
 // subcuentas que coincidan (detecta duplicados reales), y para cada subcuenta cuenta cuántas
 // líneas de póliza la referencian y su saldo neto — sin tocar ni reasignar nada todavía.
+// Todas las tablas que pueden referenciar una subcuenta — se revisan TODAS antes de decidir que
+// un duplicado es seguro de borrar. fz_polizas_lineas NO es la única fuente real: estas cuentas
+// fiscales nunca generan una línea de póliza (se calculan en vivo), así que el diagnóstico
+// anterior que solo miraba pólizas estaba viendo el lugar equivocado.
+const TABLAS_CON_SUBCUENTA = ['fz_polizas_lineas','fz_efectivo_mov','fz_bancos_mov','fz_pl_gastos','fz_productos_servicios','fz_facturas_clientes_lineas','fz_ordenes_venta_lineas'];
+
+// Para cada nombre, encuentra todas las cuentas mayor duplicadas (ordenadas por antigüedad — la
+// primera es la canónica), y para cada duplicada revisa TODAS las tablas reales en busca de
+// cualquier referencia — nunca solo pólizas. Es de solo lectura, no borra nada.
+async function verificarLimpiezaCuentasDuplicadas(businessId, nombres) {
+  const resultado = [];
+  for (const nombre of nombres) {
+    const { data: mayores } = await sb.from('fz_cuentas_mayor').select('*').eq('business_id', businessId).ilike('nombre', nombre).order('created_at', { ascending: true });
+    if (!mayores || mayores.length < 2) { resultado.push({ nombre, totalEncontradas: mayores?.length||0, duplicados: [], abortar: false }); continue; }
+    const canonico = mayores[0];
+    const duplicados = [];
+    let abortar = false;
+    for (const dup of mayores.slice(1)) {
+      const { data: subs } = await sb.from('fz_subcuentas').select('id').eq('cuenta_mayor_id', dup.id);
+      const subIds = (subs||[]).map(s=>s.id);
+      const referencias = [];
+      for (const subId of subIds) {
+        for (const tabla of TABLAS_CON_SUBCUENTA) {
+          const { count } = await sb.from(tabla).select('id', { count: 'exact', head: true }).eq('subcuenta_id', subId);
+          if (count > 0) referencias.push({ tabla, subcuentaId: subId, count });
+        }
+        const { count: countHijos } = await sb.from('fz_subcuentas').select('id', { count: 'exact', head: true }).eq('subcuenta_padre_id', subId);
+        if (countHijos > 0) referencias.push({ tabla: 'fz_subcuentas (como padre de otra)', subcuentaId: subId, count: countHijos });
+      }
+      if (referencias.length) abortar = true;
+      duplicados.push({ mayorId: dup.id, subIds, referencias, seguro: !referencias.length });
+    }
+    resultado.push({ nombre, canonicoId: canonico.id, totalEncontradas: mayores.length, duplicados, abortar });
+  }
+  return resultado;
+}
+
+// Ejecuta la limpieza SOLO si verificarLimpiezaCuentasDuplicadas no encontró ninguna referencia
+// real en ningún duplicado de ese grupo — si encuentra cualquiera, aborta ESE grupo completo sin
+// borrar nada de él (aunque otros grupos sin problemas sí se limpien). Idempotente: si se corre
+// de nuevo y ya no hay duplicados, no hace nada.
+async function ejecutarLimpiezaCuentasDuplicadas(businessId, nombres) {
+  const verificacion = await verificarLimpiezaCuentasDuplicadas(businessId, nombres);
+  const reporte = [];
+  for (const grupo of verificacion) {
+    if (!grupo.duplicados.length) { reporte.push({ nombre: grupo.nombre, accion: 'sin duplicados — nada que hacer' }); continue; }
+    if (grupo.abortar) { reporte.push({ nombre: grupo.nombre, accion: 'ABORTADO — al menos un duplicado tiene referencias reales; no se borró nada de este grupo', detalle: grupo.duplicados.filter(d=>!d.seguro) }); continue; }
+    for (const dup of grupo.duplicados) {
+      if (dup.subIds.length) await sb.from('fz_subcuentas').delete().in('id', dup.subIds);
+      await sb.from('fz_cuentas_mayor').delete().eq('id', dup.mayorId);
+    }
+    reporte.push({ nombre: grupo.nombre, accion: `${grupo.duplicados.length} duplicado(s) eliminado(s) — canónica conservada: ${grupo.canonicoId}` });
+  }
+  return reporte;
+}
+
 async function diagnosticarCuentasDuplicadas(businessId, nombres) {
   const resultado = [];
   for (const nombre of nombres) {
@@ -11038,6 +11100,28 @@ async function abrirDiagnosticoFiscal(businessId, periodo) {
             </table></div>
           </div>`).join('')}
       </div>`).join('');
+  };
+
+  document.getElementById('limpiarDuplicadosCatalogoBtn').onclick = async () => {
+    const zona = document.getElementById('duplicadosCatalogoResultado');
+    const nombres = ['Actualización fiscal', 'Diferencias por redondeo fiscal']; // NUNCA Recargos fiscales — ya está única
+    zona.innerHTML = `<div class="empty">Verificando referencias reales en las 7 tablas posibles…</div>`;
+    const verificacion = await verificarLimpiezaCuentasDuplicadas(businessId, nombres);
+    const totalDuplicados = verificacion.reduce((s,g)=>s+g.duplicados.length,0);
+    if (!totalDuplicados) { zona.innerHTML = `<div class="empty">No se encontró ningún duplicado — nada que limpiar.</div>`; return; }
+    const hayAbortados = verificacion.some(g=>g.abortar);
+    const previewHtml = verificacion.map(g => `
+      <p style="font-size:12px;"><strong>${g.nombre}</strong>: ${g.duplicados.length} duplicado(s) encontrado(s)${g.abortar?' — <span style="color:var(--red);">al menos uno TIENE referencias reales, este grupo se abortará</span>':' — todos verificados sin ninguna referencia, seguros de borrar'}</p>
+    `).join('');
+    zona.innerHTML = previewHtml + (hayAbortados ? `<p style="font-size:11.5px;color:var(--red);">Revisa la consola/apóyate conmigo antes de continuar — hay referencias inesperadas.</p>` : `<button class="btn btn-gold btn-sm" id="confirmarLimpiezaBtn">Confirmar limpieza</button>`);
+    const btnConfirmar = document.getElementById('confirmarLimpiezaBtn');
+    if (btnConfirmar) btnConfirmar.onclick = async () => {
+      if (!confirm(`Se eliminarán ${totalDuplicados} cuenta(s) mayor/subcuenta duplicada(s), conservando la más antigua de cada una. ¿Continuar?`)) return;
+      const reporte = await ejecutarLimpiezaCuentasDuplicadas(businessId, nombres);
+      registrarAuditoria(businessId, 'eliminar', 'Configuración', `Limpieza de cuentas duplicadas: ${reporte.map(r=>`${r.nombre} — ${r.accion}`).join(' | ')}`);
+      zona.innerHTML = `<p style="font-size:12px;font-weight:700;color:var(--green);">Listo:</p>` + reporte.map(r=>`<p style="font-size:12px;">${r.nombre}: ${r.accion}</p>`).join('');
+      toast('Limpieza completada.');
+    };
   };
 }
 document.getElementById('closeDiagnosticoFiscal').addEventListener('click', () => document.getElementById('modalDiagnosticoFiscal').classList.remove('show'));
