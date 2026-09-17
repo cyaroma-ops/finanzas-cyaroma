@@ -970,9 +970,10 @@ async function computeBusinessSummary(businessId, ym) {
   const posicionNeta = efectivoTotal + bancosTotal - proveedoresPendientes - otrosPasivosTotal;
 
   const periodoMes = { start, end, mesStart: ym, mesEnd: ym };
+  const datosGCMes = await fetchDatosGastosCostos(businessId, periodoMes);
   const [gClasMes, gCostosMes] = await Promise.all([
-    computeGastosClasificados(businessId, periodoMes, subcuentas, mayores),
-    computeGastosClasificados(businessId, periodoMes, subcuentas, mayores, 'costo'),
+    computeGastosClasificados(businessId, periodoMes, subcuentas, mayores, 'gasto', false, datosGCMes),
+    computeGastosClasificados(businessId, periodoMes, subcuentas, mayores, 'costo', false, datosGCMes),
   ]);
   const gastosTotalMes = gastosOperativosMes + gClasMes.totalClasificado + gClasMes.sinClasificar + gCostosMes.totalClasificado;
 
@@ -9643,8 +9644,11 @@ async function computeUtilidadAcumulada(businessId, hastaYm) {
   v.forEach(r => { diffPeriodo += computeRowDiffs(r, conceptosVenta, porCatPL, conceptosSistema).difTotal; });
   const faltanteCaja = diffPeriodo>0?diffPeriodo:0;
   const sobranteCaja = diffPeriodo<0?-diffPeriodo:0;
-  const gClas = await computeGastosClasificados(businessId, periodo, subcuentas, mayores);
-  const gCostos = await computeGastosClasificados(businessId, periodo, subcuentas, mayores, 'costo');
+  const datosGC1 = await fetchDatosGastosCostos(businessId, periodo);
+  const [gClas, gCostos] = await Promise.all([
+    computeGastosClasificados(businessId, periodo, subcuentas, mayores, 'gasto', false, datosGC1),
+    computeGastosClasificados(businessId, periodo, subcuentas, mayores, 'costo', false, datosGC1),
+  ]);
   const iPoliza = await computeIngresosPoliza(businessId, periodo, subcuentas, mayores);
   const gananciaCambiaria = await computeGananciaCambiaria(businessId, periodo);
   const totalIngresosFinal = totalIngresosVentas + sobranteCaja + iPoliza.total + gananciaCambiaria;
@@ -10374,11 +10378,8 @@ async function renderBalanceGeneral() {
   window.scrollTo(0, scrollY);
 }
 
-async function computeGastosClasificados(businessId, periodo, subcuentas, mayores, tipoFiltro = 'gasto', incluirSinMovimiento = false) {
+async function fetchDatosGastosCostos(businessId, periodo) {
   const { start, end, mesStart, mesEnd } = periodo;
-  const porSubcuenta = {}; // subcuenta_id -> monto
-  let sinClasificar = 0;
-
   const [provQ, bancosMovQ, efvoMovQ, plGastosQ, lineasPoliza] = await Promise.all([
     sb.from('fz_proveedores').select('desglose,origen_poliza_id').eq('business_id', businessId).gte('fecha', start).lte('fecha', end),
     sb.from('fz_bancos_mov').select('cargos,subcuenta_id,aplica_iva,subtotal').eq('business_id', businessId).eq('tipo_salida', 'gasto').gte('fecha', start).lte('fecha', end),
@@ -10386,6 +10387,14 @@ async function computeGastosClasificados(businessId, periodo, subcuentas, mayore
     sb.from('fz_pl_gastos').select('*').eq('business_id', businessId).gte('mes', mesStart).lte('mes', mesEnd),
     getPolizasLineasPeriodo(businessId, periodo),
   ]);
+  return { provQ, bancosMovQ, efvoMovQ, plGastosQ, lineasPoliza };
+}
+
+async function computeGastosClasificados(businessId, periodo, subcuentas, mayores, tipoFiltro = 'gasto', incluirSinMovimiento = false, datosCompartidos = null) {
+  const porSubcuenta = {}; // subcuenta_id -> monto
+  let sinClasificar = 0;
+
+  const { provQ, bancosMovQ, efvoMovQ, plGastosQ, lineasPoliza } = datosCompartidos || await fetchDatosGastosCostos(businessId, periodo);
 
   (provQ.data || []).forEach(f => {
     if (f.origen_poliza_id) return; // ya se contabilizó vía la línea de la póliza que la generó — no se duplica
@@ -10514,10 +10523,15 @@ async function computeResumenNegocio(businessId, periodo) {
   const sobranteCaja = diffPeriodo < 0 ? -diffPeriodo : 0;
   const totalIngresos = totalIngresosVentas + sobranteCaja;
 
-  const gClas = await computeGastosClasificados(businessId, periodo, subcuentas, mayores, 'gasto', true);
-  const gCostos = await computeGastosClasificados(businessId, periodo, subcuentas, mayores, 'costo', true);
-  const iPoliza = await computeIngresosPoliza(businessId, periodo, subcuentas, mayores, true);
-  const gananciaCambiaria = await computeGananciaCambiaria(businessId, periodo);
+  const [datosGC0, iPoliza, gananciaCambiaria] = await Promise.all([
+    fetchDatosGastosCostos(businessId, periodo),
+    computeIngresosPoliza(businessId, periodo, subcuentas, mayores, true),
+    computeGananciaCambiaria(businessId, periodo),
+  ]);
+  const [gClas, gCostos] = await Promise.all([
+    computeGastosClasificados(businessId, periodo, subcuentas, mayores, 'gasto', true, datosGC0),
+    computeGastosClasificados(businessId, periodo, subcuentas, mayores, 'costo', true, datosGC0),
+  ]);
   const totalIngresosFinal = totalIngresos + iPoliza.total + gananciaCambiaria;
   const gastosTotales = gastosOperativos + gClas.totalClasificado + gClas.sinClasificar + faltanteCaja;
   const utilidadReal = totalIngresosFinal - gCostos.totalClasificado - gastosTotales;
@@ -10906,8 +10920,11 @@ async function renderPLAnual(el, b) {
     ventas.forEach(r => { diffPeriodo += computeRowDiffs(r, conceptosVenta, porCatPL, conceptosSistema).difTotal; });
     const faltanteCaja = diffPeriodo>0?diffPeriodo:0;
     const sobranteCaja = diffPeriodo<0?-diffPeriodo:0;
-    const gClas = await computeGastosClasificados(b.id, periodo, subcuentas, mayores);
-    const gCostos = await computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'costo');
+    const datosGC2 = await fetchDatosGastosCostos(b.id, periodo);
+    const [gClas, gCostos] = await Promise.all([
+      computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'gasto', false, datosGC2),
+      computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'costo', false, datosGC2),
+    ]);
     const iPoliza = await computeIngresosPoliza(b.id, periodo, subcuentas, mayores);
     const gananciaCambiaria = await computeGananciaCambiaria(b.id, periodo);
     const totalIngresosFinal = totalIngresosVentas + sobranteCaja + iPoliza.total + gananciaCambiaria;
@@ -11103,8 +11120,11 @@ async function renderPL() {
 
   const totalIngresos = totalIngresosVentas + sobranteCaja;
 
-  const gClas = await computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'gasto', true);
-  const gCostos = await computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'costo', true);
+  const datosGC3 = await fetchDatosGastosCostos(b.id, periodo);
+  const [gClas, gCostos] = await Promise.all([
+    computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'gasto', true, datosGC3),
+    computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'costo', true, datosGC3),
+  ]);
   const iPoliza = await computeIngresosPoliza(b.id, periodo, subcuentas, mayores, true);
   const gananciaCambiaria = await computeGananciaCambiaria(b.id, periodo);
   const totalIngresosFinal = totalIngresos + iPoliza.total + gananciaCambiaria;
