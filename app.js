@@ -2464,6 +2464,23 @@ function cuentaObligacionPago(pagoImpuesto) {
 // idempotencia (un solo registro 'pago' en fz_provisiones_fiscales por pago_impuesto_id).
 // Recalcula la caché de importe_pagado desde su ÚNICA fuente de verdad: la suma de las
 // aplicaciones reales. Nunca se establece independiente — siempre se deriva.
+// Limpieza puntual del rediseño de aplicarPagoFiscal: antes, además del movimiento real, se
+// creaba una póliza aparte que volvía a afectar Banco/Efectivo (doble representación del mismo
+// hecho económico). Cualquier aplicación fiscal con poliza_id distinto de null es, por
+// construcción, un rastro de esa versión anterior — el código nuevo SIEMPRE guarda poliza_id en
+// null. Se identifica exclusivamente por esa relación real (nunca por texto, fecha o importe),
+// se borra solo esa póliza y se limpia la referencia — el movimiento real y la aplicación
+// permanecen intactos. Es idempotente: una vez limpio, no vuelve a encontrar nada que tocar.
+async function limpiarPolizasDuplicadasPagoFiscal(businessId) {
+  const { data: aplicacionesConPoliza } = await sb.from('fz_aplicaciones_pago_fiscal').select('id,poliza_id').eq('business_id', businessId).not('poliza_id', 'is', null);
+  for (const a of (aplicacionesConPoliza||[])) {
+    await sb.from('fz_polizas_lineas').delete().eq('poliza_id', a.poliza_id);
+    await sb.from('fz_polizas').delete().eq('id', a.poliza_id);
+    await sb.from('fz_aplicaciones_pago_fiscal').update({ poliza_id: null }).eq('id', a.id);
+  }
+  return (aplicacionesConPoliza||[]).length;
+}
+
 async function recalcularImportePagadoImpuesto(pagoImpuestoId) {
   const { data: aplicaciones } = await sb.from('fz_aplicaciones_pago_fiscal').select('monto,fecha').eq('pago_impuesto_id', pagoImpuestoId);
   const total = (aplicaciones||[]).reduce((s,a)=>s+Number(a.monto||0), 0);
@@ -2479,47 +2496,39 @@ async function recalcularImportePagadoImpuesto(pagoImpuestoId) {
 // solo una referencia de póliza), una aplicación por obligación cubierta, y una sola póliza con
 // tantos "Debe" como obligaciones y un solo "Haber Banco/Efectivo".
 // aplicaciones: [{ pagoImpuesto: <fila completa de fz_pagos_impuestos>, monto: <a aplicar> }]
-async function aplicarPagoFiscal(businessId, fecha, cuentaTipo, cuentaId, aplicaciones, conceptoMov) {
+async function aplicarPagoFiscal(businessId, fecha, cuentaTipo, cuentaId, aplicaciones) {
   if (!aplicaciones || !aplicaciones.length || !cuentaTipo || !cuentaId) return { estado: 'sin_datos' };
   if (await periodoEstaCerrado(businessId, fecha)) return { estado: 'cerrado' };
   const totalPago = aplicaciones.reduce((s,a)=>s+Number(a.monto||0), 0);
   if (totalPago <= 0.004) return { estado: 'sin_datos' };
 
-  // 1. El movimiento REAL en Banco/Efectivo — esto es lo que lo hace visible en el estado de
-  // cuenta del módulo Bancos/Efectivo, no solo en la contabilidad.
+  // Descripción automática: una obligación → su tipo+periodo; varias → el conteo.
+  const descripcion = aplicaciones.length === 1
+    ? `Pago de impuestos SAT — ${TIPO_IMPUESTO_LABEL[aplicaciones[0].pagoImpuesto.tipo_impuesto]} — ${aplicaciones[0].pagoImpuesto.periodo}`
+    : `Pago de impuestos SAT — ${aplicaciones.length} obligaciones`;
+
+  // El ÚNICO registro económico es este movimiento real — su contraparte (a qué obligación se
+  // cancela) la resuelve el motor consolidado leyendo las aplicaciones fiscales de este mismo
+  // movimiento (tipo_salida='impuesto') — por eso aquí NO se crea ninguna póliza aparte, para no
+  // representar dos veces la misma salida de banco/efectivo.
   const tabla = cuentaTipo === 'banco' ? 'fz_bancos_mov' : 'fz_efectivo_mov';
   const campoCuenta = cuentaTipo === 'banco' ? 'cuenta_id' : 'moneda_id';
-  const concepto = conceptoMov || 'Pago de impuestos SAT';
   const { data: movimiento, error: errMov } = await sb.from(tabla).insert({
     business_id: businessId, fecha, [campoCuenta]: cuentaId, cargos: totalPago, depositos: 0,
-    concepto, tipo_salida: 'otro',
+    concepto: descripcion, descripcion, proveedor: 'SAT', tipo_salida: 'impuesto',
   }).select().single();
   if (errMov) return { estado: 'error', error: errMov.message };
 
-  // 2. Una sola póliza: Debe la cuenta exigible de cada obligación cubierta, Haber Banco/Efectivo.
-  const conceptoPoliza = `[Auto] ${concepto} — ${aplicaciones.map(a=>TIPO_IMPUESTO_LABEL[a.pagoImpuesto.tipo_impuesto]).join(', ')}`;
-  const { data: poliza, error: errPol } = await sb.from('fz_polizas').insert({ business_id: businessId, fecha, concepto: conceptoPoliza }).select().single();
-  if (errPol) return { estado: 'error', error: errPol.message };
-  const lineasDebe = [];
-  for (const a of aplicaciones) {
-    const obligacion = cuentaObligacionPago(a.pagoImpuesto);
-    if (!obligacion) continue; // "Otro" sin cuenta identificada — se salta, no rompe
-    const subObligacion = await obtenerOCrearSubcuentaPorNombre(businessId, obligacion.nombre, obligacion.naturaleza);
-    lineasDebe.push({ business_id: businessId, poliza_id: poliza.id, cuenta_tipo: 'subcuenta', subcuenta_id: subObligacion, cargo: Number(a.monto), abono: 0, descripcion: conceptoPoliza });
-  }
-  const lineaBanco = { business_id: businessId, poliza_id: poliza.id, cuenta_tipo: cuentaTipo, cuenta_ref_id: cuentaId, cargo: 0, abono: totalPago, descripcion: conceptoPoliza };
-  await sb.from('fz_polizas_lineas').insert([...lineasDebe, lineaBanco].map((l,i)=>({ ...l, orden: i })));
-
-  // 3. Una aplicación por obligación — todas comparten el mismo origen (el movimiento) y la
-  // misma póliza, lo que las identifica inequívocamente como parte del mismo pago maestro.
+  // Una aplicación por obligación — todas comparten el mismo origen (el movimiento), que es lo
+  // que las identifica de forma inequívoca como parte del mismo pago maestro.
   for (const a of aplicaciones) {
     await sb.from('fz_aplicaciones_pago_fiscal').insert({
       business_id: businessId, pago_impuesto_id: a.pagoImpuesto.id, monto: Number(a.monto),
-      origen_tabla: tabla, origen_id: movimiento.id, poliza_id: poliza.id, fecha,
+      origen_tabla: tabla, origen_id: movimiento.id, poliza_id: null, fecha,
     });
     await recalcularImportePagadoImpuesto(a.pagoImpuesto.id);
   }
-  return { estado: 'pagado', movimientoId: movimiento.id, polizaId: poliza.id };
+  return { estado: 'pagado', movimientoId: movimiento.id };
 }
 
 // Revierte un pago fiscal desde su ORIGEN (el movimiento real que lo generó) — localiza todas
@@ -3678,6 +3687,7 @@ async function renderPagosImpuestos() {
 // Crea solo (nunca duplica) el "IVA a cargo" Y las retenciones de ISR/IVA por categoría de cada mes
 // del año elegido que aún no tengan registro — usando el mismo cálculo de IVA y Retenciones.
 async function autoGenerarPagosImpuestos(b, anio) {
+  await limpiarPolizasDuplicadasPagoFiscal(b.id);
   const { data: existentesIniciales } = await sb.from('fz_pagos_impuestos').select('id,periodo,tipo_impuesto,concepto,monto,fecha_pago').eq('business_id', b.id).like('periodo', `${anio}-%`);
   const existentes = existentesIniciales || [];
   const buscarExistente = (periodo, tipo, concepto) => existentes.find(p => p.periodo===periodo && p.tipo_impuesto===tipo && (p.concepto||null)===(concepto||null));
@@ -6840,7 +6850,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
         const saldo = Number(f.total) - Number(f.importe_pagado||0);
         return `
         <label style="display:flex;align-items:center;gap:8px;padding:4px 2px;font-size:12.5px;cursor:pointer;">
-          <input type="checkbox" class="mov-factura-cliente-check" value="${f.id}" data-importe="${saldo}" ${idsClienteYaVinculados.includes(f.id)?'checked':''}>
+          <input type="checkbox" class="mov-factura-cliente-check" value="${f.id}" data-importe="${saldo}" data-cliente="${cli}" ${idsClienteYaVinculados.includes(f.id)?'checked':''}>
           <span>${f.fecha} · Factura #${f.folio} · ${fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}</span>
         </label>`;
       }).join('')}
@@ -6869,6 +6879,11 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     const montoMovimiento = Number(document.getElementById('movDepositos').value) || 0;
     const diferencia = montoMovimiento - totalSeleccionado;
     const cuadra = Math.abs(diferencia) < 0.01;
+    // El Tercero se hereda del cliente cobrado — no se captura a mano. Si el depósito cubre
+    // facturas de un solo cliente, se usa su nombre; si mezcla varios, se deja para que el
+    // usuario lo aclare (no se inventa un nombre combinado).
+    const clientesDistintos = [...new Set(marcadas.map(c=>c.dataset.cliente))];
+    if (clientesDistintos.length === 1) document.getElementById('movCampo1').value = clientesDistintos[0];
     document.getElementById('movFacturasClienteResumen').innerHTML = `
       <div style="display:flex;justify-content:space-between;margin-bottom:2px;"><span>Depósito capturado</span><strong>${fmt(montoMovimiento)}</strong></div>
       <div style="display:flex;justify-content:space-between;margin-bottom:2px;"><span>Total seleccionado (${marcadas.length})</span><strong>${fmt(totalSeleccionado)}</strong></div>
@@ -6892,8 +6907,8 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     document.getElementById('movTipoLabel').textContent = esDeposito ? 'Tipo de entrada' : 'Tipo de salida';
     sel.innerHTML = esDeposito
       ? `<option value="otro">Sin clasificar</option><option value="cliente">Cobro de cliente</option><option value="traspaso_banco">Traspaso desde banco</option><option value="traspaso_efectivo">Traspaso desde caja de efectivo</option>`
-      : `<option value="otro">Sin clasificar</option><option value="gasto">Gasto</option><option value="proveedor">Pago a proveedor</option><option value="traspaso_banco">Traspaso a banco</option><option value="traspaso_efectivo">Traspaso a caja de efectivo</option>`;
-    sel.value = ['otro','cliente','gasto','proveedor','traspaso_banco','traspaso_efectivo'].includes(valorActual) && Array.from(sel.options).some(o=>o.value===valorActual) ? valorActual : 'otro';
+      : `<option value="otro">Sin clasificar</option><option value="gasto">Gasto</option><option value="proveedor">Pago a proveedor</option><option value="impuesto">Pago de impuestos</option><option value="traspaso_banco">Traspaso a banco</option><option value="traspaso_efectivo">Traspaso a caja de efectivo</option>`;
+    sel.value = ['otro','cliente','gasto','proveedor','impuesto','traspaso_banco','traspaso_efectivo'].includes(valorActual) && Array.from(sel.options).some(o=>o.value===valorActual) ? valorActual : 'otro';
   };
   document.getElementById('movCargos').addEventListener('input', actualizarOpcionesTipo);
   document.getElementById('movDepositos').addEventListener('input', actualizarOpcionesTipo);
@@ -7469,7 +7484,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
     </div>
     <div class="table-wrap scroll-sticky">
       <table>
-        <thead><tr><th>Fecha</th><th>Proveedor</th><th>Descripción</th><th>Cargos</th><th>Depósitos</th><th>Saldo</th><th></th></tr></thead>
+        <thead><tr><th>Fecha</th><th>Tercero</th><th>Descripción</th><th>Cargos</th><th>Depósitos</th><th>Saldo</th><th></th></tr></thead>
         <tbody>${rowsHtml || `<tr><td colspan="10" class="empty">Sin movimientos todavía.</td></tr>`}</tbody>
         <tfoot><tr class="total-row"><td colspan="3">Total ${STATE.currentMonth}</td><td class="num">${fmtNum(totalCargosMes)}</td><td class="num">${fmtNum(totalDepositosMes)}</td><td colspan="5"></td></tr></tfoot>
       </table>
@@ -7679,7 +7694,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     </div>
     <div class="table-wrap scroll-sticky">
       <table>
-        <thead><tr><th>Fecha</th><th>Proveedor</th><th>Descripción</th><th>Depósitos</th><th>Cargos</th><th>Saldo</th><th title="Conciliado">✓</th><th></th></tr></thead>
+        <thead><tr><th>Fecha</th><th>Tercero</th><th>Descripción</th><th>Depósitos</th><th>Cargos</th><th>Saldo</th><th title="Conciliado">✓</th><th></th></tr></thead>
         <tbody>${rowsHtml || `<tr><td colspan="11" class="empty">Sin movimientos.</td></tr>`}</tbody>
         <tfoot><tr class="total-row"><td colspan="4">Total ${STATE.currentMonth}</td><td class="num">${fmtNum(totalDepositosMes)}</td><td class="num">${fmtNum(totalCargosMes)}</td><td colspan="5"></td></tr></tfoot>
       </table>
@@ -10551,12 +10566,49 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   const cobrosPorOrigen = {};
   (todosCobrosAplicados||[]).forEach(c => { const k = `${c.origen_tabla}|${c.origen_id}`; (cobrosPorOrigen[k] = cobrosPorOrigen[k]||[]).push(c); });
 
+  const { data: todasAplicacionesFiscales } = await sb.from('fz_aplicaciones_pago_fiscal').select('*').eq('business_id', businessId).lte('fecha', hastaFecha);
+  const aplicacionesFiscalesPorOrigen = {};
+  (todasAplicacionesFiscales||[]).forEach(a => { const k = `${a.origen_tabla}|${a.origen_id}`; (aplicacionesFiscalesPorOrigen[k] = aplicacionesFiscalesPorOrigen[k]||[]).push(a); });
+  const idsPagosImpuestoNecesarios = [...new Set((todasAplicacionesFiscales||[]).map(a=>a.pago_impuesto_id))];
+  const { data: pagosImpuestoRefs } = idsPagosImpuestoNecesarios.length ? await sb.from('fz_pagos_impuestos').select('id,tipo_impuesto,concepto').in('id', idsPagosImpuestoNecesarios) : { data: [] };
+  const pagoImpuestoMapGlobal = Object.fromEntries((pagosImpuestoRefs||[]).map(p=>[p.id,p]));
+  // Se resuelven de antemano las subcuentas de cada obligación fiscal que pudiera pagarse — el
+  // mismo nombre/cuenta que ya usa el resto del motor de realización, para que compartan clave.
+  const subcuentaObligacionCache = {};
+  for (const p of (pagosImpuestoRefs||[])) {
+    const obligacion = cuentaObligacionPago(p);
+    if (obligacion && !subcuentaObligacionCache[obligacion.nombre]) {
+      subcuentaObligacionCache[obligacion.nombre] = await subRealizacion(obligacion.nombre, obligacion.naturaleza);
+    }
+  }
+
   const procesarMovimientos = (movs, esBanco, tipoOrigenTag, moduloTag, tablaOrigenNombre) => {
     (movs||[]).forEach(m => {
       const claveOrigenCuenta = esBanco ? 'banco:'+m.cuenta_id : 'efectivo:'+m.moneda_id;
       const nombreOrigenCuenta = esBanco ? `Banco: ${nombreBanco(m.cuenta_id)}` : `Efectivo: ${nombreMoneda(m.moneda_id)}`;
       const base = { modulo: moduloTag, tipoOrigen: tipoOrigenTag, id: m.id, fecha: m.fecha, referencia: m.concepto || m.descripcion || 's/ref', detalle: m.proveedor || m.descripcion || '', cuentaId: m.cuenta_id, monedaId: m.moneda_id };
       if (Number(m.cargos)) {
+        if (m.tipo_salida === 'impuesto') {
+          // Caso especial: la contraparte no es UNA cuenta, son tantas como obligaciones cubra
+          // este movimiento — se leen directo de sus aplicaciones fiscales reales, nunca de un
+          // texto ni de un supuesto — así nunca se vuelve a representar la salida de banco/
+          // efectivo por separado en una póliza aparte.
+          const aplicacionesDeEste = aplicacionesFiscalesPorOrigen[`${tablaOrigenNombre}|${m.id}`] || [];
+          if (aplicacionesDeEste.length) {
+            aplicacionesDeEste.forEach(ap => {
+              const pagoImp = pagoImpuestoMapGlobal[ap.pago_impuesto_id];
+              const obligacion = pagoImp ? cuentaObligacionPago(pagoImp) : null;
+              const cuenta = obligacion ? obligacion.nombre : 'Sin clasificar (revisar)';
+              const clave = obligacion ? 'sub:'+subcuentaObligacionCache[obligacion.nombre] : 'sin_clasificar';
+              const tipoCta = obligacion ? obligacion.naturaleza : 'gasto';
+              push({ ...base, cuenta }, clave, tipoCta, Number(ap.monto), 0);
+            });
+          } else {
+            push({ ...base, cuenta: 'Sin clasificar (revisar)' }, 'sin_clasificar', 'gasto', Number(m.cargos), 0);
+          }
+          push({ ...base, cuenta: nombreOrigenCuenta }, claveOrigenCuenta, 'activo', 0, Number(m.cargos));
+          return;
+        }
         let cuentaContraria = 'Sin clasificar (revisar)', claveContraria = 'sin_clasificar', tipoContraria = 'gasto';
         let subtotalContraria = Number(m.cargos);
         if (m.tipo_salida === 'proveedor') { cuentaContraria = 'Proveedores'; claveContraria = 'proveedores'; tipoContraria = 'pasivo'; }
