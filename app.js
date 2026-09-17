@@ -2068,9 +2068,15 @@ async function sincronizarProvisionIva(pagoImpuesto, businessId) {
   if (await periodoEstaCerrado(businessId, fechaProvision)) return { estado: 'cerrado_pendiente' };
 
   const resumen = await computeResumenIvaMesLigero(businessId, monthBounds(pagoImpuesto.periodo));
+  const netoDeseado = resumen.ivaTrasladadoCobrado - resumen.ivaAcreditablePagado; // + = a cargo, - = a favor
+  // Los 4 se rastrean cada uno por separado, igual que Trasladado/Acreditable — así, si el neto
+  // cambia de signo entre una corrida y otra, "IVA por pagar" y "IVA a favor" se ajustan cada uno
+  // a su propio objetivo (uno bajando a $0, el otro subiendo) en vez de crear una cuenta nueva.
   const componentes = [
-    { tipo: 'iva_neto_trasladado', montoDebeSer: resumen.ivaTrasladadoCobrado, cuenta: 'IVA Trasladado — Cobrado', naturaleza: 'pasivo' },
-    { tipo: 'iva_neto_acreditable', montoDebeSer: resumen.ivaAcreditablePagado, cuenta: 'IVA Acreditable — Pagado', naturaleza: 'activo' },
+    { tipo: 'iva_neto_trasladado', montoDebeSer: resumen.ivaTrasladadoCobrado, cuenta: 'IVA Trasladado — Cobrado', naturaleza: 'pasivo', modo: 'clarea' },
+    { tipo: 'iva_neto_acreditable', montoDebeSer: resumen.ivaAcreditablePagado, cuenta: 'IVA Acreditable — Pagado', naturaleza: 'activo', modo: 'clarea' },
+    { tipo: 'iva_neto_por_pagar', montoDebeSer: Math.max(0, netoDeseado), cuenta: CUENTA_IVA_POR_PAGAR, naturaleza: 'pasivo', modo: 'normal' },
+    { tipo: 'iva_neto_a_favor', montoDebeSer: Math.max(0, -netoDeseado), cuenta: CUENTA_IVA_A_FAVOR, naturaleza: 'activo', modo: 'normal' },
   ];
 
   const lineas = [];
@@ -2083,27 +2089,20 @@ async function sincronizarProvisionIva(pagoImpuesto, businessId) {
     const sub = await obtenerOCrearSubcuentaPorNombre(businessId, c.cuenta, c.naturaleza);
     const esAumento = diff > 0;
     const monto = Math.abs(diff);
-    // Pasivo (Trasladado): aumentar el neto tomado = Debe (lo clarea). Activo (Acreditable): Haber.
-    if (c.naturaleza === 'pasivo') lineas.push(esAumento ? { subcuenta_id: sub, cargo: monto, abono: 0 } : { subcuenta_id: sub, cargo: 0, abono: monto });
-    else lineas.push(esAumento ? { subcuenta_id: sub, cargo: 0, abono: monto } : { subcuenta_id: sub, cargo: monto, abono: 0 });
+    // "clarea" (Trasladado/Acreditable): aumentar lo clareado va en sentido contrario a su saldo normal.
+    // "normal" (IVA por pagar/a favor): son saldos nuevos de verdad, sentido normal de su naturaleza.
+    let cargo, abono;
+    if (c.modo === 'clarea') {
+      if (c.naturaleza === 'pasivo') { cargo = esAumento ? monto : 0; abono = esAumento ? 0 : monto; }
+      else { cargo = esAumento ? 0 : monto; abono = esAumento ? monto : 0; }
+    } else {
+      if (c.naturaleza === 'pasivo') { cargo = esAumento ? 0 : monto; abono = esAumento ? monto : 0; }
+      else { cargo = esAumento ? monto : 0; abono = esAumento ? 0 : monto; }
+    }
+    lineas.push({ subcuenta_id: sub, cargo, abono });
     registros.push({ tipo: c.tipo, monto: diff });
   }
   if (!lineas.length) return { estado: 'al_corriente' };
-
-  // El neto (IVA por pagar o a favor) balancea lo que las líneas de arriba ya tomaron de
-  // Trasladado/Acreditable — positivo = a cargo (Trasladado clareado > Acreditable clareado),
-  // negativo = a favor.
-  const netoAjuste = lineas.reduce((s,l)=>s+(l.cargo||0)-(l.abono||0), 0);
-  if (Math.abs(netoAjuste) > 0.004) {
-    const esCargo = netoAjuste > 0;
-    const cuentaNeto = esCargo ? CUENTA_IVA_POR_PAGAR : CUENTA_IVA_A_FAVOR;
-    const naturalezaNeto = esCargo ? 'pasivo' : 'activo';
-    const subNeto = await obtenerOCrearSubcuentaPorNombre(businessId, cuentaNeto, naturalezaNeto);
-    const montoNeto = Math.abs(netoAjuste);
-    // Para que la póliza balancee, esta línea debe tener signo contrario a lo ya acumulado arriba.
-    if (esCargo) lineas.push({ subcuenta_id: subNeto, cargo: 0, abono: montoNeto }); // Haber IVA por pagar (pasivo aumenta)
-    else lineas.push({ subcuenta_id: subNeto, cargo: montoNeto, abono: 0 }); // Debe IVA a favor (activo aumenta)
-  }
 
   const concepto = `[Auto] Determinación IVA — ${pagoImpuesto.periodo}`;
   const { data: nuevaPoliza, error } = await sb.from('fz_polizas').insert({ business_id: businessId, fecha: fechaProvision, concepto }).select().single();
@@ -2340,6 +2339,64 @@ async function corregirDuplicadoRealizacion(dup, businessId) {
   await sb.from('fz_iva_realizaciones').update({ monto_realizado_acumulado: dup.correcto, fecha: todayStr(), updated_at: new Date().toISOString() }).eq('id', primero.id);
   const idsSobrantes = dup.filas.slice(1).map(r=>r.id);
   if (idsSobrantes.length) await sb.from('fz_iva_realizaciones').delete().in('id', idsSobrantes);
+}
+
+// Encuentra todas las pólizas automáticas de Realización fiscal / Determinación IVA / Corrección
+// de duplicado en un rango — y para cada factura involucrada, calcula cuál es su estado REAL hoy
+// (según los pagos/cobros que de verdad existen). Es de solo lectura — no borra ni genera nada.
+async function previsualizarReinicioFiscal(businessId, desde, hasta) {
+  const { data: polizas } = await sb.from('fz_polizas').select('id,fecha,concepto').eq('business_id', businessId)
+    .gte('fecha', desde).lte('fecha', hasta)
+    .or('concepto.ilike.[Auto] Realización fiscal%,concepto.ilike.[Auto] Determinación IVA%,concepto.ilike.[Auto] Corrección de duplicado%');
+
+  // Facturas involucradas, para mostrar su estado real actual (a partir de "F.36", "Folio #1", etc.)
+  const facturasVistas = new Set();
+  (polizas||[]).forEach(p => { const m = p.concepto.match(/— ([^—]+)$/); if (m) facturasVistas.add(m[1].trim()); });
+
+  return { polizas: polizas||[], totalPolizas: (polizas||[]).length, referenciasFacturas: [...facturasVistas] };
+}
+
+// Borra las pólizas de prueba encontradas y su rastro (fz_iva_realizaciones, fz_provisiones_fiscales
+// de tipo iva_neto_*), deja evidencia en Auditoría, y vuelve a generar desde cero — usando SOLO los
+// pagos/cobros que existen realmente hoy. Las facturas sin pagos reales simplemente no regeneran nada.
+async function ejecutarReinicioFiscal(businessId, desde, hasta, usuarioEmail) {
+  const { data: polizas } = await sb.from('fz_polizas').select('id,fecha,concepto').eq('business_id', businessId)
+    .gte('fecha', desde).lte('fecha', hasta)
+    .or('concepto.ilike.[Auto] Realización fiscal%,concepto.ilike.[Auto] Determinación IVA%,concepto.ilike.[Auto] Corrección de duplicado%');
+  const idsPolizas = (polizas||[]).map(p=>p.id);
+  if (!idsPolizas.length) return { borradas: 0, regeneradas: 0 };
+
+  // Evidencia completa en Auditoría ANTES de borrar, con el detalle exacto de cada póliza.
+  const detalle = (polizas||[]).map(p => `${p.fecha} — ${p.concepto}`).join(' | ');
+  registrarAuditoria(businessId, 'eliminar', 'Impuestos', `Reinicio de datos de prueba fiscales (${idsPolizas.length} póliza[s]): ${detalle}`);
+
+  await sb.from('fz_polizas_lineas').delete().in('poliza_id', idsPolizas);
+  await sb.from('fz_polizas').delete().in('id', idsPolizas);
+  // Se borra TODO el rastreo de realización/determinación del negocio — se reconstruye limpio
+  // a partir de los pagos/cobros reales que existan hoy, no de lo que haya quedado de pruebas.
+  await sb.from('fz_iva_realizaciones').delete().eq('business_id', businessId);
+  const { data: pagosIvaIds } = await sb.from('fz_pagos_impuestos').select('id').eq('business_id', businessId).eq('tipo_impuesto', 'iva');
+  const idsPagosIva = (pagosIvaIds||[]).map(p=>p.id);
+  if (idsPagosIva.length) await sb.from('fz_provisiones_fiscales').delete().in('pago_impuesto_id', idsPagosIva).like('tipo', 'iva_neto_%');
+
+  // Regenerar desde cero: toda factura de proveedor/cliente con IVA o retención, dentro del alcance
+  // de la fecha de corte — si no tiene pagos reales, sincronizarRealizacionFactura no crea nada.
+  const [{ data: negocioRow }, { data: facturasProv }, { data: facturasCli }] = await Promise.all([
+    sb.from('businesses').select('iva_realizacion_desde').eq('id', businessId).maybeSingle(),
+    sb.from('fz_proveedores').select('id,fecha').eq('business_id', businessId),
+    sb.from('fz_facturas_clientes').select('id,fecha').eq('business_id', businessId),
+  ]);
+  const fechaCorte = negocioRow?.iva_realizacion_desde;
+  let regeneradas = 0;
+  if (fechaCorte) {
+    for (const f of (facturasProv||[])) { if (f.fecha >= fechaCorte) { await sincronizarRealizacionFactura(f.id, 'proveedor', businessId, todayStr()); regeneradas++; } }
+    for (const f of (facturasCli||[])) { if (f.fecha >= fechaCorte) { await sincronizarRealizacionFactura(f.id, 'cliente', businessId, todayStr()); regeneradas++; } }
+  }
+  // Regenerar también la Determinación IVA del/los mes(es) en el rango.
+  const { data: pagosIvaEnRango } = await sb.from('fz_pagos_impuestos').select('*').eq('business_id', businessId).eq('tipo_impuesto', 'iva').gte('periodo', desde.slice(0,7)).lte('periodo', hasta.slice(0,7));
+  for (const p of (pagosIvaEnRango||[])) await sincronizarProvisionIva(p, businessId);
+
+  return { borradas: idsPolizas.length, regeneradas };
 }
 
 async function generarPolizaPagoIsr(pagoImpuesto, businessId, cuentaTipo, cuentaId) {
@@ -10312,6 +10369,39 @@ async function abrirDiagnosticoFiscal(businessId, periodo) {
       <tbody>${d.polizasAuto.length ? d.polizasAuto.map(p=>`<tr><td>${fechaCorta(p.fecha)}</td><td style="font-size:12px;">${p.concepto}</td><td><button class="btn btn-ghost btn-sm diag-fiscal-ver-poliza" data-id="${p.id}" style="font-size:11px;padding:3px 8px;">Ver póliza</button></td></tr>`).join('') : '<tr><td colspan="3" class="empty">Ninguna.</td></tr>'}</tbody></table></div>
   `;
   body.querySelectorAll('.diag-fiscal-ver-poliza').forEach(btn => btn.addEventListener('click', () => openPolizaModal(btn.dataset.id, businessId)));
+
+  const { start, end } = monthBounds(periodo);
+  const zona = document.getElementById('reinicioFiscalZona');
+  zona.innerHTML = `
+    <p style="font-size:12.5px;font-weight:700;color:var(--navy-1);margin-bottom:6px;">Reiniciar datos de prueba fiscales (Realización/Determinación IVA)</p>
+    <p style="font-size:11.5px;color:var(--muted);margin-bottom:8px;">Borra las pólizas automáticas de este mecanismo en el rango elegido, junto con su rastreo — y vuelve a generar solo lo que corresponda a los pagos/cobros que existan realmente hoy. Las facturas sin pagos reales no regeneran nada. Queda registrado en Auditoría.</p>
+    <div class="grid-2" style="margin-bottom:8px;">
+      <div class="field" style="margin-bottom:0;"><label>Desde</label><input type="date" id="reinicioDesde" value="${start}"></div>
+      <div class="field" style="margin-bottom:0;"><label>Hasta</label><input type="date" id="reinicioHasta" value="${end}"></div>
+    </div>
+    <button class="btn btn-ghost btn-sm" id="reinicioPrevisualizarBtn">Ver qué se borraría</button>
+    <div id="reinicioPreview" style="margin-top:8px;"></div>
+  `;
+  document.getElementById('reinicioPrevisualizarBtn').addEventListener('click', async () => {
+    const desde = document.getElementById('reinicioDesde').value;
+    const hasta = document.getElementById('reinicioHasta').value;
+    const prev = document.getElementById('reinicioPreview');
+    prev.innerHTML = `<div class="empty">Buscando…</div>`;
+    const p = await previsualizarReinicioFiscal(businessId, desde, hasta);
+    if (!p.totalPolizas) { prev.innerHTML = `<div class="empty">No hay pólizas de este mecanismo en ese rango.</div>`; return; }
+    prev.innerHTML = `
+      <p style="font-size:12.5px;color:var(--red);font-weight:600;margin-bottom:6px;">Se borrarán ${p.totalPolizas} póliza(s), de estas facturas: ${p.referenciasFacturas.join(', ')||'—'}</p>
+      <div class="table-wrap" style="max-height:200px;overflow-y:auto;margin-bottom:8px;"><table><thead><tr><th>Fecha</th><th>Concepto</th></tr></thead>
+        <tbody>${p.polizas.map(x=>`<tr><td>${fechaCorta(x.fecha)}</td><td style="font-size:11.5px;">${x.concepto}</td></tr>`).join('')}</tbody></table></div>
+      <button class="btn btn-gold btn-sm" id="reinicioConfirmarBtn">Confirmar y reiniciar</button>
+    `;
+    document.getElementById('reinicioConfirmarBtn').addEventListener('click', async () => {
+      if (!confirm(`Esto borrará ${p.totalPolizas} póliza(s) automáticas y volverá a generarlas desde los pagos/cobros reales que existan hoy. ¿Continuar?`)) return;
+      const r = await ejecutarReinicioFiscal(businessId, desde, hasta);
+      toast(`Reiniciado: ${r.borradas} póliza(s) borradas, ${r.regeneradas} factura(s) revisadas para regenerar.`);
+      await abrirDiagnosticoFiscal(businessId, periodo);
+    });
+  });
 }
 document.getElementById('closeDiagnosticoFiscal').addEventListener('click', () => document.getElementById('modalDiagnosticoFiscal').classList.remove('show'));
 
