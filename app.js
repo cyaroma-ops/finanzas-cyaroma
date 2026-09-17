@@ -2825,38 +2825,48 @@ async function renderIvaFiscal() {
 }
 
 // Versión ligera del cálculo de IVA/Retenciones de un mes — solo totales, para la vista "Todos los meses".
+// Función común: la proporción de un monto base que ya se "realizó" fiscalmente, a partir de UN
+// pago/cobro aplicado a una factura. La usan IVA y Retenciones por igual — así ninguno de los dos
+// puede divergir en el futuro por un cambio hecho solo en uno de los dos módulos.
+function proporcionRealizadaDePago(montoPago, importeTotalFactura) {
+  if (!Number(importeTotalFactura)) return 0;
+  return Number(montoPago) / Number(importeTotalFactura);
+}
+
 async function computeResumenIvaMesLigero(businessId, periodo) {
   const { start, end } = periodo;
-  const [{ data: facturasProv }, { data: facturasCli }, { data: movsBancos }, { data: movsEfvo }, { data: facturasRetencion },
-         { data: pagosDelMes }, { data: cobrosDelMes }, { data: todasFacturasProvIva }, { data: todasFacturasCliIva }] = await Promise.all([
-    sb.from('fz_proveedores').select('iva_monto').eq('business_id', businessId).eq('aplica_iva', true).gte('fecha', start).lte('fecha', end),
-    sb.from('fz_facturas_clientes').select('iva_monto').eq('business_id', businessId).eq('aplica_iva', true).gte('fecha', start).lte('fecha', end),
+  const [{ data: movsBancos }, { data: movsEfvo },
+         { data: pagosDelMes }, { data: cobrosDelMes }, { data: todasFacturasProv }, { data: todasFacturasCliIva }] = await Promise.all([
     sb.from('fz_bancos_mov').select('iva_monto').eq('business_id', businessId).eq('aplica_iva', true).gte('fecha', start).lte('fecha', end),
     sb.from('fz_efectivo_mov').select('iva_monto').eq('business_id', businessId).eq('aplica_iva', true).gte('fecha', start).lte('fecha', end),
-    sb.from('fz_proveedores').select('retencion_categoria,retencion_isr_monto,retencion_iva_monto').eq('business_id', businessId).eq('aplica_retencion', true).gte('fecha', start).lte('fecha', end),
     sb.from('fz_pagos_aplicados').select('monto,factura_id').eq('business_id', businessId).gte('fecha', start).lte('fecha', end),
     sb.from('fz_cobros_aplicados').select('monto,factura_id').eq('business_id', businessId).gte('fecha', start).lte('fecha', end),
-    sb.from('fz_proveedores').select('id,importe,iva_monto').eq('business_id', businessId).eq('aplica_iva', true),
+    sb.from('fz_proveedores').select('id,importe,iva_monto,aplica_iva,aplica_retencion,retencion_categoria,retencion_isr_monto,retencion_iva_monto').eq('business_id', businessId),
     sb.from('fz_facturas_clientes').select('id,total,iva_monto').eq('business_id', businessId).eq('aplica_iva', true),
   ]);
-  const facturasProvMap = Object.fromEntries((todasFacturasProvIva||[]).map(f => [f.id, f]));
+  const facturasProvMap = Object.fromEntries((todasFacturasProv||[]).map(f => [f.id, f]));
   const facturasCliMap = Object.fromEntries((todasFacturasCliIva||[]).map(f => [f.id, f]));
   const movsIvaDirectos = [...(movsBancos||[]), ...(movsEfvo||[])];
   const ivaAcreditablePagado = (pagosDelMes||[]).reduce((s,p) => {
     const f = facturasProvMap[p.factura_id];
-    if (!f || !Number(f.importe)) return s;
-    return s + Number(f.iva_monto||0) * (Number(p.monto)/Number(f.importe));
+    if (!f || !f.aplica_iva) return s;
+    return s + Number(f.iva_monto||0) * proporcionRealizadaDePago(p.monto, f.importe);
   }, 0) + movsIvaDirectos.reduce((s,m)=>s+(Number(m.iva_monto)||0),0);
   const ivaTrasladadoCobrado = (cobrosDelMes||[]).reduce((s,c) => {
     const f = facturasCliMap[c.factura_id];
-    if (!f || !Number(f.total)) return s;
-    return s + Number(f.iva_monto||0) * (Number(c.monto)/Number(f.total));
+    if (!f) return s;
+    return s + Number(f.iva_monto||0) * proporcionRealizadaDePago(c.monto, f.total);
   }, 0);
+  // Retenciones — mismo principio: la parte exigible del periodo es la proporción efectivamente
+  // pagada de la factura que la originó, NUNCA el importe nominal completo por su sola fecha.
   const retencionesPorCategoria = {};
-  (facturasRetencion||[]).forEach(f => {
+  (pagosDelMes||[]).forEach(p => {
+    const f = facturasProvMap[p.factura_id];
+    if (!f || !f.aplica_retencion) return;
+    const prop = proporcionRealizadaDePago(p.monto, f.importe);
     const cat = f.retencion_categoria || 'Sin categoría';
-    if (Number(f.retencion_isr_monto) > 0.004) { const k = `ISR|${cat}`; retencionesPorCategoria[k] = (retencionesPorCategoria[k]||0) + Number(f.retencion_isr_monto); }
-    if (Number(f.retencion_iva_monto) > 0.004) { const k = `IVA|${cat}`; retencionesPorCategoria[k] = (retencionesPorCategoria[k]||0) + Number(f.retencion_iva_monto); }
+    if (Number(f.retencion_isr_monto) > 0.004) { const k = `ISR|${cat}`; retencionesPorCategoria[k] = (retencionesPorCategoria[k]||0) + Number(f.retencion_isr_monto) * prop; }
+    if (Number(f.retencion_iva_monto) > 0.004) { const k = `IVA|${cat}`; retencionesPorCategoria[k] = (retencionesPorCategoria[k]||0) + Number(f.retencion_iva_monto) * prop; }
   });
   return { ivaTrasladadoCobrado, ivaAcreditablePagado, ivaCargoFavor: ivaTrasladadoCobrado - ivaAcreditablePagado, retencionesPorCategoria };
 }
