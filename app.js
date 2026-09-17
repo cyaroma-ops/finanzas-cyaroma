@@ -782,7 +782,18 @@ function updateTopbar() {
     printBtn.style.display = 'none';
     printOrientacion.style.display = 'none';
   }
+  actualizarAlturaTopbar();
 }
+
+// El "top" del sticky de navegación (Impuestos, Diarios y Pólizas, Estado de Resultados) ya no
+// es un número fijo adivinado — se mide la altura real del encabezado cada vez que cambia
+// (nombre de negocio largo, tamaño de ventana, etc.) para que nunca quede un hueco por donde se
+// asome el contenido de abajo.
+function actualizarAlturaTopbar() {
+  const topbar = document.querySelector('.topbar');
+  if (topbar) document.documentElement.style.setProperty('--topbar-h', topbar.offsetHeight + 'px');
+}
+window.addEventListener('resize', actualizarAlturaTopbar);
 
 async function renderCurrentSection() {
   updateTopbar();
@@ -2042,16 +2053,19 @@ async function sincronizarProvisionIsr(pagoImpuesto, businessId) {
 // Para la vista previa de retroactivos: qué se crearía por cada periodo, SIN crear nada todavía.
 async function previsualizarProvisionesIsr(businessId, anio) {
   const { data: pagos } = await sb.from('fz_pagos_impuestos').select('*').eq('business_id', businessId).eq('tipo_impuesto', 'isr_provisional').like('periodo', `${anio}-%`).order('periodo');
+  const lista = pagos || [];
+  const [provisionesPorPago, cierres] = await Promise.all([
+    Promise.all(lista.map(p => sb.from('fz_provisiones_fiscales').select('monto').eq('pago_impuesto_id', p.id).in('tipo', ['provision','ajuste','reversion']).then(r => r.data || []))),
+    Promise.all(lista.map(p => periodoEstaCerrado(businessId, p.periodo + '-28'))),
+  ]);
   const resultado = [];
-  for (const p of (pagos||[])) {
-    const { data: existentes } = await sb.from('fz_provisiones_fiscales').select('monto').eq('pago_impuesto_id', p.id).in('tipo', ['provision','ajuste','reversion']);
-    const totalProvisionado = (existentes||[]).reduce((s,x)=>s+Number(x.monto),0);
+  lista.forEach((p, i) => {
+    const existentes = provisionesPorPago[i];
+    const totalProvisionado = existentes.reduce((s,x)=>s+Number(x.monto),0);
     const diferencia = Number(p.monto) - totalProvisionado;
-    if (Math.abs(diferencia) < 0.005) continue;
-    const fechaProvision = p.periodo + '-28';
-    const cerrado = await periodoEstaCerrado(businessId, fechaProvision);
-    resultado.push({ pago: p, diferencia, cerrado, esPrimera: !(existentes||[]).length });
-  }
+    if (Math.abs(diferencia) < 0.005) return;
+    resultado.push({ pago: p, diferencia, cerrado: cierres[i], esPrimera: !existentes.length });
+  });
   return resultado;
 }
 
@@ -3177,12 +3191,30 @@ async function autoGenerarPagosImpuestos(b, anio) {
     }
     return existente;
   };
-  let acumuladoIsr = 0;
-  for (let m = 1; m <= hastaMes; m++) {
-    const periodo = `${anio}-${String(m).padStart(2,'0')}`;
-    let [y,mm] = [Number(anio), m+1]; if (mm>12) { mm=1; y++; }
-    const fechaLimite = `${y}-${String(mm).padStart(2,'0')}-17`;
-    const resumen = await computeResumenIvaMesLigero(b.id, monthBounds(periodo));
+
+  const meses = Array.from({ length: hastaMes }, (_, i) => `${anio}-${String(i + 1).padStart(2, '0')}`);
+
+  // Lo más caro de todo esto son las consultas de cada mes (IVA y los ingresos que arman el
+  // ISR) — ninguna depende de la de otro mes, así que se piden TODAS a la vez en vez de una por
+  // una en fila. Esto es lo único que cambia: el ORDEN en que se piden los datos, nunca la
+  // fórmula ni el resultado.
+  const [resumenesIva, ingresosPorMes] = await Promise.all([
+    Promise.all(meses.map(periodo => computeResumenIvaMesLigero(b.id, monthBounds(periodo)))),
+    Promise.all(meses.map(periodo => computeIngresosAjustadosMes(b.id, periodo))),
+  ]);
+
+  // El acumulado de ISR sí depende del mes anterior, pero ya con los ingresos de cada mes en
+  // mano esto es pura suma — no vuelve a tocar la base de datos, así que es instantáneo.
+  let acumulado = 0;
+  const acumuladosPorMes = ingresosPorMes.map(r => { const previo = acumulado; acumulado += r.ingresosMesAjustado; return previo; });
+  const calcsIsr = await Promise.all(meses.map((periodo, i) => computeIsrProvisional(b.id, periodo, acumuladosPorMes[i])));
+
+  for (let i = 0; i < meses.length; i++) {
+    const periodo = meses[i];
+    const m = i + 1;
+    let [y, mm] = [Number(anio), m + 1]; if (mm > 12) { mm = 1; y++; }
+    const fechaLimite = `${y}-${String(mm).padStart(2, '0')}-17`;
+    const resumen = resumenesIva[i];
 
     await registrar(periodo, 'iva', null, resumen.ivaCargoFavor, fechaLimite);
     for (const [k, monto] of Object.entries(resumen.retencionesPorCategoria || {})) {
@@ -3191,9 +3223,7 @@ async function autoGenerarPagosImpuestos(b, anio) {
       await registrar(periodo, tipo, cat, monto, fechaLimite);
     }
 
-    const calcIsr = await computeIsrProvisional(b.id, periodo, acumuladoIsr);
-    acumuladoIsr += calcIsr.ingresosMesAjustado;
-    const filaIsr = await registrar(periodo, 'isr_provisional', null, calcIsr.impuestoACargo, fechaLimite);
+    const filaIsr = await registrar(periodo, 'isr_provisional', null, calcsIsr[i].impuestoACargo, fechaLimite);
     // Solo se provisiona automático, sin pedir confirmación, el MES ACTUAL — cualquier mes
     // anterior (aunque esté abierto) pasa primero por la vista previa de retroactivos.
     if (filaIsr && periodo === todayStr().slice(0,7)) await sincronizarProvisionIsr(filaIsr, b.id);
