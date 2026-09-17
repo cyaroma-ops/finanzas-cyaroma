@@ -6231,7 +6231,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     const subtotal = leerMonto(document.getElementById('movSubtotal').value) || 0;
     const aplicaIva = document.getElementById('movAplicaIva').checked;
     const pct = leerMonto(document.getElementById('movIvaPorcentaje').value) || 0;
-    const ivaMonto = aplicaIva ? subtotal * pct / 100 : 0;
+    const ivaMonto = Math.round((aplicaIva ? subtotal * pct / 100 : 0) * 100) / 100;
     document.getElementById('movIvaMonto').value = fmtInputVal(ivaMonto);
     if (aplicaIva) document.getElementById('movCargos').value = (subtotal + ivaMonto).toFixed(2);
   };
@@ -9262,14 +9262,17 @@ const fpActualizarIva = () => {
   const subtotal = leerMonto(document.getElementById('fpSubtotal').value) || 0;
   const aplicaIva = document.getElementById('fpAplicaIva').checked;
   const pct = leerMonto(document.getElementById('fpIvaPorcentaje').value) || 0;
-  const ivaMonto = aplicaIva ? subtotal * pct / 100 : 0;
+  // Se redondea cada monto a 2 decimales AQUÍ (no hasta el final) — así el importe se calcula
+  // con los mismos centavos que realmente se guardan en cada campo, y nunca se escapa un
+  // centavo por redondear el IVA/retenciones y el importe por separado.
+  const ivaMonto = Math.round((aplicaIva ? subtotal * pct / 100 : 0) * 100) / 100;
   document.getElementById('fpIvaMonto').value = fmtInputVal(ivaMonto);
 
   const aplicaRetencion = document.getElementById('fpAplicaRetencion').checked;
   const isrPct = leerMonto(document.getElementById('fpRetencionIsrPct').value) || 0;
   const ivaRetPct = leerMonto(document.getElementById('fpRetencionIvaPct').value) || 0;
-  const isrMonto = aplicaRetencion ? subtotal * isrPct / 100 : 0;
-  const ivaRetMonto = aplicaRetencion ? subtotal * ivaRetPct / 100 : 0;
+  const isrMonto = Math.round((aplicaRetencion ? subtotal * isrPct / 100 : 0) * 100) / 100;
+  const ivaRetMonto = Math.round((aplicaRetencion ? subtotal * ivaRetPct / 100 : 0) * 100) / 100;
   document.getElementById('fpRetencionIsrMonto').value = fmtInputVal(isrMonto);
   document.getElementById('fpRetencionIvaMonto').value = fmtInputVal(ivaRetMonto);
 
