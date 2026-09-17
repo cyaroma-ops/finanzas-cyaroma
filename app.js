@@ -3450,7 +3450,7 @@ async function renderImpuestosRetenciones(b) {
 
   const [{ data: retenciones }, { data: facturasDetalleTodas }] = await Promise.all([
     sb.from('fz_pagos_impuestos').select('*').eq('business_id', b.id).in('tipo_impuesto', ['retencion_isr','retencion_iva']).like('periodo', `${anio}-%`).order('periodo'),
-    sb.from('fz_proveedores').select('proveedor,factura,fecha,subtotal,retencion_categoria,retencion_isr_monto,retencion_iva_monto').eq('business_id', b.id).eq('aplica_retencion', true).gte('fecha', `${anio}-01-01`).lte('fecha', `${anio}-12-31`).order('fecha', { ascending: false }),
+    sb.from('fz_proveedores').select('id,proveedor,factura,fecha,subtotal,retencion_categoria,retencion_isr_monto,retencion_iva_monto').eq('business_id', b.id).eq('aplica_retencion', true).gte('fecha', `${anio}-01-01`).lte('fecha', `${anio}-12-31`).order('fecha', { ascending: false }),
   ]);
   const facturasDetalle = filtroCat ? (facturasDetalleTodas||[]).filter(f => (f.retencion_categoria||'Sin categoría') === filtroCat) : facturasDetalleTodas;
 
@@ -3493,8 +3493,8 @@ async function renderImpuestosRetenciones(b) {
         <table>
           <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Categoría</th><th>Base</th><th>ISR retenido</th><th>IVA retenido</th></tr></thead>
           <tbody>
-            ${(facturasDetalle||[]).length ? facturasDetalle.map(f => `<tr>
-                <td>${fechaCorta(f.fecha)}</td><td>${f.proveedor||''}</td><td>${f.factura||'s/f'}</td><td>${f.retencion_categoria||'Sin categoría'}</td>
+            ${(facturasDetalle||[]).length ? facturasDetalle.map((f,idx) => `<tr>
+                <td>${fechaCorta(f.fecha)}</td><td>${f.proveedor||''}</td><td><span class="ret-ver-factura" data-idx="${idx}" style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted;">${f.factura||'s/f'}</span></td><td>${f.retencion_categoria||'Sin categoría'}</td>
                 <td class="num">${f.subtotal?fmt(f.subtotal):''}</td><td class="num">${fmt(f.retencion_isr_monto)}</td><td class="num">${fmt(f.retencion_iva_monto)}</td>
               </tr>`).join('') : `<tr><td colspan="7" class="empty">Sin facturas con retención en ${anio}.</td></tr>`}
           </tbody>
@@ -3512,6 +3512,11 @@ async function renderImpuestosRetenciones(b) {
   }));
   const btnQuitar = document.getElementById('retQuitarFiltroBtn');
   if (btnQuitar) btnQuitar.addEventListener('click', () => { STATE_impRetFiltroCategoria = null; renderImpuestosRetenciones(b); });
+  el.querySelectorAll('.ret-ver-factura').forEach(sp => sp.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const f = facturasDetalle[Number(sp.dataset.idx)];
+    if (f) verDocumentoDesdeOrigen({ tipoOrigen: 'factura_proveedor', id: f.id, fecha: f.fecha }, b.id);
+  }));
 }
 
 async function renderPagosImpuestos() {
