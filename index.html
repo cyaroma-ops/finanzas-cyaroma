@@ -37,13 +37,11 @@
   --shadow:0 8px 24px rgba(10,31,61,.08);
 }
 *{box-sizing:border-box;margin:0;padding:0;}
-html{overflow-x:hidden;}
 body{
   font-family:'Inter',sans-serif;
   background:var(--paper);
   color:var(--ink);
   -webkit-font-smoothing:antialiased;
-  overflow-x:hidden;
 }
 h1,h2,h3,.serif{font-family:'Cormorant Garamond',serif;}
 .num{font-variant-numeric:tabular-nums;text-align:right;}
@@ -235,6 +233,7 @@ h1,h2,h3,.serif{font-family:'Cormorant Garamond',serif;}
 }
 .pl-sticky-summary{position:sticky;top:79px;z-index:6;background:var(--paper);padding-top:10px;margin:-10px -32px 18px;padding-left:32px;padding-right:32px;padding-bottom:4px;}
 #impuestosTabBar{position:sticky;top:79px;z-index:6;background:var(--paper);padding:10px 32px 10px;margin:-10px -32px 14px;}
+#diariosPolizasTabBar{position:sticky;top:79px;z-index:6;background:var(--paper);padding:10px 32px 10px;margin:-10px -32px 14px;}
 #sec-isrprovisional > .tag-row,#sec-ivafiscal > .tag-row{position:sticky;top:131px;z-index:5;background:var(--paper);padding:10px 0;margin:-10px 0 4px;}
 .topbar h2{font-size:24px;color:var(--navy-1);}
 .topbar .sub{font-size:12.5px;color:var(--muted);margin-top:2px;}
@@ -350,6 +349,12 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   .btn{padding:9px 14px;font-size:12.5px;}
   .modal{padding:18px;}
   input[type="month"],input[type="date"]{min-width:0;width:100%;}
+
+  /* En móvil el topbar es más bajo — se ajusta el punto donde se ancla la navegación de
+     Impuestos, y las sub-pestañas (Mes/Todos los meses) dejan de ser sticky para no apilar
+     3 barras fijas y comerse la pantalla — solo se conservan el título y las pestañas principales. */
+  .pl-sticky-summary,#impuestosTabBar,#diariosPolizasTabBar{top:66px;}
+  #sec-isrprovisional > .tag-row,#sec-ivafiscal > .tag-row{position:static;margin:0 0 10px;padding:0;}
 }
 @media(max-width:480px){
   .content{padding:12px;}
