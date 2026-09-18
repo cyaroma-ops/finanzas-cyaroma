@@ -4211,6 +4211,7 @@ async function autoGenerarPagosImpuestos(b, anio) {
 }
 
 async function pintarPagosImpuestos(contenido, b) {
+  console.log('%c>>> ENTRÓ A pintarPagosImpuestos <<<', 'background:yellow;color:black;font-weight:bold;padding:2px 6px;');
   const __m = async (nombre, fn) => { const t0 = performance.now(); const r = await fn(); if (window.__perfPagos) window.__perfPagos.push({ nombre, ms: performance.now()-t0 }); return r; };
   const { data: pagos } = await __m('  └─ select fz_pagos_impuestos', () => sb.from('fz_pagos_impuestos').select('*').eq('business_id', b.id).like('periodo', `${STATE_piAnio}-%`).order('periodo', { ascending: true }));
   // Para decidir si el menú de cada fila puede mostrar "Eliminar" — mismos criterios que la
@@ -4229,35 +4230,37 @@ async function pintarPagosImpuestos(contenido, b) {
     pagos.forEach(p => { if (p.declarada || p.fecha_presentacion) { idsNoEliminables.add(p.id); (__motivoBloqueo[p.id]=__motivoBloqueo[p.id]||[]).push('declarada'); } });
   }
 
-  // === DIAGNÓSTICO TEMPORAL — NO cambia ninguna lógica, solo imprime en consola ===
-  console.log('%c=== DIAGNÓSTICO — menú Eliminar en Pagos de Impuestos ===', 'font-weight:bold;font-size:13px;');
-  console.table((pagos||[]).map(p => ({
-    id: p.id, periodo: p.periodo, tipo_impuesto: p.tipo_impuesto, concepto: p.concepto || '(sin concepto)',
-    'está_en_idsNoEliminables': idsNoEliminables.has(p.id),
-    'motivo_bloqueo': __motivoBloqueo[p.id] ? __motivoBloqueo[p.id].join(' + ') : '(ninguno — Eliminar SÍ se muestra)',
-  })));
+  // === DIAGNÓSTICO TEMPORAL — envuelto en try/catch para que si algo truena, se VEA el error
+  // en vez de morir en silencio y saltarse todo lo demás sin explicación. No cambia la lógica.
+  try {
+    console.log('%c=== DIAGNÓSTICO ELIMINACIÓN ISR 2026-07 ===', 'background:#222;color:#0f0;font-weight:bold;font-size:13px;padding:3px 8px;');
+    console.table((pagos||[]).map(p => ({
+      id: p.id, periodo: p.periodo, tipo_impuesto: p.tipo_impuesto, concepto: p.concepto || '(sin concepto)',
+      'está_en_idsNoEliminables': idsNoEliminables.has(p.id),
+      'motivo_bloqueo': __motivoBloqueo[p.id] ? __motivoBloqueo[p.id].join(' + ') : '(ninguno — Eliminar SÍ se muestra)',
+    })));
 
-  const __filaIsrJulio = (pagos||[]).find(p => p.periodo === '2026-07' && p.tipo_impuesto === 'isr_provisional');
-  if (__filaIsrJulio) {
-    console.log('%c--- Investigación específica: ISR Provisional 2026-07 ---', 'font-weight:bold;');
-    console.log('ID real de fz_pagos_impuestos renderizado ahora:', __filaIsrJulio.id);
-    const { data: aplicacionesDeEsteId } = await sb.from('fz_aplicaciones_pago_fiscal').select('*').eq('pago_impuesto_id', __filaIsrJulio.id);
-    console.log('Filas de fz_aplicaciones_pago_fiscal con ese pago_impuesto_id (incluye revertidas):', aplicacionesDeEsteId);
-    // Por si existiera MÁS de una fila de ISR 2026-07 en fz_pagos_impuestos (un posible duplicado
-    // con otro UUID) — se buscan TODAS, no solo la que se está renderizando ahora.
-    const { data: todasFilasIsrJulio } = await sb.from('fz_pagos_impuestos').select('id,created_at').eq('business_id', b.id).eq('periodo','2026-07').eq('tipo_impuesto','isr_provisional');
-    console.log('TODAS las filas de fz_pagos_impuestos para ISR 2026-07 (por si hay más de una):', todasFilasIsrJulio);
-    if (todasFilasIsrJulio && todasFilasIsrJulio.length > 1) {
-      console.log('%c¡ATENCIÓN! Existe más de una fila de fz_pagos_impuestos para ISR 2026-07 — posible duplicado con distinto UUID.', 'color:red;font-weight:bold;');
-      for (const fila of todasFilasIsrJulio) {
-        const { data: apsDeEsaFila } = await sb.from('fz_aplicaciones_pago_fiscal').select('id,revertido_at').eq('pago_impuesto_id', fila.id);
-        console.log(`  fz_pagos_impuestos.id=${fila.id} (creado ${fila.created_at}) → ${(apsDeEsaFila||[]).length} aplicación(es):`, apsDeEsaFila);
-      }
+    const filasIsrJulio = (pagos||[]).filter(p => p.periodo === '2026-07' && p.tipo_impuesto === 'isr_provisional');
+    console.log('Cantidad de obligaciones ISR 2026-07 encontradas en el render actual:', filasIsrJulio.length);
+    // También se busca directo en la tabla (no solo en lo ya cargado), por si el filtro de año
+    // de la pantalla estuviera excluyendo alguna fila real que sí existe en la base.
+    const { data: todasFilasIsrJulioDB } = await sb.from('fz_pagos_impuestos').select('*').eq('business_id', b.id).eq('periodo','2026-07').eq('tipo_impuesto','isr_provisional');
+    console.log('Todas las filas de fz_pagos_impuestos en la BASE (sin depender del filtro de año de la pantalla) para periodo=2026-07 y tipo=isr_provisional, con sus UUID:', todasFilasIsrJulioDB);
+
+    for (const fila of (todasFilasIsrJulioDB||[])) {
+      const { data: apsDeEsaFila } = await sb.from('fz_aplicaciones_pago_fiscal').select('*').eq('pago_impuesto_id', fila.id);
+      const enIdsNoEliminables = idsNoEliminables.has(fila.id);
+      let motivo = '(ninguno)';
+      if ((apsDeEsaFila||[]).some(a=>!a.revertido_at)) motivo = 'aplicación vigente';
+      else if ((apsDeEsaFila||[]).some(a=>a.revertido_at)) motivo = 'aplicación revertida (historial)';
+      console.log(`--- fz_pagos_impuestos.id = ${fila.id} (creado ${fila.created_at}) ---`);
+      console.log('   Aplicaciones ligadas (incluye revertidas):', apsDeEsaFila);
+      console.log('   ¿Está en idsNoEliminables (el Set que decide el menú)?', enIdsNoEliminables);
+      console.log('   Motivo exacto de bloqueo:', enIdsNoEliminables ? motivo : '(ninguno — por eso se muestra Eliminar)');
     }
-    console.log('¿El id renderizado está en idsNoEliminables?', idsNoEliminables.has(__filaIsrJulio.id));
-    console.log('Condición exacta que decide mostrar "Eliminar" en el HTML: idsNoEliminables.has(p.id) ? NO se muestra : SÍ se muestra. Resultado para este id:', idsNoEliminables.has(__filaIsrJulio.id) ? 'NO se muestra (bloqueado)' : 'SÍ se muestra (Eliminar visible)');
-  } else {
-    console.log('No se encontró ninguna fila con periodo=2026-07 y tipo_impuesto=isr_provisional en el arreglo "pagos" de este render.');
+  } catch (errDiagnostico) {
+    console.log('%c¡ERROR DENTRO DEL BLOQUE DE DIAGNÓSTICO! (esto es justo lo que buscábamos si nada se veía antes)', 'background:red;color:white;font-weight:bold;padding:3px 8px;');
+    console.error(errDiagnostico);
   }
   // === FIN DIAGNÓSTICO TEMPORAL ===
 
