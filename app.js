@@ -754,7 +754,7 @@ const SECTION_META = {
 };
 // Estas viven "dentro" de Configuración: ya no tienen su propio ítem en el menú principal,
 // pero conservan su sección y su función de render tal cual, solo cambia cómo se llega ahí.
-const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos', 'comparativo', 'recargos'];
+const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos', 'comparativo', 'recargos', 'diasinhabiles'];
 function marcarNavActivo(seccion) {
   document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
   const seccionNav = SECCIONES_EN_CONFIGURACION.includes(seccion) ? 'configuracion' : seccion;
@@ -870,6 +870,7 @@ async function renderCurrentSection() {
   if (s === 'auxiliares') return renderAuxiliares();
   if (s === 'comparativo') return renderComparativo();
   if (s === 'recargos') return renderRecargos();
+  if (s === 'diasinhabiles') return renderDiasInhabiles();
   if (s === 'pagosimpuestos') return renderPagosImpuestos();
   if (s === 'isrprovisional') return renderIsrProvisional();
   if (s === 'pl') return renderPL();
@@ -2175,10 +2176,10 @@ async function calcularVencimientoBase(periodo, tipoImpuesto) {
 // oficiales) — se reporta explícitamente, nunca se presenta como definitivo en ese caso.
 async function calcularDiasHabiles(fechaBaseStr, n) {
   if (!n || n <= 0) return { fecha: fechaBaseStr, calendarioIncompleto: false };
-  const finDelAnioSiguiente = `${Number(fechaBaseStr.slice(0,4))+1}-12-31`;
-  const { data: inhabiles } = await sb.from('fz_dias_inhabiles_fiscales').select('fecha').gte('fecha', fechaBaseStr).lte('fecha', finDelAnioSiguiente);
+  const anioBase = fechaBaseStr.slice(0,4);
+  const finDelAnioSiguiente = `${Number(anioBase)+1}-12-31`;
+  const { data: inhabiles } = await sb.from('fz_dias_inhabiles_fiscales').select('fecha').eq('activo', true).gte('fecha', `${anioBase}-01-01`).lte('fecha', finDelAnioSiguiente);
   const setInhabiles = new Set((inhabiles||[]).map(f=>f.fecha));
-  const calendarioIncompleto = setInhabiles.size === 0; // no hay ningún inhábil cargado en el rango — probablemente el calendario no está completo todavía
   let fecha = new Date(fechaBaseStr + 'T00:00:00');
   let contados = 0;
   while (contados < n) {
@@ -2187,7 +2188,15 @@ async function calcularDiasHabiles(fechaBaseStr, n) {
     const fechaStr = fecha.toISOString().slice(0,10);
     if (diaSemana !== 0 && diaSemana !== 6 && !setInhabiles.has(fechaStr)) contados++;
   }
-  return { fecha: fecha.toISOString().slice(0,10), calendarioIncompleto };
+  const fechaFinal = fecha.toISOString().slice(0,10);
+  // El calendario se considera cargado para un año en cuanto existe AL MENOS un día inhábil
+  // activo capturado en ese año — no exige cubrir el rango completo, solo que alguien ya empezó
+  // a administrar ese año. Se revisan todos los años que la extensión realmente toca (el de la
+  // fecha base y, si la extensión cruzó al año siguiente, ese también).
+  const aniosTocados = new Set([anioBase, fechaFinal.slice(0,4)]);
+  const anioTieneDatos = (anio) => (inhabiles||[]).some(f=>f.fecha.slice(0,4)===anio);
+  const calendarioIncompleto = ![...aniosTocados].every(anioTieneDatos);
+  return { fecha: fechaFinal, calendarioIncompleto };
 }
 
 // Orquestador — calcula (sin persistir) el vencimiento base y efectivo de una obligación
@@ -5353,6 +5362,110 @@ async function renderRecargos() {
   await pintarRecargos(contenido);
 }
 
+let STATE_diasInhabilesAnio = todayStr().slice(0,4);
+
+// Administración del calendario de días inhábiles fiscales — global (fz_dias_inhabiles_fiscales),
+// no por negocio. El motor de vencimientos (calcularDiasHabiles) consulta esta misma tabla.
+// Sábados y domingos nunca se capturan aquí — el motor ya los excluye automáticamente.
+async function renderDiasInhabiles() {
+  const el = document.getElementById('sec-diasinhabiles');
+  el.innerHTML = '';
+  agregarBotonVolverConfig(el);
+  const contenido = document.createElement('div');
+  el.appendChild(contenido);
+  await pintarDiasInhabiles(contenido);
+}
+
+async function pintarDiasInhabiles(contenido) {
+  const { data: todos } = await sb.from('fz_dias_inhabiles_fiscales').select('*').order('fecha', { ascending: true });
+  const anios = [...new Set((todos||[]).map(d=>d.fecha.slice(0,4)))];
+  if (!anios.includes(STATE_diasInhabilesAnio)) anios.push(STATE_diasInhabilesAnio);
+  anios.sort();
+  const filtrados = (todos||[]).filter(d => d.fecha.slice(0,4) === STATE_diasInhabilesAnio);
+
+  contenido.innerHTML = `
+    <div class="card-head" style="margin-bottom:14px;">
+      <h3>Días inhábiles fiscales</h3>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <select id="diAnioSel" style="padding:5px 8px;border:1px solid var(--line);border-radius:6px;">
+          ${anios.map(a=>`<option value="${a}" ${a===STATE_diasInhabilesAnio?'selected':''}>${a}</option>`).join('')}
+        </select>
+        ${STATE.esAdministrador ? `<button class="btn btn-gold btn-sm" id="diAgregarBtn">+ Agregar día inhábil</button>` : ''}
+      </div>
+    </div>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:12px;max-width:700px;">Calendario global usado por el motor de vencimientos fiscales (aplica a todos los negocios). Sábados y domingos no se capturan aquí — se excluyen automáticamente. Captura únicamente fechas conforme al calendario oficial publicado por el SAT; nada se precarga.</p>
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Fecha</th><th>Descripción</th><th>Año</th><th>Fuente/Referencia</th><th>Activo</th>${STATE.esAdministrador?'<th></th>':''}</tr></thead>
+          <tbody>
+            ${filtrados.length ? filtrados.map(d => `<tr>
+              <td>${fechaCorta(d.fecha)}</td>
+              <td class="wrap-text" style="max-width:260px;">${d.descripcion||''}</td>
+              <td>${d.fecha.slice(0,4)}</td>
+              <td class="wrap-text" style="max-width:200px;">${d.fuente_referencia||''}</td>
+              <td>${d.activo===false?'<span style="color:var(--muted);">Inactivo</span>':'<span style="color:var(--green);">Activo</span>'}</td>
+              ${STATE.esAdministrador ? `<td style="white-space:nowrap;">
+                <button class="btn btn-ghost btn-sm di-editar" data-id="${d.id}" style="padding:3px 8px;">Editar</button>
+                <button class="btn btn-ghost btn-sm di-toggle" data-id="${d.id}" data-activo="${d.activo!==false}" style="padding:3px 8px;">${d.activo===false?'Activar':'Desactivar'}</button>
+                <button class="btn btn-ghost btn-sm di-eliminar" data-id="${d.id}" style="padding:3px 8px;color:var(--red);">Eliminar</button>
+              </td>` : ''}
+            </tr>`).join('') : `<tr><td colspan="6" class="empty">Sin días inhábiles registrados para ${STATE_diasInhabilesAnio}.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('diAnioSel').addEventListener('change', (e) => { STATE_diasInhabilesAnio = e.target.value; pintarDiasInhabiles(contenido); });
+
+  if (!STATE.esAdministrador) return;
+
+  const abrirFormulario = (dia) => {
+    const fecha = prompt('Fecha (YYYY-MM-DD):', dia?.fecha || '');
+    if (fecha === null) return;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) { toast('Fecha inválida — usa el formato YYYY-MM-DD.', 'error'); return; }
+    const diaSemana = new Date(fecha+'T00:00:00').getDay();
+    if (diaSemana === 0 || diaSemana === 6) { toast('Sábados y domingos no se capturan — el motor ya los excluye automáticamente.', 'error'); return; }
+    const descripcion = prompt('Descripción (ej. "Día de la Independencia"):', dia?.descripcion || '');
+    if (descripcion === null) return;
+    const fuente = prompt('Fuente/Referencia (ej. "Calendario SAT 2026", opcional):', dia?.fuente_referencia || '');
+    if (fuente === null) return;
+    guardarDiaInhabil(dia?.id || null, fecha, descripcion.trim(), fuente.trim(), contenido);
+  };
+
+  document.getElementById('diAgregarBtn').addEventListener('click', () => abrirFormulario(null));
+  contenido.querySelectorAll('.di-editar').forEach(btn => btn.addEventListener('click', () => {
+    const dia = (todos||[]).find(d=>d.id===btn.dataset.id);
+    abrirFormulario(dia);
+  }));
+  contenido.querySelectorAll('.di-toggle').forEach(btn => btn.addEventListener('click', async () => {
+    const nuevoActivo = btn.dataset.activo !== 'true';
+    await sb.from('fz_dias_inhabiles_fiscales').update({ activo: nuevoActivo }).eq('id', btn.dataset.id);
+    registrarAuditoria(null, 'editar', 'Configuración', `Día inhábil fiscal ${nuevoActivo?'activado':'desactivado'}`);
+    toast(nuevoActivo ? 'Activado.' : 'Desactivado.');
+    await pintarDiasInhabiles(contenido);
+  }));
+  contenido.querySelectorAll('.di-eliminar').forEach(btn => btn.addEventListener('click', async () => {
+    if (!confirm('¿Eliminar este día inhábil del calendario?')) return;
+    await sb.from('fz_dias_inhabiles_fiscales').delete().eq('id', btn.dataset.id);
+    registrarAuditoria(null, 'eliminar', 'Configuración', 'Día inhábil fiscal eliminado');
+    toast('Eliminado.');
+    await pintarDiasInhabiles(contenido);
+  }));
+}
+
+async function guardarDiaInhabil(id, fecha, descripcion, fuente_referencia, contenido) {
+  const payload = { fecha, descripcion: descripcion || null, fuente_referencia: fuente_referencia || null };
+  const { error } = id
+    ? await sb.from('fz_dias_inhabiles_fiscales').update(payload).eq('id', id)
+    : await sb.from('fz_dias_inhabiles_fiscales').insert({ ...payload, activo: true });
+  if (error) { toast('Error: ' + error.message, 'error'); return; }
+  registrarAuditoria(null, id?'editar':'crear', 'Configuración', `Día inhábil fiscal ${fecha}${id?' actualizado':' agregado'}`);
+  toast(id ? 'Actualizado.' : 'Agregado.');
+  await pintarDiasInhabiles(contenido);
+}
+
 let STATE_recargosAnio = todayStr().slice(0,4);
 
 // Cálculo de Recargos y Actualización reutilizable — usado tanto en la calculadora suelta
@@ -6196,6 +6309,7 @@ async function renderConfiguracion() {
     <p style="font-size:13px;font-weight:700;color:var(--navy-1);margin-bottom:10px;">Fiscal</p>
     ${grid(`
       ${tarjetaConfigHtml('cfgRecargos', 'Recargos y Actualización', 'Calculadora de INPC y recargos para impuestos pagados fuera de tiempo — aplica a cualquier negocio.')}
+      ${tarjetaConfigHtml('cfgDiasInhabiles', 'Días inhábiles', 'Calendario oficial de días inhábiles fiscales para el cálculo de vencimientos — global, aplica a todos los negocios.')}
     `)}
     <p style="font-size:13px;font-weight:700;color:var(--navy-1);margin-bottom:10px;">Administración</p>
     ${grid(`
@@ -6218,6 +6332,7 @@ async function renderConfiguracion() {
   ir('cfgActivosFijos', 'activosfijos');
   ir('cfgComparativo', 'comparativo');
   ir('cfgRecargos', 'recargos');
+  ir('cfgDiasInhabiles', 'diasinhabiles');
   const usuariosBtn = document.getElementById('cfgUsuarios');
   if (usuariosBtn) usuariosBtn.addEventListener('click', openUsuariosModal);
   const mfaBtn = document.getElementById('cfgMfa');
