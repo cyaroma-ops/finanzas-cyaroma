@@ -740,6 +740,7 @@ const SECTION_META = {
   auxiliares: { title: 'Auxiliares', sub: '', showMonth: true, needsBiz: true },
   comparativo: { title: 'Comparativo entre negocios', sub: '', showMonth: true, needsBiz: false },
   recargos: { title: 'Recargos y Actualización', sub: '', showMonth: false, needsBiz: false },
+  diasinhabiles: { title: 'Días inhábiles fiscales', sub: '', showMonth: false, needsBiz: false },
   pagosimpuestos: { title: 'Pagos de Impuestos', sub: '', showMonth: false, needsBiz: true },
   isrprovisional: { title: 'Pago Provisional de ISR', sub: '', showMonth: true, needsBiz: true },
   pl: { title: 'Estado de Resultados', sub: '', showMonth: true, needsBiz: true },
@@ -799,6 +800,13 @@ const SECCIONES_IMPRIMIBLES = ['efectivo', 'bancos', 'pl', 'flujo', 'balance', '
 
 function updateTopbar() {
   const meta = SECTION_META[STATE.currentSection];
+  if (!meta) {
+    console.error(`SECTION_META no tiene entrada para la sección "${STATE.currentSection}" — falta registrarla. La pantalla no puede mostrar su título/encabezado hasta corregirlo.`);
+    document.getElementById('pageTitle').textContent = STATE.currentSection || '(sección desconocida)';
+    document.getElementById('pageSub').textContent = '';
+    document.getElementById('monthPicker').style.display = 'none';
+    return;
+  }
   const b = biz();
   const titulo = meta.title + (meta.needsBiz && b ? ' — ' + b.name : '');
   document.getElementById('pageTitle').textContent = titulo;
