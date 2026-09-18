@@ -2248,6 +2248,61 @@ async function crearDeclaracionFiscal(businessId, pagoImpuestoId, datos) {
   return { estado: 'creada', declaracion: nueva };
 }
 
+// La declaración VIGENTE de una obligación es la "punta" de la cadena Normal→Complementaria 1→
+// Complementaria 2→... : la única declaración que ninguna otra referencia como su anterior. Si
+// no hay ninguna declaración, regresa null (nunca se inventa una).
+async function obtenerDeclaracionVigente(pagoImpuestoId) {
+  const { data: todas } = await sb.from('fz_declaraciones_fiscales').select('*').eq('pago_impuesto_id', pagoImpuestoId).order('created_at', { ascending: true });
+  if (!todas || !todas.length) return null;
+  const referenciadas = new Set(todas.filter(d=>d.declaracion_anterior_id).map(d=>d.declaracion_anterior_id));
+  return todas.find(d => !referenciadas.has(d.id)) || todas[todas.length-1];
+}
+
+// Importe exigible REAL de una obligación, a una fecha de pago — fuente única que usan tanto el
+// preview del modal de pago como (indirectamente) la aplicación definitiva, para que nunca se
+// muestre un número distinto al que termina contabilizándose. Parte del importe DECLARADO (no
+// de fz_pagos_impuestos.monto) y le aplica exactamente la misma ruta fiscal de la Fase 4
+// (asegurarVencimientoEfectivo → fecha real → calcularMoraFiscal) — nunca una segunda fórmula.
+async function calcularImporteExigibleObligacion(pagoImpuestoId, fechaPago) {
+  const declaracion = await obtenerDeclaracionVigente(pagoImpuestoId);
+  if (!declaracion) return { sinDeclaracion: true };
+
+  const { data: aplicacionesPrevias } = await sb.from('fz_aplicaciones_pago_fiscal').select('monto_principal,monto_actualizacion,monto_recargos').eq('pago_impuesto_id', pagoImpuestoId).is('revertido_at', null);
+  const principalYaPagado = (aplicacionesPrevias||[]).reduce((s,a)=>s+Number(a.monto_principal||0),0);
+  const actualizacionYaPagada = (aplicacionesPrevias||[]).reduce((s,a)=>s+Number(a.monto_actualizacion||0),0);
+  const recargosYaPagados = (aplicacionesPrevias||[]).reduce((s,a)=>s+Number(a.monto_recargos||0),0);
+  const saldoPrincipal = Number(declaracion.importe_declarado||0) - principalYaPagado;
+
+  // Una complementaria que disminuye por debajo de lo YA pagado no se resuelve aquí — requiere
+  // tratamiento posterior (posible compensación/devolución), nunca se automatiza en esta fase.
+  if (saldoPrincipal < -0.004) {
+    return { sinDeclaracion: false, declaracion, requiereTratamientoEspecial: true, motivo: `La declaración vigente (${declaracion.tipo_declaracion}) determina un importe menor a lo ya pagado contra esta obligación — requiere revisión manual (posible compensación/devolución), no se automatiza.` };
+  }
+  if (saldoPrincipal <= 0.004) {
+    return { sinDeclaracion: false, declaracion, saldoPrincipal: 0, totalExigible: 0, montoRedondeado: 0, yaLiquidada: true };
+  }
+
+  const venc = await asegurarVencimientoEfectivo(pagoImpuestoId);
+  if (!venc.ok) return { sinDeclaracion: false, declaracion, sinVencimientoConfiable: true, motivo: venc.motivo };
+
+  let actualizacionPendiente = 0, recargosPendientes = 0, aviso = null;
+  if (fechaPago > venc.fecha) {
+    const r = await calcularMoraFiscal(saldoPrincipal, venc.fecha, fechaPago);
+    if (r.error) aviso = r.error;
+    else {
+      actualizacionPendiente = Math.max(0, (r.montoActualizado - saldoPrincipal) - actualizacionYaPagada);
+      recargosPendientes = Math.max(0, r.recargos - recargosYaPagados);
+    }
+  }
+  const totalExigible = saldoPrincipal + actualizacionPendiente + recargosPendientes;
+  const montoRedondeado = ajustarRedondeoSAT(totalExigible);
+  return {
+    sinDeclaracion: false, declaracion, saldoPrincipal, actualizacionPendiente, recargosPendientes,
+    totalExigible, montoRedondeado, ajusteSAT: Math.round((montoRedondeado-totalExigible)*100)/100, aviso,
+    fechaVencimientoEfectiva: venc.fecha,
+  };
+}
+
 // Override controlado de actualización/recargos — nunca una edición libre. Exige motivo,
 // registra usuario/fecha, conserva el valor calculado original sin tocarlo, y solo cambia el
 // valor "aplicado" (el que usan reportes/contabilización). Restringido a rol administrativo —
@@ -3174,7 +3229,13 @@ async function aplicarPagoFiscal(businessId, fecha, cuentaTipo, cuentaId, aplica
     const principalYaPagado = (previas||[]).reduce((s,p)=>s+Number(p.monto_principal||0),0);
     const actualizacionYaPagada = (previas||[]).reduce((s,p)=>s+Number(p.monto_actualizacion||0),0);
     const recargosYaPagados = (previas||[]).reduce((s,p)=>s+Number(p.monto_recargos||0),0);
-    const saldoPrincipalPendiente = Number(a.pagoImpuesto.monto) - principalYaPagado;
+    // La base del principal es la declaración vigente cuando existe (para que nunca diverja de lo
+    // que el usuario vio en el preview) — solo si no hay ninguna declaración registrada (caso de
+    // registros manuales/"otro" que llegan por la otra vía de este mismo motor) se respalda en
+    // el monto propio de la obligación, igual que antes.
+    const declaracionVigente = await obtenerDeclaracionVigente(a.pagoImpuesto.id);
+    const baseParaPrincipal = declaracionVigente ? Number(declaracionVigente.importe_declarado||0) : Number(a.pagoImpuesto.monto);
+    const saldoPrincipalPendiente = baseParaPrincipal - principalYaPagado;
     const desglose = await calcularDesglosePagoParcial(saldoPrincipalPendiente, vencimientos[a.pagoImpuesto.id], fecha, Number(a.monto), recargosYaPagados, actualizacionYaPagada);
     await sb.from('fz_aplicaciones_pago_fiscal').insert({
       business_id: businessId, pago_impuesto_id: a.pagoImpuesto.id, monto: Number(a.monto),
@@ -4813,46 +4874,47 @@ async function abrirModalAplicarPagoFiscal(b) {
   const lista = document.getElementById('apfLista');
   const construirLista = async () => {
     const fechaPago = document.getElementById('apfFecha').value || todayStr();
-    // Total exigible = principal pendiente + actualización/recargos pendientes, recalculados a
-    // esta fecha — nunca un valor guardado de antes, porque los accesorios crecen con el tiempo.
+    // Importe exigible = misma ruta fiscal que la aplicación definitiva (calcularImporteExigibleObligacion,
+    // que internamente usa asegurarVencimientoEfectivo → calcularMoraFiscal) — nunca una segunda
+    // fórmula distinta para el preview. La fuente del principal es la declaración vigente, no
+    // fz_pagos_impuestos.monto.
     const filasConTotal = [];
     for (const p of conSaldo) {
-      const saldoPrincipal = Number(p.monto) - (Number(p.importe_pagado)||0);
-      let actualizacionPendiente = 0, recargosPendientes = 0, aviso = null;
-      if (fechaPago.slice(0,7) > p.fecha_limite.slice(0,7) && saldoPrincipal > 0.004) {
-        const { data: previas } = await sb.from('fz_aplicaciones_pago_fiscal').select('monto_actualizacion,monto_recargos').eq('pago_impuesto_id', p.id);
-        const actualizacionYaPagada = (previas||[]).reduce((s,a)=>s+Number(a.monto_actualizacion||0),0);
-        const recargosYaPagados = (previas||[]).reduce((s,a)=>s+Number(a.monto_recargos||0),0);
-        const r = await calcularRecargosActualizacion(saldoPrincipal, p.fecha_limite.slice(0,7), fechaPago.slice(0,7));
-        if (r.error) aviso = r.error;
-        else {
-          actualizacionPendiente = Math.max(0, (r.montoActualizado - saldoPrincipal) - actualizacionYaPagada);
-          recargosPendientes = Math.max(0, r.recargos - recargosYaPagados);
-        }
-      }
-      const totalExigible = saldoPrincipal + actualizacionPendiente + recargosPendientes;
-      const montoRedondeado = ajustarRedondeoSAT(totalExigible);
-      const ajusteSAT = Math.round((montoRedondeado - totalExigible)*100)/100;
-      filasConTotal.push({ p, saldoPrincipal, actualizacionPendiente, recargosPendientes, totalExigible, montoRedondeado, ajusteSAT, aviso });
+      const r = await calcularImporteExigibleObligacion(p.id, fechaPago);
+      filasConTotal.push({ p, ...r });
     }
-    lista.innerHTML = filasConTotal.length ? filasConTotal.map(({p, saldoPrincipal, actualizacionPendiente, recargosPendientes, totalExigible, montoRedondeado, ajusteSAT, aviso}) => `
+    lista.innerHTML = filasConTotal.length ? filasConTotal.map(({p, sinDeclaracion, declaracion, requiereTratamientoEspecial, sinVencimientoConfiable, yaLiquidada, motivo, saldoPrincipal, actualizacionPendiente, recargosPendientes, totalExigible, montoRedondeado, ajusteSAT, aviso}) => {
+      if (sinDeclaracion) {
+        return `<div style="padding:5px 2px;border-bottom:1px solid var(--line);">
+          <div style="font-size:12px;">${p.periodo} · ${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]}${p.concepto?' — '+p.concepto:''}</div>
+          <div style="font-size:11px;color:var(--red);padding-left:2px;">Sin declaración registrada — regístrala primero desde "Editar" para poder aplicar el pago.</div>
+        </div>`;
+      }
+      if (requiereTratamientoEspecial || sinVencimientoConfiable) {
+        return `<div style="padding:5px 2px;border-bottom:1px solid var(--line);">
+          <div style="font-size:12px;">${p.periodo} · ${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]}${p.concepto?' — '+p.concepto:''}</div>
+          <div style="font-size:11px;color:var(--red);padding-left:2px;">${motivo}</div>
+        </div>`;
+      }
+      if (yaLiquidada) {
+        return `<div style="padding:5px 2px;border-bottom:1px solid var(--line);opacity:0.6;">
+          <div style="font-size:12px;">${p.periodo} · ${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]}${p.concepto?' — '+p.concepto:''} — ya liquidada según su declaración vigente.</div>
+        </div>`;
+      }
+      return `
       <div style="padding:5px 2px;border-bottom:1px solid var(--line);">
         <label style="display:flex;align-items:center;gap:7px;cursor:pointer;">
-          <input type="checkbox" class="apf-check" value="${p.id}" data-saldo="${montoRedondeado}">
-          <span style="flex:1;font-size:12px;">${p.periodo} · ${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]}${p.concepto?' — '+p.concepto:''}</span>
-          <input type="text" class="apf-monto-aplicar" data-id="${p.id}" inputmode="decimal" value="${fmtInputVal(montoRedondeado)}" style="width:100px;padding:4px 6px;font-size:12px;border:1px solid var(--line);border-radius:6px;" disabled>
+          <input type="checkbox" class="apf-check" value="${p.id}" data-monto="${montoRedondeado}">
+          <span style="flex:1;font-size:12px;">${p.periodo} · ${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]}${p.concepto?' — '+p.concepto:''} <span style="color:var(--muted);">(${declaracion.tipo_declaracion==='normal'?'Normal':'Complementaria '+declaracion.numero_complementaria})</span></span>
+          <span class="apf-monto-mostrado" data-id="${p.id}" style="width:100px;text-align:right;font-size:12px;font-weight:600;display:inline-block;">${fmt(montoRedondeado)}</span>
         </label>
         ${(actualizacionPendiente>0.004||recargosPendientes>0.004) ? `<div style="font-size:11px;color:var(--muted);padding-left:26px;">Principal ${fmt(saldoPrincipal)}${actualizacionPendiente>0.004?' · Actualización '+fmt(actualizacionPendiente):''}${recargosPendientes>0.004?' · Recargos '+fmt(recargosPendientes):''} · Subtotal calculado ${fmt(totalExigible)}</div>` : ''}
         ${Math.abs(ajusteSAT)>0.004 ? `<div style="font-size:11px;color:var(--gold);padding-left:26px;">Importe determinado/calculado: ${fmt(totalExigible)} · Ajuste SAT: ${ajusteSAT>0?'+':''}${fmt(ajusteSAT)} · Importe a pagar SAT: <strong>${fmt(montoRedondeado)}</strong></div>` : ''}
+        ${declaracion.linea_captura ? `<div style="font-size:11px;color:var(--muted);padding-left:26px;">Línea de captura: ${declaracion.linea_captura}${declaracion.fecha_vigencia_linea?' (vigente hasta '+fechaCorta(declaracion.fecha_vigencia_linea)+')':''}</div>` : ''}
         ${aviso ? `<div style="font-size:11px;color:var(--red);padding-left:26px;">${aviso}</div>` : ''}
-      </div>`).join('') : `<div class="empty" style="padding:8px;font-size:12px;">No hay obligaciones con saldo pendiente.</div>`;
-    lista.querySelectorAll('.apf-check').forEach(chk => chk.addEventListener('change', () => {
-      const input = lista.querySelector(`.apf-monto-aplicar[data-id="${chk.value}"]`);
-      input.disabled = !chk.checked;
-      if (chk.checked) input.value = fmtInputVal(Number(chk.dataset.saldo));
-      actualizarResumen();
-    }));
-    lista.querySelectorAll('.apf-monto-aplicar').forEach(inp => inp.addEventListener('input', actualizarResumen));
+      </div>`;
+    }).join('') : `<div class="empty" style="padding:8px;font-size:12px;">No hay obligaciones con saldo pendiente.</div>`;
+    lista.querySelectorAll('.apf-check').forEach(chk => chk.addEventListener('change', actualizarResumen));
     actualizarResumen();
   };
 
@@ -4860,7 +4922,7 @@ async function abrirModalAplicarPagoFiscal(b) {
     const montoTotal = leerMonto(document.getElementById('apfMontoTotal').value) || 0;
     let totalSeleccionado = 0;
     lista.querySelectorAll('.apf-check:checked').forEach(chk => {
-      totalSeleccionado += leerMonto(lista.querySelector(`.apf-monto-aplicar[data-id="${chk.value}"]`).value) || 0;
+      totalSeleccionado += Number(chk.dataset.monto) || 0;
     });
     const diferencia = montoTotal - totalSeleccionado;
     document.getElementById('apfResumen').innerHTML = `
@@ -4869,7 +4931,6 @@ async function abrirModalAplicarPagoFiscal(b) {
       <div style="display:flex;justify-content:space-between;color:${Math.abs(diferencia)<0.005?'var(--green)':'var(--red)'};font-weight:700;"><span>Diferencia</span><span>${Math.abs(diferencia)<0.005?'$0.00 ✓':fmt(diferencia)}</span></div>
     `;
   };
-  lista.querySelectorAll('.apf-monto-aplicar').forEach(inp => inp.addEventListener('input', actualizarResumen));
   document.getElementById('apfMontoTotal').oninput = actualizarResumen;
   document.getElementById('apfFecha').onchange = construirLista;
   await construirLista();
@@ -4888,11 +4949,12 @@ document.getElementById('apfGuardar').addEventListener('click', async () => {
   const { data: pagosImpuestos } = await sb.from('fz_pagos_impuestos').select('*').in('id', seleccionados.map(c=>c.value));
   const aplicaciones = seleccionados.map(chk => ({
     pagoImpuesto: pagosImpuestos.find(p=>p.id===chk.value),
-    monto: leerMonto(lista.querySelector(`.apf-monto-aplicar[data-id="${chk.value}"]`).value) || 0,
+    monto: Number(chk.dataset.monto) || 0,
   })).filter(a => a.pagoImpuesto && a.monto > 0.004);
   const r = await aplicarPagoFiscal(b.id, fecha, cuentaTipo, cuentaId, aplicaciones);
   if (r.estado === 'error') { toast('Error: ' + r.error, 'error'); return; }
   if (r.estado === 'cerrado') { toast('El periodo de esa fecha está cerrado.', 'error'); return; }
+  if (r.estado === 'vencimiento_no_confiable') { toast(`No se pudo calcular con confianza el vencimiento de ${r.obligacion}: ${r.motivo}`, 'error'); return; }
   registrarAuditoria(b.id, 'crear', 'Pagos de Impuestos', `Pago de impuestos aplicado a ${aplicaciones.length} obligación(es) — ${fmt(aplicaciones.reduce((s,a)=>s+a.monto,0))}`);
   toast('Pago aplicado.');
   document.getElementById('modalAplicarPagoFiscal').classList.remove('show');
@@ -4952,6 +5014,60 @@ async function abrirModalPagoImpuesto(pago, b) {
   const tieneAplicacionesVigentes = aplicacionesDeEsta.some(a => !a.revertido_at);
   camposProtegidos.forEach(id => { document.getElementById(id).disabled = tieneAplicacionesVigentes; });
   document.getElementById('piEliminarBtn').style.display = (pago && await puedeEliminarseObligacionFiscal(pago.id)) ? '' : 'none';
+
+  // Declaraciones — solo tiene sentido para una obligación que ya existe.
+  document.getElementById('piDeclaracionesZona').style.display = pago ? 'block' : 'none';
+  document.getElementById('piDeclaracionFormZona').style.display = 'none';
+  if (pago) {
+    const { data: declaraciones } = await sb.from('fz_declaraciones_fiscales').select('*').eq('pago_impuesto_id', pago.id).order('created_at', { ascending: true });
+    const vigente = await obtenerDeclaracionVigente(pago.id);
+    document.getElementById('piDeclaracionesLista').innerHTML = (declaraciones||[]).length
+      ? declaraciones.map(d => `
+        <div style="padding:5px 8px;border:1px solid var(--line);border-radius:8px;margin-bottom:5px;font-size:11.5px;${vigente&&d.id===vigente.id?'':'opacity:0.6;'}">
+          <strong>${d.tipo_declaracion==='normal'?'Normal':'Complementaria '+d.numero_complementaria}</strong>${vigente&&d.id===vigente.id?' <span style="color:var(--green);">— vigente</span>':''}
+          ${d.fecha_presentacion?' · Presentada '+fechaCorta(d.fecha_presentacion):''}${d.numero_operacion?' · Op. '+d.numero_operacion:''}
+          <div style="color:var(--muted);margin-top:2px;">Importe declarado: ${fmt(d.importe_declarado||0)}${d.linea_captura?' · Línea: '+d.linea_captura:''}${d.fecha_vigencia_linea?' (vigente hasta '+fechaCorta(d.fecha_vigencia_linea)+')':''}</div>
+        </div>`).join('')
+      : `<p style="font-size:11.5px;color:var(--muted);">Sin declaraciones registradas todavía — el pago no podrá aplicarse hasta que exista al menos una.</p>`;
+
+    document.getElementById('piRegistrarDeclaracionBtn').onclick = () => {
+      const yaHayNormal = (declaraciones||[]).some(d=>d.tipo_declaracion==='normal');
+      document.getElementById('piDeclTipo').value = yaHayNormal ? 'complementaria' : 'normal';
+      document.getElementById('piDeclTipo').dispatchEvent(new Event('change'));
+      document.getElementById('piDeclFecha').value = todayStr();
+      document.getElementById('piDeclNumOp').value = '';
+      document.getElementById('piDeclImporte').value = fmtInputVal(Number(pago.monto)||0);
+      document.getElementById('piDeclLinea').value = '';
+      document.getElementById('piDeclVigencia').value = '';
+      document.getElementById('piDeclaracionFormZona').style.display = 'block';
+    };
+    document.getElementById('piDeclTipo').onchange = (e) => {
+      const esComplementaria = e.target.value === 'complementaria';
+      document.getElementById('piDeclNumeroZona').style.display = esComplementaria ? 'block' : 'none';
+      if (esComplementaria) document.getElementById('piDeclNumero').value = ((declaraciones||[]).filter(d=>d.tipo_declaracion==='complementaria').length + 1);
+    };
+    document.getElementById('piDeclCancelarBtn').onclick = () => { document.getElementById('piDeclaracionFormZona').style.display = 'none'; };
+    document.getElementById('piDeclGuardarBtn').onclick = async () => {
+      const tipo = document.getElementById('piDeclTipo').value;
+      const numero = tipo==='complementaria' ? Number(document.getElementById('piDeclNumero').value)||null : null;
+      if (tipo==='complementaria' && !numero) { toast('Indica el número de complementaria.', 'error'); return; }
+      const r = await crearDeclaracionFiscal(b.id, pago.id, {
+        tipo_declaracion: tipo, numero_complementaria: numero,
+        declaracion_anterior_id: tipo==='complementaria' && vigente ? vigente.id : null,
+        fecha_presentacion: document.getElementById('piDeclFecha').value || null,
+        numero_operacion: document.getElementById('piDeclNumOp').value.trim() || null,
+        importe_declarado: leerMonto(document.getElementById('piDeclImporte').value) || 0,
+        linea_captura: document.getElementById('piDeclLinea').value.trim() || null,
+        fecha_vigencia_linea: document.getElementById('piDeclVigencia').value || null,
+        estado: 'normal_presentada',
+      });
+      if (r.estado === 'error') { toast('Error: ' + r.error, 'error'); return; }
+      registrarAuditoria(b.id, 'crear', 'Pagos de Impuestos', `Declaración ${tipo==='normal'?'Normal':'Complementaria '+numero} registrada — ${TIPO_IMPUESTO_LABEL[pago.tipo_impuesto]} ${pago.periodo}`);
+      toast('Declaración registrada.');
+      await abrirModalPagoImpuesto(pago, b); // re-abre para refrescar el listado con la nueva declaración
+    };
+  }
+
   document.getElementById('piHistorialPagosZona').style.display = aplicacionesDeEsta.length ? 'block' : 'none';
   if (aplicacionesDeEsta.length) {
     const [{ data: cuentasBancoRef }, { data: monedasRef }] = await Promise.all([

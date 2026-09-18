@@ -1539,6 +1539,50 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
       <label>Notas</label>
       <input type="text" id="piNotas" placeholder="Opcional">
     </div>
+    <div id="piDeclaracionesZona" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line);">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <label style="font-size:12.5px;font-weight:600;">Declaraciones</label>
+        <button class="btn btn-ghost btn-sm" id="piRegistrarDeclaracionBtn" style="font-size:11px;padding:3px 10px;">+ Registrar declaración</button>
+      </div>
+      <div id="piDeclaracionesLista" style="margin-top:4px;"></div>
+      <div id="piDeclaracionFormZona" style="display:none;margin-top:8px;padding:8px;background:#f7f7f7;border-radius:8px;">
+        <div class="field">
+          <label>Tipo de declaración</label>
+          <select id="piDeclTipo">
+            <option value="normal">Normal</option>
+            <option value="complementaria">Complementaria</option>
+          </select>
+        </div>
+        <div class="field" id="piDeclNumeroZona" style="display:none;">
+          <label>N° de complementaria</label>
+          <input type="number" id="piDeclNumero" min="1">
+        </div>
+        <div class="field">
+          <label>Fecha de presentación</label>
+          <input type="date" id="piDeclFecha">
+        </div>
+        <div class="field">
+          <label>Número de operación</label>
+          <input type="text" id="piDeclNumOp" placeholder="Opcional">
+        </div>
+        <div class="field">
+          <label>Importe declarado</label>
+          <input type="text" id="piDeclImporte" inputmode="decimal" placeholder="0.00">
+        </div>
+        <div class="field">
+          <label>Línea de captura</label>
+          <input type="text" id="piDeclLinea" placeholder="Opcional">
+        </div>
+        <div class="field">
+          <label>Vigencia de la línea de captura</label>
+          <input type="date" id="piDeclVigencia">
+        </div>
+        <div class="modal-actions" style="margin-top:6px;">
+          <button class="btn btn-ghost btn-sm" id="piDeclCancelarBtn">Cancelar</button>
+          <button class="btn btn-gold btn-sm" id="piDeclGuardarBtn">Guardar declaración</button>
+        </div>
+      </div>
+    </div>
     <div id="piHistorialPagosZona" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid var(--line);">
       <p style="font-size:11.5px;color:var(--gold);margin-bottom:6px;">Esta obligación ya tiene pagos aplicados — el monto, tipo, periodo y concepto quedan protegidos, y no se puede eliminar directamente. Para corregir un pago, revierte la aplicación específica abajo.</p>
       <label style="font-size:12.5px;font-weight:600;">Historial de pagos</label>
