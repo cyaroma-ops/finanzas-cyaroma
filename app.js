@@ -2007,25 +2007,22 @@ const CUENTA_ISR_PROV_PASIVO = 'ISR provisional por pagar';
 
 // Busca (o crea) una subcuenta por nombre — el nombre nunca queda amarrado a un
 // id fijo en código, así que después se puede remapear desde Configuración.
-// TEMPORAL: la restricción única en base de datos (nombre_normalizado) NO llegó a crearse — el
-// bloque completo se revirtió cuando falló por un duplicado pendiente ("Equipos de operación"),
-// ya que el editor SQL corre varias instrucciones como una sola transacción. Mientras se corrige
-// ese duplicado y se vuelve a correr el esquema, esta función usa la versión que SÍ funciona
-// contra el esquema actual: pide la lista ordenada por antigüedad y toma la más vieja — sin
-// .maybeSingle() (que fallaba con duplicados existentes) y sin depender de ninguna columna nueva.
+// Busca o crea una cuenta mayor/subcuenta por nombre — versión atómica. Con la restricción única
+// real ya en base de datos (para mayor: negocio + tipo + nombre normalizado; para subcuenta:
+// negocio + cuenta mayor + padre + nombre normalizado), un solo upsert con onConflict resuelve
+// "existe o no" en una operación indivisible — dos llamadas concurrentes nunca pueden volver a
+// crear un duplicado, sin importar qué tan rápido o al mismo tiempo se llamen. Esta función
+// siempre crea subcuentas RAÍZ (sin padre); para subcuentas anidadas hay que crearlas aparte.
 async function obtenerOCrearSubcuentaPorNombre(businessId, nombre, tipo) {
-  const { data: mayoresExistentes } = await sb.from('fz_cuentas_mayor').select('id').eq('business_id', businessId).ilike('nombre', nombre).order('created_at', { ascending: true });
-  let mayorId = mayoresExistentes && mayoresExistentes.length ? mayoresExistentes[0].id : null;
-  if (!mayorId) {
-    const { data: nuevaMayor, error } = await sb.from('fz_cuentas_mayor').insert({ business_id: businessId, nombre, tipo }).select().single();
-    if (error) throw error;
-    mayorId = nuevaMayor.id;
-  }
-  const { data: subsExistentes } = await sb.from('fz_subcuentas').select('id').eq('cuenta_mayor_id', mayorId).ilike('nombre', nombre).order('created_at', { ascending: true });
-  if (subsExistentes && subsExistentes.length) return subsExistentes[0].id;
-  const { data: nuevaSub, error: e2 } = await sb.from('fz_subcuentas').insert({ business_id: businessId, cuenta_mayor_id: mayorId, nombre }).select().single();
-  if (e2) throw e2;
-  return nuevaSub.id;
+  const { data: mayor, error: errMayor } = await sb.from('fz_cuentas_mayor')
+    .upsert({ business_id: businessId, nombre, tipo }, { onConflict: 'business_id,tipo,nombre_normalizado' })
+    .select('id').single();
+  if (errMayor) throw errMayor;
+  const { data: sub, error: errSub } = await sb.from('fz_subcuentas')
+    .upsert({ business_id: businessId, cuenta_mayor_id: mayor.id, nombre }, { onConflict: 'business_id,cuenta_mayor_id,padre_id_normalizado,nombre_normalizado' })
+    .select('id').single();
+  if (errSub) throw errSub;
+  return sub.id;
 }
 
 // Sincroniza la provisión contable de UN registro de ISR Provisional ya determinado.
