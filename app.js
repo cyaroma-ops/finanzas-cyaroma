@@ -4083,16 +4083,38 @@ async function autoGenerarPagosImpuestos(b, anio) {
   // (Medición: cada promesa se cronometra por separado, pero AMBAS siguen corriendo en paralelo
   // — el Promise.all exterior no cambia, solo se le agregó un cronómetro a cada rama.)
   const __medirRama = async (nombre, promesa) => { const t0 = performance.now(); const r = await promesa; if (window.__perfPagos) window.__perfPagos.push({ nombre, ms: performance.now()-t0 }); return r; };
+
+  // Precarga ÚNICA para todo el año que se necesita — una sola reconstrucción del libro
+  // consolidado (no una por mes), y los mismos catálogos/tablas que antes se pedían mes por mes.
+  // Cada mes filtra de aquí lo que le toca, sin volver a tocar la base de datos.
+  const anioStart = `${anio}-01-01`;
+  const anioEnd = monthBounds(meses[meses.length-1]).end;
+  const __tPre = performance.now();
+  const [ventasAnioQ, conceptosVenta, conceptos, subcuentas, mayores, conceptosSistema, motorAnio, plGastosAnioQ, cobrosAnioQ] = await Promise.all([
+    sb.from('fz_ventas').select('*').eq('business_id', b.id).gte('fecha', anioStart).lte('fecha', anioEnd),
+    loadConceptosVenta(b.id), loadConceptos(b.id), loadSubcuentas(b.id), loadCuentasMayor(b.id), loadConceptosSistema(b.id),
+    getLibroPartidaDobleConOrigen(b.id, anioEnd, anioStart),
+    sb.from('fz_pl_gastos').select('*').eq('business_id', b.id).gte('mes', `${anio}-01`).lte('mes', meses[meses.length-1]),
+    sb.from('fz_cobros_aplicados').select('monto,tipo_cambio,factura_id,fecha').eq('business_id', b.id).gte('fecha', anioStart).lte('fecha', anioEnd).not('tipo_cambio','is',null),
+  ]);
+  const datosAnio = {
+    ventasAnio: ventasAnioQ.data || [], conceptosVenta, conceptos, subcuentas, mayores, conceptosSistema,
+    filasMotorAnio: motorAnio.filas,
+    datosGCAnio: { plGastosQ: plGastosAnioQ, filasMotor: motorAnio.filas },
+    cobrosAnio: cobrosAnioQ.data || [],
+  };
+  if (window.__perfPagos) window.__perfPagos.push({ nombre: '  └─ PRE-CARGA compartida del año (1 sola reconstrucción del libro)', ms: performance.now()-__tPre });
+
   const [resumenesIva, ingresosPorMes] = await Promise.all([
     __medirRama('  └─ computeResumenIvaMesLigero × '+meses.length+' meses', Promise.all(meses.map(periodo => computeResumenIvaMesLigero(b.id, monthBounds(periodo))))),
-    __medirRama('  └─ computeIngresosAjustadosMes × '+meses.length+' meses (llama a getLibroPartidaDobleConOrigen 2x por mes)', Promise.all(meses.map(periodo => computeIngresosAjustadosMes(b.id, periodo)))),
+    __medirRama('  └─ computeIngresosAjustadosMes × '+meses.length+' meses (ahora usa la precarga compartida)', Promise.all(meses.map(periodo => computeIngresosAjustadosMes(b.id, periodo, datosAnio)))),
   ]);
 
   // El acumulado de ISR sí depende del mes anterior, pero ya con los ingresos de cada mes en
   // mano esto es pura suma — no vuelve a tocar la base de datos, así que es instantáneo.
   let acumulado = 0;
   const acumuladosPorMes = ingresosPorMes.map(r => { const previo = acumulado; acumulado += r.ingresosMesAjustado; return previo; });
-  const calcsIsr = await __medirRama('  └─ computeIsrProvisional × '+meses.length+' meses', Promise.all(meses.map((periodo, i) => computeIsrProvisional(b.id, periodo, acumuladosPorMes[i]))));
+  const calcsIsr = await __medirRama('  └─ computeIsrProvisional × '+meses.length+' meses', Promise.all(meses.map((periodo, i) => computeIsrProvisional(b.id, periodo, acumuladosPorMes[i], ingresosPorMes[i]))));
 
   const __t3 = performance.now();
 
@@ -11768,10 +11790,10 @@ async function computeGastosClasificados(businessId, periodo, subcuentas, mayore
    ============================================================ */
 // Ingresos ajustados de UN SOLO mes (sin recalcular meses anteriores) — se usa como pieza
 // reutilizable tanto en el cálculo de un mes individual como en la vista "Todos los meses".
-async function computeIngresosAjustadosMes(businessId, ym) {
+async function computeIngresosAjustadosMes(businessId, ym, datosAnio = null) {
   const { start, end } = monthBounds(ym);
   const [resumen, conceptosQ] = await Promise.all([
-    computeResumenNegocio(businessId, { start, end }),
+    computeResumenNegocio(businessId, { start, end, mesStart: ym, mesEnd: ym }, datosAnio),
     sb.from('fz_isr_conceptos').select('tipo,monto').eq('business_id', businessId).eq('periodo', ym),
   ]);
   const cp = conceptosQ.data || [];
@@ -11780,13 +11802,15 @@ async function computeIngresosAjustadosMes(businessId, ym) {
   return { ingresosFacturadosMes: resumen.totalIngresos, disminuir: dis, adicional: adi, ingresosMesAjustado: resumen.totalIngresos - dis + adi };
 }
 
-async function computeIsrProvisional(businessId, ym, ingresosAnterioresOverride = null) {
+async function computeIsrProvisional(businessId, ym, ingresosAnterioresOverride = null, datosIngresosMesOverride = null) {
   const anio = ym.slice(0,4);
   const mesNum = Number(ym.slice(5,7));
 
   // Estas 4 consultas no dependen entre sí — se piden todas a la vez en vez de una por una.
+  // Si ya se calcularon los ingresos de ESTE mes en la llamada de arriba (autoGenerarPagosImpuestos
+  // ya los tiene), se reutilizan tal cual en vez de volver a reconstruir el libro para lo mismo.
   const [datosIngresosMes, conceptosQ, datosAnualesArr, pagosAnterioresQ] = await Promise.all([
-    computeIngresosAjustadosMes(businessId, ym),
+    datosIngresosMesOverride !== null ? Promise.resolve(datosIngresosMesOverride) : computeIngresosAjustadosMes(businessId, ym),
     sb.from('fz_isr_conceptos').select('*').eq('business_id', businessId).eq('periodo', ym).then(r=>r.data),
     sb.from('fz_isr_datos_anuales').select('*').eq('business_id', businessId).lte('vigente_desde', ym).order('vigente_desde', { ascending: false }).limit(1).then(r=>r.data),
     sb.from('fz_pagos_impuestos').select('monto').eq('business_id', businessId).eq('tipo_impuesto', 'isr_provisional').like('periodo', `${anio}-%`).lt('periodo', ym).then(r=>r.data),
@@ -11830,12 +11854,18 @@ async function computeIsrProvisional(businessId, ym, ingresosAnterioresOverride 
   };
 }
 
-async function computeResumenNegocio(businessId, periodo) {
-  const [ventasQ, conceptosVenta, conceptos, subcuentas, mayores, conceptosSistema] = await Promise.all([
-    sb.from('fz_ventas').select('*').eq('business_id', businessId).gte('fecha', periodo.start).lte('fecha', periodo.end),
-    loadConceptosVenta(businessId), loadConceptos(businessId), loadSubcuentas(businessId), loadCuentasMayor(businessId), loadConceptosSistema(businessId),
-  ]);
-  const v = ventasQ.data || [];
+async function computeResumenNegocio(businessId, periodo, datosAnio = null) {
+  let v, conceptosVenta, conceptos, subcuentas, mayores, conceptosSistema;
+  if (datosAnio) {
+    v = datosAnio.ventasAnio.filter(r => r.fecha >= periodo.start && r.fecha <= periodo.end);
+    ({ conceptosVenta, conceptos, subcuentas, mayores, conceptosSistema } = datosAnio);
+  } else {
+    const [ventasQ, cv, c, s, m, cs] = await Promise.all([
+      sb.from('fz_ventas').select('*').eq('business_id', businessId).gte('fecha', periodo.start).lte('fecha', periodo.end),
+      loadConceptosVenta(businessId), loadConceptos(businessId), loadSubcuentas(businessId), loadCuentasMayor(businessId), loadConceptosSistema(businessId),
+    ]);
+    v = ventasQ.data || []; conceptosVenta = cv; conceptos = c; subcuentas = s; mayores = m; conceptosSistema = cs;
+  }
   const ingresosPorConcepto = conceptosVenta.map(c => ({ id: c.id, tipo: c.tipo, monto: v.reduce((s, r) => s + (Number((r.venta_data || {})[c.id]) || 0), 0) }));
   const totalIngresosVentas = ingresosPorConcepto.reduce((s, i) => s + (i.tipo === 'resta' ? -i.monto : i.monto), 0);
   const gastosOperativos = v.reduce((s,r)=>s+(Number(r.gastos)||0),0);
@@ -11847,10 +11877,10 @@ async function computeResumenNegocio(businessId, periodo) {
   const sobranteCaja = diffPeriodo < 0 ? -diffPeriodo : 0;
   const totalIngresos = totalIngresosVentas + sobranteCaja;
 
-  const [datosGC0, iPoliza, gananciaCambiaria] = await Promise.all([
-    fetchDatosGastosCostos(businessId, periodo),
-    computeIngresosPoliza(businessId, periodo, subcuentas, mayores, true),
-    computeGananciaCambiaria(businessId, periodo),
+  const datosGC0 = datosAnio ? filtrarDatosGastosCostosPorMes(datosAnio.datosGCAnio, periodo) : await fetchDatosGastosCostos(businessId, periodo);
+  const [iPoliza, gananciaCambiaria] = await Promise.all([
+    computeIngresosPoliza(businessId, periodo, subcuentas, mayores, true, datosAnio?.filasMotorAnio),
+    computeGananciaCambiaria(businessId, periodo, datosAnio?.cobrosAnio),
   ]);
   const [gClas, gCostos] = await Promise.all([
     computeGastosClasificados(businessId, periodo, subcuentas, mayores, 'gasto', true, datosGC0),
@@ -11863,10 +11893,25 @@ async function computeResumenNegocio(businessId, periodo) {
   return { totalIngresos: totalIngresosFinal, totalGastos: gastosTotales + gCostos.totalClasificado, utilidad: utilidadReal, margen };
 }
 
-async function computeGananciaCambiaria(businessId, periodo) {
-  const { data: cobros } = await sb.from('fz_cobros_aplicados')
-    .select('monto,tipo_cambio,factura_id,fecha')
-    .eq('business_id', businessId).gte('fecha', periodo.start).lte('fecha', periodo.end).not('tipo_cambio', 'is', null);
+// Recorta a UN mes los datos de gastos/costos ya cargados para el año completo — mismo formato
+// que espera computeGastosClasificados, sin volver a consultar nada.
+function filtrarDatosGastosCostosPorMes(datosAnio, periodoMes) {
+  return {
+    plGastosQ: { data: (datosAnio.plGastosQ.data||[]).filter(g => g.mes >= periodoMes.mesStart && g.mes <= periodoMes.mesEnd) },
+    filasMotor: datosAnio.filasMotor.filter(f => f.fecha >= periodoMes.start && f.fecha <= periodoMes.end),
+  };
+}
+
+async function computeGananciaCambiaria(businessId, periodo, cobrosCompartidos = null) {
+  let cobros;
+  if (cobrosCompartidos) {
+    cobros = cobrosCompartidos.filter(c => c.fecha >= periodo.start && c.fecha <= periodo.end);
+  } else {
+    const r = await sb.from('fz_cobros_aplicados')
+      .select('monto,tipo_cambio,factura_id,fecha')
+      .eq('business_id', businessId).gte('fecha', periodo.start).lte('fecha', periodo.end).not('tipo_cambio', 'is', null);
+    cobros = r.data;
+  }
   if (!cobros || !cobros.length) return 0;
   const facturaIds = [...new Set(cobros.map(c => c.factura_id))];
   const { data: facturas } = await sb.from('fz_facturas_clientes').select('id,tipo_cambio').in('id', facturaIds);
@@ -11883,8 +11928,9 @@ async function computeGananciaCambiaria(businessId, periodo) {
 // filtrada por clasificación real, nunca reconstruidos aparte por módulo de origen. fz_ventas
 // (los ingresos diarios del corte de caja) sigue siendo la excepción operativa acordada, y se
 // suma por separado en computeResumenNegocio, sin tocar esta función.
-async function computeIngresosPoliza(businessId, periodo, subcuentas, mayores, incluirSinMovimiento = false) {
-  const { filas } = await getLibroPartidaDobleConOrigen(businessId, periodo.end, periodo.start);
+async function computeIngresosPoliza(businessId, periodo, subcuentas, mayores, incluirSinMovimiento = false, filasCompartidas = null) {
+  const filasCompletas = filasCompartidas || (await getLibroPartidaDobleConOrigen(businessId, periodo.end, periodo.start)).filas;
+  const filas = filasCompartidas ? filasCompletas.filter(f => f.fecha >= periodo.start && f.fecha <= periodo.end) : filasCompletas;
   const porSubcuenta = {};
   filas.filter(f => f.tipo === 'ingreso' && f.clave.startsWith('sub:')).forEach(f => {
     const subId = f.clave.slice(4);
