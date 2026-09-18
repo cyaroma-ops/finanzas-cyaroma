@@ -2031,7 +2031,7 @@ async function obtenerOCrearObligacionFiscal(businessId, periodo, tipoImpuesto, 
     return existente;
   }
   if (monto <= 0.004) return null;
-  const { data: nueva, error } = await sb.from('fz_pagos_impuestos').insert({ business_id: businessId, periodo, tipo_impuesto: tipoImpuesto, concepto: concepto||null, monto, fecha_limite: fechaLimite, fecha_pago: null }).select().single();
+  const { data: nueva, error } = await sb.from('fz_pagos_impuestos').insert({ business_id: businessId, periodo, tipo_impuesto: tipoImpuesto, concepto: concepto||null, monto, fecha_limite: fechaLimite, fecha_pago: null, origen_registro: 'sistema' }).select().single();
   if (error) throw error;
   if (cacheExistentes) cacheExistentes.push(nueva);
   return nueva;
@@ -2042,13 +2042,24 @@ async function obtenerOCrearObligacionFiscal(businessId, periodo, tipoImpuesto, 
 // (vigente O revertida, porque el historial debe conservarse), cualquier provisión contable ya
 // generada, o que ya haya sido declarada. Si tiene cualquiera de estas, no puede eliminarse — la
 // corrección debe pasar por su flujo correspondiente (revertir aplicación, etc.), nunca borrar.
+// FUNCIÓN CENTRAL — autoridad única para decidir si una obligación fiscal puede eliminarse.
+// Regla definitiva:
+//   - origen_registro !== 'manual' (es decir, 'sistema', o histórico sin clasificar) → NUNCA
+//     eliminable, sin importar si tiene o no relaciones. Una obligación determinada/generada por
+//     el sistema forma parte del historial fiscal del negocio; se corrige por su flujo (Editar,
+//     Revertir pago), nunca por DELETE. Los registros históricos sin origen explícito se tratan
+//     con esta misma regla protectora — nunca se clasifican a ciegas como "manual".
+//   - origen_registro === 'manual' → eliminable SOLO si además está realmente huérfano: sin
+//     aplicación de pago (vigente o revertida), sin provisión contable, sin declaración.
 async function puedeEliminarseObligacionFiscal(pagoImpuestoId) {
-  const [{ count: countAplicaciones }, { count: countProvisiones }, { data: pago }] = await Promise.all([
+  const { data: pago } = await sb.from('fz_pagos_impuestos').select('origen_registro,declarada,fecha_presentacion').eq('id', pagoImpuestoId).maybeSingle();
+  if (!pago) return false; // no se encontró — por seguridad, no se ofrece eliminar
+  if (pago.origen_registro !== 'manual') return false; // 'sistema' o histórico sin clasificar
+  const [{ count: countAplicaciones }, { count: countProvisiones }] = await Promise.all([
     sb.from('fz_aplicaciones_pago_fiscal').select('id', { count: 'exact', head: true }).eq('pago_impuesto_id', pagoImpuestoId),
     sb.from('fz_provisiones_fiscales').select('id', { count: 'exact', head: true }).eq('pago_impuesto_id', pagoImpuestoId),
-    sb.from('fz_pagos_impuestos').select('declarada,fecha_presentacion').eq('id', pagoImpuestoId).maybeSingle(),
   ]);
-  const yaDeclarada = !!(pago && (pago.declarada || pago.fecha_presentacion));
+  const yaDeclarada = !!(pago.declarada || pago.fecha_presentacion);
   return !((countAplicaciones||0) > 0 || (countProvisiones||0) > 0 || yaDeclarada);
 }
 
@@ -4216,26 +4227,27 @@ async function autoGenerarPagosImpuestos(b, anio) {
 async function pintarPagosImpuestos(contenido, b, miToken) {
   const __m = async (nombre, fn) => { const t0 = performance.now(); const r = await fn(); if (window.__perfPagos) window.__perfPagos.push({ nombre, ms: performance.now()-t0 }); return r; };
   const { data: pagos } = await __m('  └─ select fz_pagos_impuestos', () => sb.from('fz_pagos_impuestos').select('*').eq('business_id', b.id).like('periodo', `${STATE_piAnio}-%`).order('periodo', { ascending: true }));
-  // Para decidir si el menú de cada fila puede mostrar "Eliminar" — mismos criterios que la
-  // función central `puedeEliminarseObligacionFiscal`, pero en una sola consulta por criterio
-  // para toda la tabla, nunca una por obligación. Se incluye CUALQUIER aplicación (vigente o
-  // revertida) — el historial siempre bloquea, sin excepción por periodo/tipo.
+  // Para decidir si el menú de cada fila puede mostrar "Eliminar" — misma regla definitiva que
+  // `puedeEliminarseObligacionFiscal`, en una sola consulta por criterio para toda la tabla.
+  // origen_registro !== 'manual' (sistema, o histórico sin clasificar) siempre bloquea, sin
+  // importar sus relaciones. Solo 'manual' se revisa por relaciones reales.
   const idsNoEliminables = new Set();
   if ((pagos||[]).length) {
-    const idsPagos = pagos.map(p=>p.id);
-    const [{ data: aplicaciones }, { data: provisiones }] = await Promise.all([
-      sb.from('fz_aplicaciones_pago_fiscal').select('pago_impuesto_id').in('pago_impuesto_id', idsPagos),
-      sb.from('fz_provisiones_fiscales').select('pago_impuesto_id').in('pago_impuesto_id', idsPagos),
-    ]);
-    (aplicaciones||[]).forEach(a => idsNoEliminables.add(a.pago_impuesto_id));
-    (provisiones||[]).forEach(p => idsNoEliminables.add(p.pago_impuesto_id));
-    pagos.forEach(p => { if (p.declarada || p.fecha_presentacion) idsNoEliminables.add(p.id); });
+    const idsManuales = pagos.filter(p => p.origen_registro === 'manual').map(p=>p.id);
+    pagos.forEach(p => { if (p.origen_registro !== 'manual') idsNoEliminables.add(p.id); });
+    if (idsManuales.length) {
+      const [{ data: aplicaciones }, { data: provisiones }] = await Promise.all([
+        sb.from('fz_aplicaciones_pago_fiscal').select('pago_impuesto_id').in('pago_impuesto_id', idsManuales),
+        sb.from('fz_provisiones_fiscales').select('pago_impuesto_id').in('pago_impuesto_id', idsManuales),
+      ]);
+      (aplicaciones||[]).forEach(a => idsNoEliminables.add(a.pago_impuesto_id));
+      (provisiones||[]).forEach(p => idsNoEliminables.add(p.pago_impuesto_id));
+      pagos.forEach(p => { if (p.origen_registro === 'manual' && (p.declarada || p.fecha_presentacion)) idsNoEliminables.add(p.id); });
+    }
   }
   // Si mientras se calculaba todo esto ya se pidió un renderizado MÁS NUEVO (p. ej. el usuario
   // cambió de año o volvió a entrar a la pantalla), esta corrida quedó obsoleta — nunca debe
-  // escribir el DOM encima del resultado más reciente. Sin este seguro, dos renderizados que se
-  // solapan podrían terminar mostrando "Eliminar" con datos ya viejos, aunque el cálculo mismo
-  // sea correcto.
+  // escribir el DOM encima del resultado más reciente.
   if (miToken !== __pagosImpuestosRenderToken) return;
 
   const pendientesProvision = await __m('  └─ previsualizarProvisionesIsr', () => previsualizarProvisionesIsr(b.id, STATE_piAnio));
@@ -4355,12 +4367,7 @@ async function pintarPagosImpuestos(contenido, b, miToken) {
             ${(pagos||[]).length ? pagos.map(p => {
               const est = estadosDeImpuesto(p);
               const deltaActualizacion = p.monto_actualizado ? Math.max(0, p.monto_actualizado - Number(p.monto)) : null;
-              const __bloqueado = idsNoEliminables.has(p.id);
-              const __htmlMenu = `<div class="pi-menu-dropdown" data-menu="${p.id}" data-menu-source="pintarPagosImpuestos-v2" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:110px;overflow:hidden;">
-                    <button class="pi-editar" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Editar</button>
-                    ${__bloqueado ? '' : `<button class="pi-eliminar" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>`}
-                  </div>`;
-              console.log('%c[menú generado]', 'color:#888;', { id: p.id, periodo: p.periodo, tipo_impuesto: p.tipo_impuesto, bloqueado: __bloqueado, htmlMenu: __htmlMenu });
+              const bloqueado = idsNoEliminables.has(p.id);
               return `<tr>
                 <td>${p.periodo}</td><td>${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]||p.tipo_impuesto}</td><td class="wrap-text" style="max-width:220px;">${p.concepto||''}</td>
                 <td class="num">${fmt(p.monto)}</td><td>${fechaCorta(p.fecha_limite)}</td>
@@ -4373,7 +4380,10 @@ async function pintarPagosImpuestos(contenido, b, miToken) {
                 <td class="num" style="font-weight:600;">${p.total_pagado?fmt(p.total_pagado):''}</td>
                 <td style="position:relative;">
                   <button class="btn btn-ghost btn-sm pi-menu-btn" data-id="${p.id}" style="padding:3px 10px;">⋯</button>
-                  ${__htmlMenu}
+                  <div class="pi-menu-dropdown" data-menu="${p.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:110px;overflow:hidden;">
+                    <button class="pi-editar" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Editar</button>
+                    ${bloqueado ? '' : `<button class="pi-eliminar" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>`}
+                  </div>
                 </td>
               </tr>`;
             }).join('') : `<tr><td colspan="13" class="empty">No hay impuestos registrados en ${STATE_piAnio}.</td></tr>`}
@@ -4382,42 +4392,6 @@ async function pintarPagosImpuestos(contenido, b, miToken) {
       </div>
     </div>
   `;
-
-  // === DIAGNÓSTICO TEMPORAL DE DOM — no cambia ninguna lógica ===
-  console.log('%c=== DIAGNÓSTICO DOM — menú Eliminar ===', 'background:#222;color:#0f0;font-weight:bold;padding:3px 8px;');
-  const __filaIsrJulioDOM = Array.from(contenido.querySelectorAll('.pi-menu-btn')).find(btn => {
-    const tr = btn.closest('tr');
-    return tr && tr.children[0]?.textContent === '2026-07' && tr.children[1]?.textContent === 'ISR Provisional';
-  });
-  if (__filaIsrJulioDOM) {
-    const uuidBoton = __filaIsrJulioDOM.dataset.id;
-    const dropdown = contenido.querySelector(`.pi-menu-dropdown[data-menu="${uuidBoton}"]`);
-    console.log('UUID en data-id del botón ⋯ de ISR 2026-07 (DOM real):', uuidBoton);
-    console.log('¿Coincide con el UUID conocido (16913b7e-4bbe-46a4-8dc7-2183c9340fe5)?', uuidBoton === '16913b7e-4bbe-46a4-8dc7-2183c9340fe5');
-    console.log('¿El dropdown tiene data-menu-source="pintarPagosImpuestos-v2"?', dropdown ? dropdown.dataset.menuSource : '(no se encontró el dropdown)');
-    console.log('Texto/opciones reales dentro del menú (DOM):', dropdown ? Array.from(dropdown.children).map(el => ({ texto: el.textContent, clase: el.className })) : '(sin dropdown)');
-    const botonEliminarDOM = dropdown ? dropdown.querySelector('.pi-eliminar') : null;
-    console.log('¿Existe un elemento con texto "Eliminar" (botón .pi-eliminar) dentro de este menú?', !!botonEliminarDOM);
-    if (botonEliminarDOM) console.log('HTML exacto de ese botón encontrado en el DOM:', botonEliminarDOM.outerHTML);
-  } else {
-    console.log('No se encontró en el DOM ninguna fila con periodo=2026-07 y tipo=ISR Provisional (columna de texto).');
-  }
-
-  // Lista de TODAS las filas que terminan con un botón "Eliminar" visible en el DOM real.
-  const __filasConEliminarDOM = [];
-  contenido.querySelectorAll('.pi-menu-dropdown').forEach(dd => {
-    const btnEliminar = dd.querySelector('.pi-eliminar');
-    if (btnEliminar) {
-      const tr = dd.closest('tr');
-      __filasConEliminarDOM.push({
-        periodo: tr?.children[0]?.textContent, tipo: tr?.children[1]?.textContent,
-        UUID: dd.dataset.menu, bloqueado_segun_set: idsNoEliminables.has(dd.dataset.menu),
-      });
-    }
-  });
-  console.log(`Filas que TERMINAN mostrando "Eliminar" en el DOM real (${__filasConEliminarDOM.length}):`);
-  console.table(__filasConEliminarDOM);
-  // === FIN DIAGNÓSTICO TEMPORAL DE DOM ===
 
   document.getElementById('piAnioSel').addEventListener('change', async (e) => {
     STATE_piAnio = e.target.value;
@@ -4876,7 +4850,7 @@ document.getElementById('piGuardarBtn').addEventListener('click', async () => {
       if (error) { toast('Error: ' + error.message, 'error'); return; }
       filaGuardada = data;
     } else {
-      const { data, error } = await sb.from('fz_pagos_impuestos').insert(payload).select().single();
+      const { data, error } = await sb.from('fz_pagos_impuestos').insert({ ...payload, origen_registro: 'manual' }).select().single();
       if (error) { toast('Error: ' + error.message, 'error'); return; }
       filaGuardada = data;
     }
