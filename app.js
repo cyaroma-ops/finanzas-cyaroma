@@ -4102,7 +4102,10 @@ async function renderImpuestosRetenciones(b) {
   }));
 }
 
+let __pagosImpuestosRenderToken = 0;
+
 async function renderPagosImpuestos() {
+  const miToken = ++__pagosImpuestosRenderToken;
   const el = document.getElementById('sec-pagosimpuestos');
   const b = biz();
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
@@ -4123,7 +4126,7 @@ async function renderPagosImpuestos() {
   const tGlobal0 = performance.now();
 
   await medir('autoGenerarPagosImpuestos (total)', () => autoGenerarPagosImpuestos(b, STATE_piAnio));
-  await medir('pintarPagosImpuestos (total)', () => pintarPagosImpuestos(contenido, b));
+  await medir('pintarPagosImpuestos (total)', () => pintarPagosImpuestos(contenido, b, miToken));
 
   const totalMs = performance.now() - tGlobal0;
   console.log('%c=== DIAGNÓSTICO DE RENDIMIENTO — Impuestos → Pagos ===', 'font-weight:bold;font-size:13px;');
@@ -4210,59 +4213,30 @@ async function autoGenerarPagosImpuestos(b, anio) {
   if (window.__perfPagos) window.__perfPagos.push({ nombre: '  └─ ciclo de registrar() (secuencial, '+meses.length+' meses)', ms: performance.now()-__t3 });
 }
 
-async function pintarPagosImpuestos(contenido, b) {
-  console.log('%c>>> ENTRÓ A pintarPagosImpuestos <<<', 'background:yellow;color:black;font-weight:bold;padding:2px 6px;');
+async function pintarPagosImpuestos(contenido, b, miToken) {
   const __m = async (nombre, fn) => { const t0 = performance.now(); const r = await fn(); if (window.__perfPagos) window.__perfPagos.push({ nombre, ms: performance.now()-t0 }); return r; };
   const { data: pagos } = await __m('  └─ select fz_pagos_impuestos', () => sb.from('fz_pagos_impuestos').select('*').eq('business_id', b.id).like('periodo', `${STATE_piAnio}-%`).order('periodo', { ascending: true }));
   // Para decidir si el menú de cada fila puede mostrar "Eliminar" — mismos criterios que la
   // función central `puedeEliminarseObligacionFiscal`, pero en una sola consulta por criterio
-  // para toda la tabla, nunca una por obligación.
+  // para toda la tabla, nunca una por obligación. Se incluye CUALQUIER aplicación (vigente o
+  // revertida) — el historial siempre bloquea, sin excepción por periodo/tipo.
   const idsNoEliminables = new Set();
-  const __motivoBloqueo = {}; // solo para el diagnóstico de abajo — no afecta la lógica real
   if ((pagos||[]).length) {
     const idsPagos = pagos.map(p=>p.id);
     const [{ data: aplicaciones }, { data: provisiones }] = await Promise.all([
-      sb.from('fz_aplicaciones_pago_fiscal').select('pago_impuesto_id').in('pago_impuesto_id', idsPagos), // cualquier estado — el historial cuenta
+      sb.from('fz_aplicaciones_pago_fiscal').select('pago_impuesto_id').in('pago_impuesto_id', idsPagos),
       sb.from('fz_provisiones_fiscales').select('pago_impuesto_id').in('pago_impuesto_id', idsPagos),
     ]);
-    (aplicaciones||[]).forEach(a => { idsNoEliminables.add(a.pago_impuesto_id); (__motivoBloqueo[a.pago_impuesto_id]=__motivoBloqueo[a.pago_impuesto_id]||[]).push('aplicación fiscal'); });
-    (provisiones||[]).forEach(p => { idsNoEliminables.add(p.pago_impuesto_id); (__motivoBloqueo[p.pago_impuesto_id]=__motivoBloqueo[p.pago_impuesto_id]||[]).push('provisión contable'); });
-    pagos.forEach(p => { if (p.declarada || p.fecha_presentacion) { idsNoEliminables.add(p.id); (__motivoBloqueo[p.id]=__motivoBloqueo[p.id]||[]).push('declarada'); } });
+    (aplicaciones||[]).forEach(a => idsNoEliminables.add(a.pago_impuesto_id));
+    (provisiones||[]).forEach(p => idsNoEliminables.add(p.pago_impuesto_id));
+    pagos.forEach(p => { if (p.declarada || p.fecha_presentacion) idsNoEliminables.add(p.id); });
   }
-
-  // === DIAGNÓSTICO TEMPORAL — envuelto en try/catch para que si algo truena, se VEA el error
-  // en vez de morir en silencio y saltarse todo lo demás sin explicación. No cambia la lógica.
-  try {
-    console.log('%c=== DIAGNÓSTICO ELIMINACIÓN ISR 2026-07 ===', 'background:#222;color:#0f0;font-weight:bold;font-size:13px;padding:3px 8px;');
-    console.table((pagos||[]).map(p => ({
-      id: p.id, periodo: p.periodo, tipo_impuesto: p.tipo_impuesto, concepto: p.concepto || '(sin concepto)',
-      'está_en_idsNoEliminables': idsNoEliminables.has(p.id),
-      'motivo_bloqueo': __motivoBloqueo[p.id] ? __motivoBloqueo[p.id].join(' + ') : '(ninguno — Eliminar SÍ se muestra)',
-    })));
-
-    const filasIsrJulio = (pagos||[]).filter(p => p.periodo === '2026-07' && p.tipo_impuesto === 'isr_provisional');
-    console.log('Cantidad de obligaciones ISR 2026-07 encontradas en el render actual:', filasIsrJulio.length);
-    // También se busca directo en la tabla (no solo en lo ya cargado), por si el filtro de año
-    // de la pantalla estuviera excluyendo alguna fila real que sí existe en la base.
-    const { data: todasFilasIsrJulioDB } = await sb.from('fz_pagos_impuestos').select('*').eq('business_id', b.id).eq('periodo','2026-07').eq('tipo_impuesto','isr_provisional');
-    console.log('Todas las filas de fz_pagos_impuestos en la BASE (sin depender del filtro de año de la pantalla) para periodo=2026-07 y tipo=isr_provisional, con sus UUID:', todasFilasIsrJulioDB);
-
-    for (const fila of (todasFilasIsrJulioDB||[])) {
-      const { data: apsDeEsaFila } = await sb.from('fz_aplicaciones_pago_fiscal').select('*').eq('pago_impuesto_id', fila.id);
-      const enIdsNoEliminables = idsNoEliminables.has(fila.id);
-      let motivo = '(ninguno)';
-      if ((apsDeEsaFila||[]).some(a=>!a.revertido_at)) motivo = 'aplicación vigente';
-      else if ((apsDeEsaFila||[]).some(a=>a.revertido_at)) motivo = 'aplicación revertida (historial)';
-      console.log(`--- fz_pagos_impuestos.id = ${fila.id} (creado ${fila.created_at}) ---`);
-      console.log('   Aplicaciones ligadas (incluye revertidas):', apsDeEsaFila);
-      console.log('   ¿Está en idsNoEliminables (el Set que decide el menú)?', enIdsNoEliminables);
-      console.log('   Motivo exacto de bloqueo:', enIdsNoEliminables ? motivo : '(ninguno — por eso se muestra Eliminar)');
-    }
-  } catch (errDiagnostico) {
-    console.log('%c¡ERROR DENTRO DEL BLOQUE DE DIAGNÓSTICO! (esto es justo lo que buscábamos si nada se veía antes)', 'background:red;color:white;font-weight:bold;padding:3px 8px;');
-    console.error(errDiagnostico);
-  }
-  // === FIN DIAGNÓSTICO TEMPORAL ===
+  // Si mientras se calculaba todo esto ya se pidió un renderizado MÁS NUEVO (p. ej. el usuario
+  // cambió de año o volvió a entrar a la pantalla), esta corrida quedó obsoleta — nunca debe
+  // escribir el DOM encima del resultado más reciente. Sin este seguro, dos renderizados que se
+  // solapan podrían terminar mostrando "Eliminar" con datos ya viejos, aunque el cálculo mismo
+  // sea correcto.
+  if (miToken !== __pagosImpuestosRenderToken) return;
 
   const pendientesProvision = await __m('  └─ previsualizarProvisionesIsr', () => previsualizarProvisionesIsr(b.id, STATE_piAnio));
   const pendientesProvisionIva = await __m('  └─ previsualizarProvisionesIva', () => previsualizarProvisionesIva(b.id, STATE_piAnio));
@@ -4281,6 +4255,10 @@ async function pintarPagosImpuestos(contenido, b) {
   const declaracionesPendientes = (pagos||[]).filter(p=>!p.declarada).length;
   const anioActual = Number(todayStr().slice(0,4));
   const anios = Array.from({length:6}, (_,i) => anioActual - 4 + i);
+
+  // Segunda verificación — puede haber empezado un renderizado más nuevo durante el trabajo
+  // asíncrono de arriba (provisiones, duplicados). Nunca se escribe el DOM si ya quedó obsoleto.
+  if (miToken !== __pagosImpuestosRenderToken) return;
 
   contenido.innerHTML = `
     <p style="font-size:12px;color:var(--muted);margin-bottom:14px;max-width:700px;">El IVA a cargo de cada mes se agrega solo (viene del cálculo de IVA y Retenciones) — los demás impuestos (ISR Provisional, Retenciones, Otro) los registras con el botón de abajo. Marca la fecha de pago directo en la tabla; si fue tarde, se calculan solos la actualización y los recargos.</p>
@@ -4504,7 +4482,7 @@ async function pintarPagosImpuestos(contenido, b) {
     const p = (pagos||[]).find(x => x.id === inp.dataset.id);
     if (!p) return;
     await guardarFechaPagoInline(p, inp.value || null, b);
-    await pintarPagosImpuestos(contenido, b);
+    await pintarPagosImpuestos(contenido, b, ++__pagosImpuestosRenderToken);
   }));
   contenido.querySelectorAll('.pi-menu-btn').forEach(btn => btn.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -4531,7 +4509,7 @@ async function pintarPagosImpuestos(contenido, b) {
     if (!confirm('¿Eliminar este registro de impuesto?')) return;
     await sb.from('fz_pagos_impuestos').delete().eq('id', btn.dataset.id);
     registrarAuditoria(b.id, 'eliminar', 'Pagos de Impuestos', 'Registro eliminado');
-    await pintarPagosImpuestos(contenido, b);
+    await pintarPagosImpuestos(contenido, b, ++__pagosImpuestosRenderToken);
   }));
 }
 
