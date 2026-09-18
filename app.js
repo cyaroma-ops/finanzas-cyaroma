@@ -2002,6 +2002,56 @@ document.getElementById('darDeBajaActivoFijo').addEventListener('click', async (
    pagar (Pasivo). No toca Estado de Resultados. Idempotente por
    negocio+periodo+tipo — solo ajusta la diferencia. Respeta cierre de periodo.
    ============================================================ */
+// FUNCIÓN CENTRAL — toda ruta que registre una obligación fiscal (ISR, IVA, Retenciones,
+// generación automática o manual) debe pasar por aquí. Busca primero por la clave canónica real
+// (negocio + periodo + tipo + concepto); si existe, la reutiliza — solo actualiza el monto si
+// todavía no está pagada y cambió; nunca inserta una segunda fila para la misma obligación.
+// cacheExistentes (opcional): un arreglo ya cargado en memoria (para el ciclo por lote de
+// autoGenerarPagosImpuestos, que ya trae todas las del año) — evita una consulta nueva por cada
+// llamada dentro de ese ciclo; se actualiza en el mismo arreglo para que la siguiente búsqueda ya
+// vea el cambio. Sin ese parámetro, consulta directo — para cualquier botón o ruta individual.
+async function obtenerOCrearObligacionFiscal(businessId, periodo, tipoImpuesto, concepto, monto, fechaLimite, cacheExistentes = null) {
+  let existente;
+  if (cacheExistentes) {
+    existente = cacheExistentes.find(p => p.periodo===periodo && p.tipo_impuesto===tipoImpuesto && (p.concepto||null)===(concepto||null));
+  } else {
+    let query = sb.from('fz_pagos_impuestos').select('*').eq('business_id', businessId).eq('periodo', periodo).eq('tipo_impuesto', tipoImpuesto);
+    query = concepto ? query.eq('concepto', concepto) : query.is('concepto', null);
+    // Ordenado por antigüedad en vez de .maybeSingle() — si por algún dato histórico ya hubiera
+    // más de una fila, esto no truena: toma la más vieja como la canónica, igual que ya hacemos
+    // con cuentas/subcuentas duplicadas.
+    const { data: filas } = await query.order('created_at', { ascending: true });
+    existente = filas && filas.length ? filas[0] : null;
+  }
+  if (existente) {
+    if (!existente.fecha_pago && Math.abs(Number(existente.monto) - monto) > 0.5) {
+      await sb.from('fz_pagos_impuestos').update({ monto }).eq('id', existente.id);
+      existente.monto = monto;
+    }
+    return existente;
+  }
+  if (monto <= 0.004) return null;
+  const { data: nueva, error } = await sb.from('fz_pagos_impuestos').insert({ business_id: businessId, periodo, tipo_impuesto: tipoImpuesto, concepto: concepto||null, monto, fecha_limite: fechaLimite, fecha_pago: null }).select().single();
+  if (error) throw error;
+  if (cacheExistentes) cacheExistentes.push(nueva);
+  return nueva;
+}
+
+// FUNCIÓN CENTRAL — determina si una obligación fiscal puede eliminarse directamente. Consulta
+// las relaciones REALES (nunca depende del mes/ejercicio/tipo): cualquier aplicación de pago
+// (vigente O revertida, porque el historial debe conservarse), cualquier provisión contable ya
+// generada, o que ya haya sido declarada. Si tiene cualquiera de estas, no puede eliminarse — la
+// corrección debe pasar por su flujo correspondiente (revertir aplicación, etc.), nunca borrar.
+async function puedeEliminarseObligacionFiscal(pagoImpuestoId) {
+  const [{ count: countAplicaciones }, { count: countProvisiones }, { data: pago }] = await Promise.all([
+    sb.from('fz_aplicaciones_pago_fiscal').select('id', { count: 'exact', head: true }).eq('pago_impuesto_id', pagoImpuestoId),
+    sb.from('fz_provisiones_fiscales').select('id', { count: 'exact', head: true }).eq('pago_impuesto_id', pagoImpuestoId),
+    sb.from('fz_pagos_impuestos').select('declarada,fecha_presentacion').eq('id', pagoImpuestoId).maybeSingle(),
+  ]);
+  const yaDeclarada = !!(pago && (pago.declarada || pago.fecha_presentacion));
+  return !((countAplicaciones||0) > 0 || (countProvisiones||0) > 0 || yaDeclarada);
+}
+
 const CUENTA_ISR_PROV_ACTIVO = 'Pagos provisionales de ISR';
 const CUENTA_ISR_PROV_PASIVO = 'ISR provisional por pagar';
 
@@ -3783,12 +3833,13 @@ async function pintarIsrMes(contenido, b) {
   document.getElementById('isrRegistrarBtn').addEventListener('click', async () => {
     if (calc.impuestoACargo <= 0.004) { toast('No hay impuesto a cargo este mes.', 'error'); return; }
     let [y,m] = ym.split('-').map(Number); m++; if (m>12) { m=1; y++; }
-    const { error } = await sb.from('fz_pagos_impuestos').insert({
-      business_id: b.id, periodo: ym, tipo_impuesto: 'isr_provisional', concepto: null,
-      monto: calc.impuestoACargo, fecha_limite: `${y}-${String(m).padStart(2,'0')}-17`, fecha_pago: null,
-    });
-    if (error) { toast('Error: ' + error.message, 'error'); return; }
-    registrarAuditoria(b.id, 'crear', 'Pago Provisional de ISR', `${ym} — ${fmt(calc.impuestoACargo)} registrado en Pagos de Impuestos`);
+    try {
+      await obtenerOCrearObligacionFiscal(b.id, ym, 'isr_provisional', null, calc.impuestoACargo, `${y}-${String(m).padStart(2,'0')}-17`);
+    } catch (err) {
+      toast('Error: ' + (err?.message||err), 'error');
+      return;
+    }
+    registrarAuditoria(b.id, 'crear', 'Pago Provisional de ISR', `${ym} — ${fmt(calc.impuestoACargo)} registrado/actualizado en Pagos de Impuestos`);
     toast('Registrado en Pagos de Impuestos.');
   });
 
@@ -4090,21 +4141,7 @@ async function autoGenerarPagosImpuestos(b, anio) {
   // Corrige de inmediato (no hasta el final) los registros SIN PAGAR cuyo monto ya no coincide con
   // el cálculo real — así, si un mes se corrige, los meses siguientes de esta misma pasada ya ven
   // el valor correcto (en vez de tardar varias visitas en propagarse). Nunca toca lo ya pagado.
-  const registrar = async (periodo, tipo, concepto, monto, fechaLimite) => {
-    const existente = buscarExistente(periodo, tipo, concepto);
-    if (!existente) {
-      if (monto > 0.004) {
-        const { data } = await sb.from('fz_pagos_impuestos').insert({ business_id: b.id, periodo, tipo_impuesto: tipo, concepto, monto, fecha_limite: fechaLimite, fecha_pago: null }).select().single();
-        if (data) existentes.push(data);
-        return data || null;
-      }
-      return null;
-    } else if (!existente.fecha_pago && Math.abs(Number(existente.monto) - monto) > 0.5) {
-      await sb.from('fz_pagos_impuestos').update({ monto }).eq('id', existente.id);
-      existente.monto = monto;
-    }
-    return existente;
-  };
+  const registrar = (periodo, tipo, concepto, monto, fechaLimite) => obtenerOCrearObligacionFiscal(b.id, periodo, tipo, concepto, monto, fechaLimite, existentes);
 
   const meses = Array.from({ length: hastaMes }, (_, i) => `${anio}-${String(i + 1).padStart(2, '0')}`);
 
@@ -4176,12 +4213,19 @@ async function autoGenerarPagosImpuestos(b, anio) {
 async function pintarPagosImpuestos(contenido, b) {
   const __m = async (nombre, fn) => { const t0 = performance.now(); const r = await fn(); if (window.__perfPagos) window.__perfPagos.push({ nombre, ms: performance.now()-t0 }); return r; };
   const { data: pagos } = await __m('  └─ select fz_pagos_impuestos', () => sb.from('fz_pagos_impuestos').select('*').eq('business_id', b.id).like('periodo', `${STATE_piAnio}-%`).order('periodo', { ascending: true }));
-  // Para decidir si el menú de cada fila puede mostrar "Eliminar" — una sola consulta para
-  // todas las filas, nunca una por obligación.
-  const idsConAplicacionesVigentes = new Set();
+  // Para decidir si el menú de cada fila puede mostrar "Eliminar" — mismos criterios que la
+  // función central `puedeEliminarseObligacionFiscal`, pero en una sola consulta por criterio
+  // para toda la tabla, nunca una por obligación.
+  const idsNoEliminables = new Set();
   if ((pagos||[]).length) {
-    const { data: aplicacionesVigentes } = await sb.from('fz_aplicaciones_pago_fiscal').select('pago_impuesto_id').in('pago_impuesto_id', pagos.map(p=>p.id)).is('revertido_at', null);
-    (aplicacionesVigentes||[]).forEach(a => idsConAplicacionesVigentes.add(a.pago_impuesto_id));
+    const idsPagos = pagos.map(p=>p.id);
+    const [{ data: aplicaciones }, { data: provisiones }] = await Promise.all([
+      sb.from('fz_aplicaciones_pago_fiscal').select('pago_impuesto_id').in('pago_impuesto_id', idsPagos), // cualquier estado — el historial cuenta
+      sb.from('fz_provisiones_fiscales').select('pago_impuesto_id').in('pago_impuesto_id', idsPagos),
+    ]);
+    (aplicaciones||[]).forEach(a => idsNoEliminables.add(a.pago_impuesto_id));
+    (provisiones||[]).forEach(p => idsNoEliminables.add(p.pago_impuesto_id));
+    pagos.forEach(p => { if (p.declarada || p.fecha_presentacion) idsNoEliminables.add(p.id); });
   }
   const pendientesProvision = await __m('  └─ previsualizarProvisionesIsr', () => previsualizarProvisionesIsr(b.id, STATE_piAnio));
   const pendientesProvisionIva = await __m('  └─ previsualizarProvisionesIva', () => previsualizarProvisionesIva(b.id, STATE_piAnio));
@@ -4310,7 +4354,7 @@ async function pintarPagosImpuestos(contenido, b) {
                   <button class="btn btn-ghost btn-sm pi-menu-btn" data-id="${p.id}" style="padding:3px 10px;">⋯</button>
                   <div class="pi-menu-dropdown" data-menu="${p.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:110px;overflow:hidden;">
                     <button class="pi-editar" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Editar</button>
-                    ${idsConAplicacionesVigentes.has(p.id) ? '' : `<button class="pi-eliminar" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>`}
+                    ${idsNoEliminables.has(p.id) ? '' : `<button class="pi-eliminar" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>`}
                   </div>
                 </td>
               </tr>`;
@@ -4440,12 +4484,11 @@ async function pintarPagosImpuestos(contenido, b) {
   }));
   contenido.querySelectorAll('.pi-eliminar').forEach(btn => btn.addEventListener('click', async (e) => {
     e.stopPropagation();
-    // Protección de backend, no solo visual: aunque el botón ya no se muestre cuando hay
-    // aplicaciones vigentes, esta verificación bloquea la eliminación de todas formas si se
-    // llegara a invocar por otra vía (consola, futuro cambio de UI, etc.).
-    const { data: aplicacionesVigentes } = await sb.from('fz_aplicaciones_pago_fiscal').select('id').eq('pago_impuesto_id', btn.dataset.id).is('revertido_at', null).limit(1);
-    if (aplicacionesVigentes && aplicacionesVigentes.length) {
-      toast('Esta obligación ya tiene pagos aplicados — no se puede eliminar directamente. Usa "Revertir pago" desde su Historial de pagos.', 'error');
+    // Protección de backend real — la función central consulta las relaciones reales (aplicaciones
+    // en cualquier estado, provisión contable, declaración), no depende del mes/tipo, y bloquea
+    // aunque se invoque por otra vía (consola, futuro cambio de UI, etc.).
+    if (!(await puedeEliminarseObligacionFiscal(btn.dataset.id))) {
+      toast('Esta obligación ya tiene pagos, provisión contable o declaración relacionada — no se puede eliminar directamente. Usa "Revertir pago" desde su Historial de pagos.', 'error');
       return;
     }
     if (!confirm('¿Eliminar este registro de impuesto?')) return;
@@ -4627,7 +4670,7 @@ async function abrirModalPagoImpuesto(pago, b) {
   }
   const tieneAplicacionesVigentes = aplicacionesDeEsta.some(a => !a.revertido_at);
   camposProtegidos.forEach(id => { document.getElementById(id).disabled = tieneAplicacionesVigentes; });
-  document.getElementById('piEliminarBtn').style.display = (pago && !tieneAplicacionesVigentes) ? '' : 'none';
+  document.getElementById('piEliminarBtn').style.display = (pago && await puedeEliminarseObligacionFiscal(pago.id)) ? '' : 'none';
   document.getElementById('piHistorialPagosZona').style.display = aplicacionesDeEsta.length ? 'block' : 'none';
   if (aplicacionesDeEsta.length) {
     const [{ data: cuentasBancoRef }, { data: monedasRef }] = await Promise.all([
@@ -4767,9 +4810,22 @@ document.getElementById('piGuardarBtn').addEventListener('click', async () => {
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     filaGuardada = data;
   } else {
-    const { data, error } = await sb.from('fz_pagos_impuestos').insert(payload).select().single();
-    if (error) { toast('Error: ' + error.message, 'error'); return; }
-    filaGuardada = data;
+    // Antes de crear, buscar si ya existe la obligación canónica (misma clave que usa la
+    // función central) — si existe, se actualiza con TODO lo capturado aquí en vez de crear
+    // un duplicado; nunca se pierde lo que el usuario acaba de escribir en este modal.
+    let query = sb.from('fz_pagos_impuestos').select('id').eq('business_id', b.id).eq('periodo', payload.periodo).eq('tipo_impuesto', payload.tipo_impuesto);
+    query = payload.concepto ? query.eq('concepto', payload.concepto) : query.is('concepto', null);
+    const { data: existentesPrevios } = await query.order('created_at', { ascending: true });
+    const existente = existentesPrevios && existentesPrevios.length ? existentesPrevios[0] : null;
+    if (existente) {
+      const { data, error } = await sb.from('fz_pagos_impuestos').update(payload).eq('id', existente.id).select().single();
+      if (error) { toast('Error: ' + error.message, 'error'); return; }
+      filaGuardada = data;
+    } else {
+      const { data, error } = await sb.from('fz_pagos_impuestos').insert(payload).select().single();
+      if (error) { toast('Error: ' + error.message, 'error'); return; }
+      filaGuardada = data;
+    }
   }
   if (filaGuardada && fechaPago && pagadoDesdeTipo) {
     await aplicarPagoFiscal(b.id, fechaPago, pagadoDesdeTipo, pagadoDesdeId, [{ pagoImpuesto: filaGuardada, monto: Number(filaGuardada.monto) }], `Pago ${TIPO_IMPUESTO_LABEL[filaGuardada.tipo_impuesto]} — ${filaGuardada.periodo}`);
@@ -4782,12 +4838,11 @@ document.getElementById('piGuardarBtn').addEventListener('click', async () => {
 document.getElementById('piEliminarBtn').addEventListener('click', async () => {
   if (!STATE_piEditandoId || !confirm('¿Eliminar este registro de impuesto?')) return;
   const b = biz();
-  // Bloqueo puro — cualquier aplicación vigente impide eliminar, sea pago individual o conjunto.
-  // No se revierte nada automáticamente aquí: la única vía para quitar un pago es "Revertir pago"
-  // desde el Historial de pagos, con motivo y trazabilidad.
-  const { data: aplicacionesVigentes } = await sb.from('fz_aplicaciones_pago_fiscal').select('id').eq('pago_impuesto_id', STATE_piEditandoId).is('revertido_at', null).limit(1);
-  if (aplicacionesVigentes && aplicacionesVigentes.length) {
-    toast('Esta obligación ya tiene pagos aplicados — no se puede eliminar directamente. Usa "Revertir pago" desde su Historial de pagos.', 'error');
+  // Bloqueo puro con la función central — consulta relaciones reales (aplicaciones en cualquier
+  // estado, provisión contable, declaración), nunca depende del mes/tipo. No se revierte nada
+  // automáticamente aquí: la única vía para quitar un pago es "Revertir pago" desde el Historial.
+  if (!(await puedeEliminarseObligacionFiscal(STATE_piEditandoId))) {
+    toast('Esta obligación ya tiene pagos, provisión contable o declaración relacionada — no se puede eliminar directamente. Usa "Revertir pago" desde su Historial de pagos.', 'error');
     return;
   }
   await sb.from('fz_pagos_impuestos').delete().eq('id', STATE_piEditandoId);
