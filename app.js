@@ -3250,7 +3250,7 @@ async function aplicarPagoFiscal(businessId, fecha, cuentaTipo, cuentaId, aplica
     const saldoPrincipalPendiente = baseParaPrincipal - principalYaPagado;
     const desglose = await calcularDesglosePagoParcial(saldoPrincipalPendiente, vencimientos[a.pagoImpuesto.id], fecha, Number(a.monto), recargosYaPagados, actualizacionYaPagada);
     await sb.from('fz_aplicaciones_pago_fiscal').insert({
-      business_id: businessId, pago_impuesto_id: a.pagoImpuesto.id, monto: Number(a.monto),
+      business_id: businessId, pago_impuesto_id: a.pagoImpuesto.id, declaracion_id: declaracionVigente ? declaracionVigente.id : null, monto: Number(a.monto),
       monto_principal: desglose.monto_principal, monto_actualizacion: desglose.monto_actualizacion, monto_recargos: desglose.monto_recargos, monto_redondeo: desglose.monto_redondeo || 0,
       origen_tabla: tabla, origen_id: movimiento.id, poliza_id: null, fecha,
     });
@@ -5031,20 +5031,47 @@ async function abrirModalPagoImpuesto(pago, b) {
   camposProtegidos.forEach(id => { document.getElementById(id).disabled = tieneAplicacionesVigentes; });
   document.getElementById('piEliminarBtn').style.display = (pago && await puedeEliminarseObligacionFiscal(pago.id)) ? '' : 'none';
 
-  // Declaraciones — solo tiene sentido para una obligación que ya existe.
+  // Historial fiscal — Determinación → Obligación → Normal → Complementaria(s) → Línea de
+  // captura → Pago(s). Solo tiene sentido para una obligación que ya existe.
   document.getElementById('piDeclaracionesZona').style.display = pago ? 'block' : 'none';
   document.getElementById('piDeclaracionFormZona').style.display = 'none';
   if (pago) {
     const { data: declaraciones } = await sb.from('fz_declaraciones_fiscales').select('*').eq('pago_impuesto_id', pago.id).order('created_at', { ascending: true });
     const vigente = await obtenerDeclaracionVigente(pago.id);
-    document.getElementById('piDeclaracionesLista').innerHTML = (declaraciones||[]).length
+    const exigibleActual = await calcularImporteExigibleObligacion(pago.id, todayStr());
+
+    // Cada aplicación (ya cargada arriba en aplicacionesDeEsta) se agrupa bajo SU declaración —
+    // la relación real (declaracion_id), nunca inferida por fecha ni importe. Las que no tienen
+    // declaracion_id (aplicaciones históricas, de antes de esta fase) se muestran aparte, a nivel
+    // obligación completa, sin adivinar a cuál declaración pertenecieron.
+    const pagosPorDeclaracion = {};
+    const pagosSinVincular = [];
+    aplicacionesDeEsta.forEach(a => {
+      if (a.declaracion_id) (pagosPorDeclaracion[a.declaracion_id] = pagosPorDeclaracion[a.declaracion_id] || []).push(a);
+      else pagosSinVincular.push(a);
+    });
+    const filaPago = a => `<div style="font-size:11px;color:${a.revertido_at?'var(--red)':'var(--muted)'};padding-left:10px;">${a.revertido_at?'[Revertido] ':''}${fechaCorta(a.fecha)} · ${fmt(a.monto)}${a.revertido_at?' — '+(a.revertido_motivo||'sin motivo'):''}</div>`;
+
+    let html = '';
+    if (exigibleActual.requiereTratamientoEspecial) {
+      html += `<div style="padding:6px 8px;background:#fff3e0;border-radius:8px;margin-bottom:6px;font-size:11.5px;color:#8a5a00;"><strong>Requiere revisión:</strong> posible saldo a favor/compensación/devolución. ${exigibleActual.motivo}</div>`;
+    }
+    html += (declaraciones||[]).length
       ? declaraciones.map(d => `
         <div style="padding:5px 8px;border:1px solid var(--line);border-radius:8px;margin-bottom:5px;font-size:11.5px;${vigente&&d.id===vigente.id?'':'opacity:0.6;'}">
           <strong>${d.tipo_declaracion==='normal'?'Normal':'Complementaria '+d.numero_complementaria}</strong>${vigente&&d.id===vigente.id?' <span style="color:var(--green);">— vigente</span>':''}
           ${d.fecha_presentacion?' · Presentada '+fechaCorta(d.fecha_presentacion):''}${d.numero_operacion?' · Op. '+d.numero_operacion:''}
           <div style="color:var(--muted);margin-top:2px;">Importe declarado: ${fmt(d.importe_declarado||0)}${d.linea_captura?' · Línea: '+d.linea_captura:''}${d.fecha_vigencia_linea?' (vigente hasta '+fechaCorta(d.fecha_vigencia_linea)+')':''}</div>
+          ${(pagosPorDeclaracion[d.id]||[]).length ? `<div style="margin-top:3px;">${pagosPorDeclaracion[d.id].map(filaPago).join('')}</div>` : `<div style="font-size:11px;color:var(--muted);padding-left:10px;">Sin pagos aplicados a esta declaración todavía.</div>`}
         </div>`).join('')
       : `<p style="font-size:11.5px;color:var(--muted);">Sin declaraciones registradas todavía — el pago no podrá aplicarse hasta que exista al menos una.</p>`;
+    if (pagosSinVincular.length) {
+      html += `<div style="padding:5px 8px;border:1px dashed var(--line);border-radius:8px;margin-top:5px;font-size:11.5px;">
+        <strong style="color:var(--muted);">Pago histórico sin vinculación específica</strong> <span style="color:var(--muted);">(anterior a esta fase — agrupado a nivel obligación, no se adivina a cuál declaración perteneció)</span>
+        <div style="margin-top:3px;">${pagosSinVincular.map(filaPago).join('')}</div>
+      </div>`;
+    }
+    document.getElementById('piDeclaracionesLista').innerHTML = html;
 
     document.getElementById('piRegistrarDeclaracionBtn').onclick = () => {
       const yaHayNormal = (declaraciones||[]).some(d=>d.tipo_declaracion==='normal');
