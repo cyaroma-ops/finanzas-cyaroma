@@ -4170,6 +4170,13 @@ async function autoGenerarPagosImpuestos(b, anio) {
 async function pintarPagosImpuestos(contenido, b) {
   const __m = async (nombre, fn) => { const t0 = performance.now(); const r = await fn(); if (window.__perfPagos) window.__perfPagos.push({ nombre, ms: performance.now()-t0 }); return r; };
   const { data: pagos } = await __m('  └─ select fz_pagos_impuestos', () => sb.from('fz_pagos_impuestos').select('*').eq('business_id', b.id).like('periodo', `${STATE_piAnio}-%`).order('periodo', { ascending: true }));
+  // Para decidir si el menú de cada fila puede mostrar "Eliminar" — una sola consulta para
+  // todas las filas, nunca una por obligación.
+  const idsConAplicacionesVigentes = new Set();
+  if ((pagos||[]).length) {
+    const { data: aplicacionesVigentes } = await sb.from('fz_aplicaciones_pago_fiscal').select('pago_impuesto_id').in('pago_impuesto_id', pagos.map(p=>p.id)).is('revertido_at', null);
+    (aplicacionesVigentes||[]).forEach(a => idsConAplicacionesVigentes.add(a.pago_impuesto_id));
+  }
   const pendientesProvision = await __m('  └─ previsualizarProvisionesIsr', () => previsualizarProvisionesIsr(b.id, STATE_piAnio));
   const pendientesProvisionIva = await __m('  └─ previsualizarProvisionesIva', () => previsualizarProvisionesIva(b.id, STATE_piAnio));
   const duplicadosRealizacion = await __m('  └─ detectarDuplicadosRealizacion', () => detectarDuplicadosRealizacion(b.id));
@@ -4297,7 +4304,7 @@ async function pintarPagosImpuestos(contenido, b) {
                   <button class="btn btn-ghost btn-sm pi-menu-btn" data-id="${p.id}" style="padding:3px 10px;">⋯</button>
                   <div class="pi-menu-dropdown" data-menu="${p.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:110px;overflow:hidden;">
                     <button class="pi-editar" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Editar</button>
-                    <button class="pi-eliminar" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>
+                    ${idsConAplicacionesVigentes.has(p.id) ? '' : `<button class="pi-eliminar" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>`}
                   </div>
                 </td>
               </tr>`;
@@ -4427,6 +4434,14 @@ async function pintarPagosImpuestos(contenido, b) {
   }));
   contenido.querySelectorAll('.pi-eliminar').forEach(btn => btn.addEventListener('click', async (e) => {
     e.stopPropagation();
+    // Protección de backend, no solo visual: aunque el botón ya no se muestre cuando hay
+    // aplicaciones vigentes, esta verificación bloquea la eliminación de todas formas si se
+    // llegara a invocar por otra vía (consola, futuro cambio de UI, etc.).
+    const { data: aplicacionesVigentes } = await sb.from('fz_aplicaciones_pago_fiscal').select('id').eq('pago_impuesto_id', btn.dataset.id).is('revertido_at', null).limit(1);
+    if (aplicacionesVigentes && aplicacionesVigentes.length) {
+      toast('Esta obligación ya tiene pagos aplicados — no se puede eliminar directamente. Usa "Revertir pago" desde su Historial de pagos.', 'error');
+      return;
+    }
     if (!confirm('¿Eliminar este registro de impuesto?')) return;
     await sb.from('fz_pagos_impuestos').delete().eq('id', btn.dataset.id);
     registrarAuditoria(b.id, 'eliminar', 'Pagos de Impuestos', 'Registro eliminado');
@@ -4744,8 +4759,14 @@ document.getElementById('piGuardarBtn').addEventListener('click', async () => {
 document.getElementById('piEliminarBtn').addEventListener('click', async () => {
   if (!STATE_piEditandoId || !confirm('¿Eliminar este registro de impuesto?')) return;
   const b = biz();
-  const bloqueado = await intentarRevertirPagoIndividual(STATE_piEditandoId);
-  if (bloqueado) { toast('Este pago es parte de un pago conjunto — no se puede eliminar así. Adminístralo desde Bancos/Efectivo.', 'error'); return; }
+  // Bloqueo puro — cualquier aplicación vigente impide eliminar, sea pago individual o conjunto.
+  // No se revierte nada automáticamente aquí: la única vía para quitar un pago es "Revertir pago"
+  // desde el Historial de pagos, con motivo y trazabilidad.
+  const { data: aplicacionesVigentes } = await sb.from('fz_aplicaciones_pago_fiscal').select('id').eq('pago_impuesto_id', STATE_piEditandoId).is('revertido_at', null).limit(1);
+  if (aplicacionesVigentes && aplicacionesVigentes.length) {
+    toast('Esta obligación ya tiene pagos aplicados — no se puede eliminar directamente. Usa "Revertir pago" desde su Historial de pagos.', 'error');
+    return;
+  }
   await sb.from('fz_pagos_impuestos').delete().eq('id', STATE_piEditandoId);
   registrarAuditoria(b.id, 'eliminar', 'Pagos de Impuestos', 'Registro eliminado');
   document.getElementById('modalPagoImpuesto').classList.remove('show');
