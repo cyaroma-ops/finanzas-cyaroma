@@ -2322,6 +2322,100 @@ async function ejecutarLimpiezaCuentasDuplicadas(businessId, nombres) {
 // segundo SELECT de obtenerOCrearSubcuentaPorNombre en vez del primero). Nunca toca la mayor —
 // solo revisa/limpia las subcuentas duplicadas bajo ella, con la misma verificación de
 // referencias reales en las 7 tablas antes de borrar cualquiera.
+// Escanea TODO el catálogo del negocio (no solo nombres específicos) y encuentra cualquier
+// grupo de cuentas mayor (mismo tipo + nombre normalizado) o de subcuentas (misma cuenta mayor +
+// nombre normalizado) que tenga más de una fila — sin necesitar adivinar nombres de antemano.
+async function encontrarTodosLosDuplicadosCatalogo(businessId) {
+  const [{ data: mayores }, { data: subcuentas }] = await Promise.all([
+    sb.from('fz_cuentas_mayor').select('*').eq('business_id', businessId).order('created_at', { ascending: true }),
+    sb.from('fz_subcuentas').select('*').eq('business_id', businessId).order('created_at', { ascending: true }),
+  ]);
+  const normalizar = (s) => (s||'').trim().toLowerCase();
+  const mayoresPorId = Object.fromEntries((mayores||[]).map(m=>[m.id,m]));
+
+  const gruposMayor = {};
+  (mayores||[]).forEach(m => { const k = `${m.tipo}|${normalizar(m.nombre)}`; (gruposMayor[k]=gruposMayor[k]||[]).push(m); });
+  const mayoresDuplicados = Object.values(gruposMayor).filter(g=>g.length>1);
+
+  const gruposSub = {};
+  (subcuentas||[]).forEach(s => { const k = `${s.cuenta_mayor_id}|${normalizar(s.nombre)}`; (gruposSub[k]=gruposSub[k]||[]).push(s); });
+  const subcuentasDuplicadas = Object.values(gruposSub).filter(g=>g.length>1);
+
+  return { mayoresDuplicados, subcuentasDuplicadas, mayoresPorId };
+}
+
+// Para cada grupo duplicado encontrado (mayor o subcuenta), verifica referencias reales en las 7
+// tablas antes de proponer nada — de solo lectura.
+async function verificarTodosLosDuplicadosCatalogo(businessId) {
+  const { mayoresDuplicados, subcuentasDuplicadas, mayoresPorId } = await encontrarTodosLosDuplicadosCatalogo(businessId);
+
+  const revisarReferenciasSubcuenta = async (subId) => {
+    const referencias = [];
+    for (const tabla of TABLAS_CON_SUBCUENTA) {
+      const { count } = await sb.from(tabla).select('id', { count: 'exact', head: true }).eq('subcuenta_id', subId);
+      if (count > 0) referencias.push({ tabla, count });
+    }
+    const { count: countHijos } = await sb.from('fz_subcuentas').select('id', { count: 'exact', head: true }).eq('subcuenta_padre_id', subId);
+    if (countHijos > 0) referencias.push({ tabla: 'fz_subcuentas (como padre de otra)', count: countHijos });
+    return referencias;
+  };
+
+  const gruposMayorConDetalle = [];
+  for (const grupo of mayoresDuplicados) {
+    const canonico = grupo[0]; // más antiguo
+    const duplicados = [];
+    let abortar = false;
+    for (const dup of grupo.slice(1)) {
+      const { data: subs } = await sb.from('fz_subcuentas').select('id').eq('cuenta_mayor_id', dup.id);
+      const subIds = (subs||[]).map(s=>s.id);
+      let referencias = [];
+      for (const subId of subIds) referencias = referencias.concat(await revisarReferenciasSubcuenta(subId));
+      if (referencias.length) abortar = true;
+      duplicados.push({ mayorId: dup.id, subIds, referencias, seguro: !referencias.length });
+    }
+    gruposMayorConDetalle.push({ nombre: canonico.nombre, tipo: canonico.tipo, canonicoId: canonico.id, duplicados, abortar });
+  }
+
+  const gruposSubConDetalle = [];
+  for (const grupo of subcuentasDuplicadas) {
+    const canonica = grupo[0];
+    const mayor = mayoresPorId[canonica.cuenta_mayor_id];
+    const duplicadas = [];
+    let abortar = false;
+    for (const dup of grupo.slice(1)) {
+      const referencias = await revisarReferenciasSubcuenta(dup.id);
+      if (referencias.length) abortar = true;
+      duplicadas.push({ subId: dup.id, referencias, seguro: !referencias.length });
+    }
+    gruposSubConDetalle.push({ nombre: canonica.nombre, mayorNombre: mayor?.nombre||'(desconocida)', canonicaId: canonica.id, duplicados: duplicadas, abortar });
+  }
+
+  return { gruposMayor: gruposMayorConDetalle, gruposSub: gruposSubConDetalle };
+}
+
+// Ejecuta la limpieza de TODO lo encontrado — cada grupo se resuelve de forma independiente; si
+// un grupo tiene alguna referencia real, ese grupo específico se aborta sin tocarlo, y los demás
+// grupos limpios sí se procesan.
+async function ejecutarLimpiezaTotalCatalogo(businessId) {
+  const { gruposMayor, gruposSub } = await verificarTodosLosDuplicadosCatalogo(businessId);
+  const reporte = [];
+  for (const g of gruposMayor) {
+    if (g.abortar) { reporte.push({ tipo: 'mayor', nombre: g.nombre, accion: 'ABORTADO — referencias reales encontradas' }); continue; }
+    for (const dup of g.duplicados) {
+      if (dup.subIds.length) await sb.from('fz_subcuentas').delete().in('id', dup.subIds);
+      await sb.from('fz_cuentas_mayor').delete().eq('id', dup.mayorId);
+    }
+    reporte.push({ tipo: 'mayor', nombre: g.nombre, accion: `${g.duplicados.length} duplicado(s) eliminado(s), canónica: ${g.canonicoId}` });
+  }
+  for (const g of gruposSub) {
+    if (g.abortar) { reporte.push({ tipo: 'subcuenta', nombre: `${g.mayorNombre} → ${g.nombre}`, accion: 'ABORTADO — referencias reales encontradas' }); continue; }
+    const ids = g.duplicados.map(d=>d.subId);
+    if (ids.length) await sb.from('fz_subcuentas').delete().in('id', ids);
+    reporte.push({ tipo: 'subcuenta', nombre: `${g.mayorNombre} → ${g.nombre}`, accion: `${ids.length} duplicado(s) eliminado(s), canónica: ${g.canonicaId}` });
+  }
+  return reporte;
+}
+
 async function verificarLimpiezaSubcuentasHermanas(businessId, nombre) {
   const { data: mayores } = await sb.from('fz_cuentas_mayor').select('id').eq('business_id', businessId).ilike('nombre', nombre);
   if (!mayores || mayores.length !== 1) return { nombre, estado: 'requiere_revision_manual', mayoresEncontrados: mayores?.length||0, duplicados: [], abortar: true };
@@ -11173,6 +11267,26 @@ async function abrirDiagnosticoFiscal(businessId, periodo) {
       const r = await ejecutarLimpiezaSubcuentasHermanas(businessId, 'Diferencias por redondeo fiscal');
       registrarAuditoria(businessId, 'eliminar', 'Configuración', `Limpieza de subcuentas hermanas — Diferencias por redondeo fiscal: ${r.accion}`);
       zona.innerHTML = `<p style="font-size:12px;font-weight:700;color:var(--green);">Listo:</p><p style="font-size:12px;">${r.accion}</p>`;
+      toast('Limpieza completada.');
+    };
+  };
+
+  document.getElementById('escanearTodoCatalogoBtn').onclick = async () => {
+    const zona = document.getElementById('duplicadosCatalogoResultado');
+    zona.innerHTML = `<div class="empty">Escaneando todo el catálogo de cuentas mayor y subcuentas…</div>`;
+    const { gruposMayor, gruposSub } = await verificarTodosLosDuplicadosCatalogo(businessId);
+    if (!gruposMayor.length && !gruposSub.length) { zona.innerHTML = `<div class="empty">No se encontró ningún duplicado en todo el catálogo.</div>`; return; }
+    const hayAbortados = gruposMayor.some(g=>g.abortar) || gruposSub.some(g=>g.abortar);
+    const filaMayor = g => `<p style="font-size:12px;"><strong>Cuenta mayor "${g.nombre}"</strong> (${g.tipo}): ${g.duplicados.length} duplicado(s)${g.abortar?' — <span style="color:var(--red);">tiene referencias reales, se abortará</span>':' — seguro de borrar'}</p>`;
+    const filaSub = g => `<p style="font-size:12px;"><strong>Subcuenta "${g.mayorNombre} → ${g.nombre}"</strong>: ${g.duplicados.length} duplicado(s)${g.abortar?' — <span style="color:var(--red);">tiene referencias reales, se abortará</span>':' — seguro de borrar'}</p>`;
+    zona.innerHTML = gruposMayor.map(filaMayor).join('') + gruposSub.map(filaSub).join('') +
+      `<button class="btn btn-gold btn-sm" id="confirmarLimpiezaTotalBtn" style="margin-top:8px;">Confirmar limpieza de los grupos seguros</button>` +
+      (hayAbortados ? `<p style="font-size:11.5px;color:var(--red);margin-top:6px;">Los grupos marcados en rojo NO se tocarán — tienen referencias reales que revisar manualmente.</p>` : '');
+    document.getElementById('confirmarLimpiezaTotalBtn').onclick = async () => {
+      if (!confirm('Se eliminarán todos los duplicados seguros encontrados (los que tienen referencias reales se dejarán intactos). ¿Continuar?')) return;
+      const reporte = await ejecutarLimpiezaTotalCatalogo(businessId);
+      registrarAuditoria(businessId, 'eliminar', 'Configuración', `Limpieza total de catálogo: ${reporte.map(r=>`${r.nombre} — ${r.accion}`).join(' | ')}`);
+      zona.innerHTML = `<p style="font-size:12px;font-weight:700;color:var(--green);">Listo:</p>` + reporte.map(r=>`<p style="font-size:12px;">[${r.tipo}] ${r.nombre}: ${r.accion}</p>`).join('');
       toast('Limpieza completada.');
     };
   };
