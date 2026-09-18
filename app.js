@@ -2897,18 +2897,24 @@ async function revertirPagoFiscalPorOrigen(origenTabla, origenId) {
 // oculta ni genera una póliza para cuadrarlo) — solo si esta era la última aplicación vigente de
 // ese movimiento, el movimiento (que ya no representa nada real) se revierte también.
 async function revertirAplicacionFiscalIndividual(aplicacionId, motivo, usuarioEmail) {
-  const { data: aplicacion } = await sb.from('fz_aplicaciones_pago_fiscal').select('*').eq('id', aplicacionId).maybeSingle();
+  console.log('[revertirAplicacionFiscalIndividual] buscando aplicación id:', aplicacionId);
+  const { data: aplicacion, error: errBusqueda } = await sb.from('fz_aplicaciones_pago_fiscal').select('*').eq('id', aplicacionId).maybeSingle();
+  console.log('[revertirAplicacionFiscalIndividual] encontrada:', aplicacion, '| error:', errBusqueda);
+  if (errBusqueda) return { estado: 'error', error: errBusqueda.message };
   if (!aplicacion) return { estado: 'no_encontrada' };
   if (aplicacion.revertido_at) return { estado: 'ya_revertida' };
 
-  await sb.from('fz_aplicaciones_pago_fiscal').update({
+  const { error: errUpdate } = await sb.from('fz_aplicaciones_pago_fiscal').update({
     revertido_at: new Date().toISOString(), revertido_por: usuarioEmail || null, revertido_motivo: motivo || null,
   }).eq('id', aplicacionId);
+  console.log('[revertirAplicacionFiscalIndividual] resultado del UPDATE — error:', errUpdate);
+  if (errUpdate) return { estado: 'error', error: errUpdate.message };
 
   await recalcularImportePagadoImpuesto(aplicacion.pago_impuesto_id);
 
   const { data: otrasVigentes } = await sb.from('fz_aplicaciones_pago_fiscal').select('id')
     .eq('origen_tabla', aplicacion.origen_tabla).eq('origen_id', aplicacion.origen_id).is('revertido_at', null);
+  console.log('[revertirAplicacionFiscalIndividual] otras aplicaciones vigentes en el mismo movimiento:', otrasVigentes);
   let movimientoRevertido = false;
   if (!otrasVigentes || !otrasVigentes.length) {
     await sb.from(aplicacion.origen_tabla).delete().eq('id', aplicacion.origen_id);
@@ -4657,12 +4663,29 @@ async function abrirModalPagoImpuesto(pago, b) {
       if (motivo === null) return; // canceló
       if (!motivo.trim()) { toast('Necesitas escribir un motivo.', 'error'); return; }
       if (!confirm('¿Confirmas revertir este pago? Se conservará en el historial, marcado como revertido.')) return;
-      const r = await revertirAplicacionFiscalIndividual(btn.dataset.id, motivo.trim(), STATE.user?.email || null);
-      if (r.estado === 'ya_revertida') { toast('Ya estaba revertida.', 'error'); return; }
-      registrarAuditoria(b.id, 'editar', 'Pagos de Impuestos', `Reversión de aplicación fiscal — obligación ${pago.periodo}/${pago.tipo_impuesto} — motivo: ${motivo.trim()}${r.eraPagoConjunto?' (pago conjunto, movimiento conservado)':''}`);
-      toast('Pago revertido.');
-      document.getElementById('modalPagoImpuesto').classList.remove('show');
-      renderPagosImpuestos();
+      const aplicacionId = btn.dataset.id;
+      console.log('[Revertir pago] aplicacionId enviado:', aplicacionId);
+      let r;
+      try {
+        r = await revertirAplicacionFiscalIndividual(aplicacionId, motivo.trim(), STATE.user?.email || null);
+      } catch (err) {
+        console.log('[Revertir pago] excepción:', err);
+        toast('Error al revertir: ' + (err?.message || err), 'error');
+        return;
+      }
+      console.log('[Revertir pago] resultado recibido:', r);
+      if (r.estado === 'revertida') {
+        registrarAuditoria(b.id, 'editar', 'Pagos de Impuestos', `Reversión de aplicación fiscal — obligación ${pago.periodo}/${pago.tipo_impuesto} — motivo: ${motivo.trim()}${r.eraPagoConjunto?' (pago conjunto, movimiento conservado)':''}`);
+        toast('Pago revertido.');
+        document.getElementById('modalPagoImpuesto').classList.remove('show');
+        renderPagosImpuestos();
+      } else if (r.estado === 'ya_revertida') {
+        toast('Ya estaba revertida — no se hizo ningún cambio adicional.', 'error');
+      } else if (r.estado === 'no_encontrada') {
+        toast('No se encontró esa aplicación — no se revirtió nada. Revisa la consola (aplicacionId enviado) y avísame.', 'error');
+      } else {
+        toast('Estado inesperado ("' + (r?.estado||'sin estado') + '") — no se dio por exitoso. Revisa la consola y avísame antes de reintentar.', 'error');
+      }
     }));
   }
   document.getElementById('modalPagoImpuesto').classList.add('show');
