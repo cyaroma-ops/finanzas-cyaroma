@@ -2063,14 +2063,121 @@ async function puedeEliminarseObligacionFiscal(pagoImpuestoId) {
   return !((countAplicaciones||0) > 0 || (countProvisiones||0) > 0 || yaDeclarada);
 }
 
-// Sexto dígito numérico del RFC — literalmente el 6° carácter de la cadena, nunca capturado a
-// mano. Aplica tanto a Persona Física (13 caracteres) como Moral (12), porque la regla fiscal se
-// basa en la posición del carácter, no en el tipo de persona. Devuelve null si esa posición no
-// es un dígito numérico (para no forzar una facilidad que no aplica en ese caso).
+// Sexto dígito numérico del RFC — conforme al artículo 5.1 del Decreto del 26 de diciembre de
+// 2013, es el 6° carácter NUMÉRICO de la clave, no la posición 6 literal del string. La
+// diferencia importa: en Persona Moral (3 letras) la posición 6 cae en el bloque de fecha, pero
+// en Persona Física (4 letras) la posición 6 también cae ahí — sin embargo, contar por posición
+// literal en vez de por dígitos numéricos encontrados puede desalinear el resultado si el RFC
+// no tiene exactamente ese patrón. Este cálculo es explícito: normaliza, valida la estructura
+// real de un RFC (física o moral), y toma el 6° dígito de los encontrados en la clave — nunca
+// inventa ni completa un RFC inválido.
 function obtenerSextoDigitoRFC(rfc) {
-  if (!rfc || rfc.length < 6) return null;
-  const caracter = rfc.trim().toUpperCase()[5];
-  return /^[0-9]$/.test(caracter) ? Number(caracter) : null;
+  if (!rfc) return null;
+  // 1. Normalizar
+  const limpio = rfc.trim().toUpperCase().replace(/[\s-]/g, '');
+  // 2. Validar estructura real de RFC: Moral = 3 letras + 6 dígitos (fecha) + 3 alfanuméricos
+  //    (homoclave); Física = 4 letras + 6 dígitos (fecha) + 3 alfanuméricos (homoclave).
+  const esMoral = /^[A-ZÑ&]{3}[0-9]{6}[A-Z0-9]{3}$/.test(limpio);
+  const esFisica = /^[A-ZÑ&]{4}[0-9]{6}[A-Z0-9]{3}$/.test(limpio);
+  if (!esMoral && !esFisica) return null; // estructura inválida — no se infiere nada
+  // 3. Identificar los caracteres numéricos de la clave, en orden.
+  const digitos = limpio.replace(/[^0-9]/g, '');
+  // 4. El sexto dígito numérico (siempre cae dentro del bloque de 6 dígitos de la fecha, tanto
+  //    en física como en moral, porque el prefijo de letras nunca contiene números).
+  // 5. Si no hay al menos 6 dígitos numéricos válidos, null — nunca se completa/infiere.
+  if (digitos.length < 6) return null;
+  return Number(digitos[5]);
+}
+
+// Días hábiles adicionales según el sexto dígito, conforme a la tabla del artículo 5.1.
+function diasHabilesPorSextoDigito(sextoDigito) {
+  if (sextoDigito === 1 || sextoDigito === 2) return 1;
+  if (sextoDigito === 3 || sextoDigito === 4) return 2;
+  if (sextoDigito === 5 || sextoDigito === 6) return 3;
+  if (sextoDigito === 7 || sextoDigito === 8) return 4;
+  if (sextoDigito === 9 || sextoDigito === 0) return 5;
+  return 0;
+}
+
+// Vencimiento BASE por tipo de obligación — consulta la regla parametrizada, nunca asume que
+// todo vence el día 17. Por ahora solo existe la regla 'dia17_mes_siguiente' (la única que usan
+// los tipos actuales); una regla nueva se agregaría aquí sin tocar las demás.
+async function calcularVencimientoBase(periodo, tipoImpuesto) {
+  const { data: regla } = await sb.from('fz_reglas_vencimiento_impuesto').select('*').eq('tipo_impuesto', tipoImpuesto).maybeSingle();
+  if (!regla) return { fechaBase: null, susceptible: false, criterio: `Sin regla parametrizada para tipo_impuesto="${tipoImpuesto}"` };
+  if (regla.regla_vencimiento_base === 'dia17_mes_siguiente') {
+    let [y, m] = periodo.split('-').map(Number);
+    m++; if (m > 12) { m = 1; y++; }
+    return {
+      fechaBase: `${y}-${String(m).padStart(2, '0')}-17`,
+      susceptible: regla.obligacion_susceptible_facilidad_5_1,
+      criterio: 'Vencimiento legal general: día 17 del mes siguiente al periodo.',
+    };
+  }
+  return { fechaBase: null, susceptible: false, criterio: `Regla "${regla.regla_vencimiento_base}" no implementada todavía.` };
+}
+
+// Días hábiles reales desde una fecha base — salta sábados/domingos y las fechas registradas en
+// fz_dias_inhabiles_fiscales. Si esa tabla no tiene ninguna fecha en el rango relevante, el
+// resultado es matemáticamente correcto pero incompleto en la práctica (faltan los feriados
+// oficiales) — se reporta explícitamente, nunca se presenta como definitivo en ese caso.
+async function calcularDiasHabiles(fechaBaseStr, n) {
+  if (!n || n <= 0) return { fecha: fechaBaseStr, calendarioIncompleto: false };
+  const finDelAnioSiguiente = `${Number(fechaBaseStr.slice(0,4))+1}-12-31`;
+  const { data: inhabiles } = await sb.from('fz_dias_inhabiles_fiscales').select('fecha').gte('fecha', fechaBaseStr).lte('fecha', finDelAnioSiguiente);
+  const setInhabiles = new Set((inhabiles||[]).map(f=>f.fecha));
+  const calendarioIncompleto = setInhabiles.size === 0; // no hay ningún inhábil cargado en el rango — probablemente el calendario no está completo todavía
+  let fecha = new Date(fechaBaseStr + 'T00:00:00');
+  let contados = 0;
+  while (contados < n) {
+    fecha.setDate(fecha.getDate() + 1);
+    const diaSemana = fecha.getDay(); // 0=domingo, 6=sábado
+    const fechaStr = fecha.toISOString().slice(0,10);
+    if (diaSemana !== 0 && diaSemana !== 6 && !setInhabiles.has(fechaStr)) contados++;
+  }
+  return { fecha: fecha.toISOString().slice(0,10), calendarioIncompleto };
+}
+
+// Orquestador — calcula (sin persistir) el vencimiento base y efectivo de una obligación
+// concreta, aplicando la separación exigida: susceptibilidad por tipo ≠ aplicabilidad real al
+// contribuyente (que además requiere sexto dígito válido y ausencia de exclusión registrada).
+async function calcularVencimientoEfectivo(businessId, periodo, tipoImpuesto) {
+  const { fechaBase, susceptible, criterio } = await calcularVencimientoBase(periodo, tipoImpuesto);
+  if (!fechaBase) return { fecha_vencimiento_base: null, obligacion_susceptible_facilidad: false, facilidad_rfc_aplicable: false, sexto_digito_rfc: null, dias_habiles_extension: 0, fecha_vencimiento_efectiva: null, vencimiento_calendario_incompleto: false, vencimiento_criterio: criterio };
+
+  const { data: negocio } = await sb.from('businesses').select('rfc,facilidad_art5_1_excluido,facilidad_art5_1_motivo_exclusion').eq('id', businessId).maybeSingle();
+  const sextoDigito = obtenerSextoDigitoRFC(negocio?.rfc);
+  const excluido = !!(negocio?.facilidad_art5_1_excluido);
+  const facilidadAplicable = susceptible && !excluido && sextoDigito !== null;
+
+  if (!facilidadAplicable) {
+    let motivo = 'No aplica la facilidad del artículo 5.1: ';
+    if (!susceptible) motivo += 'esta obligación no es susceptible por su naturaleza.';
+    else if (excluido) motivo += `el contribuyente está marcado como excluido (${negocio?.facilidad_art5_1_motivo_exclusion || 'sin motivo registrado'}).`;
+    else motivo += 'no se pudo obtener un sexto dígito numérico válido del RFC registrado.';
+    return { fecha_vencimiento_base: fechaBase, obligacion_susceptible_facilidad: susceptible, facilidad_rfc_aplicable: false, sexto_digito_rfc: sextoDigito, dias_habiles_extension: 0, fecha_vencimiento_efectiva: fechaBase, vencimiento_calendario_incompleto: false, vencimiento_criterio: `${criterio} ${motivo}` };
+  }
+
+  const extension = diasHabilesPorSextoDigito(sextoDigito);
+  const { fecha: fechaEfectiva, calendarioIncompleto } = await calcularDiasHabiles(fechaBase, extension);
+  return {
+    fecha_vencimiento_base: fechaBase, obligacion_susceptible_facilidad: true, facilidad_rfc_aplicable: true,
+    sexto_digito_rfc: sextoDigito, dias_habiles_extension: extension, fecha_vencimiento_efectiva: fechaEfectiva,
+    vencimiento_calendario_incompleto: calendarioIncompleto,
+    vencimiento_criterio: `${criterio} Facilidad art. 5.1 aplicable (sexto dígito ${sextoDigito} → +${extension} día(s) hábil(es)).${calendarioIncompleto ? ' ADVERTENCIA: no hay días inhábiles fiscales cargados en el rango — este vencimiento es preliminar hasta cargar el calendario oficial.' : ''}`,
+  };
+}
+
+// Calcula y PERSISTE el vencimiento en una obligación específica — nunca se llama
+// automáticamente; es una acción deliberada por obligación, para no alterar en lote ningún
+// registro existente (incluyendo el histórico ISR Provisional 2026-08, que se deja intacto).
+async function calcularYGuardarVencimientoEfectivo(pagoImpuestoId) {
+  const { data: pago } = await sb.from('fz_pagos_impuestos').select('id,business_id,periodo,tipo_impuesto').eq('id', pagoImpuestoId).maybeSingle();
+  if (!pago) return { estado: 'no_encontrada' };
+  const resultado = await calcularVencimientoEfectivo(pago.business_id, pago.periodo, pago.tipo_impuesto);
+  const { error } = await sb.from('fz_pagos_impuestos').update(resultado).eq('id', pagoImpuestoId);
+  if (error) return { estado: 'error', error: error.message };
+  return { estado: 'calculado', ...resultado };
 }
 
 // Crea una declaración fiscal (Normal o Complementaria) con las protecciones estructurales que
