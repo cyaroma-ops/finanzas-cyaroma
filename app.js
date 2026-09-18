@@ -4355,6 +4355,12 @@ async function pintarPagosImpuestos(contenido, b, miToken) {
             ${(pagos||[]).length ? pagos.map(p => {
               const est = estadosDeImpuesto(p);
               const deltaActualizacion = p.monto_actualizado ? Math.max(0, p.monto_actualizado - Number(p.monto)) : null;
+              const __bloqueado = idsNoEliminables.has(p.id);
+              const __htmlMenu = `<div class="pi-menu-dropdown" data-menu="${p.id}" data-menu-source="pintarPagosImpuestos-v2" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:110px;overflow:hidden;">
+                    <button class="pi-editar" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Editar</button>
+                    ${__bloqueado ? '' : `<button class="pi-eliminar" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>`}
+                  </div>`;
+              console.log('%c[menú generado]', 'color:#888;', { id: p.id, periodo: p.periodo, tipo_impuesto: p.tipo_impuesto, bloqueado: __bloqueado, htmlMenu: __htmlMenu });
               return `<tr>
                 <td>${p.periodo}</td><td>${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]||p.tipo_impuesto}</td><td class="wrap-text" style="max-width:220px;">${p.concepto||''}</td>
                 <td class="num">${fmt(p.monto)}</td><td>${fechaCorta(p.fecha_limite)}</td>
@@ -4367,10 +4373,7 @@ async function pintarPagosImpuestos(contenido, b, miToken) {
                 <td class="num" style="font-weight:600;">${p.total_pagado?fmt(p.total_pagado):''}</td>
                 <td style="position:relative;">
                   <button class="btn btn-ghost btn-sm pi-menu-btn" data-id="${p.id}" style="padding:3px 10px;">⋯</button>
-                  <div class="pi-menu-dropdown" data-menu="${p.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:110px;overflow:hidden;">
-                    <button class="pi-editar" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Editar</button>
-                    ${idsNoEliminables.has(p.id) ? '' : `<button class="pi-eliminar" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>`}
-                  </div>
+                  ${__htmlMenu}
                 </td>
               </tr>`;
             }).join('') : `<tr><td colspan="13" class="empty">No hay impuestos registrados en ${STATE_piAnio}.</td></tr>`}
@@ -4379,6 +4382,42 @@ async function pintarPagosImpuestos(contenido, b, miToken) {
       </div>
     </div>
   `;
+
+  // === DIAGNÓSTICO TEMPORAL DE DOM — no cambia ninguna lógica ===
+  console.log('%c=== DIAGNÓSTICO DOM — menú Eliminar ===', 'background:#222;color:#0f0;font-weight:bold;padding:3px 8px;');
+  const __filaIsrJulioDOM = Array.from(contenido.querySelectorAll('.pi-menu-btn')).find(btn => {
+    const tr = btn.closest('tr');
+    return tr && tr.children[0]?.textContent === '2026-07' && tr.children[1]?.textContent === 'ISR Provisional';
+  });
+  if (__filaIsrJulioDOM) {
+    const uuidBoton = __filaIsrJulioDOM.dataset.id;
+    const dropdown = contenido.querySelector(`.pi-menu-dropdown[data-menu="${uuidBoton}"]`);
+    console.log('UUID en data-id del botón ⋯ de ISR 2026-07 (DOM real):', uuidBoton);
+    console.log('¿Coincide con el UUID conocido (16913b7e-4bbe-46a4-8dc7-2183c9340fe5)?', uuidBoton === '16913b7e-4bbe-46a4-8dc7-2183c9340fe5');
+    console.log('¿El dropdown tiene data-menu-source="pintarPagosImpuestos-v2"?', dropdown ? dropdown.dataset.menuSource : '(no se encontró el dropdown)');
+    console.log('Texto/opciones reales dentro del menú (DOM):', dropdown ? Array.from(dropdown.children).map(el => ({ texto: el.textContent, clase: el.className })) : '(sin dropdown)');
+    const botonEliminarDOM = dropdown ? dropdown.querySelector('.pi-eliminar') : null;
+    console.log('¿Existe un elemento con texto "Eliminar" (botón .pi-eliminar) dentro de este menú?', !!botonEliminarDOM);
+    if (botonEliminarDOM) console.log('HTML exacto de ese botón encontrado en el DOM:', botonEliminarDOM.outerHTML);
+  } else {
+    console.log('No se encontró en el DOM ninguna fila con periodo=2026-07 y tipo=ISR Provisional (columna de texto).');
+  }
+
+  // Lista de TODAS las filas que terminan con un botón "Eliminar" visible en el DOM real.
+  const __filasConEliminarDOM = [];
+  contenido.querySelectorAll('.pi-menu-dropdown').forEach(dd => {
+    const btnEliminar = dd.querySelector('.pi-eliminar');
+    if (btnEliminar) {
+      const tr = dd.closest('tr');
+      __filasConEliminarDOM.push({
+        periodo: tr?.children[0]?.textContent, tipo: tr?.children[1]?.textContent,
+        UUID: dd.dataset.menu, bloqueado_segun_set: idsNoEliminables.has(dd.dataset.menu),
+      });
+    }
+  });
+  console.log(`Filas que TERMINAN mostrando "Eliminar" en el DOM real (${__filasConEliminarDOM.length}):`);
+  console.table(__filasConEliminarDOM);
+  // === FIN DIAGNÓSTICO TEMPORAL DE DOM ===
 
   document.getElementById('piAnioSel').addEventListener('change', async (e) => {
     STATE_piAnio = e.target.value;
