@@ -2341,10 +2341,13 @@ async function obtenerSaldoPrincipalYDeclaracion(pagoImpuestoId) {
   const [declaracion, { data: pago }, { data: aplicacionesPrevias }] = await Promise.all([
     obtenerDeclaracionVigente(pagoImpuestoId),
     sb.from('fz_pagos_impuestos').select('monto').eq('id', pagoImpuestoId).maybeSingle(),
-    sb.from('fz_aplicaciones_pago_fiscal').select('monto_principal,monto_actualizacion,monto_recargos').eq('pago_impuesto_id', pagoImpuestoId).is('revertido_at', null),
+    sb.from('fz_aplicaciones_pago_fiscal').select('monto,monto_principal,monto_actualizacion,monto_recargos').eq('pago_impuesto_id', pagoImpuestoId).is('revertido_at', null),
   ]);
   const base = declaracion ? Number(declaracion.importe_declarado||0) : Number(pago?.monto||0);
-  const principalYaPagado = (aplicacionesPrevias||[]).reduce((s,a)=>s+Number(a.monto_principal||0),0);
+  // Respaldo histórico compartido — sin esto, una aplicación anterior al desglose (monto_principal
+  // en 0 por defecto, con el importe real solo en "monto") no se restaba del saldo, dejando el
+  // saldo económico igual al importe declarado completo aunque ya hubiera un pago real aplicado.
+  const principalYaPagado = sumarPrincipalConRespaldoHistorico(aplicacionesPrevias);
   const actualizacionYaPagada = (aplicacionesPrevias||[]).reduce((s,a)=>s+Number(a.monto_actualizacion||0),0);
   const recargosYaPagados = (aplicacionesPrevias||[]).reduce((s,a)=>s+Number(a.monto_recargos||0),0);
   return { declaracion, saldoPrincipal: base - principalYaPagado, actualizacionYaPagada, recargosYaPagados };
@@ -3159,18 +3162,22 @@ async function revertirPagoHistoricoLegacy(businessId, periodo, tipoImpuesto) {
   return { estado: 'revertido', monto: pago.monto };
 }
 
-async function recalcularImportePagadoImpuesto(pagoImpuestoId) {
-  const { data: aplicaciones } = await sb.from('fz_aplicaciones_pago_fiscal').select('monto,monto_principal,monto_actualizacion,monto_recargos,fecha').eq('pago_impuesto_id', pagoImpuestoId).is('revertido_at', null);
-  // importe_pagado representa el PRINCIPAL pagado — nunca se mezcla con recargos/actualización.
-  // Las aplicaciones creadas ANTES de este desglose quedaron con las 3 columnas en 0 (el valor
-  // por defecto de Postgres al agregar la columna, no null) — para esas, todo su "monto" ya era
-  // principal en su momento, así que se usa como respaldo exacto, sin perder esos pagos ya
-  // probados. Las aplicaciones REVERTIDAS se excluyen aquí, pero conservan su fila completa —
-  // nunca se borran, solo dejan de contar para el saldo.
-  const total = (aplicaciones||[]).reduce((s,a)=>{
+// Suma el PRINCIPAL de un conjunto de aplicaciones — con respaldo para las creadas ANTES del
+// desglose (monto_principal/actualizacion/recargos quedaron en 0 por defecto de Postgres, no
+// null): para esas, su "monto" completo YA era principal en su momento, así que se usa como
+// respaldo exacto. Fuente ÚNICA reutilizada por recalcularImportePagadoImpuesto y
+// obtenerSaldoPrincipalYDeclaracion — nunca deben divergir entre sí.
+function sumarPrincipalConRespaldoHistorico(aplicaciones) {
+  return (aplicaciones||[]).reduce((s,a)=>{
     const desglosado = Number(a.monto_principal||0) + Number(a.monto_actualizacion||0) + Number(a.monto_recargos||0);
     return s + (desglosado > 0.004 ? Number(a.monto_principal||0) : Number(a.monto||0));
   }, 0);
+}
+
+async function recalcularImportePagadoImpuesto(pagoImpuestoId) {
+  const { data: aplicaciones } = await sb.from('fz_aplicaciones_pago_fiscal').select('monto,monto_principal,monto_actualizacion,monto_recargos,fecha').eq('pago_impuesto_id', pagoImpuestoId).is('revertido_at', null);
+  // importe_pagado representa el PRINCIPAL pagado — nunca se mezcla con recargos/actualización.
+  const total = sumarPrincipalConRespaldoHistorico(aplicaciones);
   // fecha_pago también es una caché derivada — se toma la fecha del aplicación vigente más
   // reciente, nunca se establece independiente de las aplicaciones reales.
   const fechaMasReciente = (aplicaciones||[]).length ? aplicaciones.reduce((max,a)=>a.fecha>max?a.fecha:max, aplicaciones[0].fecha) : null;
@@ -3306,17 +3313,11 @@ async function aplicarPagoFiscal(businessId, fecha, cuentaTipo, cuentaId, aplica
   // que las identifica de forma inequívoca como parte del mismo pago maestro. Cada una congela
   // su propio desglose (principal/actualización/recargos), calculado a la fecha de este pago.
   for (const a of aplicaciones) {
-    const { data: previas } = await sb.from('fz_aplicaciones_pago_fiscal').select('monto_principal,monto_actualizacion,monto_recargos').eq('pago_impuesto_id', a.pagoImpuesto.id);
-    const principalYaPagado = (previas||[]).reduce((s,p)=>s+Number(p.monto_principal||0),0);
-    const actualizacionYaPagada = (previas||[]).reduce((s,p)=>s+Number(p.monto_actualizacion||0),0);
-    const recargosYaPagados = (previas||[]).reduce((s,p)=>s+Number(p.monto_recargos||0),0);
-    // La base del principal es la declaración vigente cuando existe (para que nunca diverja de lo
-    // que el usuario vio en el preview) — solo si no hay ninguna declaración registrada (caso de
-    // registros manuales/"otro" que llegan por la otra vía de este mismo motor) se respalda en
-    // el monto propio de la obligación, igual que antes.
-    const declaracionVigente = await obtenerDeclaracionVigente(a.pagoImpuesto.id);
-    const baseParaPrincipal = declaracionVigente ? Number(declaracionVigente.importe_declarado||0) : Number(a.pagoImpuesto.monto);
-    const saldoPrincipalPendiente = baseParaPrincipal - principalYaPagado;
+    // Misma fuente única que usa el preview del modal (obtenerSaldoPrincipalYDeclaracion) — ya
+    // no se recalcula por separado aquí. Esto cierra la divergencia real: antes esta consulta no
+    // excluía aplicaciones revertidas ni aplicaba el respaldo histórico de pagos anteriores al
+    // desglose, así que backend podía terminar aplicando un saldo distinto al que el usuario vio.
+    const { declaracion: declaracionVigente, saldoPrincipal: saldoPrincipalPendiente, actualizacionYaPagada, recargosYaPagados } = await obtenerSaldoPrincipalYDeclaracion(a.pagoImpuesto.id);
     const desglose = await calcularDesglosePagoParcial(saldoPrincipalPendiente, vencimientos[a.pagoImpuesto.id], fecha, Number(a.monto), recargosYaPagados, actualizacionYaPagada);
     await sb.from('fz_aplicaciones_pago_fiscal').insert({
       business_id: businessId, pago_impuesto_id: a.pagoImpuesto.id, declaracion_id: declaracionVigente ? declaracionVigente.id : null, monto: Number(a.monto),
