@@ -4026,8 +4026,23 @@ async function renderPagosImpuestos() {
   contenido.innerHTML = `<div class="empty">Calculando…</div>`;
   el.appendChild(contenido);
 
-  await autoGenerarPagosImpuestos(b, STATE_piAnio);
-  await pintarPagosImpuestos(contenido, b);
+  // --- INSTRUMENTACIÓN TEMPORAL DE RENDIMIENTO — no cambia ninguna lógica, solo mide. ---
+  window.__perfPagos = [];
+  const medir = async (nombre, fn) => {
+    const t0 = performance.now();
+    const r = await fn();
+    window.__perfPagos.push({ nombre, ms: performance.now() - t0 });
+    return r;
+  };
+  const tGlobal0 = performance.now();
+
+  await medir('autoGenerarPagosImpuestos (total)', () => autoGenerarPagosImpuestos(b, STATE_piAnio));
+  await medir('pintarPagosImpuestos (total)', () => pintarPagosImpuestos(contenido, b));
+
+  const totalMs = performance.now() - tGlobal0;
+  console.log('%c=== DIAGNÓSTICO DE RENDIMIENTO — Impuestos → Pagos ===', 'font-weight:bold;font-size:13px;');
+  console.table(window.__perfPagos.map(p => ({ Función: p.nombre, 'Tiempo (s)': (p.ms/1000).toFixed(2), '% del total': ((p.ms/totalMs)*100).toFixed(1)+'%' })));
+  console.log(`TOTAL: ${(totalMs/1000).toFixed(2)} s`);
 }
 
 // Crea solo (nunca duplica) el "IVA a cargo" Y las retenciones de ISR/IVA por categoría de cada mes
@@ -4062,16 +4077,21 @@ async function autoGenerarPagosImpuestos(b, anio) {
   // ISR) — ninguna depende de la de otro mes, así que se piden TODAS a la vez en vez de una por
   // una en fila. Esto es lo único que cambia: el ORDEN en que se piden los datos, nunca la
   // fórmula ni el resultado.
+  // (Medición: cada promesa se cronometra por separado, pero AMBAS siguen corriendo en paralelo
+  // — el Promise.all exterior no cambia, solo se le agregó un cronómetro a cada rama.)
+  const __medirRama = async (nombre, promesa) => { const t0 = performance.now(); const r = await promesa; if (window.__perfPagos) window.__perfPagos.push({ nombre, ms: performance.now()-t0 }); return r; };
   const [resumenesIva, ingresosPorMes] = await Promise.all([
-    Promise.all(meses.map(periodo => computeResumenIvaMesLigero(b.id, monthBounds(periodo)))),
-    Promise.all(meses.map(periodo => computeIngresosAjustadosMes(b.id, periodo))),
+    __medirRama('  └─ computeResumenIvaMesLigero × '+meses.length+' meses', Promise.all(meses.map(periodo => computeResumenIvaMesLigero(b.id, monthBounds(periodo))))),
+    __medirRama('  └─ computeIngresosAjustadosMes × '+meses.length+' meses (llama a getLibroPartidaDobleConOrigen 2x por mes)', Promise.all(meses.map(periodo => computeIngresosAjustadosMes(b.id, periodo)))),
   ]);
 
   // El acumulado de ISR sí depende del mes anterior, pero ya con los ingresos de cada mes en
   // mano esto es pura suma — no vuelve a tocar la base de datos, así que es instantáneo.
   let acumulado = 0;
   const acumuladosPorMes = ingresosPorMes.map(r => { const previo = acumulado; acumulado += r.ingresosMesAjustado; return previo; });
-  const calcsIsr = await Promise.all(meses.map((periodo, i) => computeIsrProvisional(b.id, periodo, acumuladosPorMes[i])));
+  const calcsIsr = await __medirRama('  └─ computeIsrProvisional × '+meses.length+' meses', Promise.all(meses.map((periodo, i) => computeIsrProvisional(b.id, periodo, acumuladosPorMes[i]))));
+
+  const __t3 = performance.now();
 
   for (let i = 0; i < meses.length; i++) {
     const periodo = meses[i];
@@ -4093,13 +4113,15 @@ async function autoGenerarPagosImpuestos(b, anio) {
     // anterior (aunque esté abierto) pasa primero por la vista previa de retroactivos.
     if (filaIsr && periodo === todayStr().slice(0,7)) await sincronizarProvisionIsr(filaIsr, b.id);
   }
+  if (window.__perfPagos) window.__perfPagos.push({ nombre: '  └─ ciclo de registrar() (secuencial, '+meses.length+' meses)', ms: performance.now()-__t3 });
 }
 
 async function pintarPagosImpuestos(contenido, b) {
-  const { data: pagos } = await sb.from('fz_pagos_impuestos').select('*').eq('business_id', b.id).like('periodo', `${STATE_piAnio}-%`).order('periodo', { ascending: true });
-  const pendientesProvision = await previsualizarProvisionesIsr(b.id, STATE_piAnio);
-  const pendientesProvisionIva = await previsualizarProvisionesIva(b.id, STATE_piAnio);
-  const duplicadosRealizacion = await detectarDuplicadosRealizacion(b.id);
+  const __m = async (nombre, fn) => { const t0 = performance.now(); const r = await fn(); if (window.__perfPagos) window.__perfPagos.push({ nombre, ms: performance.now()-t0 }); return r; };
+  const { data: pagos } = await __m('  └─ select fz_pagos_impuestos', () => sb.from('fz_pagos_impuestos').select('*').eq('business_id', b.id).like('periodo', `${STATE_piAnio}-%`).order('periodo', { ascending: true }));
+  const pendientesProvision = await __m('  └─ previsualizarProvisionesIsr', () => previsualizarProvisionesIsr(b.id, STATE_piAnio));
+  const pendientesProvisionIva = await __m('  └─ previsualizarProvisionesIva', () => previsualizarProvisionesIva(b.id, STATE_piAnio));
+  const duplicadosRealizacion = await __m('  └─ detectarDuplicadosRealizacion', () => detectarDuplicadosRealizacion(b.id));
   const hoy = todayStr();
 
   const estatusDe = (p) => {
