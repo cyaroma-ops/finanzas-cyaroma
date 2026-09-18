@@ -2263,15 +2263,27 @@ async function obtenerDeclaracionVigente(pagoImpuestoId) {
 // muestre un número distinto al que termina contabilizándose. Parte del importe DECLARADO (no
 // de fz_pagos_impuestos.monto) y le aplica exactamente la misma ruta fiscal de la Fase 4
 // (asegurarVencimientoEfectivo → fecha real → calcularMoraFiscal) — nunca una segunda fórmula.
-async function calcularImporteExigibleObligacion(pagoImpuestoId, fechaPago) {
-  const declaracion = await obtenerDeclaracionVigente(pagoImpuestoId);
-  if (!declaracion) return { sinDeclaracion: true };
-
-  const { data: aplicacionesPrevias } = await sb.from('fz_aplicaciones_pago_fiscal').select('monto_principal,monto_actualizacion,monto_recargos').eq('pago_impuesto_id', pagoImpuestoId).is('revertido_at', null);
+// Saldo de PRINCIPAL pendiente de una obligación — fuente ÚNICA para decidir "tiene saldo" y para
+// calcular el importe exigible; nunca se duplica esta decisión en dos lados. Usa la declaración
+// vigente como base cuando existe (Fase 5); si no hay ninguna (registros manuales/"otro" que
+// legítimamente nunca tienen declaración), usa el monto propio de la obligación — el mismo
+// respaldo que ya usa aplicarPagoFiscal para ese caso, sin romper ese segundo llamador.
+async function obtenerSaldoPrincipalYDeclaracion(pagoImpuestoId) {
+  const [declaracion, { data: pago }, { data: aplicacionesPrevias }] = await Promise.all([
+    obtenerDeclaracionVigente(pagoImpuestoId),
+    sb.from('fz_pagos_impuestos').select('monto').eq('id', pagoImpuestoId).maybeSingle(),
+    sb.from('fz_aplicaciones_pago_fiscal').select('monto_principal,monto_actualizacion,monto_recargos').eq('pago_impuesto_id', pagoImpuestoId).is('revertido_at', null),
+  ]);
+  const base = declaracion ? Number(declaracion.importe_declarado||0) : Number(pago?.monto||0);
   const principalYaPagado = (aplicacionesPrevias||[]).reduce((s,a)=>s+Number(a.monto_principal||0),0);
   const actualizacionYaPagada = (aplicacionesPrevias||[]).reduce((s,a)=>s+Number(a.monto_actualizacion||0),0);
   const recargosYaPagados = (aplicacionesPrevias||[]).reduce((s,a)=>s+Number(a.monto_recargos||0),0);
-  const saldoPrincipal = Number(declaracion.importe_declarado||0) - principalYaPagado;
+  return { declaracion, saldoPrincipal: base - principalYaPagado, actualizacionYaPagada, recargosYaPagados };
+}
+
+async function calcularImporteExigibleObligacion(pagoImpuestoId, fechaPago) {
+  const { declaracion, saldoPrincipal, actualizacionYaPagada, recargosYaPagados } = await obtenerSaldoPrincipalYDeclaracion(pagoImpuestoId);
+  if (!declaracion) return { sinDeclaracion: true };
 
   // Una complementaria que disminuye por debajo de lo YA pagado no se resuelve aquí — requiere
   // tratamiento posterior (posible compensación/devolución), nunca se automatiza en esta fase.
@@ -4869,7 +4881,11 @@ async function abrirModalAplicarPagoFiscal(b) {
     (monedas||[]).map(m=>`<option value="efectivo:${m.id}">Caja — ${m.nombre}</option>`).join('');
 
   const { data: pendientes } = await sb.from('fz_pagos_impuestos').select('*').eq('business_id', b.id).order('periodo', { ascending: false });
-  const conSaldo = (pendientes||[]).filter(p => Number(p.monto) - (Number(p.importe_pagado)||0) > 0.009);
+  const conSaldo = [];
+  for (const p of (pendientes||[])) {
+    const { saldoPrincipal } = await obtenerSaldoPrincipalYDeclaracion(p.id);
+    if (saldoPrincipal > 0.009) conSaldo.push(p);
+  }
 
   const lista = document.getElementById('apfLista');
   const construirLista = async () => {
