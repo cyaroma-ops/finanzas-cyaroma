@@ -4217,16 +4217,50 @@ async function pintarPagosImpuestos(contenido, b) {
   // función central `puedeEliminarseObligacionFiscal`, pero en una sola consulta por criterio
   // para toda la tabla, nunca una por obligación.
   const idsNoEliminables = new Set();
+  const __motivoBloqueo = {}; // solo para el diagnóstico de abajo — no afecta la lógica real
   if ((pagos||[]).length) {
     const idsPagos = pagos.map(p=>p.id);
     const [{ data: aplicaciones }, { data: provisiones }] = await Promise.all([
       sb.from('fz_aplicaciones_pago_fiscal').select('pago_impuesto_id').in('pago_impuesto_id', idsPagos), // cualquier estado — el historial cuenta
       sb.from('fz_provisiones_fiscales').select('pago_impuesto_id').in('pago_impuesto_id', idsPagos),
     ]);
-    (aplicaciones||[]).forEach(a => idsNoEliminables.add(a.pago_impuesto_id));
-    (provisiones||[]).forEach(p => idsNoEliminables.add(p.pago_impuesto_id));
-    pagos.forEach(p => { if (p.declarada || p.fecha_presentacion) idsNoEliminables.add(p.id); });
+    (aplicaciones||[]).forEach(a => { idsNoEliminables.add(a.pago_impuesto_id); (__motivoBloqueo[a.pago_impuesto_id]=__motivoBloqueo[a.pago_impuesto_id]||[]).push('aplicación fiscal'); });
+    (provisiones||[]).forEach(p => { idsNoEliminables.add(p.pago_impuesto_id); (__motivoBloqueo[p.pago_impuesto_id]=__motivoBloqueo[p.pago_impuesto_id]||[]).push('provisión contable'); });
+    pagos.forEach(p => { if (p.declarada || p.fecha_presentacion) { idsNoEliminables.add(p.id); (__motivoBloqueo[p.id]=__motivoBloqueo[p.id]||[]).push('declarada'); } });
   }
+
+  // === DIAGNÓSTICO TEMPORAL — NO cambia ninguna lógica, solo imprime en consola ===
+  console.log('%c=== DIAGNÓSTICO — menú Eliminar en Pagos de Impuestos ===', 'font-weight:bold;font-size:13px;');
+  console.table((pagos||[]).map(p => ({
+    id: p.id, periodo: p.periodo, tipo_impuesto: p.tipo_impuesto, concepto: p.concepto || '(sin concepto)',
+    'está_en_idsNoEliminables': idsNoEliminables.has(p.id),
+    'motivo_bloqueo': __motivoBloqueo[p.id] ? __motivoBloqueo[p.id].join(' + ') : '(ninguno — Eliminar SÍ se muestra)',
+  })));
+
+  const __filaIsrJulio = (pagos||[]).find(p => p.periodo === '2026-07' && p.tipo_impuesto === 'isr_provisional');
+  if (__filaIsrJulio) {
+    console.log('%c--- Investigación específica: ISR Provisional 2026-07 ---', 'font-weight:bold;');
+    console.log('ID real de fz_pagos_impuestos renderizado ahora:', __filaIsrJulio.id);
+    const { data: aplicacionesDeEsteId } = await sb.from('fz_aplicaciones_pago_fiscal').select('*').eq('pago_impuesto_id', __filaIsrJulio.id);
+    console.log('Filas de fz_aplicaciones_pago_fiscal con ese pago_impuesto_id (incluye revertidas):', aplicacionesDeEsteId);
+    // Por si existiera MÁS de una fila de ISR 2026-07 en fz_pagos_impuestos (un posible duplicado
+    // con otro UUID) — se buscan TODAS, no solo la que se está renderizando ahora.
+    const { data: todasFilasIsrJulio } = await sb.from('fz_pagos_impuestos').select('id,created_at').eq('business_id', b.id).eq('periodo','2026-07').eq('tipo_impuesto','isr_provisional');
+    console.log('TODAS las filas de fz_pagos_impuestos para ISR 2026-07 (por si hay más de una):', todasFilasIsrJulio);
+    if (todasFilasIsrJulio && todasFilasIsrJulio.length > 1) {
+      console.log('%c¡ATENCIÓN! Existe más de una fila de fz_pagos_impuestos para ISR 2026-07 — posible duplicado con distinto UUID.', 'color:red;font-weight:bold;');
+      for (const fila of todasFilasIsrJulio) {
+        const { data: apsDeEsaFila } = await sb.from('fz_aplicaciones_pago_fiscal').select('id,revertido_at').eq('pago_impuesto_id', fila.id);
+        console.log(`  fz_pagos_impuestos.id=${fila.id} (creado ${fila.created_at}) → ${(apsDeEsaFila||[]).length} aplicación(es):`, apsDeEsaFila);
+      }
+    }
+    console.log('¿El id renderizado está en idsNoEliminables?', idsNoEliminables.has(__filaIsrJulio.id));
+    console.log('Condición exacta que decide mostrar "Eliminar" en el HTML: idsNoEliminables.has(p.id) ? NO se muestra : SÍ se muestra. Resultado para este id:', idsNoEliminables.has(__filaIsrJulio.id) ? 'NO se muestra (bloqueado)' : 'SÍ se muestra (Eliminar visible)');
+  } else {
+    console.log('No se encontró ninguna fila con periodo=2026-07 y tipo_impuesto=isr_provisional en el arreglo "pagos" de este render.');
+  }
+  // === FIN DIAGNÓSTICO TEMPORAL ===
+
   const pendientesProvision = await __m('  └─ previsualizarProvisionesIsr', () => previsualizarProvisionesIsr(b.id, STATE_piAnio));
   const pendientesProvisionIva = await __m('  └─ previsualizarProvisionesIva', () => previsualizarProvisionesIva(b.id, STATE_piAnio));
   const duplicadosRealizacion = await __m('  └─ detectarDuplicadosRealizacion', () => detectarDuplicadosRealizacion(b.id));
