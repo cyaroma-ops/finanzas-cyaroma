@@ -2063,6 +2063,91 @@ async function puedeEliminarseObligacionFiscal(pagoImpuestoId) {
   return !((countAplicaciones||0) > 0 || (countProvisiones||0) > 0 || yaDeclarada);
 }
 
+// Sexto dígito numérico del RFC — literalmente el 6° carácter de la cadena, nunca capturado a
+// mano. Aplica tanto a Persona Física (13 caracteres) como Moral (12), porque la regla fiscal se
+// basa en la posición del carácter, no en el tipo de persona. Devuelve null si esa posición no
+// es un dígito numérico (para no forzar una facilidad que no aplica en ese caso).
+function obtenerSextoDigitoRFC(rfc) {
+  if (!rfc || rfc.length < 6) return null;
+  const caracter = rfc.trim().toUpperCase()[5];
+  return /^[0-9]$/.test(caracter) ? Number(caracter) : null;
+}
+
+// Crea una declaración fiscal (Normal o Complementaria) con las protecciones estructurales que
+// la sola restricción UNIQUE de la base no puede cubrir por completo: que la declaración
+// anterior referenciada pertenezca a la MISMA obligación y al MISMO negocio (evita vincular
+// entre negocios o crear una referencia inválida/circular).
+async function crearDeclaracionFiscal(businessId, pagoImpuestoId, datos) {
+  const { data: obligacion } = await sb.from('fz_pagos_impuestos').select('id,business_id,periodo,tipo_impuesto,concepto').eq('id', pagoImpuestoId).maybeSingle();
+  if (!obligacion || obligacion.business_id !== businessId) return { estado: 'error', error: 'La obligación no existe o no pertenece a este negocio.' };
+
+  if (datos.declaracion_anterior_id) {
+    const { data: anterior } = await sb.from('fz_declaraciones_fiscales').select('id,pago_impuesto_id,business_id').eq('id', datos.declaracion_anterior_id).maybeSingle();
+    if (!anterior || anterior.pago_impuesto_id !== pagoImpuestoId || anterior.business_id !== businessId) {
+      return { estado: 'error', error: 'La declaración anterior referenciada no pertenece a esta misma obligación/negocio.' };
+    }
+    if (datos.declaracion_anterior_id === datos.id) return { estado: 'error', error: 'Una declaración no puede referenciarse a sí misma.' };
+  }
+
+  if (datos.tipo_declaracion === 'normal') {
+    const { data: yaExisteNormal } = await sb.from('fz_declaraciones_fiscales').select('id').eq('pago_impuesto_id', pagoImpuestoId).eq('tipo_declaracion', 'normal').maybeSingle();
+    if (yaExisteNormal) return { estado: 'error', error: 'Esta obligación ya tiene una declaración Normal — no puede haber otra.' };
+  }
+  if (datos.tipo_declaracion === 'complementaria') {
+    if (!datos.numero_complementaria) return { estado: 'error', error: 'Falta el número de secuencia de la complementaria.' };
+    const { data: yaExisteMismoNumero } = await sb.from('fz_declaraciones_fiscales').select('id').eq('pago_impuesto_id', pagoImpuestoId).eq('tipo_declaracion', 'complementaria').eq('numero_complementaria', datos.numero_complementaria).maybeSingle();
+    if (yaExisteMismoNumero) return { estado: 'error', error: `Ya existe la Complementaria ${datos.numero_complementaria} para esta obligación.` };
+  }
+
+  const payload = {
+    business_id: businessId, pago_impuesto_id: pagoImpuestoId,
+    periodo_fiscal: obligacion.periodo, tipo_impuesto: obligacion.tipo_impuesto, concepto: obligacion.concepto,
+    tipo_declaracion: datos.tipo_declaracion, numero_complementaria: datos.numero_complementaria || null,
+    declaracion_anterior_id: datos.declaracion_anterior_id || null,
+    fecha_presentacion: datos.fecha_presentacion || null, numero_operacion: datos.numero_operacion || null,
+    importe_declarado: datos.importe_declarado ?? null,
+    actualizacion_calculada: datos.actualizacion_calculada || 0, actualizacion_aplicada: datos.actualizacion_aplicada ?? (datos.actualizacion_calculada || 0),
+    recargos_calculados: datos.recargos_calculados || 0, recargos_aplicados: datos.recargos_aplicados ?? (datos.recargos_calculados || 0),
+    otros_accesorios: datos.otros_accesorios || 0, monto_redondeo: datos.monto_redondeo || 0,
+    importe_total: datos.importe_total ?? null,
+    linea_captura: datos.linea_captura || null, fecha_emision_linea: datos.fecha_emision_linea || null, fecha_vigencia_linea: datos.fecha_vigencia_linea || null,
+    acuse_path: datos.acuse_path || null, estado: datos.estado || 'determinada',
+    created_by: STATE.user?.email || null,
+  };
+  const { data: nueva, error } = await sb.from('fz_declaraciones_fiscales').insert(payload).select().single();
+  if (error) return { estado: 'error', error: error.message };
+  return { estado: 'creada', declaracion: nueva };
+}
+
+// Override controlado de actualización/recargos — nunca una edición libre. Exige motivo,
+// registra usuario/fecha, conserva el valor calculado original sin tocarlo, y solo cambia el
+// valor "aplicado" (el que usan reportes/contabilización). Restringido a rol administrativo —
+// no se mezcla con el rol visual del usuario normal.
+async function ajustarAccesoriosDeclaracion(declaracionId, nuevaActualizacionAplicada, nuevosRecargosAplicados, motivo, usuarioEmail) {
+  if (!STATE.esAdministrador) return { estado: 'sin_permiso' };
+  if (!motivo || !motivo.trim()) return { estado: 'falta_motivo' };
+  const { error } = await sb.from('fz_declaraciones_fiscales').update({
+    actualizacion_aplicada: nuevaActualizacionAplicada, recargos_aplicados: nuevosRecargosAplicados,
+    ajuste_manual: true, motivo_ajuste: motivo.trim(), ajuste_usuario: usuarioEmail || null, ajuste_fecha: new Date().toISOString(),
+  }).eq('id', declaracionId);
+  if (error) return { estado: 'error', error: error.message };
+  return { estado: 'ajustado' };
+}
+
+// Regresa una declaración ajustada manualmente al cálculo automático — sin borrar el historial
+// del ajuste (ajuste_manual queda en false, pero motivo/usuario/fecha del ajuste anterior
+// permanecen en la fila para auditoría).
+async function regresarAccesoriosACalculoAutomatico(declaracionId) {
+  if (!STATE.esAdministrador) return { estado: 'sin_permiso' };
+  const { data: decl } = await sb.from('fz_declaraciones_fiscales').select('actualizacion_calculada,recargos_calculados').eq('id', declaracionId).maybeSingle();
+  if (!decl) return { estado: 'no_encontrada' };
+  const { error } = await sb.from('fz_declaraciones_fiscales').update({
+    actualizacion_aplicada: decl.actualizacion_calculada, recargos_aplicados: decl.recargos_calculados, ajuste_manual: false,
+  }).eq('id', declaracionId);
+  if (error) return { estado: 'error', error: error.message };
+  return { estado: 'restaurado' };
+}
+
 const CUENTA_ISR_PROV_ACTIVO = 'Pagos provisionales de ISR';
 const CUENTA_ISR_PROV_PASIVO = 'ISR provisional por pagar';
 
