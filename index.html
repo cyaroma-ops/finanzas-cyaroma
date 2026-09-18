@@ -727,6 +727,45 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
       <input type="date" id="editBizIvaRealizacionDesde">
       <div style="font-size:11px;color:var(--muted);margin-top:3px;">Facturas a partir de esta fecha separan IVA/Retenciones en "Pendiente" y "Realizado", reclasificando solo cuando se aplica un pago/cobro real. Vacío = apagado (sigue como hoy). Las facturas anteriores no se tocan.</div>
     </div>
+
+    <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line);">
+      <label style="font-size:13px;font-weight:700;">Configuración fiscal</label>
+
+      <div class="field" style="margin-top:8px;">
+        <label>RFC</label>
+        <input type="text" id="editBizRfc" placeholder="Ej. XAXX010101000" style="text-transform:uppercase;">
+        <div id="editBizRfcAviso" style="font-size:11px;margin-top:3px;"></div>
+      </div>
+      <div class="field">
+        <label>Tipo de persona</label>
+        <select id="editBizTipoPersona">
+          <option value="">— sin definir —</option>
+          <option value="fisica">Física</option>
+          <option value="moral">Moral</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>Régimen fiscal vigente</label>
+        <div id="editBizRegimenActual" style="font-size:12px;color:var(--muted);margin-bottom:4px;"></div>
+        <div style="display:flex;gap:6px;">
+          <input type="text" id="editBizRegimenNuevo" placeholder="Clave o nombre del régimen" style="flex:1;">
+          <input type="date" id="editBizRegimenDesde" style="width:150px;">
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:3px;">Si capturas uno nuevo, cierra automáticamente la vigencia del anterior (si había) y este queda como vigente.</div>
+      </div>
+
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+          <input type="checkbox" id="editBizFacilidadExcluido">
+          Excluido de la facilidad del Art. 5.1
+        </label>
+        <div id="editBizMotivoExclusionZona" style="display:none;margin-top:6px;">
+          <input type="text" id="editBizMotivoExclusion" placeholder="Motivo de la exclusión (obligatorio)">
+        </div>
+      </div>
+    </div>
+
     <div class="modal-actions">
       <button class="btn btn-ghost" id="cancelEditBiz">Cancelar</button>
       <button class="btn btn-gold" id="saveEditBiz">Guardar</button>

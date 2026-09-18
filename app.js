@@ -583,6 +583,17 @@ function setupBizControls() {
   document.getElementById('cancelEditBiz').addEventListener('click', () => {
     document.getElementById('modalEditBiz').classList.remove('show');
   });
+  document.getElementById('editBizRfc').addEventListener('input', (e) => {
+    e.target.value = e.target.value.toUpperCase().replace(/\s/g, '');
+    const aviso = document.getElementById('editBizRfcAviso');
+    if (!e.target.value) { aviso.textContent = ''; return; }
+    const digito = obtenerSextoDigitoRFC(e.target.value); // reutiliza la validación ya probada — no se duplica
+    aviso.textContent = digito !== null ? `Formato válido — sexto dígito: ${digito}` : 'Formato de RFC no reconocido (Física: 4 letras + 6 dígitos + 3; Moral: 3 letras + 6 dígitos + 3).';
+    aviso.style.color = digito !== null ? 'var(--green)' : 'var(--red)';
+  });
+  document.getElementById('editBizFacilidadExcluido').addEventListener('change', (e) => {
+    document.getElementById('editBizMotivoExclusionZona').style.display = e.target.checked ? 'block' : 'none';
+  });
   document.getElementById('saveEditBiz').addEventListener('click', async () => {
     const bizId = document.getElementById('modalEditBiz').dataset.bizId;
     const name = document.getElementById('editBizName').value.trim();
@@ -590,8 +601,34 @@ function setupBizControls() {
     const modo = document.getElementById('editBizModo').value;
     const iva_realizacion_desde = document.getElementById('editBizIvaRealizacionDesde').value || null;
     if (!name) { toast('Escribe el nombre comercial.', 'error'); return; }
-    const { error } = await sb.from('businesses').update({ name, razon_social, modo, iva_realizacion_desde }).eq('id', bizId);
+
+    // RFC — normalizado, y si se capturó algo, debe tener formato válido; nunca se completa/infiere.
+    const rfcInput = document.getElementById('editBizRfc').value.toUpperCase().replace(/\s/g, '');
+    if (rfcInput && obtenerSextoDigitoRFC(rfcInput) === null) { toast('El RFC no tiene un formato reconocido — corrígelo o déjalo vacío.', 'error'); return; }
+    const rfc = rfcInput || null;
+    const tipo_persona = document.getElementById('editBizTipoPersona').value || null;
+
+    const facilidad_art5_1_excluido = document.getElementById('editBizFacilidadExcluido').checked;
+    const motivoExclusionInput = document.getElementById('editBizMotivoExclusion').value.trim();
+    if (facilidad_art5_1_excluido && !motivoExclusionInput) { toast('Si marcas la exclusión, indica el motivo.', 'error'); return; }
+    const facilidad_art5_1_motivo_exclusion = facilidad_art5_1_excluido ? motivoExclusionInput : null;
+
+    const { error } = await sb.from('businesses').update({ name, razon_social, modo, iva_realizacion_desde, rfc, tipo_persona, facilidad_art5_1_excluido, facilidad_art5_1_motivo_exclusion }).eq('id', bizId);
     if (error) { toast('Error: ' + error.message, 'error'); return; }
+
+    // Régimen fiscal — si se capturó uno nuevo, cierra la vigencia del anterior (si había) y este
+    // queda como vigente. Reutiliza fz_regimenes_fiscales_negocio tal cual, sin tabla paralela.
+    const regimenNuevo = document.getElementById('editBizRegimenNuevo').value.trim();
+    if (regimenNuevo) {
+      const desde = document.getElementById('editBizRegimenDesde').value || todayStr();
+      const { data: vigentesPrevios } = await sb.from('fz_regimenes_fiscales_negocio').select('id').eq('business_id', bizId).is('vigente_hasta', null);
+      for (const v of (vigentesPrevios||[])) {
+        const diaAnterior = new Date(desde+'T00:00:00'); diaAnterior.setDate(diaAnterior.getDate()-1);
+        await sb.from('fz_regimenes_fiscales_negocio').update({ vigente_hasta: diaAnterior.toISOString().slice(0,10) }).eq('id', v.id);
+      }
+      await sb.from('fz_regimenes_fiscales_negocio').insert({ business_id: bizId, clave_regimen: regimenNuevo, vigente_desde: desde, vigente_hasta: null });
+    }
+
     document.getElementById('modalEditBiz').classList.remove('show');
     await loadBusinesses();
     renderBizSelect();
@@ -601,11 +638,26 @@ function setupBizControls() {
     if (STATE.currentSection === 'negocios') renderNegocios();
   });
 }
-function abrirEditarNegocio(negocio) {
+async function abrirEditarNegocio(negocio) {
   document.getElementById('editBizName').value = negocio.name || '';
   document.getElementById('editBizRazonSocial').value = negocio.razon_social || '';
   document.getElementById('editBizModo').value = negocio.modo || 'financiero';
   document.getElementById('editBizIvaRealizacionDesde').value = negocio.iva_realizacion_desde || '';
+  document.getElementById('editBizRfc').value = negocio.rfc || '';
+  document.getElementById('editBizTipoPersona').value = negocio.tipo_persona || '';
+  document.getElementById('editBizRfcAviso').textContent = '';
+  document.getElementById('editBizRegimenNuevo').value = '';
+  document.getElementById('editBizRegimenDesde').value = '';
+  document.getElementById('editBizFacilidadExcluido').checked = !!negocio.facilidad_art5_1_excluido;
+  document.getElementById('editBizMotivoExclusion').value = negocio.facilidad_art5_1_motivo_exclusion || '';
+  document.getElementById('editBizMotivoExclusionZona').style.display = negocio.facilidad_art5_1_excluido ? 'block' : 'none';
+
+  const { data: regimenes } = await sb.from('fz_regimenes_fiscales_negocio').select('*').eq('business_id', negocio.id).is('vigente_hasta', null).order('vigente_desde', { ascending: false });
+  const vigente = regimenes && regimenes.length ? regimenes[0] : null;
+  document.getElementById('editBizRegimenActual').textContent = vigente
+    ? `Vigente: ${vigente.clave_regimen}${vigente.vigente_desde?' (desde '+fechaCorta(vigente.vigente_desde)+')':''}`
+    : 'Sin régimen registrado todavía.';
+
   document.getElementById('modalEditBiz').dataset.bizId = negocio.id;
   document.getElementById('modalEditBiz').classList.add('show');
 }
