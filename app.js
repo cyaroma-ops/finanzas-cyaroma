@@ -4033,8 +4033,6 @@ async function renderPagosImpuestos() {
 // Crea solo (nunca duplica) el "IVA a cargo" Y las retenciones de ISR/IVA por categoría de cada mes
 // del año elegido que aún no tengan registro — usando el mismo cálculo de IVA y Retenciones.
 async function autoGenerarPagosImpuestos(b, anio) {
-  await limpiarPolizasDuplicadasPagoFiscal(b.id);
-  await migrarMovimientosPagoFiscalExistentes(b.id);
   const { data: existentesIniciales } = await sb.from('fz_pagos_impuestos').select('id,periodo,tipo_impuesto,concepto,monto,fecha_pago').eq('business_id', b.id).like('periodo', `${anio}-%`);
   const existentes = existentesIniciales || [];
   const buscarExistente = (periodo, tipo, concepto) => existentes.find(p => p.periodo===periodo && p.tipo_impuesto===tipo && (p.concepto||null)===(concepto||null));
