@@ -1539,6 +1539,11 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
       <label>Notas</label>
       <input type="text" id="piNotas" placeholder="Opcional">
     </div>
+    <div id="piHistorialPagosZona" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid var(--line);">
+      <p style="font-size:11.5px;color:var(--gold);margin-bottom:6px;">Esta obligación ya tiene pagos aplicados — el monto, tipo, periodo y concepto quedan protegidos, y no se puede eliminar directamente. Para corregir un pago, revierte la aplicación específica abajo.</p>
+      <label style="font-size:12.5px;font-weight:600;">Historial de pagos</label>
+      <div id="piHistorialPagosLista" style="margin-top:4px;"></div>
+    </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="closePagoImpuesto">Cancelar</button>
       <button class="btn btn-danger" id="piEliminarBtn" style="display:none;">Eliminar</button>

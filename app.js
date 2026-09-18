@@ -2749,18 +2749,19 @@ async function revertirPagoHistoricoLegacy(businessId, periodo, tipoImpuesto) {
 }
 
 async function recalcularImportePagadoImpuesto(pagoImpuestoId) {
-  const { data: aplicaciones } = await sb.from('fz_aplicaciones_pago_fiscal').select('monto,monto_principal,monto_actualizacion,monto_recargos,fecha').eq('pago_impuesto_id', pagoImpuestoId);
+  const { data: aplicaciones } = await sb.from('fz_aplicaciones_pago_fiscal').select('monto,monto_principal,monto_actualizacion,monto_recargos,fecha').eq('pago_impuesto_id', pagoImpuestoId).is('revertido_at', null);
   // importe_pagado representa el PRINCIPAL pagado — nunca se mezcla con recargos/actualización.
   // Las aplicaciones creadas ANTES de este desglose quedaron con las 3 columnas en 0 (el valor
   // por defecto de Postgres al agregar la columna, no null) — para esas, todo su "monto" ya era
   // principal en su momento, así que se usa como respaldo exacto, sin perder esos pagos ya
-  // probados.
+  // probados. Las aplicaciones REVERTIDAS se excluyen aquí, pero conservan su fila completa —
+  // nunca se borran, solo dejan de contar para el saldo.
   const total = (aplicaciones||[]).reduce((s,a)=>{
     const desglosado = Number(a.monto_principal||0) + Number(a.monto_actualizacion||0) + Number(a.monto_recargos||0);
     return s + (desglosado > 0.004 ? Number(a.monto_principal||0) : Number(a.monto||0));
   }, 0);
-  // fecha_pago también es una caché derivada — se toma la fecha del aplicación más reciente,
-  // nunca se establece independiente de las aplicaciones reales.
+  // fecha_pago también es una caché derivada — se toma la fecha del aplicación vigente más
+  // reciente, nunca se establece independiente de las aplicaciones reales.
   const fechaMasReciente = (aplicaciones||[]).length ? aplicaciones.reduce((max,a)=>a.fecha>max?a.fecha:max, aplicaciones[0].fecha) : null;
   await sb.from('fz_pagos_impuestos').update({ importe_pagado: total, fecha_pago: fechaMasReciente }).eq('id', pagoImpuestoId);
   return total;
@@ -2886,6 +2887,34 @@ async function revertirPagoFiscalPorOrigen(origenTabla, origenId) {
   const idsObligaciones = [...new Set(aplicaciones.map(a=>a.pago_impuesto_id))];
   await sb.from('fz_aplicaciones_pago_fiscal').delete().eq('origen_tabla', origenTabla).eq('origen_id', origenId);
   for (const id of idsObligaciones) await recalcularImportePagadoImpuesto(id);
+}
+
+// Revierte UNA aplicación fiscal específica (desde "Historial de pagos" de una obligación) — sin
+// borrar nunca el historial: se marca revertido_at/revertido_por/revertido_motivo, conservando
+// la fila completa para trazabilidad. Idempotente: si ya estaba revertida, no hace nada más.
+// Protege pagos conjuntos: si el movimiento de origen cubre OTRAS obligaciones todavía vigentes,
+// el movimiento NO se toca (el motor consolidado expone el hueco como "Sin clasificar", nunca lo
+// oculta ni genera una póliza para cuadrarlo) — solo si esta era la última aplicación vigente de
+// ese movimiento, el movimiento (que ya no representa nada real) se revierte también.
+async function revertirAplicacionFiscalIndividual(aplicacionId, motivo, usuarioEmail) {
+  const { data: aplicacion } = await sb.from('fz_aplicaciones_pago_fiscal').select('*').eq('id', aplicacionId).maybeSingle();
+  if (!aplicacion) return { estado: 'no_encontrada' };
+  if (aplicacion.revertido_at) return { estado: 'ya_revertida' };
+
+  await sb.from('fz_aplicaciones_pago_fiscal').update({
+    revertido_at: new Date().toISOString(), revertido_por: usuarioEmail || null, revertido_motivo: motivo || null,
+  }).eq('id', aplicacionId);
+
+  await recalcularImportePagadoImpuesto(aplicacion.pago_impuesto_id);
+
+  const { data: otrasVigentes } = await sb.from('fz_aplicaciones_pago_fiscal').select('id')
+    .eq('origen_tabla', aplicacion.origen_tabla).eq('origen_id', aplicacion.origen_id).is('revertido_at', null);
+  let movimientoRevertido = false;
+  if (!otrasVigentes || !otrasVigentes.length) {
+    await sb.from(aplicacion.origen_tabla).delete().eq('id', aplicacion.origen_id);
+    movimientoRevertido = true;
+  }
+  return { estado: 'revertida', movimientoRevertido, eraPagoConjunto: !movimientoRevertido };
 }
 
 // Revierte el pago de UNA obligación desde el modal individual — pero solo si de verdad fue un
@@ -4565,6 +4594,62 @@ async function abrirModalPagoImpuesto(pago, b) {
   actualizarVisibilidadPagadoDesde();
   actualizarVisibilidadTraerIva();
   if (!pago) sugerirFechaLimitePi();
+
+  // Si ya existen aplicaciones de pago reales, se protegen los datos que identifican/cuantifican
+  // la obligación, se oculta Eliminar, y se muestra el historial con la opción de revertir cada
+  // aplicación por separado — nunca se edita/borra la obligación para "corregir" un pago ya hecho.
+  const camposProtegidos = ['piTipo','piConcepto','piPeriodo','piMonto'];
+  let aplicacionesDeEsta = [];
+  if (pago) {
+    const { data } = await sb.from('fz_aplicaciones_pago_fiscal').select('*').eq('pago_impuesto_id', pago.id).order('fecha', { ascending: false });
+    aplicacionesDeEsta = data || [];
+  }
+  const tieneAplicacionesVigentes = aplicacionesDeEsta.some(a => !a.revertido_at);
+  camposProtegidos.forEach(id => { document.getElementById(id).disabled = tieneAplicacionesVigentes; });
+  document.getElementById('piEliminarBtn').style.display = (pago && !tieneAplicacionesVigentes) ? '' : 'none';
+  document.getElementById('piHistorialPagosZona').style.display = aplicacionesDeEsta.length ? 'block' : 'none';
+  if (aplicacionesDeEsta.length) {
+    const [{ data: cuentasBancoRef }, { data: monedasRef }] = await Promise.all([
+      sb.from('fz_bancos_cuentas').select('id,nombre').eq('business_id', b.id),
+      sb.from('fz_efectivo_monedas').select('id,nombre').eq('business_id', b.id),
+    ]);
+    const idsBanco = aplicacionesDeEsta.filter(a=>a.origen_tabla==='fz_bancos_mov').map(a=>a.origen_id);
+    const idsEfvo = aplicacionesDeEsta.filter(a=>a.origen_tabla==='fz_efectivo_mov').map(a=>a.origen_id);
+    const [{ data: movsBanco }, { data: movsEfvo }] = await Promise.all([
+      idsBanco.length ? sb.from('fz_bancos_mov').select('id,cuenta_id').in('id', idsBanco) : Promise.resolve({data:[]}),
+      idsEfvo.length ? sb.from('fz_efectivo_mov').select('id,moneda_id').in('id', idsEfvo) : Promise.resolve({data:[]}),
+    ]);
+    const nombreOrigenDe = (ap) => {
+      if (ap.origen_tabla === 'fz_bancos_mov') {
+        const mov = (movsBanco||[]).find(m=>m.id===ap.origen_id);
+        const cuenta = mov && (cuentasBancoRef||[]).find(c=>c.id===mov.cuenta_id);
+        return `Banco — ${cuenta?.nombre || '(cuenta eliminada)'}`;
+      }
+      const mov = (movsEfvo||[]).find(m=>m.id===ap.origen_id);
+      const moneda = mov && (monedasRef||[]).find(m=>m.id===mov.moneda_id);
+      return `Efectivo — ${moneda?.nombre || '(caja eliminada)'}`;
+    };
+    document.getElementById('piHistorialPagosLista').innerHTML = aplicacionesDeEsta.map(ap => `
+      <div style="padding:6px 8px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;font-size:11.5px;${ap.revertido_at?'opacity:0.55;background:#f7f7f7;':''}">
+        <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;">
+          <span><strong>${fechaCorta(ap.fecha)}</strong> · ${nombreOrigenDe(ap)} · Total ${fmt(ap.monto)}</span>
+          ${ap.revertido_at ? `<span style="color:var(--red);">Revertido ${fechaCorta(ap.revertido_at.slice(0,10))}${ap.revertido_por?' — '+ap.revertido_por:''}${ap.revertido_motivo?' ("'+ap.revertido_motivo+'")':''}</span>` : `<button class="btn btn-ghost btn-sm pi-revertir-aplicacion" data-id="${ap.id}" style="font-size:11px;padding:2px 8px;">Revertir pago</button>`}
+        </div>
+        <div style="color:var(--muted);margin-top:2px;">Principal ${fmt(ap.monto_principal||0)} · Actualización ${fmt(ap.monto_actualizacion||0)} · Recargos ${fmt(ap.monto_recargos||0)} · Redondeo ${fmt(ap.monto_redondeo||0)}</div>
+      </div>`).join('');
+    document.querySelectorAll('.pi-revertir-aplicacion').forEach(btn => btn.addEventListener('click', async () => {
+      const motivo = prompt('Motivo de la reversión (obligatorio para el historial):');
+      if (motivo === null) return; // canceló
+      if (!motivo.trim()) { toast('Necesitas escribir un motivo.', 'error'); return; }
+      if (!confirm('¿Confirmas revertir este pago? Se conservará en el historial, marcado como revertido.')) return;
+      const r = await revertirAplicacionFiscalIndividual(btn.dataset.id, motivo.trim(), STATE.user?.email || null);
+      if (r.estado === 'ya_revertida') { toast('Ya estaba revertida.', 'error'); return; }
+      registrarAuditoria(b.id, 'editar', 'Pagos de Impuestos', `Reversión de aplicación fiscal — obligación ${pago.periodo}/${pago.tipo_impuesto} — motivo: ${motivo.trim()}${r.eraPagoConjunto?' (pago conjunto, movimiento conservado)':''}`);
+      toast('Pago revertido.');
+      document.getElementById('modalPagoImpuesto').classList.remove('show');
+      renderPagosImpuestos();
+    }));
+  }
   document.getElementById('modalPagoImpuesto').classList.add('show');
 }
 document.getElementById('piDeclarada').addEventListener('change', (e) => {
@@ -10986,7 +11071,7 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   const cobrosPorOrigen = {};
   (todosCobrosAplicados||[]).forEach(c => { const k = `${c.origen_tabla}|${c.origen_id}`; (cobrosPorOrigen[k] = cobrosPorOrigen[k]||[]).push(c); });
 
-  const { data: todasAplicacionesFiscales } = await sb.from('fz_aplicaciones_pago_fiscal').select('*').eq('business_id', businessId).lte('fecha', hastaFecha);
+  const { data: todasAplicacionesFiscales } = await sb.from('fz_aplicaciones_pago_fiscal').select('*').eq('business_id', businessId).lte('fecha', hastaFecha).is('revertido_at', null);
   const aplicacionesFiscalesPorOrigen = {};
   (todasAplicacionesFiscales||[]).forEach(a => { const k = `${a.origen_tabla}|${a.origen_id}`; (aplicacionesFiscalesPorOrigen[k] = aplicacionesFiscalesPorOrigen[k]||[]).push(a); });
   const idsPagosImpuestoNecesarios = [...new Set((todasAplicacionesFiscales||[]).map(a=>a.pago_impuesto_id))];
@@ -11043,6 +11128,12 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
                 else if (Number(ap.monto_redondeo) < -0.004) push({ ...base, cuenta: CUENTA_REDONDEO_FISCAL }, 'sub:'+subcuentaObligacionCache[CUENTA_REDONDEO_FISCAL], 'gasto', 0, Math.abs(Number(ap.monto_redondeo)));
               }
             });
+            // Si alguna aplicación de este movimiento fue revertida, la suma de las vigentes ya
+            // no cubre el total del cargo real — el hueco se hace VISIBLE en "Sin clasificar",
+            // nunca se oculta ni se compensa con una póliza de ajuste.
+            const totalAplicado = aplicacionesDeEste.reduce((s,ap)=>s+Number(ap.monto||0),0);
+            const huecoPorReversion = Number(m.cargos) - totalAplicado;
+            if (Math.abs(huecoPorReversion) > 0.004) push({ ...base, cuenta: 'Sin clasificar (revisar) — aplicación revertida' }, 'sin_clasificar', 'gasto', huecoPorReversion, 0);
           } else {
             push({ ...base, cuenta: 'Sin clasificar (revisar)' }, 'sin_clasificar', 'gasto', Number(m.cargos), 0);
           }
