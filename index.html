@@ -774,6 +774,62 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   </div>
 </div>
 
+<!-- Modal: agregar/editar día inhábil fiscal -->
+<div class="modal-bg" id="modalDiaInhabil">
+  <div class="modal" style="width:min(440px,92vw);">
+    <h3 id="diModalTitulo">Agregar día inhábil fiscal</h3>
+    <div class="field">
+      <label>Fecha</label>
+      <input type="date" id="diFecha">
+      <div style="font-size:11px;color:var(--muted);margin-top:3px;">Sábados y domingos no requieren registro; el motor los excluye automáticamente.</div>
+      <div id="diErrorFecha" style="font-size:11.5px;color:var(--red);margin-top:3px;display:none;"></div>
+    </div>
+    <div class="field">
+      <label>Descripción</label>
+      <input type="text" id="diDescripcion" placeholder="Ej. Día inhábil SAT">
+      <div id="diErrorDescripcion" style="font-size:11.5px;color:var(--red);margin-top:3px;display:none;"></div>
+    </div>
+    <div class="field">
+      <label>Fuente / referencia</label>
+      <input type="text" id="diFuente" placeholder="Ej. Calendario SAT 2026">
+    </div>
+    <div class="field">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+        <input type="checkbox" id="diActivo" checked>
+        Activo
+      </label>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="diCancelarBtn">Cancelar</button>
+      <button class="btn btn-gold" id="diGuardarBtn">Guardar día inhábil</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: eliminar día inhábil fiscal -->
+<div class="modal-bg" id="modalEliminarDiaInhabil">
+  <div class="modal" style="width:min(420px,92vw);">
+    <h3>Eliminar día inhábil</h3>
+    <p style="font-size:13px;margin:10px 0;">¿Deseas eliminar el día inhábil del <strong id="diElimFecha"></strong> — <strong id="diElimDescripcion"></strong>?</p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="diElimCancelarBtn">Cancelar</button>
+      <button class="btn btn-danger" id="diElimConfirmarBtn">Eliminar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: validar calendario fiscal del año -->
+<div class="modal-bg" id="modalValidarCalendario">
+  <div class="modal" style="width:min(460px,92vw);">
+    <h3 id="dvTitulo">Validar calendario fiscal</h3>
+    <p style="font-size:13px;margin:10px 0;">Confirma que revisaste y capturaste los días inhábiles fiscales oficiales aplicables a este año. Una vez validado, el motor podrá utilizar este calendario para calcular vencimientos efectivos.</p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="dvCancelarBtn">Cancelar</button>
+      <button class="btn btn-gold" id="dvConfirmarBtn">Confirmar validación</button>
+    </div>
+  </div>
+</div>
+
 <!-- Modal: configurar autenticación de dos pasos (2FA) -->
 <div class="modal-bg" id="modalMfa">
   <div class="modal" style="width:min(420px,92vw);">

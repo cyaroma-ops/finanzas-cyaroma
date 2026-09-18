@@ -2197,13 +2197,13 @@ async function calcularDiasHabiles(fechaBaseStr, n) {
     if (diaSemana !== 0 && diaSemana !== 6 && !setInhabiles.has(fechaStr)) contados++;
   }
   const fechaFinal = fecha.toISOString().slice(0,10);
-  // El calendario se considera cargado para un año en cuanto existe AL MENOS un día inhábil
-  // activo capturado en ese año — no exige cubrir el rango completo, solo que alguien ya empezó
-  // a administrar ese año. Se revisan todos los años que la extensión realmente toca (el de la
-  // fecha base y, si la extensión cruzó al año siguiente, ese también).
-  const aniosTocados = new Set([anioBase, fechaFinal.slice(0,4)]);
-  const anioTieneDatos = (anio) => (inhabiles||[]).some(f=>f.fecha.slice(0,4)===anio);
-  const calendarioIncompleto = ![...aniosTocados].every(anioTieneDatos);
+  // El calendario de un año se considera completo ÚNICAMENTE cuando ese año fue marcado
+  // explícitamente como validado (fz_calendario_fiscal_validacion) — la sola existencia de
+  // registros nunca es evidencia suficiente. Se exige la validación de TODOS los años que la
+  // extensión realmente toca (el de la fecha base y, si cruzó al año siguiente, ese también).
+  const aniosTocados = [...new Set([anioBase, fechaFinal.slice(0,4)])];
+  const estadosAnios = await Promise.all(aniosTocados.map(a => obtenerEstadoCalendarioAnio(a)));
+  const calendarioIncompleto = !estadosAnios.every(e => e.validado);
   return { fecha: fechaFinal, calendarioIncompleto };
 }
 
@@ -5372,9 +5372,28 @@ async function renderRecargos() {
 
 let STATE_diasInhabilesAnio = todayStr().slice(0,4);
 
+// Estado explícito de validación del calendario fiscal de un año — la sola existencia de días
+// inhábiles capturados NUNCA es evidencia suficiente de que el año está completo.
+async function obtenerEstadoCalendarioAnio(anio) {
+  const { data } = await sb.from('fz_calendario_fiscal_validacion').select('*').eq('anio', anio).maybeSingle();
+  return data || { anio, validado: false, validado_en: null, validado_por: null };
+}
+async function marcarCalendarioValidado(anio, usuarioEmail) {
+  if (!STATE.esAdministrador) return { estado: 'sin_permiso' };
+  const { error } = await sb.from('fz_calendario_fiscal_validacion').upsert({ anio, validado: true, validado_en: new Date().toISOString(), validado_por: usuarioEmail || null });
+  if (error) return { estado: 'error', error: error.message };
+  return { estado: 'validado' };
+}
+// Cualquier cambio al contenido de días inhábiles de un año ya validado invalida ese año de
+// nuevo — el calendario cambió, así que la validación anterior ya no es vigente.
+async function invalidarCalendarioAnio(anio) {
+  await sb.from('fz_calendario_fiscal_validacion').update({ validado: false }).eq('anio', anio);
+}
+
 // Administración del calendario de días inhábiles fiscales — global (fz_dias_inhabiles_fiscales),
-// no por negocio. El motor de vencimientos (calcularDiasHabiles) consulta esta misma tabla.
-// Sábados y domingos nunca se capturan aquí — el motor ya los excluye automáticamente.
+// no por negocio. El motor de vencimientos (calcularDiasHabiles) consulta esta misma tabla, y
+// además exige que el año esté explícitamente validado (fz_calendario_fiscal_validacion), no solo
+// que tenga registros. Sábados y domingos nunca se capturan aquí — el motor ya los excluye.
 async function renderDiasInhabiles() {
   const el = document.getElementById('sec-diasinhabiles');
   el.innerHTML = '';
@@ -5390,9 +5409,10 @@ async function pintarDiasInhabiles(contenido) {
   if (!anios.includes(STATE_diasInhabilesAnio)) anios.push(STATE_diasInhabilesAnio);
   anios.sort();
   const filtrados = (todos||[]).filter(d => d.fecha.slice(0,4) === STATE_diasInhabilesAnio);
+  const estadoAnio = await obtenerEstadoCalendarioAnio(STATE_diasInhabilesAnio);
 
   contenido.innerHTML = `
-    <div class="card-head" style="margin-bottom:14px;">
+    <div class="card-head" style="margin-bottom:6px;">
       <h3>Días inhábiles fiscales</h3>
       <div style="display:flex;gap:8px;align-items:center;">
         <select id="diAnioSel" style="padding:5px 8px;border:1px solid var(--line);border-radius:6px;">
@@ -5401,16 +5421,23 @@ async function pintarDiasInhabiles(contenido) {
         ${STATE.esAdministrador ? `<button class="btn btn-gold btn-sm" id="diAgregarBtn">+ Agregar día inhábil</button>` : ''}
       </div>
     </div>
-    <p style="font-size:12px;color:var(--muted);margin-bottom:12px;max-width:700px;">Calendario global usado por el motor de vencimientos fiscales (aplica a todos los negocios). Sábados y domingos no se capturan aquí — se excluyen automáticamente. Captura únicamente fechas conforme al calendario oficial publicado por el SAT; nada se precarga.</p>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:10px;max-width:700px;">Calendario global utilizado por el motor de vencimientos fiscales. Aplica a todos los negocios. Sábados y domingos se excluyen automáticamente.</p>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
+      <span style="font-size:13px;font-weight:600;">Año: ${STATE_diasInhabilesAnio}</span>
+      <span style="font-size:12.5px;padding:3px 10px;border-radius:12px;background:${estadoAnio.validado?'#e6f4ea':'#fff3e0'};color:${estadoAnio.validado?'var(--green)':'#8a5a00'};font-weight:600;">
+        ${estadoAnio.validado ? 'Validado' : 'Pendiente de validar'}
+      </span>
+      ${estadoAnio.validado ? `<span style="font-size:11.5px;color:var(--muted);">Validado el ${fechaCorta(estadoAnio.validado_en.slice(0,10))} por ${estadoAnio.validado_por||'—'}</span>` : ''}
+      ${STATE.esAdministrador && !estadoAnio.validado ? `<button class="btn btn-ghost btn-sm" id="diValidarBtn">Marcar calendario ${STATE_diasInhabilesAnio} como validado</button>` : ''}
+    </div>
     <div class="card">
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Fecha</th><th>Descripción</th><th>Año</th><th>Fuente/Referencia</th><th>Activo</th>${STATE.esAdministrador?'<th></th>':''}</tr></thead>
+          <thead><tr><th>Fecha</th><th>Descripción</th><th>Fuente/Referencia</th><th>Estado</th>${STATE.esAdministrador?'<th></th>':''}</tr></thead>
           <tbody>
             ${filtrados.length ? filtrados.map(d => `<tr>
               <td>${fechaCorta(d.fecha)}</td>
               <td class="wrap-text" style="max-width:260px;">${d.descripcion||''}</td>
-              <td>${d.fecha.slice(0,4)}</td>
               <td class="wrap-text" style="max-width:200px;">${d.fuente_referencia||''}</td>
               <td>${d.activo===false?'<span style="color:var(--muted);">Inactivo</span>':'<span style="color:var(--green);">Activo</span>'}</td>
               ${STATE.esAdministrador ? `<td style="white-space:nowrap;">
@@ -5418,7 +5445,7 @@ async function pintarDiasInhabiles(contenido) {
                 <button class="btn btn-ghost btn-sm di-toggle" data-id="${d.id}" data-activo="${d.activo!==false}" style="padding:3px 8px;">${d.activo===false?'Activar':'Desactivar'}</button>
                 <button class="btn btn-ghost btn-sm di-eliminar" data-id="${d.id}" style="padding:3px 8px;color:var(--red);">Eliminar</button>
               </td>` : ''}
-            </tr>`).join('') : `<tr><td colspan="6" class="empty">Sin días inhábiles registrados para ${STATE_diasInhabilesAnio}.</td></tr>`}
+            </tr>`).join('') : `<tr><td colspan="5" class="empty">No hay días inhábiles fiscales registrados para ${STATE_diasInhabilesAnio}.</td></tr>`}
           </tbody>
         </table>
       </div>
@@ -5427,52 +5454,104 @@ async function pintarDiasInhabiles(contenido) {
 
   document.getElementById('diAnioSel').addEventListener('change', (e) => { STATE_diasInhabilesAnio = e.target.value; pintarDiasInhabiles(contenido); });
 
+  if (STATE.esAdministrador && !estadoAnio.validado) {
+    document.getElementById('diValidarBtn').addEventListener('click', () => {
+      document.getElementById('dvTitulo').textContent = `Validar calendario fiscal ${STATE_diasInhabilesAnio}`;
+      document.getElementById('modalValidarCalendario').classList.add('show');
+      document.getElementById('dvConfirmarBtn').onclick = async () => {
+        const r = await marcarCalendarioValidado(STATE_diasInhabilesAnio, STATE.user?.email);
+        if (r.estado === 'error') { toast('Error: ' + r.error, 'error'); return; }
+        registrarAuditoria(null, 'editar', 'Configuración', `Calendario fiscal ${STATE_diasInhabilesAnio} marcado como validado`);
+        document.getElementById('modalValidarCalendario').classList.remove('show');
+        toast('Calendario validado.');
+        await pintarDiasInhabiles(contenido);
+      };
+    });
+  }
+
   if (!STATE.esAdministrador) return;
 
-  const abrirFormulario = (dia) => {
-    const fecha = prompt('Fecha (YYYY-MM-DD):', dia?.fecha || '');
-    if (fecha === null) return;
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) { toast('Fecha inválida — usa el formato YYYY-MM-DD.', 'error'); return; }
-    const diaSemana = new Date(fecha+'T00:00:00').getDay();
-    if (diaSemana === 0 || diaSemana === 6) { toast('Sábados y domingos no se capturan — el motor ya los excluye automáticamente.', 'error'); return; }
-    const descripcion = prompt('Descripción (ej. "Día de la Independencia"):', dia?.descripcion || '');
-    if (descripcion === null) return;
-    const fuente = prompt('Fuente/Referencia (ej. "Calendario SAT 2026", opcional):', dia?.fuente_referencia || '');
-    if (fuente === null) return;
-    guardarDiaInhabil(dia?.id || null, fecha, descripcion.trim(), fuente.trim(), contenido);
+  const abrirModalDia = (dia) => {
+    document.getElementById('diModalTitulo').textContent = dia ? 'Editar día inhábil fiscal' : 'Agregar día inhábil fiscal';
+    document.getElementById('diFecha').value = dia?.fecha || '';
+    document.getElementById('diDescripcion').value = dia?.descripcion || '';
+    document.getElementById('diFuente').value = dia?.fuente_referencia || '';
+    document.getElementById('diActivo').checked = dia?.activo !== false;
+    document.getElementById('diErrorFecha').style.display = 'none';
+    document.getElementById('diErrorDescripcion').style.display = 'none';
+    document.getElementById('diGuardarBtn').textContent = dia ? 'Guardar cambios' : 'Guardar día inhábil';
+    document.getElementById('modalDiaInhabil').dataset.editId = dia?.id || '';
+    document.getElementById('modalDiaInhabil').classList.add('show');
   };
 
-  document.getElementById('diAgregarBtn').addEventListener('click', () => abrirFormulario(null));
+  document.getElementById('diAgregarBtn').addEventListener('click', () => abrirModalDia(null));
   contenido.querySelectorAll('.di-editar').forEach(btn => btn.addEventListener('click', () => {
-    const dia = (todos||[]).find(d=>d.id===btn.dataset.id);
-    abrirFormulario(dia);
+    abrirModalDia((todos||[]).find(d=>d.id===btn.dataset.id));
   }));
   contenido.querySelectorAll('.di-toggle').forEach(btn => btn.addEventListener('click', async () => {
+    const dia = (todos||[]).find(d=>d.id===btn.dataset.id);
     const nuevoActivo = btn.dataset.activo !== 'true';
     await sb.from('fz_dias_inhabiles_fiscales').update({ activo: nuevoActivo }).eq('id', btn.dataset.id);
+    await invalidarCalendarioAnio(dia.fecha.slice(0,4));
     registrarAuditoria(null, 'editar', 'Configuración', `Día inhábil fiscal ${nuevoActivo?'activado':'desactivado'}`);
     toast(nuevoActivo ? 'Activado.' : 'Desactivado.');
     await pintarDiasInhabiles(contenido);
   }));
-  contenido.querySelectorAll('.di-eliminar').forEach(btn => btn.addEventListener('click', async () => {
-    if (!confirm('¿Eliminar este día inhábil del calendario?')) return;
-    await sb.from('fz_dias_inhabiles_fiscales').delete().eq('id', btn.dataset.id);
-    registrarAuditoria(null, 'eliminar', 'Configuración', 'Día inhábil fiscal eliminado');
-    toast('Eliminado.');
-    await pintarDiasInhabiles(contenido);
+  contenido.querySelectorAll('.di-eliminar').forEach(btn => btn.addEventListener('click', () => {
+    const dia = (todos||[]).find(d=>d.id===btn.dataset.id);
+    document.getElementById('diElimFecha').textContent = fechaCorta(dia.fecha);
+    document.getElementById('diElimDescripcion').textContent = dia.descripcion || '(sin descripción)';
+    document.getElementById('modalEliminarDiaInhabil').classList.add('show');
+    document.getElementById('diElimConfirmarBtn').onclick = async () => {
+      await sb.from('fz_dias_inhabiles_fiscales').delete().eq('id', dia.id);
+      await invalidarCalendarioAnio(dia.fecha.slice(0,4));
+      registrarAuditoria(null, 'eliminar', 'Configuración', 'Día inhábil fiscal eliminado');
+      document.getElementById('modalEliminarDiaInhabil').classList.remove('show');
+      toast('Eliminado.');
+      await pintarDiasInhabiles(contenido);
+    };
   }));
-}
 
-async function guardarDiaInhabil(id, fecha, descripcion, fuente_referencia, contenido) {
-  const payload = { fecha, descripcion: descripcion || null, fuente_referencia: fuente_referencia || null };
-  const { error } = id
-    ? await sb.from('fz_dias_inhabiles_fiscales').update(payload).eq('id', id)
-    : await sb.from('fz_dias_inhabiles_fiscales').insert({ ...payload, activo: true });
-  if (error) { toast('Error: ' + error.message, 'error'); return; }
-  registrarAuditoria(null, id?'editar':'crear', 'Configuración', `Día inhábil fiscal ${fecha}${id?' actualizado':' agregado'}`);
-  toast(id ? 'Actualizado.' : 'Agregado.');
-  await pintarDiasInhabiles(contenido);
+  document.getElementById('diGuardarBtn').onclick = async () => {
+    const fecha = document.getElementById('diFecha').value;
+    const descripcion = document.getElementById('diDescripcion').value.trim();
+    const fuente = document.getElementById('diFuente').value.trim();
+    const activo = document.getElementById('diActivo').checked;
+    const editId = document.getElementById('modalDiaInhabil').dataset.editId || null;
+
+    let hayError = false;
+    const errFecha = document.getElementById('diErrorFecha');
+    const errDesc = document.getElementById('diErrorDescripcion');
+    errFecha.style.display = 'none'; errDesc.style.display = 'none';
+
+    if (!fecha) { errFecha.textContent = 'La fecha es obligatoria.'; errFecha.style.display = 'block'; hayError = true; }
+    else {
+      const diaSemana = new Date(fecha+'T00:00:00').getDay();
+      if (diaSemana === 0 || diaSemana === 6) { errFecha.textContent = 'Sábados y domingos no requieren registro — el motor ya los excluye automáticamente.'; errFecha.style.display = 'block'; hayError = true; }
+      else {
+        const duplicado = (todos||[]).find(d => d.fecha === fecha && d.id !== editId);
+        if (duplicado) { errFecha.textContent = 'Ya existe un día inhábil registrado para esta fecha.'; errFecha.style.display = 'block'; hayError = true; }
+      }
+    }
+    if (!descripcion) { errDesc.textContent = 'La descripción es obligatoria.'; errDesc.style.display = 'block'; hayError = true; }
+    if (hayError) return; // el modal permanece abierto
+
+    const payload = { fecha, descripcion, fuente_referencia: fuente || null, activo };
+    const { error } = editId
+      ? await sb.from('fz_dias_inhabiles_fiscales').update(payload).eq('id', editId)
+      : await sb.from('fz_dias_inhabiles_fiscales').insert(payload);
+    if (error) { errFecha.textContent = 'Error: ' + error.message; errFecha.style.display = 'block'; return; }
+    await invalidarCalendarioAnio(fecha.slice(0,4));
+    registrarAuditoria(null, editId?'editar':'crear', 'Configuración', `Día inhábil fiscal ${fecha}${editId?' actualizado':' agregado'}`);
+    document.getElementById('modalDiaInhabil').classList.remove('show');
+    toast(editId ? 'Actualizado.' : 'Agregado.');
+    STATE_diasInhabilesAnio = fecha.slice(0,4);
+    await pintarDiasInhabiles(contenido);
+  };
 }
+document.getElementById('diCancelarBtn').addEventListener('click', () => document.getElementById('modalDiaInhabil').classList.remove('show'));
+document.getElementById('diElimCancelarBtn').addEventListener('click', () => document.getElementById('modalEliminarDiaInhabil').classList.remove('show'));
+document.getElementById('dvCancelarBtn').addEventListener('click', () => document.getElementById('modalValidarCalendario').classList.remove('show'));
 
 let STATE_recargosAnio = todayStr().slice(0,4);
 
