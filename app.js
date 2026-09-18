@@ -11133,9 +11133,14 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   const CUENTA_ACTUALIZACION_FISCAL = 'Actualización fiscal';
   const CUENTA_RECARGOS_FISCALES = 'Recargos fiscales';
   const CUENTA_REDONDEO_FISCAL = 'Diferencias por redondeo fiscal';
+  const CUENTA_PAGOS_POR_ACLARAR = 'Pagos por aclarar';
   if ((todasAplicacionesFiscales||[]).some(a => Number(a.monto_actualizacion) > 0.004)) subcuentaObligacionCache[CUENTA_ACTUALIZACION_FISCAL] = await subRealizacion(CUENTA_ACTUALIZACION_FISCAL, 'gasto');
   if ((todasAplicacionesFiscales||[]).some(a => Number(a.monto_recargos) > 0.004)) subcuentaObligacionCache[CUENTA_RECARGOS_FISCALES] = await subRealizacion(CUENTA_RECARGOS_FISCALES, 'gasto');
   if ((todasAplicacionesFiscales||[]).some(a => Math.abs(Number(a.monto_redondeo)) > 0.004)) subcuentaObligacionCache[CUENTA_REDONDEO_FISCAL] = await subRealizacion(CUENTA_REDONDEO_FISCAL, 'gasto');
+  // Activo circulante / Deudores diversos — cuenta transitoria: la porción de un pago conjunto
+  // que se queda sin aplicación al revertir una de sus aplicaciones NUNCA entra a resultados,
+  // porque el dinero sí salió del banco — se queda "por aclarar" hasta que se reasigne.
+  subcuentaObligacionCache[CUENTA_PAGOS_POR_ACLARAR] = await subRealizacion(CUENTA_PAGOS_POR_ACLARAR, 'activo');
 
   const procesarMovimientos = (movs, esBanco, tipoOrigenTag, moduloTag, tablaOrigenNombre) => {
     (movs||[]).forEach(m => {
@@ -11177,7 +11182,7 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
             // nunca se oculta ni se compensa con una póliza de ajuste.
             const totalAplicado = aplicacionesDeEste.reduce((s,ap)=>s+Number(ap.monto||0),0);
             const huecoPorReversion = Number(m.cargos) - totalAplicado;
-            if (Math.abs(huecoPorReversion) > 0.004) push({ ...base, cuenta: 'Sin clasificar (revisar) — aplicación revertida' }, 'sin_clasificar', 'gasto', huecoPorReversion, 0);
+            if (Math.abs(huecoPorReversion) > 0.004) push({ ...base, cuenta: CUENTA_PAGOS_POR_ACLARAR }, 'sub:'+subcuentaObligacionCache[CUENTA_PAGOS_POR_ACLARAR], 'activo', huecoPorReversion, 0);
           } else {
             push({ ...base, cuenta: 'Sin clasificar (revisar)' }, 'sin_clasificar', 'gasto', Number(m.cargos), 0);
           }
