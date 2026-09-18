@@ -2143,7 +2143,7 @@ async function calcularDiasHabiles(fechaBaseStr, n) {
 // contribuyente (que además requiere sexto dígito válido y ausencia de exclusión registrada).
 async function calcularVencimientoEfectivo(businessId, periodo, tipoImpuesto) {
   const { fechaBase, susceptible, criterio } = await calcularVencimientoBase(periodo, tipoImpuesto);
-  if (!fechaBase) return { fecha_vencimiento_base: null, obligacion_susceptible_facilidad: false, facilidad_rfc_aplicable: false, sexto_digito_rfc: null, dias_habiles_extension: 0, fecha_vencimiento_efectiva: null, vencimiento_calendario_incompleto: false, vencimiento_criterio: criterio };
+  if (!fechaBase) return { fecha_vencimiento_base: null, obligacion_susceptible_facilidad: false, facilidad_rfc_aplicable: false, sexto_digito_rfc: null, dias_habiles_extension: 0, fecha_vencimiento_efectiva: null, vencimiento_calendario_incompleto: false, vencimiento_criterio: criterio, confiable: false, motivoNoConfiable: criterio };
 
   const { data: negocio } = await sb.from('businesses').select('rfc,facilidad_art5_1_excluido,facilidad_art5_1_motivo_exclusion').eq('id', businessId).maybeSingle();
   const sextoDigito = obtenerSextoDigitoRFC(negocio?.rfc);
@@ -2152,19 +2152,26 @@ async function calcularVencimientoEfectivo(businessId, periodo, tipoImpuesto) {
 
   if (!facilidadAplicable) {
     let motivo = 'No aplica la facilidad del artículo 5.1: ';
-    if (!susceptible) motivo += 'esta obligación no es susceptible por su naturaleza.';
-    else if (excluido) motivo += `el contribuyente está marcado como excluido (${negocio?.facilidad_art5_1_motivo_exclusion || 'sin motivo registrado'}).`;
-    else motivo += 'no se pudo obtener un sexto dígito numérico válido del RFC registrado.';
-    return { fecha_vencimiento_base: fechaBase, obligacion_susceptible_facilidad: susceptible, facilidad_rfc_aplicable: false, sexto_digito_rfc: sextoDigito, dias_habiles_extension: 0, fecha_vencimiento_efectiva: fechaBase, vencimiento_calendario_incompleto: false, vencimiento_criterio: `${criterio} ${motivo}` };
+    // Estos dos casos SÍ son fiscalmente confiables — se determinó con certeza que la facilidad
+    // no corresponde, así que fecha_vencimiento_efectiva = fecha_vencimiento_base es definitivo.
+    if (!susceptible) return { fecha_vencimiento_base: fechaBase, obligacion_susceptible_facilidad: false, facilidad_rfc_aplicable: false, sexto_digito_rfc: sextoDigito, dias_habiles_extension: 0, fecha_vencimiento_efectiva: fechaBase, vencimiento_calendario_incompleto: false, vencimiento_criterio: `${criterio} ${motivo}esta obligación no es susceptible por su naturaleza.`, confiable: true };
+    if (excluido) return { fecha_vencimiento_base: fechaBase, obligacion_susceptible_facilidad: true, facilidad_rfc_aplicable: false, sexto_digito_rfc: sextoDigito, dias_habiles_extension: 0, fecha_vencimiento_efectiva: fechaBase, vencimiento_calendario_incompleto: false, vencimiento_criterio: `${criterio} ${motivo}el contribuyente está marcado como excluido (${negocio?.facilidad_art5_1_motivo_exclusion || 'sin motivo registrado'}).`, confiable: true };
+    // Aquí SÍ es ambiguo: es susceptible, no hay exclusión registrada, pero no se pudo obtener
+    // un sexto dígito válido (RFC faltante o con formato inválido) — no confiable.
+    motivo += 'no se pudo obtener un sexto dígito numérico válido del RFC registrado (RFC faltante o con formato inválido).';
+    return { fecha_vencimiento_base: fechaBase, obligacion_susceptible_facilidad: susceptible, facilidad_rfc_aplicable: false, sexto_digito_rfc: sextoDigito, dias_habiles_extension: 0, fecha_vencimiento_efectiva: null, vencimiento_calendario_incompleto: false, vencimiento_criterio: `${criterio} ${motivo}`, confiable: false, motivoNoConfiable: motivo };
   }
 
   const extension = diasHabilesPorSextoDigito(sextoDigito);
   const { fecha: fechaEfectiva, calendarioIncompleto } = await calcularDiasHabiles(fechaBase, extension);
+  const criterioCompleto = `${criterio} Facilidad art. 5.1 aplicable (sexto dígito ${sextoDigito} → +${extension} día(s) hábil(es)).${calendarioIncompleto ? ' ADVERTENCIA: no hay días inhábiles fiscales cargados en el rango — este vencimiento es preliminar hasta cargar el calendario oficial.' : ''}`;
+  if (calendarioIncompleto) {
+    return { fecha_vencimiento_base: fechaBase, obligacion_susceptible_facilidad: true, facilidad_rfc_aplicable: true, sexto_digito_rfc: sextoDigito, dias_habiles_extension: extension, fecha_vencimiento_efectiva: null, vencimiento_calendario_incompleto: true, vencimiento_criterio: criterioCompleto, confiable: false, motivoNoConfiable: `El calendario de días inhábiles fiscales no tiene información cargada para calcular con certeza los ${extension} día(s) hábil(es) de extensión.` };
+  }
   return {
     fecha_vencimiento_base: fechaBase, obligacion_susceptible_facilidad: true, facilidad_rfc_aplicable: true,
     sexto_digito_rfc: sextoDigito, dias_habiles_extension: extension, fecha_vencimiento_efectiva: fechaEfectiva,
-    vencimiento_calendario_incompleto: calendarioIncompleto,
-    vencimiento_criterio: `${criterio} Facilidad art. 5.1 aplicable (sexto dígito ${sextoDigito} → +${extension} día(s) hábil(es)).${calendarioIncompleto ? ' ADVERTENCIA: no hay días inhábiles fiscales cargados en el rango — este vencimiento es preliminar hasta cargar el calendario oficial.' : ''}`,
+    vencimiento_calendario_incompleto: false, vencimiento_criterio: criterioCompleto, confiable: true,
   };
 }
 
@@ -2175,9 +2182,24 @@ async function calcularYGuardarVencimientoEfectivo(pagoImpuestoId) {
   const { data: pago } = await sb.from('fz_pagos_impuestos').select('id,business_id,periodo,tipo_impuesto').eq('id', pagoImpuestoId).maybeSingle();
   if (!pago) return { estado: 'no_encontrada' };
   const resultado = await calcularVencimientoEfectivo(pago.business_id, pago.periodo, pago.tipo_impuesto);
-  const { error } = await sb.from('fz_pagos_impuestos').update(resultado).eq('id', pagoImpuestoId);
+  if (!resultado.confiable) return { estado: 'no_confiable', motivo: resultado.motivoNoConfiable, ...resultado };
+  const { confiable, motivoNoConfiable, ...columnas } = resultado;
+  const { error } = await sb.from('fz_pagos_impuestos').update(columnas).eq('id', pagoImpuestoId);
   if (error) return { estado: 'error', error: error.message };
   return { estado: 'calculado', ...resultado };
+}
+
+// Prerrequisito bajo demanda antes de calcular accesorios de un pago — si la obligación ya tiene
+// fecha_vencimiento_efectiva, la usa tal cual (nunca la recalcula silenciosamente). Si no la
+// tiene, intenta obtenerla ahora mismo, para ESA obligación únicamente (nunca en lote). Si no
+// puede determinarse con confiabilidad fiscal, regresa exactamente qué dato falta.
+async function asegurarVencimientoEfectivo(pagoImpuestoId) {
+  const { data: pago } = await sb.from('fz_pagos_impuestos').select('id,periodo,tipo_impuesto,fecha_vencimiento_efectiva').eq('id', pagoImpuestoId).maybeSingle();
+  if (!pago) return { ok: false, motivo: 'La obligación no existe.' };
+  if (pago.fecha_vencimiento_efectiva) return { ok: true, fecha: pago.fecha_vencimiento_efectiva };
+  const r = await calcularYGuardarVencimientoEfectivo(pagoImpuestoId);
+  if (r.estado === 'calculado') return { ok: true, fecha: r.fecha_vencimiento_efectiva };
+  return { ok: false, motivo: r.motivo || 'No se pudo determinar la fecha de vencimiento efectiva.', periodo: pago.periodo, tipo_impuesto: pago.tipo_impuesto };
 }
 
 // Crea una declaración fiscal (Normal o Complementaria) con las protecciones estructurales que
@@ -3038,6 +3060,33 @@ function ajustarRedondeoSAT(monto) {
   return centavos <= 50 ? piso : piso + 1;
 }
 
+// Art. 21 CFF: los recargos se causan "por cada mes o fracción" desde que debió pagarse hasta
+// que se paga. La fórmula compartida (calcularRecargosActualizacion) ya cuenta correctamente
+// cada mes cuando el pago cae en un mes POSTERIOR al de vencimiento (su ciclo arranca en el mes
+// siguiente y acumula hasta el mes de pago). Pero si ambos caen en el MISMO mes calendario —algo
+// que antes era imposible, y ahora sí ocurre cuando la facilidad extiende el vencimiento dentro
+// del propio mes— ese ciclo nunca corre ni una vez, y da recargos = 0. Esta función NO duplica
+// la fórmula ni la tabla de tasas: reutiliza calcularRecargosActualizacion tal cual para obtener
+// la actualización (su propia metodología, sin tocarla), y solo para el caso de fracción dentro
+// del mismo mes, toma la tasa de ESE mes de la misma tabla fz_recargos_tasas y aplica la misma
+// multiplicación que ya usa la fórmula (montoActualizado × tasa / 100) — nunca inventa una tasa
+// nueva ni cambia la metodología de actualización.
+async function calcularMoraFiscal(saldoPrincipal, fechaVencimientoEfectiva, fechaPago) {
+  const mesVenc = fechaVencimientoEfectiva.slice(0,7);
+  const mesPago = fechaPago.slice(0,7);
+  const base = await calcularRecargosActualizacion(saldoPrincipal, mesVenc, mesPago, true);
+  if (base.error) return base;
+  if (mesPago > mesVenc) return base; // el ciclo compartido ya cuenta correctamente cada mes/fracción aquí
+  // mesPago === mesVenc: hay mora real por fecha completa (ya se verificó fechaPago > fechaVencimientoEfectiva
+  // antes de llamar esta función), pero el ciclo compartido no cuenta ningún mes en este caso —
+  // se aplica la fracción de este mismo mes, con la tasa de ESE mes, de la misma tabla.
+  const { data: tasasData } = await sb.from('fz_recargos_tasas').select('*');
+  const tasasMap = Object.fromEntries((tasasData||[]).map(r => [r.periodo, Number(r.tasa)]));
+  const tasaMes = tasasMap[mesVenc];
+  if (tasaMes === undefined) return { error: `Falta capturar la tasa de recargos de: ${mesVenc} en Recargos y Actualización.` };
+  return { ...base, tasaAcumulada: tasaMes, recargos: base.montoActualizado * tasaMes / 100, mesesOFraccion: 1 };
+}
+
 // Desglosa UN monto que se está aplicando a una obligación entre recargos / principal /
 // actualización / redondeo SAT, siguiendo el orden real del Art. 20 CFF: primero recargos
 // (hasta agotar lo pendiente), el remanente se reparte proporcionalmente entre principal y
@@ -3046,11 +3095,12 @@ function ajustarRedondeoSAT(monto) {
 // pago parcial genuino, menor a eso, nunca genera redondeo (evita que cada parcialidad invente
 // su propio ajuste y desfigure el total determinado).
 // saldoPrincipalPendiente = lo que aún no se ha aplicado a principal, de aplicaciones anteriores.
-async function calcularDesglosePagoParcial(saldoPrincipalPendiente, mesVencimiento, fechaPago, montoAAplicar, recargosYaPagados, actualizacionYaPagada) {
-  const mesPago = fechaPago.slice(0,7);
+// fechaVencimientoEfectiva = fecha real (nunca un periodo/mes) contra la que se decide si el
+// pago fue oportuno o extemporáneo.
+async function calcularDesglosePagoParcial(saldoPrincipalPendiente, fechaVencimientoEfectiva, fechaPago, montoAAplicar, recargosYaPagados, actualizacionYaPagada) {
   let actualizacionPendiente = 0, recargosPendientes = 0, aviso = null;
-  if (mesPago > mesVencimiento && saldoPrincipalPendiente > 0.004) {
-    const r = await calcularRecargosActualizacion(saldoPrincipalPendiente, mesVencimiento, mesPago);
+  if (fechaPago > fechaVencimientoEfectiva && saldoPrincipalPendiente > 0.004) {
+    const r = await calcularMoraFiscal(saldoPrincipalPendiente, fechaVencimientoEfectiva, fechaPago);
     if (r.error) aviso = r.error;
     else {
       actualizacionPendiente = Math.max(0, (r.montoActualizado - saldoPrincipalPendiente) - Number(actualizacionYaPagada||0));
@@ -3088,6 +3138,17 @@ async function aplicarPagoFiscal(businessId, fecha, cuentaTipo, cuentaId, aplica
   const totalPago = aplicaciones.reduce((s,a)=>s+Number(a.monto||0), 0);
   if (totalPago <= 0.004) return { estado: 'sin_datos' };
 
+  // Prerrequisito bajo demanda — ANTES de crear nada. Si cualquiera de las obligaciones de este
+  // pago no tiene una fecha_vencimiento_efectiva fiscalmente confiable, todo el intento se
+  // detiene aquí (no se crea el movimiento ni ninguna aplicación) — nunca se usa fecha_limite
+  // como respaldo silencioso.
+  const vencimientos = {};
+  for (const a of aplicaciones) {
+    const r = await asegurarVencimientoEfectivo(a.pagoImpuesto.id);
+    if (!r.ok) return { estado: 'vencimiento_no_confiable', obligacion: `${TIPO_IMPUESTO_LABEL[a.pagoImpuesto.tipo_impuesto]||a.pagoImpuesto.tipo_impuesto} — ${a.pagoImpuesto.periodo}`, motivo: r.motivo };
+    vencimientos[a.pagoImpuesto.id] = r.fecha;
+  }
+
   // Descripción automática: una obligación → su tipo+periodo; varias → el conteo.
   const descripcion = aplicaciones.length === 1
     ? `Pago de impuestos SAT — ${TIPO_IMPUESTO_LABEL[aplicaciones[0].pagoImpuesto.tipo_impuesto]} — ${aplicaciones[0].pagoImpuesto.periodo}`
@@ -3114,7 +3175,7 @@ async function aplicarPagoFiscal(businessId, fecha, cuentaTipo, cuentaId, aplica
     const actualizacionYaPagada = (previas||[]).reduce((s,p)=>s+Number(p.monto_actualizacion||0),0);
     const recargosYaPagados = (previas||[]).reduce((s,p)=>s+Number(p.monto_recargos||0),0);
     const saldoPrincipalPendiente = Number(a.pagoImpuesto.monto) - principalYaPagado;
-    const desglose = await calcularDesglosePagoParcial(saldoPrincipalPendiente, a.pagoImpuesto.fecha_limite.slice(0,7), fecha, Number(a.monto), recargosYaPagados, actualizacionYaPagada);
+    const desglose = await calcularDesglosePagoParcial(saldoPrincipalPendiente, vencimientos[a.pagoImpuesto.id], fecha, Number(a.monto), recargosYaPagados, actualizacionYaPagada);
     await sb.from('fz_aplicaciones_pago_fiscal').insert({
       business_id: businessId, pago_impuesto_id: a.pagoImpuesto.id, monto: Number(a.monto),
       monto_principal: desglose.monto_principal, monto_actualizacion: desglose.monto_actualizacion, monto_recargos: desglose.monto_recargos, monto_redondeo: desglose.monto_redondeo || 0,
@@ -5085,7 +5146,12 @@ let STATE_recargosAnio = todayStr().slice(0,4);
 
 // Cálculo de Recargos y Actualización reutilizable — usado tanto en la calculadora suelta
 // como conectado directo al "IVA a cargo" del mes en IVA y Retenciones.
-async function calcularRecargosActualizacion(impuesto, mesVenc, mesPago) {
+// yaEsExtemporaneoConfirmado (opcional, default false): cuando el llamador ya determinó la
+// extemporaneidad por FECHA REAL (nunca por mes) antes de llegar aquí — como hace ahora el flujo
+// de aplicar un pago — se salta esta guarda por mes. Los demás usos existentes (previsualizaciones
+// que aún comparan por periodo/mes) no pasan este parámetro, así que conservan exactamente su
+// comportamiento de siempre.
+async function calcularRecargosActualizacion(impuesto, mesVenc, mesPago, yaEsExtemporaneoConfirmado = false) {
   const [{ data: inpcData }, { data: tasasData }] = await Promise.all([
     sb.from('fz_inpc_valores').select('*'),
     sb.from('fz_recargos_tasas').select('*'),
@@ -5093,7 +5159,7 @@ async function calcularRecargosActualizacion(impuesto, mesVenc, mesPago) {
   const inpcMap = Object.fromEntries((inpcData||[]).map(r => [r.periodo, Number(r.valor)]));
   const tasasMap = Object.fromEntries((tasasData||[]).map(r => [r.periodo, Number(r.tasa)]));
 
-  if (mesPago <= mesVenc) return { error: 'El mes de pago debe ser posterior al mes en que debió pagarse.' };
+  if (!yaEsExtemporaneoConfirmado && mesPago <= mesVenc) return { error: 'El mes de pago debe ser posterior al mes en que debió pagarse.' };
 
   const mesAnteriorA = (ym) => { const [y,m] = ym.split('-').map(Number); const d = new Date(y, m-2, 1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; };
   const inpcPago = inpcMap[mesAnteriorA(mesPago)];
