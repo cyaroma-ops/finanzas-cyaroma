@@ -2486,17 +2486,26 @@ async function obtenerUltimaActualizacionPerdida(perdidaId, ejercicioControlActu
   return anteriores.length ? anteriores[anteriores.length - 1] : null;
 }
 
-function calcularControlProvisionalPerdida(saldoDisponible, aplicacionesPorMes) {
+// Redondeo monetario — SIEMPRE a 2 decimales, la misma precisión persistida y mostrada. Toda la
+// cadena INPC → factor → saldo actualizado → saldo disponible → aplicación → saldo provisional
+// debe operar sobre importes ya normalizados aquí — nunca comparar contra el residuo crudo de un
+// factor con muchos decimales.
+function redondearMoneda(valor) {
+  return Math.round((Number(valor) + Number.EPSILON) * 100) / 100;
+}
+
+function calcularControlProvisionalPerdida(saldoDisponibleCrudo, aplicacionesPorMes) {
+  const saldoDisponible = saldoDisponibleCrudo !== null ? redondearMoneda(saldoDisponibleCrudo) : null;
   const porMes = {};
   let mesAgotamiento = null;
   for (let m = 1; m <= 12; m++) {
     const mm = String(m).padStart(2, '0');
-    const aplicadoAcumulado = (aplicacionesPorMes[mm] !== undefined && aplicacionesPorMes[mm] !== null) ? Number(aplicacionesPorMes[mm]) : null;
+    const aplicadoAcumulado = (aplicacionesPorMes[mm] !== undefined && aplicacionesPorMes[mm] !== null) ? redondearMoneda(aplicacionesPorMes[mm]) : null;
     let saldoControl = null, excedeDisponible = false;
     if (aplicadoAcumulado !== null && saldoDisponible !== null) {
-      saldoControl = saldoDisponible - aplicadoAcumulado;
-      if (saldoControl < -0.004) excedeDisponible = true;
-      if (mesAgotamiento === null && saldoControl <= 0.004) mesAgotamiento = mm;
+      saldoControl = redondearMoneda(saldoDisponible - aplicadoAcumulado);
+      if (saldoControl < 0) excedeDisponible = true; // comparación exacta sobre el importe ya normalizado a centavos — nunca una tolerancia arbitraria
+      if (mesAgotamiento === null && saldoControl <= 0) mesAgotamiento = mm;
     }
     porMes[mm] = { aplicadoAcumulado, saldoControl, excedeDisponible };
   }
@@ -2575,15 +2584,16 @@ async function registrarActualizacionPerdida(perdidaId, ejercicioActualizacion, 
   const inpcs = await obtenerINPCsParaActualizacionPerdida(periodoAntiguo, periodoReciente);
   if (!inpcs.ok) return { estado: 'inpc_pendiente', faltantes: inpcs.faltantes, periodoAntiguo, periodoReciente };
 
-  const importeCalculado = Number(datos.saldoAnterior) * inpcs.factor;
-  const huboAjuste = datos.importeAplicado !== undefined && datos.importeAplicado !== null && Math.abs(Number(datos.importeAplicado) - importeCalculado) > 0.004;
+  const saldoAnteriorNormalizado = redondearMoneda(datos.saldoAnterior);
+  const importeCalculado = redondearMoneda(saldoAnteriorNormalizado * inpcs.factor);
+  const huboAjuste = datos.importeAplicado !== undefined && datos.importeAplicado !== null && redondearMoneda(datos.importeAplicado) !== importeCalculado;
   if (huboAjuste && (!datos.motivoAjuste || !datos.motivoAjuste.trim())) return { estado: 'falta_motivo' };
-  const importeAplicado = huboAjuste ? Number(datos.importeAplicado) : importeCalculado;
+  const importeAplicado = huboAjuste ? redondearMoneda(datos.importeAplicado) : importeCalculado;
 
   const { data: existente } = await sb.from('fz_perdidas_fiscales_actualizaciones').select('*').eq('perdida_id', perdidaId).eq('ejercicio_actualizacion', ejercicioActualizacion).maybeSingle();
   const payload = {
     perdida_id: perdidaId, ejercicio_actualizacion: ejercicioActualizacion,
-    saldo_anterior: datos.saldoAnterior ?? null,
+    saldo_anterior: saldoAnteriorNormalizado,
     periodo_inpc_antiguo: periodoAntiguo, periodo_inpc_reciente: periodoReciente,
     inpc_inicial: inpcs.valorAntiguo, inpc_final: inpcs.valorReciente, factor: inpcs.factor,
     importe_calculado: importeCalculado, importe_actualizado: importeAplicado, es_captura_inicial: false,
@@ -2622,31 +2632,34 @@ async function registrarSaldoInicialPerdida(perdidaId, mesAnioUltimaActualizacio
 }
 
 async function registrarAplicacionProvisionalPerdida(perdidaId, ejercicioControl, periodo, montoAcumulado, usuarioEmail) {
+  const montoNormalizado = redondearMoneda(montoAcumulado);
   const { data: existente } = await sb.from('fz_perdidas_fiscales_aplicaciones').select('*').eq('perdida_id', perdidaId).eq('periodo', periodo).maybeSingle();
   if (existente) {
     const valorAnteriorReal = existente.aplicado_acumulado;
-    await sb.from('fz_perdidas_fiscales_aplicaciones').update({ aplicado_acumulado: montoAcumulado, updated_at: new Date().toISOString() }).eq('id', existente.id);
-    await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: `aplicación ${periodo}`, valor_anterior: String(valorAnteriorReal), valor_nuevo: String(montoAcumulado), usuario: usuarioEmail || null });
+    await sb.from('fz_perdidas_fiscales_aplicaciones').update({ aplicado_acumulado: montoNormalizado, updated_at: new Date().toISOString() }).eq('id', existente.id);
+    await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: `aplicación ${periodo}`, valor_anterior: String(valorAnteriorReal), valor_nuevo: String(montoNormalizado), usuario: usuarioEmail || null });
   } else {
-    await sb.from('fz_perdidas_fiscales_aplicaciones').insert({ perdida_id: perdidaId, ejercicio_control: ejercicioControl, periodo, aplicado_acumulado: montoAcumulado, created_by: usuarioEmail || null });
-    await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: `aplicación ${periodo}`, valor_nuevo: String(montoAcumulado), usuario: usuarioEmail || null });
+    await sb.from('fz_perdidas_fiscales_aplicaciones').insert({ perdida_id: perdidaId, ejercicio_control: ejercicioControl, periodo, aplicado_acumulado: montoNormalizado, created_by: usuarioEmail || null });
+    await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: `aplicación ${periodo}`, valor_nuevo: String(montoNormalizado), usuario: usuarioEmail || null });
   }
-  return { estado: 'ok' };
+  return { estado: 'ok', montoNormalizado };
 }
 
 async function registrarCierreAnualPerdida(perdidaId, ejercicioControl, datos, usuarioEmail) {
-  const ajuste = Number(datos.aplicacionDefinitivaAnual) - Number(datos.aplicacionProvisionalAcumulada);
-  const saldoDefinitivo = Math.max(0, Number(datos.saldoDefinitivoPendiente));
+  const provisional = redondearMoneda(datos.aplicacionProvisionalAcumulada);
+  const definitiva = redondearMoneda(datos.aplicacionDefinitivaAnual);
+  const ajuste = redondearMoneda(definitiva - provisional);
+  const saldoDefinitivo = redondearMoneda(Math.max(0, Number(datos.saldoDefinitivoPendiente)));
   const { data: existente } = await sb.from('fz_perdidas_fiscales_cierres').select('id').eq('perdida_id', perdidaId).eq('ejercicio_control', ejercicioControl).maybeSingle();
   const payload = {
     perdida_id: perdidaId, ejercicio_control: ejercicioControl,
-    aplicacion_provisional_acumulada: datos.aplicacionProvisionalAcumulada, aplicacion_definitiva_anual: datos.aplicacionDefinitivaAnual,
+    aplicacion_provisional_acumulada: provisional, aplicacion_definitiva_anual: definitiva,
     saldo_definitivo_pendiente: saldoDefinitivo, observaciones: datos.observaciones || null, fecha_cierre: datos.fechaCierre || todayStr(),
     created_by: usuarioEmail || null,
   };
   if (existente) { await sb.from('fz_perdidas_fiscales_cierres').update(payload).eq('id', existente.id); }
   else { await sb.from('fz_perdidas_fiscales_cierres').insert(payload); }
-  await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: 'cierre anual', valor_nuevo: `Ejercicio ${ejercicioControl}: definitiva ${datos.aplicacionDefinitivaAnual}, ajuste ${ajuste}, saldo definitivo ${saldoDefinitivo}`, motivo: datos.observaciones||null, usuario: usuarioEmail || null });
+  await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: 'cierre anual', valor_nuevo: `Ejercicio ${ejercicioControl}: definitiva ${definitiva}, ajuste ${ajuste}, saldo definitivo ${saldoDefinitivo}`, motivo: datos.observaciones||null, usuario: usuarioEmail || null });
   return { estado: 'ok', ajuste, saldoDefinitivo };
 }
 
@@ -4600,7 +4613,7 @@ function abrirModalPerdidaActualizacion(b, p, ejercicio) {
       bloqueadoPorFaltaDeAntecedente = true;
       return;
     }
-    const calculado = p.saldoDisponible * r.factor;
+    const calculado = redondearMoneda(redondearMoneda(p.saldoDisponible) * r.factor);
     resultadoDiv.innerHTML = `Periodo INPC: ${periodosDeterminados.periodoAntiguo} → ${periodosDeterminados.periodoReciente} (determinado automáticamente)<br>INPC ${periodosDeterminados.periodoAntiguo}: <strong>${r.valorAntiguo}</strong> · INPC ${periodosDeterminados.periodoReciente}: <strong>${r.valorReciente}</strong> · Factor: <strong>${r.factor.toFixed(4)}</strong><br>Saldo actualizado calculado: <strong style="color:var(--navy-1);">${fmt(calculado)}</strong>`;
   })();
 
@@ -4660,15 +4673,17 @@ function abrirModalPerdidaAplicacion(b, p, ejercicio, mes) {
   document.getElementById('pfApGuardarBtn').onclick = async () => {
     const importe = leerMonto(document.getElementById('pfApImporte').value);
     if (importe === null || importe < 0) { toast('Indica el importe acumulado.', 'error'); return; }
-    if (p.saldoDisponible !== null && importe > p.saldoDisponible + 0.004) {
+    const importeNormalizado = redondearMoneda(importe);
+    const saldoNormalizado = p.saldoDisponible !== null ? redondearMoneda(p.saldoDisponible) : null;
+    if (saldoNormalizado !== null && importeNormalizado > saldoNormalizado) {
       const adv = document.getElementById('pfApAdvertencia');
       if (adv.style.display === 'none') {
-        adv.textContent = `Este importe excede el saldo disponible (${fmt(p.saldoDisponible)}). Vuelve a presionar Guardar para confirmarlo de todas formas, o corrígelo.`;
+        adv.textContent = `Este importe excede el saldo disponible (${fmt(saldoNormalizado)}). Vuelve a presionar Guardar para confirmarlo de todas formas, o corrígelo.`;
         adv.style.display = 'block';
         return; // primera vez: solo advierte, no guarda — exige confirmación explícita
       }
     }
-    await registrarAplicacionProvisionalPerdida(p.id, ejercicio, periodo, importe, STATE.user?.email);
+    await registrarAplicacionProvisionalPerdida(p.id, ejercicio, periodo, importeNormalizado, STATE.user?.email);
     document.getElementById('modalPerdidaAplicacion').classList.remove('show');
     toast('Aplicación registrada.');
     await renderPerdidasFiscales(b);
