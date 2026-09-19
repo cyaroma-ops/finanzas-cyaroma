@@ -3738,12 +3738,27 @@ let STATE_papelesUltimoMes = {}; // último mes visitado en el drill-down, por c
 // saldos donde importa el valor más reciente capturado; 'no_aplica' = sin total con sentido.
 // Formato por tipo de dato — 'moneda' | 'porcentaje' | 'coeficiente' | 'numero' | 'saldo'.
 // 'saldo' se formatea como moneda pero nunca fuerza rojo por ser cero (semántica visual distinta).
+// Formatea un valor fiscal para PRESENTACIÓN — nunca convierte ausencia en cero.
+// NULL/undefined = "—" (todavía no existe un resultado determinado).
+// 0 (número real) = "$0.00" (determinado efectivamente en cero).
+// Cada tipo de dato conserva su propio formato — nunca todo como moneda.
 function formatearValorConcepto(valor, formato) {
-  const n = Number(valor)||0;
+  if (valor === null || valor === undefined) return '—';
+  const n = Number(valor);
   if (formato === 'coeficiente') return n.toFixed(4);
   if (formato === 'porcentaje') return (n*100).toFixed(2) + '%';
   if (formato === 'numero') return n.toLocaleString('es-MX');
   return fmt(n); // 'moneda' | 'saldo'
+}
+
+// Campo de un objeto de accesorios (fz_papel_concepto_accesorios) para presentación. Si el objeto
+// no existe todavía (el cálculo nunca se ejecutó para ese periodo) o el campo es NULL, muestra
+// "—" — nunca "$0.00", que significaría "se calculó y el resultado fue cero".
+function formatAccesorioCampo(accesorio, campo) {
+  if (!accesorio) return '—';
+  const v = accesorio[campo];
+  if (v === null || v === undefined) return '—';
+  return fmt(Number(v));
 }
 
 const CONCEPTOS_DEFAULT_IVA = [
@@ -3905,11 +3920,11 @@ async function renderCedulaAnual(b, elId, tipoPapel, titulo, conceptosDefault, t
         <table style="min-width:900px;">
           <thead><tr><th>Concepto</th>${mesesCols.map(mm=>`<th class="num">${MESES_LARGO[Number(mm)-1].slice(0,3)}</th>`).join('')}<th class="num">Total</th></tr></thead>
           <tbody>
-            <tr><td>Principal</td>${mesesCols.map(mm=>`<td class="num">${fmt(filaResultado.porMes[mm]?filaResultado.porMes[mm].valor||0:0)}</td>`).join('')}<td class="num" style="font-weight:600;">${fmt(filaResultado.total||0)}</td></tr>
-            <tr><td>Actualización</td>${mesesCols.map(mm=>`<td class="num">${fmt(Number((porMesAcc[mm]||{}).importe_actualizacion_aplicado)||0)}</td>`).join('')}<td class="num">${fmt(campo('importe_actualizacion_aplicado'))}</td></tr>
-            <tr><td>Recargos</td>${mesesCols.map(mm=>`<td class="num">${fmt(Number((porMesAcc[mm]||{}).importe_recargos_aplicado)||0)}</td>`).join('')}<td class="num">${fmt(campo('importe_recargos_aplicado'))}</td></tr>
-            <tr><td>Ajuste redondeo SAT</td>${mesesCols.map(mm=>`<td class="num">${fmt(Number((porMesAcc[mm]||{}).monto_redondeo)||0)}</td>`).join('')}<td class="num">${fmt(campo('monto_redondeo'))}</td></tr>
-            <tr class="pt-fila-cierre"><td>Total fiscal</td>${mesesCols.map(mm=>`<td class="num">${fmt(Number((porMesAcc[mm]||{}).importe_final)||(filaResultado.porMes[mm]?filaResultado.porMes[mm].valor||0:0))}</td>`).join('')}<td class="num">${fmt(campo('importe_final')||filaResultado.total||0)}</td></tr>
+            <tr><td>Principal</td>${mesesCols.map(mm=>`<td class="num">${filaResultado.porMes[mm]&&filaResultado.porMes[mm].valor!==null?fmt(filaResultado.porMes[mm].valor):'—'}</td>`).join('')}<td class="num" style="font-weight:600;">${filaResultado.total!==null?fmt(filaResultado.total):'—'}</td></tr>
+            <tr><td>Actualización</td>${mesesCols.map(mm=>`<td class="num">${formatAccesorioCampo(porMesAcc[mm],'importe_actualizacion_aplicado')}</td>`).join('')}<td class="num">${Object.values(porMesAcc).some(a=>a)?fmt(campo('importe_actualizacion_aplicado')):'—'}</td></tr>
+            <tr><td>Recargos</td>${mesesCols.map(mm=>`<td class="num">${formatAccesorioCampo(porMesAcc[mm],'importe_recargos_aplicado')}</td>`).join('')}<td class="num">${Object.values(porMesAcc).some(a=>a)?fmt(campo('importe_recargos_aplicado')):'—'}</td></tr>
+            <tr><td>Ajuste redondeo SAT</td>${mesesCols.map(mm=>`<td class="num">${formatAccesorioCampo(porMesAcc[mm],'monto_redondeo')}</td>`).join('')}<td class="num">${Object.values(porMesAcc).some(a=>a)?fmt(campo('monto_redondeo')):'—'}</td></tr>
+            <tr class="pt-fila-cierre"><td>Total fiscal</td>${mesesCols.map(mm=>`<td class="num">${porMesAcc[mm]?formatAccesorioCampo(porMesAcc[mm],'importe_final'):(filaResultado.porMes[mm]&&filaResultado.porMes[mm].valor!==null?fmt(filaResultado.porMes[mm].valor):'—')}</td>`).join('')}<td class="num">${Object.values(porMesAcc).some(a=>a)?fmt(campo('importe_final')):(filaResultado.total!==null?fmt(filaResultado.total):'—')}</td></tr>
           </tbody>
         </table>
       </div>
@@ -3978,7 +3993,7 @@ async function renderCedulaAnual(b, elId, tipoPapel, titulo, conceptosDefault, t
                 const celda = fila.porMes[mm];
                 return `<td class="num ca-celda" data-mes="${mm}" style="cursor:pointer;${celda.valor===null?'color:var(--muted);':''}">${celda.valor!==null?formatearValorConcepto(celda.valor, fila.formato):'—'}</td>`;
               }).join('')}
-              <td class="num">${fila.total!==null?formatearValorConcepto(fila.total, fila.formato):(fila.agregacion==='no_aplica'?'—':'')}</td>
+              <td class="num">${fila.total!==null?formatearValorConcepto(fila.total, fila.formato):(fila.agregacion==='no_aplica'?'N/A':'—')}</td>
             </tr>${opciones.accesorios ? `<tr class="ca-fila-accesorios" data-clave="${fila.clave||fila.nombre}" style="display:none;background:#f7f7f7;"><td colspan="${mesesCols.length+2}" style="padding:8px 12px;font-size:11px;">
               <strong>Accesorios — ${fila.nombre}:</strong> ${mesesCols.map(mm=>{ const a=fila.porMes[mm].accesorios; return a?`${MESES_LARGO[Number(mm)-1].slice(0,3)}: Princ.${fmt(fila.porMes[mm].valor||0)}+Act.${fmt(a.importe_actualizacion_aplicado)}+Rec.${fmt(a.importe_recargos_aplicado)}+Red.${fmt(a.monto_redondeo)}=${fmt(a.importe_final)}`:'';}).filter(Boolean).join(' · ') || 'Sin accesorios calculados todavía en ningún mes.'}
             </td></tr>${opciones.accesorios?`<tr><td colspan="${mesesCols.length+2}" style="padding:0 0 6px 0;"><a href="#" class="pt-editar-link ca-toggle-accesorios" data-clave="${fila.clave||fila.nombre}" style="margin-left:4px;">Ver accesorios</a></td></tr>`:''}` : ''}`).join('')}
@@ -4275,10 +4290,10 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
       <div class="pt-accesorios-linea">
         <div><span class="pt-label">Calcular accesorios al</span><span class="pt-value">${accTotal?fechaCorta(accTotal.calcular_al):'—'}</span></div>
         <div><span class="pt-label">Principal</span><span class="pt-value">${fmt(Number(totalPeriodoConcepto.valor_aplicado)||0)}</span></div>
-        <div><span class="pt-label">Actualización</span><span class="pt-value">${fmt(Number(accTotal?.importe_actualizacion_aplicado)||0)}</span></div>
-        <div><span class="pt-label">Recargos</span><span class="pt-value">${fmt(Number(accTotal?.importe_recargos_aplicado)||0)}</span></div>
-        <div><span class="pt-label">Ajuste redondeo SAT</span><span class="pt-value">${fmt(Number(accTotal?.monto_redondeo)||0)}</span></div>
-        <div><span class="pt-label" style="color:var(--gold);">Total fiscal</span><span class="pt-value" style="color:var(--gold);font-size:14px;">${fmt(Number(accTotal?.importe_final)||0)}</span></div>
+        <div><span class="pt-label">Actualización</span><span class="pt-value">${formatAccesorioCampo(accTotal,'importe_actualizacion_aplicado')}</span></div>
+        <div><span class="pt-label">Recargos</span><span class="pt-value">${formatAccesorioCampo(accTotal,'importe_recargos_aplicado')}</span></div>
+        <div><span class="pt-label">Ajuste redondeo SAT</span><span class="pt-value">${formatAccesorioCampo(accTotal,'monto_redondeo')}</span></div>
+        <div><span class="pt-label" style="color:var(--gold);">Total fiscal</span><span class="pt-value" style="color:var(--gold);font-size:14px;">${formatAccesorioCampo(accTotal,'importe_final')}</span></div>
       </div>
       <a href="#" class="pt-editar-link cg-ver-calculo" style="display:inline-block;margin-top:8px;opacity:1;">Ver cálculo detallado</a>
       <div class="cg-calculo-detalle" style="display:none;margin-top:6px;font-size:11px;color:var(--muted);background:#f7f9fc;padding:8px;border-radius:8px;">
@@ -4541,10 +4556,10 @@ async function renderPapelISRPM(b) {
       <div class="pt-accesorios-linea">
         <div><span class="pt-label">Calcular al</span><span class="pt-value">${snapshot?fechaCorta(snapshot.calcular_al):'—'}</span></div>
         <div><span class="pt-label">Principal</span><span class="pt-value">${fmt(Number(conceptoResultado.valor_aplicado)||0)}</span></div>
-        <div><span class="pt-label">Actualización</span><span class="pt-value">${fmt(Number(snapshot?.importe_actualizacion_aplicado)||0)}</span></div>
-        <div><span class="pt-label">Recargos</span><span class="pt-value">${fmt(Number(snapshot?.importe_recargos_aplicado)||0)}</span></div>
-        <div><span class="pt-label">Ajuste redondeo SAT</span><span class="pt-value">${fmt(Number(snapshot?.monto_redondeo)||0)}</span></div>
-        <div><span class="pt-label" style="color:var(--gold);">Total fiscal</span><span class="pt-value" style="color:var(--gold);font-size:14px;">${fmt(Number(snapshot?.importe_final)||0)}</span></div>
+        <div><span class="pt-label">Actualización</span><span class="pt-value">${formatAccesorioCampo(snapshot,'importe_actualizacion_aplicado')}</span></div>
+        <div><span class="pt-label">Recargos</span><span class="pt-value">${formatAccesorioCampo(snapshot,'importe_recargos_aplicado')}</span></div>
+        <div><span class="pt-label">Ajuste redondeo SAT</span><span class="pt-value">${formatAccesorioCampo(snapshot,'monto_redondeo')}</span></div>
+        <div><span class="pt-label" style="color:var(--gold);">Total fiscal</span><span class="pt-value" style="color:var(--gold);font-size:14px;">${formatAccesorioCampo(snapshot,'importe_final')}</span></div>
       </div>
       <a href="#" class="pt-editar-link" id="pIsrVerCalculoBtn" style="display:inline-block;margin-top:8px;opacity:1;">Ver cálculo detallado</a>
       <div id="pIsrCalculoDetalle" style="display:none;margin-top:6px;font-size:11px;color:var(--muted);background:#f7f9fc;padding:8px;border-radius:8px;">
