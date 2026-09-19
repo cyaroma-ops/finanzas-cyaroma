@@ -948,13 +948,18 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
     <div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:10px;">
       <span>Saldo anterior</span><strong id="pfActSaldoAnterior">—</strong>
     </div>
-    <div class="field"><label>Importe actualizado disponible</label><input type="text" id="pfActImporte" inputmode="decimal"></div>
     <div class="grid-3">
-      <div class="field"><label>INPC inicial</label><input type="text" id="pfActInpcInicial" inputmode="decimal"></div>
-      <div class="field"><label>INPC final</label><input type="text" id="pfActInpcFinal" inputmode="decimal"></div>
-      <div class="field"><label>Factor</label><input type="text" id="pfActFactor" inputmode="decimal"></div>
+      <div class="field"><label>Periodo INPC más antiguo</label><input type="month" id="pfActPeriodoAntiguo"></div>
+      <div class="field"><label>Periodo INPC más reciente</label><input type="month" id="pfActPeriodoReciente"></div>
     </div>
-    <div class="field"><label>Periodo de actualización</label><input type="text" id="pfActPeriodo" placeholder="Ej. Dic 2024 - Dic 2025"></div>
+    <p style="font-size:10.5px;color:var(--muted);margin:-4px 0 8px;">Los valores INPC se obtienen automáticamente del catálogo en Configuración → Recargos y Actualización.</p>
+    <div id="pfActResultadoCatalogo" style="font-size:12px;background:#f7f9fc;border-radius:8px;padding:8px 10px;margin-bottom:10px;color:var(--muted);">Indica ambos periodos para calcular.</div>
+    <div class="field" id="pfActAjusteZona" style="display:none;">
+      <label>Ajustar importe aplicado (excepción — requiere motivo)</label>
+      <input type="text" id="pfActImporteAjustado" inputmode="decimal">
+      <input type="text" id="pfActMotivoAjuste" placeholder="Motivo del ajuste" style="margin-top:6px;">
+    </div>
+    <a href="#" class="pt-editar-link" id="pfActMostrarAjusteBtn" style="display:inline-block;opacity:1;margin-bottom:8px;">¿Necesitas ajustar el importe calculado?</a>
     <div class="field"><label>Observaciones</label><input type="text" id="pfActObs" placeholder="Opcional"></div>
     <div id="pfErrorAct" style="font-size:11.5px;color:var(--red);margin-top:3px;display:none;"></div>
     <div class="modal-actions">

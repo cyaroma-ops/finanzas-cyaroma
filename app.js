@@ -2450,6 +2450,22 @@ async function asegurarConceptoPersistido(businessId, tipoPapel, ejercicio, peri
 // los meses como si fueran consumos aislados (ISR PM es acumulado) — cada mes ya trae su propio
 // acumulado, se resta directamente del saldo disponible. Nunca ajusta silenciosamente un exceso:
 // lo marca con advertencia para que el contador lo revise.
+// SOLO LECTURA sobre el catálogo INPC YA EXISTENTE (fz_inpc_valores, la misma fuente que usa
+// Configuración → Recargos y Actualización) — nunca se crea ni duplica un catálogo. Si falta
+// cualquiera de los dos periodos, NUNCA se inventa un valor (ni 0 ni 1): se reporta explícitamente
+// cuál falta para que se complete en Configuración.
+async function obtenerINPCsParaActualizacionPerdida(periodoAntiguo, periodoReciente) {
+  const { data: filas } = await sb.from('fz_inpc_valores').select('*').in('periodo', [periodoAntiguo, periodoReciente]);
+  const antiguo = (filas||[]).find(f => f.periodo === periodoAntiguo);
+  const reciente = (filas||[]).find(f => f.periodo === periodoReciente);
+  const faltantes = [];
+  if (!antiguo) faltantes.push(periodoAntiguo);
+  if (!reciente) faltantes.push(periodoReciente);
+  if (faltantes.length) return { ok: false, faltantes };
+  const factor = Number(reciente.valor) / Number(antiguo.valor);
+  return { ok: true, valorAntiguo: Number(antiguo.valor), valorReciente: Number(reciente.valor), factor };
+}
+
 function calcularControlProvisionalPerdida(saldoDisponible, aplicacionesPorMes) {
   const porMes = {};
   let mesAgotamiento = null;
@@ -2510,24 +2526,39 @@ async function registrarPerdidaFiscal(businessId, datos, usuarioEmail) {
   return { estado: 'creada', perdida: nueva };
 }
 
+// datos: { saldoAnterior, periodoInpcAntiguo, periodoInpcReciente, importeAplicado (opcional —
+// solo cuando el contador ajusta manualmente el resultado calculado por el catálogo),
+// motivoAjuste, observaciones }.
+// El INPC se obtiene SIEMPRE del catálogo existente — nunca se recibe como número capturado aquí.
 async function registrarActualizacionPerdida(perdidaId, ejercicioActualizacion, datos, usuarioEmail) {
+  const inpcs = await obtenerINPCsParaActualizacionPerdida(datos.periodoInpcAntiguo, datos.periodoInpcReciente);
+  if (!inpcs.ok) return { estado: 'inpc_pendiente', faltantes: inpcs.faltantes };
+
+  const importeCalculado = Number(datos.saldoAnterior) * inpcs.factor;
+  const huboAjuste = datos.importeAplicado !== undefined && datos.importeAplicado !== null && Math.abs(Number(datos.importeAplicado) - importeCalculado) > 0.004;
+  if (huboAjuste && (!datos.motivoAjuste || !datos.motivoAjuste.trim())) return { estado: 'falta_motivo' };
+  const importeAplicado = huboAjuste ? Number(datos.importeAplicado) : importeCalculado;
+
   const { data: existente } = await sb.from('fz_perdidas_fiscales_actualizaciones').select('*').eq('perdida_id', perdidaId).eq('ejercicio_actualizacion', ejercicioActualizacion).maybeSingle();
   const payload = {
     perdida_id: perdidaId, ejercicio_actualizacion: ejercicioActualizacion,
-    saldo_anterior: datos.saldoAnterior ?? null, importe_actualizado: datos.importeActualizado,
-    inpc_inicial: datos.inpcInicial ?? null, inpc_final: datos.inpcFinal ?? null, factor: datos.factor ?? null,
-    periodo_actualizacion: datos.periodoActualizacion || null, observaciones: datos.observaciones || null,
-    created_by: usuarioEmail || null,
+    saldo_anterior: datos.saldoAnterior ?? null,
+    periodo_inpc_antiguo: datos.periodoInpcAntiguo, periodo_inpc_reciente: datos.periodoInpcReciente,
+    inpc_inicial: inpcs.valorAntiguo, inpc_final: inpcs.valorReciente, factor: inpcs.factor,
+    importe_calculado: importeCalculado, importe_actualizado: importeAplicado,
+    ajuste_manual: huboAjuste, ajuste_motivo: huboAjuste ? datos.motivoAjuste.trim() : null,
+    ajuste_usuario: huboAjuste ? (usuarioEmail || null) : null, ajuste_fecha: huboAjuste ? new Date().toISOString() : null,
+    observaciones: datos.observaciones || null, created_by: usuarioEmail || null,
   };
   if (existente) {
-    const valorAnteriorReal = existente.importe_actualizado; // capturado ANTES de actualizar — nunca se lee después del update
+    const valorAnteriorReal = existente.importe_actualizado; // capturado ANTES de actualizar
     await sb.from('fz_perdidas_fiscales_actualizaciones').update(payload).eq('id', existente.id);
-    await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: 'actualización', valor_anterior: String(valorAnteriorReal), valor_nuevo: String(datos.importeActualizado), motivo: datos.observaciones||null, usuario: usuarioEmail || null });
+    await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: 'actualización', valor_anterior: String(valorAnteriorReal), valor_nuevo: String(importeAplicado), motivo: huboAjuste ? datos.motivoAjuste.trim() : (datos.observaciones||null), usuario: usuarioEmail || null });
   } else {
     await sb.from('fz_perdidas_fiscales_actualizaciones').insert(payload);
-    await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: 'actualización', valor_nuevo: `Ejercicio ${ejercicioActualizacion}: ${datos.importeActualizado}`, usuario: usuarioEmail || null });
+    await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: 'actualización', valor_nuevo: `Ejercicio ${ejercicioActualizacion}: ${importeAplicado} (INPC ${datos.periodoInpcAntiguo}→${datos.periodoInpcReciente}, factor ${inpcs.factor.toFixed(4)})`, usuario: usuarioEmail || null });
   }
-  return { estado: 'ok' };
+  return { estado: 'ok', importeCalculado, importeAplicado, factor: inpcs.factor };
 }
 
 async function registrarAplicacionProvisionalPerdida(perdidaId, ejercicioControl, periodo, montoAcumulado, usuarioEmail) {
@@ -4329,7 +4360,7 @@ function renderDetallePerdida(p, ejercicio) {
         <h3 style="font-size:13px;">Actualización — ejercicio ${ejercicio}</h3>
         <a href="#" class="pt-editar-link pf-registrar-actualizacion" data-id="${p.id}" style="opacity:1;">${p.actualizacionVigente?'Editar':'Registrar'} actualización</a>
       </div>
-      ${p.actualizacionVigente ? `<p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Importe actualizado: <strong style="color:var(--navy-1);">${fmt(p.actualizacionVigente.importe_actualizado)}</strong>${p.actualizacionVigente.periodo_actualizacion?' · '+p.actualizacionVigente.periodo_actualizacion:''}${p.actualizacionVigente.factor?' · Factor '+p.actualizacionVigente.factor:''}</p>` : `<p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Sin actualización capturada para ${ejercicio} — el saldo disponible se toma de ${p.cierreAnterior?'el cierre del ejercicio anterior':(ejercicio===p.ejercicio_origen?'la pérdida original':'ninguna fuente todavía')}.</p>`}
+      ${p.actualizacionVigente ? `<p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Importe actualizado: <strong style="color:var(--navy-1);">${fmt(p.actualizacionVigente.importe_actualizado)}</strong>${p.actualizacionVigente.periodo_inpc_antiguo?' · INPC '+p.actualizacionVigente.periodo_inpc_antiguo+'→'+p.actualizacionVigente.periodo_inpc_reciente:''}${p.actualizacionVigente.factor?' · Factor '+Number(p.actualizacionVigente.factor).toFixed(4):''}${p.actualizacionVigente.ajuste_manual?' <span style="color:var(--gold);">(ajustado manualmente)</span>':''}</p>` : `<p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Sin actualización capturada para ${ejercicio} — el saldo disponible se toma de ${p.cierreAnterior?'el cierre del ejercicio anterior':(ejercicio===p.ejercicio_origen?'la pérdida original':'ninguna fuente todavía')}.</p>`}
 
       <h3 style="font-size:13px;margin-top:14px;">Aplicación en pagos provisionales</h3>
       <div class="table-wrap">
@@ -4467,26 +4498,57 @@ function abrirModalPerdidaActualizacion(b, p, ejercicio) {
   document.getElementById('pfActConceptoNombre').textContent = `Pérdida ${p.ejercicio_origen} — ejercicio de control ${ejercicio}`;
   document.getElementById('pfActSaldoAnterior').textContent = p.saldoDisponible !== null ? fmt(p.saldoDisponible) : '—';
   const act = p.actualizacionVigente;
-  document.getElementById('pfActImporte').value = act ? fmtInputVal(Number(act.importe_actualizado)) : '';
-  document.getElementById('pfActInpcInicial').value = act?.inpc_inicial ?? '';
-  document.getElementById('pfActInpcFinal').value = act?.inpc_final ?? '';
-  document.getElementById('pfActFactor').value = act?.factor ?? '';
-  document.getElementById('pfActPeriodo').value = act?.periodo_actualizacion || '';
+  document.getElementById('pfActPeriodoAntiguo').value = act?.periodo_inpc_antiguo || '';
+  document.getElementById('pfActPeriodoReciente').value = act?.periodo_inpc_reciente || '';
   document.getElementById('pfActObs').value = act?.observaciones || '';
+  document.getElementById('pfActAjusteZona').style.display = act?.ajuste_manual ? 'block' : 'none';
+  document.getElementById('pfActImporteAjustado').value = act?.ajuste_manual ? fmtInputVal(Number(act.importe_actualizado)) : '';
+  document.getElementById('pfActMotivoAjuste').value = act?.ajuste_motivo || '';
+  document.getElementById('pfActMostrarAjusteBtn').textContent = act?.ajuste_manual ? 'Editar ajuste manual' : '¿Necesitas ajustar el importe calculado?';
   document.getElementById('pfErrorAct').style.display = 'none';
+
+  let ultimoResultadoCatalogo = null; // { ok, factor, valorAntiguo, valorReciente } o { ok:false, faltantes }
+  const resultadoDiv = document.getElementById('pfActResultadoCatalogo');
+  const consultarCatalogo = async () => {
+    const antiguo = document.getElementById('pfActPeriodoAntiguo').value;
+    const reciente = document.getElementById('pfActPeriodoReciente').value;
+    if (!antiguo || !reciente) { resultadoDiv.textContent = 'Indica ambos periodos para calcular.'; ultimoResultadoCatalogo = null; return; }
+    const r = await obtenerINPCsParaActualizacionPerdida(antiguo, reciente);
+    ultimoResultadoCatalogo = r;
+    if (!r.ok) {
+      resultadoDiv.innerHTML = `<span style="color:var(--red);">INPC pendiente en catálogo: ${r.faltantes.join(', ')}. Complétalo en Configuración → Recargos y Actualización.</span>`;
+      return;
+    }
+    const saldoAnterior = p.saldoDisponible !== null ? p.saldoDisponible : 0;
+    const calculado = saldoAnterior * r.factor;
+    resultadoDiv.innerHTML = `INPC ${antiguo}: <strong>${r.valorAntiguo}</strong> · INPC ${reciente}: <strong>${r.valorReciente}</strong> · Factor: <strong>${r.factor.toFixed(4)}</strong><br>Saldo actualizado calculado: <strong style="color:var(--navy-1);">${fmt(calculado)}</strong>`;
+  };
+  if (act?.periodo_inpc_antiguo && act?.periodo_inpc_reciente) consultarCatalogo();
+  document.getElementById('pfActPeriodoAntiguo').onchange = consultarCatalogo;
+  document.getElementById('pfActPeriodoReciente').onchange = consultarCatalogo;
+
+  document.getElementById('pfActMostrarAjusteBtn').onclick = (e) => {
+    e.preventDefault();
+    const z = document.getElementById('pfActAjusteZona');
+    z.style.display = z.style.display === 'none' ? 'block' : 'none';
+  };
+
   document.getElementById('modalPerdidaActualizacion').classList.add('show');
   document.getElementById('pfActGuardarBtn').onclick = async () => {
-    const importe = leerMonto(document.getElementById('pfActImporte').value);
     const err = document.getElementById('pfErrorAct');
-    if (importe === null || importe < 0) { err.textContent = 'Indica el importe actualizado.'; err.style.display = 'block'; return; }
-    await registrarActualizacionPerdida(p.id, ejercicio, {
-      saldoAnterior: p.saldoDisponible, importeActualizado: importe,
-      inpcInicial: leerMonto(document.getElementById('pfActInpcInicial').value),
-      inpcFinal: leerMonto(document.getElementById('pfActInpcFinal').value),
-      factor: leerMonto(document.getElementById('pfActFactor').value),
-      periodoActualizacion: document.getElementById('pfActPeriodo').value.trim() || null,
+    const antiguo = document.getElementById('pfActPeriodoAntiguo').value;
+    const reciente = document.getElementById('pfActPeriodoReciente').value;
+    if (!antiguo || !reciente) { err.textContent = 'Indica ambos periodos INPC.'; err.style.display = 'block'; return; }
+    const ajusteVisible = document.getElementById('pfActAjusteZona').style.display !== 'none';
+    const importeAjustado = ajusteVisible ? leerMonto(document.getElementById('pfActImporteAjustado').value) : null;
+    const motivoAjuste = document.getElementById('pfActMotivoAjuste').value.trim();
+    const r = await registrarActualizacionPerdida(p.id, ejercicio, {
+      saldoAnterior: p.saldoDisponible, periodoInpcAntiguo: antiguo, periodoInpcReciente: reciente,
+      importeAplicado: importeAjustado, motivoAjuste: motivoAjuste || null,
       observaciones: document.getElementById('pfActObs').value.trim() || null,
     }, STATE.user?.email);
+    if (r.estado === 'inpc_pendiente') { err.textContent = `INPC pendiente en catálogo: ${r.faltantes.join(', ')}. Complétalo en Configuración → Recargos y Actualización antes de continuar.`; err.style.display = 'block'; return; }
+    if (r.estado === 'falta_motivo') { err.textContent = 'El ajuste manual requiere motivo.'; err.style.display = 'block'; return; }
     document.getElementById('modalPerdidaActualizacion').classList.remove('show');
     toast('Actualización registrada.');
     await renderPerdidasFiscales(b);
