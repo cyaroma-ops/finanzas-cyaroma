@@ -2438,6 +2438,128 @@ async function asegurarConceptoPersistido(businessId, tipoPapel, ejercicio, peri
   return { papel, concepto: nuevo };
 }
 
+// ============================================================
+// PÉRDIDAS FISCALES — cédula auxiliar. Nunca es un impuesto, nunca se suma al Total Federal,
+// nunca genera declaración/pago/póliza en Fase 1. Abrir/visualizar NUNCA crea registros — solo
+// las acciones explícitas (Registrar pérdida, Registrar actualización, Registrar aplicación,
+// Registrar cierre anual, Adjuntar soporte) persisten.
+// ============================================================
+
+// Cálculo PURO — dado el saldo disponible del ejercicio de control y las aplicaciones YA
+// ACUMULADAS por mes, determina el saldo de control por mes y el mes de agotamiento. Nunca suma
+// los meses como si fueran consumos aislados (ISR PM es acumulado) — cada mes ya trae su propio
+// acumulado, se resta directamente del saldo disponible. Nunca ajusta silenciosamente un exceso:
+// lo marca con advertencia para que el contador lo revise.
+function calcularControlProvisionalPerdida(saldoDisponible, aplicacionesPorMes) {
+  const porMes = {};
+  let mesAgotamiento = null;
+  for (let m = 1; m <= 12; m++) {
+    const mm = String(m).padStart(2, '0');
+    const aplicadoAcumulado = (aplicacionesPorMes[mm] !== undefined && aplicacionesPorMes[mm] !== null) ? Number(aplicacionesPorMes[mm]) : null;
+    let saldoControl = null, excedeDisponible = false;
+    if (aplicadoAcumulado !== null && saldoDisponible !== null) {
+      saldoControl = saldoDisponible - aplicadoAcumulado;
+      if (saldoControl < -0.004) excedeDisponible = true;
+      if (mesAgotamiento === null && saldoControl <= 0.004) mesAgotamiento = mm;
+    }
+    porMes[mm] = { aplicadoAcumulado, saldoControl, excedeDisponible };
+  }
+  return { porMes, mesAgotamiento, saldoDisponible };
+}
+
+// SOLO LECTURA — trae todas las pérdidas del negocio con su actualización vigente para el
+// ejercicio de control pedido, sus aplicaciones mensuales de ese ejercicio, y su cierre si existe.
+// Nunca crea nada. El saldo disponible se resuelve: actualización capturada para este ejercicio →
+// si no existe, saldo definitivo del cierre del ejercicio anterior → si no existe, monto original
+// (solo tiene sentido cuando ejercicio_control === ejercicio_origen).
+async function obtenerPerdidasFiscalesSiExisten(businessId, ejercicioControl) {
+  const { data: perdidas } = await sb.from('fz_perdidas_fiscales').select('*').eq('business_id', businessId).order('ejercicio_origen', { ascending: true });
+  if (!perdidas || !perdidas.length) return [];
+  const perdidaIds = perdidas.map(p => p.id);
+  const [{ data: actualizaciones }, { data: aplicaciones }, { data: cierres }] = await Promise.all([
+    sb.from('fz_perdidas_fiscales_actualizaciones').select('*').in('perdida_id', perdidaIds),
+    sb.from('fz_perdidas_fiscales_aplicaciones').select('*').in('perdida_id', perdidaIds).eq('ejercicio_control', ejercicioControl),
+    sb.from('fz_perdidas_fiscales_cierres').select('*').in('perdida_id', perdidaIds),
+  ]);
+  const ejercicioAnterior = String(Number(ejercicioControl) - 1);
+  return perdidas.map(p => {
+    const actualizacionVigente = (actualizaciones||[]).find(a => a.perdida_id === p.id && a.ejercicio_actualizacion === ejercicioControl) || null;
+    const cierreAnterior = (cierres||[]).find(c => c.perdida_id === p.id && c.ejercicio_control === ejercicioAnterior) || null;
+    const cierreEsteEjercicio = (cierres||[]).find(c => c.perdida_id === p.id && c.ejercicio_control === ejercicioControl) || null;
+    let saldoDisponible;
+    if (actualizacionVigente) saldoDisponible = Number(actualizacionVigente.importe_actualizado);
+    else if (cierreAnterior) saldoDisponible = Number(cierreAnterior.saldo_definitivo_pendiente);
+    else if (ejercicioControl === p.ejercicio_origen) saldoDisponible = Number(p.monto_original);
+    else saldoDisponible = null; // sin fuente sustentada para ese ejercicio — no se inventa
+    const aplicacionesPorMes = {};
+    (aplicaciones||[]).filter(a => a.perdida_id === p.id).forEach(a => { aplicacionesPorMes[a.periodo.slice(5,7)] = a.aplicado_acumulado; });
+    const control = saldoDisponible !== null ? calcularControlProvisionalPerdida(saldoDisponible, aplicacionesPorMes) : null;
+    return { ...p, actualizacionVigente, cierreAnterior, cierreEsteEjercicio, saldoDisponible, control };
+  });
+}
+
+// ---- Acciones explícitas de persistencia — nunca invocadas desde el render ----
+
+async function registrarPerdidaFiscal(businessId, datos, usuarioEmail) {
+  const { data: nueva, error } = await sb.from('fz_perdidas_fiscales').insert({
+    business_id: businessId, ejercicio_origen: datos.ejercicioOrigen, monto_original: datos.montoOriginal,
+    notas: datos.notas || null, created_by: usuarioEmail || null,
+  }).select().single();
+  if (error) return { estado: 'error', error: error.message };
+  await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: nueva.id, campo: 'creación', valor_nuevo: `Ejercicio ${datos.ejercicioOrigen}: ${datos.montoOriginal}`, usuario: usuarioEmail || null });
+  return { estado: 'creada', perdida: nueva };
+}
+
+async function registrarActualizacionPerdida(perdidaId, ejercicioActualizacion, datos, usuarioEmail) {
+  const { data: existente } = await sb.from('fz_perdidas_fiscales_actualizaciones').select('*').eq('perdida_id', perdidaId).eq('ejercicio_actualizacion', ejercicioActualizacion).maybeSingle();
+  const payload = {
+    perdida_id: perdidaId, ejercicio_actualizacion: ejercicioActualizacion,
+    saldo_anterior: datos.saldoAnterior ?? null, importe_actualizado: datos.importeActualizado,
+    inpc_inicial: datos.inpcInicial ?? null, inpc_final: datos.inpcFinal ?? null, factor: datos.factor ?? null,
+    periodo_actualizacion: datos.periodoActualizacion || null, observaciones: datos.observaciones || null,
+    created_by: usuarioEmail || null,
+  };
+  if (existente) {
+    const valorAnteriorReal = existente.importe_actualizado; // capturado ANTES de actualizar — nunca se lee después del update
+    await sb.from('fz_perdidas_fiscales_actualizaciones').update(payload).eq('id', existente.id);
+    await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: 'actualización', valor_anterior: String(valorAnteriorReal), valor_nuevo: String(datos.importeActualizado), motivo: datos.observaciones||null, usuario: usuarioEmail || null });
+  } else {
+    await sb.from('fz_perdidas_fiscales_actualizaciones').insert(payload);
+    await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: 'actualización', valor_nuevo: `Ejercicio ${ejercicioActualizacion}: ${datos.importeActualizado}`, usuario: usuarioEmail || null });
+  }
+  return { estado: 'ok' };
+}
+
+async function registrarAplicacionProvisionalPerdida(perdidaId, ejercicioControl, periodo, montoAcumulado, usuarioEmail) {
+  const { data: existente } = await sb.from('fz_perdidas_fiscales_aplicaciones').select('*').eq('perdida_id', perdidaId).eq('periodo', periodo).maybeSingle();
+  if (existente) {
+    const valorAnteriorReal = existente.aplicado_acumulado;
+    await sb.from('fz_perdidas_fiscales_aplicaciones').update({ aplicado_acumulado: montoAcumulado, updated_at: new Date().toISOString() }).eq('id', existente.id);
+    await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: `aplicación ${periodo}`, valor_anterior: String(valorAnteriorReal), valor_nuevo: String(montoAcumulado), usuario: usuarioEmail || null });
+  } else {
+    await sb.from('fz_perdidas_fiscales_aplicaciones').insert({ perdida_id: perdidaId, ejercicio_control: ejercicioControl, periodo, aplicado_acumulado: montoAcumulado, created_by: usuarioEmail || null });
+    await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: `aplicación ${periodo}`, valor_nuevo: String(montoAcumulado), usuario: usuarioEmail || null });
+  }
+  return { estado: 'ok' };
+}
+
+async function registrarCierreAnualPerdida(perdidaId, ejercicioControl, datos, usuarioEmail) {
+  const ajuste = Number(datos.aplicacionDefinitivaAnual) - Number(datos.aplicacionProvisionalAcumulada);
+  const saldoDefinitivo = Math.max(0, Number(datos.saldoDefinitivoPendiente));
+  const { data: existente } = await sb.from('fz_perdidas_fiscales_cierres').select('id').eq('perdida_id', perdidaId).eq('ejercicio_control', ejercicioControl).maybeSingle();
+  const payload = {
+    perdida_id: perdidaId, ejercicio_control: ejercicioControl,
+    aplicacion_provisional_acumulada: datos.aplicacionProvisionalAcumulada, aplicacion_definitiva_anual: datos.aplicacionDefinitivaAnual,
+    saldo_definitivo_pendiente: saldoDefinitivo, observaciones: datos.observaciones || null, fecha_cierre: datos.fechaCierre || todayStr(),
+    created_by: usuarioEmail || null,
+  };
+  if (existente) { await sb.from('fz_perdidas_fiscales_cierres').update(payload).eq('id', existente.id); }
+  else { await sb.from('fz_perdidas_fiscales_cierres').insert(payload); }
+  await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: 'cierre anual', valor_nuevo: `Ejercicio ${ejercicioControl}: definitiva ${datos.aplicacionDefinitivaAnual}, ajuste ${ajuste}, saldo definitivo ${saldoDefinitivo}`, motivo: datos.observaciones||null, usuario: usuarioEmail || null });
+  return { estado: 'ok', ajuste, saldoDefinitivo };
+}
+
+
 async function actualizarValorConceptoPapel(conceptoId, nuevoValorAplicado, motivo, usuarioEmail) {
   const { data: concepto } = await sb.from('fz_papel_conceptos').select('*').eq('id', conceptoId).maybeSingle();
   if (!concepto) return { estado: 'no_encontrada' };
@@ -4050,11 +4172,12 @@ async function renderPapelesTrabajo() {
     { id: 'iva', label: 'IVA' },
     { id: 'retisr', label: 'Retenciones ISR' },
     { id: 'retiva', label: 'Retenciones IVA' },
+    { id: 'perdidas', label: 'Pérdidas Fiscales' },
   ];
   tabBarEl.innerHTML = tabs.map(t => `<div class="tag ${STATE_papelesTab===t.id?'active':''}" data-tab="${t.id}">${t.label}</div>`).join('');
   tabBarEl.querySelectorAll('.tag').forEach(tag => tag.addEventListener('click', () => { STATE_papelesTab = tag.dataset.tab; renderPapelesTrabajo(); }));
 
-  const mapaVistas = { resumen: 'sec-resumenfederal', isrpm: 'sec-papelisrpm', iva: 'sec-papeliva', retisr: 'sec-papelretisr', retiva: 'sec-papelretiva' };
+  const mapaVistas = { resumen: 'sec-resumenfederal', isrpm: 'sec-papelisrpm', iva: 'sec-papeliva', retisr: 'sec-papelretisr', retiva: 'sec-papelretiva', perdidas: 'sec-perdidasfiscales' };
   Object.entries(mapaVistas).forEach(([tab, id]) => {
     const el = document.getElementById(id);
     if (el) el.style.display = (STATE_papelesTab === tab) ? '' : 'none';
@@ -4081,6 +4204,7 @@ async function renderPapelesTrabajo() {
       if (STATE_papelesVista.retiva === 'anual') await renderCedulaAnual(b, 'sec-papelretiva', 'retenciones_iva', 'Retenciones IVA', CONCEPTOS_DEFAULT_RETENCIONES_IVA, 'retiva', { accesoriosGlobal: true, accesorios: true });
       else { STATE_papelesMesGenerica['retIvaMes'] = STATE_papelesUltimoMes.retiva || STATE_papelesMesGenerica['retIvaMes'] || todayStr().slice(0,7); await renderCedulaGenerica(b, 'sec-papelretiva', 'retenciones_iva', 'Retenciones de IVA — Papel de trabajo', CONCEPTOS_DEFAULT_RETENCIONES_IVA, 'retIvaMes', { resumenIVA: false, accesorios: true }); }
     }
+    else if (STATE_papelesTab === 'perdidas') await renderPerdidasFiscales(b);
   } catch (err) {
     console.error('[Papeles de Trabajo] error al renderizar', STATE_papelesTab, err);
     const contenedor = document.getElementById(mapaVistas[STATE_papelesTab]);
@@ -4095,6 +4219,155 @@ async function renderPapelesTrabajo() {
 // Resumen Federal — vista anual. Determinado (del papel), Presentado (fz_declaraciones_fiscales)
 // y Pagado (fz_aplicaciones_pago_fiscal) se muestran SEPARADOS — nunca se infiere uno del otro.
 // Pérdidas/PTU son cédulas auxiliares, nunca se suman aquí como impuesto.
+let STATE_perdidasEjercicio = null;
+let STATE_perdidaExpandida = null; // id de la pérdida cuyo detalle Ene-Dic/cierre está abierto
+
+async function renderPerdidasFiscales(b) {
+  const el = document.getElementById('sec-perdidasfiscales');
+  el.innerHTML = `<div class="empty">Cargando…</div>`;
+  if (!STATE_perdidasEjercicio) STATE_perdidasEjercicio = todayStr().slice(0,4);
+  const ejercicio = STATE_perdidasEjercicio;
+  const anios = Array.from({length:6}, (_,i) => Number(todayStr().slice(0,4)) - 4 + i);
+
+  const { data: regimenes } = await sb.from('fz_regimenes_fiscales_negocio').select('clave_regimen').eq('business_id', b.id).is('vigente_hasta', null).order('vigente_desde', { ascending: false }).limit(1);
+  const regimenTexto = regimenes && regimenes.length ? regimenes[0].clave_regimen : 'Sin régimen registrado';
+
+  // SOLO LECTURA — nunca crea nada por abrir la pantalla.
+  const perdidas = await obtenerPerdidasFiscalesSiExisten(b.id, ejercicio);
+
+  // Resumen del ejercicio — franja única, no tarjetas separadas. Suma correctamente cuando hay
+  // más de una pérdida de origen distinto.
+  const mesActual = String(Number(todayStr().slice(5,7))).padStart(2,'0');
+  let saldoInicioTotal = 0, aplicadoTotal = 0, saldoProvisionalTotal = 0, hayDatos = false;
+  const agotamientos = [];
+  perdidas.forEach(p => {
+    if (p.saldoDisponible === null) return;
+    hayDatos = true;
+    saldoInicioTotal += p.saldoDisponible;
+    const ultimaConAplicacion = Object.keys(p.control.porMes).reverse().find(mm => p.control.porMes[mm].aplicadoAcumulado !== null);
+    if (ultimaConAplicacion) {
+      aplicadoTotal += p.control.porMes[ultimaConAplicacion].aplicadoAcumulado;
+      saldoProvisionalTotal += Math.max(0, p.control.porMes[ultimaConAplicacion].saldoControl);
+    } else {
+      saldoProvisionalTotal += p.saldoDisponible;
+    }
+    if (p.control.mesAgotamiento) agotamientos.push(`${p.ejercicio_origen}: agotada en ${MESES_LARGO[Number(p.control.mesAgotamiento)-1]} ${ejercicio}`);
+  });
+  const estadoResumen = !hayDatos ? 'Sin pérdidas con saldo determinado para este ejercicio' : (agotamientos.length ? agotamientos.join(' · ') : 'Con saldo disponible');
+
+  el.innerHTML = `
+    <div class="pt-card">
+      <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;align-items:flex-start;">
+        <div>
+          <div class="pt-titulo-cedula">Pérdidas Fiscales</div>
+          <p class="pt-subtitulo">Cédula de control y aplicación — ${b.name}${b.rfc?' · RFC '+b.rfc:''} · Régimen ${regimenTexto}</p>
+        </div>
+        <select class="pf-anio-sel" style="padding:5px 8px;border:1px solid var(--line);border-radius:6px;height:fit-content;">
+          ${anios.map(a=>`<option value="${a}" ${String(a)===ejercicio?'selected':''}>${a}</option>`).join('')}
+        </select>
+      </div>
+      <div style="display:flex;gap:16px;margin-top:10px;">
+        <button class="btn btn-ghost btn-sm pf-registrar-btn" style="padding:4px 12px;">+ Registrar pérdida</button>
+      </div>
+    </div>
+
+    <div class="pt-card">
+      <div style="display:flex;flex-wrap:wrap;gap:24px;">
+        <div><span class="pt-label">Saldo disponible al inicio</span><span class="pt-value" style="font-size:16px;">${hayDatos?fmt(saldoInicioTotal):'—'}</span></div>
+        <div><span class="pt-label">Aplicación acumulada en provisionales</span><span class="pt-value" style="font-size:16px;">${hayDatos?fmt(aplicadoTotal):'—'}</span></div>
+        <div><span class="pt-label">Saldo provisional</span><span class="pt-value" style="font-size:16px;color:var(--gold);">${hayDatos?fmt(saldoProvisionalTotal):'—'}</span></div>
+        <div><span class="pt-label">Estado</span><span class="pt-value" style="font-size:13px;">${estadoResumen}</span></div>
+      </div>
+    </div>
+
+    <div class="pt-card">
+      <h3>Control por ejercicio de origen</h3>
+      ${!perdidas.length ? `<p style="font-size:12px;color:var(--muted);">Sin pérdidas fiscales registradas todavía.</p>` : `
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Ejercicio origen</th><th>Pérdida original</th><th>Saldo actualizado</th><th>Aplicado provisional</th><th>Saldo provisional</th><th>Estado</th><th></th></tr></thead>
+          <tbody>
+            ${perdidas.map(p => {
+              const ultimaConAplicacion = Object.keys(p.control?.porMes||{}).reverse().find(mm => p.control.porMes[mm].aplicadoAcumulado !== null);
+              const aplicado = ultimaConAplicacion ? p.control.porMes[ultimaConAplicacion].aplicadoAcumulado : null;
+              const saldoProv = ultimaConAplicacion ? p.control.porMes[ultimaConAplicacion].saldoControl : (p.saldoDisponible !== null ? p.saldoDisponible : null);
+              const estado = p.control && p.control.mesAgotamiento ? `Agotada en ${MESES_LARGO[Number(p.control.mesAgotamiento)-1]}` : (p.saldoDisponible!==null ? 'Con saldo' : 'Sin saldo determinado');
+              return `<tr>
+                <td>${p.ejercicio_origen}</td>
+                <td class="num">${fmt(p.monto_original)}</td>
+                <td class="num">${p.saldoDisponible!==null?fmt(p.saldoDisponible):'—'}</td>
+                <td class="num">${aplicado!==null?fmt(aplicado):'—'}</td>
+                <td class="num" style="font-weight:600;">${saldoProv!==null?fmt(saldoProv):'—'}</td>
+                <td><span class="pt-origen ${p.control&&p.control.mesAgotamiento?'':'sistema'}">${estado}</span></td>
+                <td><a href="#" class="pt-editar-link pf-ver-detalle" data-id="${p.id}">${STATE_perdidaExpandida===p.id?'Ocultar':'Ver detalle'}</a></td>
+              </tr>${STATE_perdidaExpandida===p.id ? renderDetallePerdida(p, ejercicio) : ''}`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>`}
+    </div>
+  `;
+
+  el.querySelector('.pf-anio-sel').addEventListener('change', (e) => { STATE_perdidasEjercicio = e.target.value; renderPerdidasFiscales(b); });
+  el.querySelector('.pf-registrar-btn').addEventListener('click', () => abrirModalPerdidaNueva(b));
+  el.querySelectorAll('.pf-ver-detalle').forEach(a => a.addEventListener('click', (e) => {
+    e.preventDefault();
+    STATE_perdidaExpandida = STATE_perdidaExpandida === a.dataset.id ? null : a.dataset.id;
+    renderPerdidasFiscales(b);
+  }));
+
+  if (STATE_perdidaExpandida) wireDetallePerdida(b, perdidas.find(p=>p.id===STATE_perdidaExpandida), ejercicio);
+}
+
+// Fila expandida — control Ene-Dic + actualización + cierre anual, para UNA pérdida.
+function renderDetallePerdida(p, ejercicio) {
+  const mesesCols = Array.from({length:12}, (_,i) => String(i+1).padStart(2,'0'));
+  const cierre = p.cierreEsteEjercicio;
+  return `<tr><td colspan="7" style="padding:0;background:#f7f9fc;">
+    <div style="padding:14px 16px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <h3 style="font-size:13px;">Actualización — ejercicio ${ejercicio}</h3>
+        <a href="#" class="pt-editar-link pf-registrar-actualizacion" data-id="${p.id}" style="opacity:1;">${p.actualizacionVigente?'Editar':'Registrar'} actualización</a>
+      </div>
+      ${p.actualizacionVigente ? `<p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Importe actualizado: <strong style="color:var(--navy-1);">${fmt(p.actualizacionVigente.importe_actualizado)}</strong>${p.actualizacionVigente.periodo_actualizacion?' · '+p.actualizacionVigente.periodo_actualizacion:''}${p.actualizacionVigente.factor?' · Factor '+p.actualizacionVigente.factor:''}</p>` : `<p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Sin actualización capturada para ${ejercicio} — el saldo disponible se toma de ${p.cierreAnterior?'el cierre del ejercicio anterior':(ejercicio===p.ejercicio_origen?'la pérdida original':'ninguna fuente todavía')}.</p>`}
+
+      <h3 style="font-size:13px;margin-top:14px;">Aplicación en pagos provisionales</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>${mesesCols.map(mm=>`<th class="num">${MESES_LARGO[Number(mm)-1].slice(0,3)}</th>`).join('')}</tr></thead>
+          <tbody><tr>${mesesCols.map(mm => {
+            const c = p.control ? p.control.porMes[mm] : { aplicadoAcumulado: null, saldoControl: null, excedeDisponible: false };
+            return `<td class="num" style="cursor:pointer;${c.excedeDisponible?'color:var(--red);':''}" data-mes="${mm}" data-id="${p.id}" title="Clic para registrar/editar">${c.aplicadoAcumulado!==null?fmt(c.aplicadoAcumulado):'—'}${c.excedeDisponible?' ⚠':''}</td>`;
+          }).join('')}</tr>
+          <tr>${mesesCols.map(mm => {
+            const c = p.control ? p.control.porMes[mm] : { saldoControl: null };
+            return `<td class="num" style="font-size:10.5px;color:var(--muted);">${c.saldoControl!==null?fmt(c.saldoControl):'—'}</td>`;
+          }).join('')}</tr>
+          </tbody>
+        </table>
+      </div>
+      <p style="font-size:10px;color:var(--muted);margin-top:4px;">Fila superior: aplicado acumulado (clic para registrar/editar). Fila inferior: saldo de control resultante.</p>
+
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px;">
+        <h3 style="font-size:13px;">Cierre anual — ${ejercicio}</h3>
+        <a href="#" class="pt-editar-link pf-registrar-cierre" data-id="${p.id}" style="opacity:1;">${cierre?'Editar':'Registrar'} cierre</a>
+      </div>
+      ${cierre ? `<div class="pt-grid" style="margin-top:6px;">
+        <div><span class="pt-label">Aplicación provisional acumulada</span><span class="pt-value">${fmt(cierre.aplicacion_provisional_acumulada)}</span></div>
+        <div><span class="pt-label">Aplicación definitiva anual</span><span class="pt-value">${fmt(cierre.aplicacion_definitiva_anual)}</span></div>
+        <div><span class="pt-label">Ajuste</span><span class="pt-value">${fmt(cierre.aplicacion_definitiva_anual - cierre.aplicacion_provisional_acumulada)}</span></div>
+        <div><span class="pt-label" style="color:var(--gold);">Saldo definitivo pendiente</span><span class="pt-value" style="color:var(--gold);">${fmt(cierre.saldo_definitivo_pendiente)}</span></div>
+      </div>` : `<p style="font-size:11.5px;color:var(--muted);margin-top:6px;">Sin cierre registrado para ${ejercicio} todavía.</p>`}
+
+      <div style="display:flex;gap:14px;margin-top:12px;">
+        <a href="#" class="pt-editar-link pf-ver-historial" data-id="${p.id}" style="opacity:1;">Historial</a>
+        <a href="#" class="pt-editar-link pf-ver-soportes" data-id="${p.id}" style="opacity:1;">Soportes</a>
+      </div>
+      <div class="pf-soportes-zona" data-id="${p.id}" style="display:none;margin-top:8px;"></div>
+    </div>
+  </td></tr>`;
+}
+
 async function renderResumenFederal(b) {
   const el = document.getElementById('sec-resumenfederal');
   el.innerHTML = `<div class="empty">Calculando…</div>`;
@@ -4116,6 +4389,10 @@ async function renderResumenFederal(b) {
     });
     return { mes, porTipo };
   });
+
+  // Pérdidas Fiscales — cédula AUXILIAR, solo lectura, NUNCA se suma al Total Federal.
+  const perdidasAux = await obtenerPerdidasFiscalesSiExisten(b.id, STATE_papelesAnio);
+  const perdidasConSaldoAux = perdidasAux.filter(p=>p.saldoDisponible!==null);
 
   el.innerHTML = `
     <div class="card-head" style="margin-bottom:6px;">
@@ -4140,8 +4417,195 @@ async function renderResumenFederal(b) {
         </table>
       </div>
     </div>
+
+    <div class="pt-card">
+      <h3 style="color:var(--muted);font-size:13px;">Pérdidas Fiscales — cédula auxiliar (no se suma al Total Federal)</h3>
+      ${!perdidasConSaldoAux.length ? `<p style="font-size:11.5px;color:var(--muted);">Sin pérdidas con saldo determinado para ${STATE_papelesAnio}.</p>` : `
+      <div style="display:flex;flex-wrap:wrap;gap:20px;font-size:12px;">
+        ${perdidasConSaldoAux.map(p => {
+          const ultima = Object.keys(p.control.porMes).reverse().find(mm=>p.control.porMes[mm].aplicadoAcumulado!==null);
+          const saldo = ultima ? p.control.porMes[ultima].saldoControl : p.saldoDisponible;
+          const estado = p.control.mesAgotamiento ? `Agotada en ${MESES_LARGO[Number(p.control.mesAgotamiento)-1]}` : 'Con saldo';
+          return `<div><span class="pt-label">Pérdida ${p.ejercicio_origen}</span><span class="pt-value">${fmt(saldo)} <span style="font-size:10px;color:var(--muted);font-weight:400;">(${estado})</span></span></div>`;
+        }).join('')}
+      </div>
+      <a href="#" class="pt-editar-link" id="rfVerPerdidasBtn" style="display:inline-block;margin-top:8px;opacity:1;">Ver Pérdidas Fiscales →</a>
+      `}
+    </div>
   `;
   document.getElementById('rfAnioSel').addEventListener('change', (e) => { STATE_papelesAnio = e.target.value; renderResumenFederal(b); });
+  const btnVerPerdidas = document.getElementById('rfVerPerdidasBtn');
+  if (btnVerPerdidas) btnVerPerdidas.addEventListener('click', (e) => { e.preventDefault(); STATE_papelesTab = 'perdidas'; STATE_perdidasEjercicio = STATE_papelesAnio; renderPapelesTrabajo(); });
+}
+
+// Modal genérico "Agregar concepto" — reutilizable por cualquier cédula de Papeles de Trabajo.
+// ---- Modales de Pérdidas Fiscales ----
+
+function abrirModalPerdidaNueva(b) {
+  document.getElementById('pfEjercicioOrigen').value = '';
+  document.getElementById('pfMontoOriginal').value = '';
+  document.getElementById('pfNotasNueva').value = '';
+  document.getElementById('pfErrorNueva').style.display = 'none';
+  document.getElementById('modalPerdidaNueva').classList.add('show');
+  document.getElementById('pfNuevaGuardarBtn').onclick = async () => {
+    const ejercicioOrigen = document.getElementById('pfEjercicioOrigen').value.trim();
+    const monto = leerMonto(document.getElementById('pfMontoOriginal').value);
+    const notas = document.getElementById('pfNotasNueva').value.trim();
+    const err = document.getElementById('pfErrorNueva');
+    if (!/^\d{4}$/.test(ejercicioOrigen)) { err.textContent = 'Indica el ejercicio de origen (4 dígitos).'; err.style.display = 'block'; return; }
+    if (!monto || monto <= 0) { err.textContent = 'La pérdida original debe ser mayor a cero.'; err.style.display = 'block'; return; }
+    const r = await registrarPerdidaFiscal(b.id, { ejercicioOrigen, montoOriginal: monto, notas: notas || null }, STATE.user?.email);
+    if (r.estado === 'error') { err.textContent = r.error.includes('duplicate')?'Ya existe una pérdida registrada para ese ejercicio de origen.':('Error: '+r.error); err.style.display = 'block'; return; }
+    document.getElementById('modalPerdidaNueva').classList.remove('show');
+    toast('Pérdida fiscal registrada.');
+    await renderPerdidasFiscales(b);
+  };
+}
+document.getElementById('pfNuevaCancelarBtn').addEventListener('click', () => document.getElementById('modalPerdidaNueva').classList.remove('show'));
+
+function abrirModalPerdidaActualizacion(b, p, ejercicio) {
+  document.getElementById('pfActConceptoNombre').textContent = `Pérdida ${p.ejercicio_origen} — ejercicio de control ${ejercicio}`;
+  document.getElementById('pfActSaldoAnterior').textContent = p.saldoDisponible !== null ? fmt(p.saldoDisponible) : '—';
+  const act = p.actualizacionVigente;
+  document.getElementById('pfActImporte').value = act ? fmtInputVal(Number(act.importe_actualizado)) : '';
+  document.getElementById('pfActInpcInicial').value = act?.inpc_inicial ?? '';
+  document.getElementById('pfActInpcFinal').value = act?.inpc_final ?? '';
+  document.getElementById('pfActFactor').value = act?.factor ?? '';
+  document.getElementById('pfActPeriodo').value = act?.periodo_actualizacion || '';
+  document.getElementById('pfActObs').value = act?.observaciones || '';
+  document.getElementById('pfErrorAct').style.display = 'none';
+  document.getElementById('modalPerdidaActualizacion').classList.add('show');
+  document.getElementById('pfActGuardarBtn').onclick = async () => {
+    const importe = leerMonto(document.getElementById('pfActImporte').value);
+    const err = document.getElementById('pfErrorAct');
+    if (importe === null || importe < 0) { err.textContent = 'Indica el importe actualizado.'; err.style.display = 'block'; return; }
+    await registrarActualizacionPerdida(p.id, ejercicio, {
+      saldoAnterior: p.saldoDisponible, importeActualizado: importe,
+      inpcInicial: leerMonto(document.getElementById('pfActInpcInicial').value),
+      inpcFinal: leerMonto(document.getElementById('pfActInpcFinal').value),
+      factor: leerMonto(document.getElementById('pfActFactor').value),
+      periodoActualizacion: document.getElementById('pfActPeriodo').value.trim() || null,
+      observaciones: document.getElementById('pfActObs').value.trim() || null,
+    }, STATE.user?.email);
+    document.getElementById('modalPerdidaActualizacion').classList.remove('show');
+    toast('Actualización registrada.');
+    await renderPerdidasFiscales(b);
+  };
+}
+document.getElementById('pfActCancelarBtn').addEventListener('click', () => document.getElementById('modalPerdidaActualizacion').classList.remove('show'));
+
+function abrirModalPerdidaAplicacion(b, p, ejercicio, mes) {
+  const periodo = `${ejercicio}-${mes}`;
+  document.getElementById('pfApConceptoNombre').textContent = `Pérdida ${p.ejercicio_origen} — ${MESES_LARGO[Number(mes)-1]} ${ejercicio}`;
+  const actual = p.control ? p.control.porMes[mes] : null;
+  document.getElementById('pfApImporte').value = actual && actual.aplicadoAcumulado !== null ? fmtInputVal(actual.aplicadoAcumulado) : '';
+  document.getElementById('pfApAdvertencia').style.display = 'none';
+  document.getElementById('modalPerdidaAplicacion').classList.add('show');
+  document.getElementById('pfApGuardarBtn').onclick = async () => {
+    const importe = leerMonto(document.getElementById('pfApImporte').value);
+    if (importe === null || importe < 0) { toast('Indica el importe acumulado.', 'error'); return; }
+    if (p.saldoDisponible !== null && importe > p.saldoDisponible + 0.004) {
+      const adv = document.getElementById('pfApAdvertencia');
+      if (adv.style.display === 'none') {
+        adv.textContent = `Este importe excede el saldo disponible (${fmt(p.saldoDisponible)}). Vuelve a presionar Guardar para confirmarlo de todas formas, o corrígelo.`;
+        adv.style.display = 'block';
+        return; // primera vez: solo advierte, no guarda — exige confirmación explícita
+      }
+    }
+    await registrarAplicacionProvisionalPerdida(p.id, ejercicio, periodo, importe, STATE.user?.email);
+    document.getElementById('modalPerdidaAplicacion').classList.remove('show');
+    toast('Aplicación registrada.');
+    await renderPerdidasFiscales(b);
+  };
+}
+document.getElementById('pfApCancelarBtn').addEventListener('click', () => document.getElementById('modalPerdidaAplicacion').classList.remove('show'));
+
+function abrirModalPerdidaCierre(b, p, ejercicio) {
+  const ultimaConAplicacion = p.control ? Object.keys(p.control.porMes).reverse().find(mm => p.control.porMes[mm].aplicadoAcumulado !== null) : null;
+  const provisionalAcumulada = ultimaConAplicacion ? p.control.porMes[ultimaConAplicacion].aplicadoAcumulado : 0;
+  document.getElementById('pfCierreConceptoNombre').textContent = `Pérdida ${p.ejercicio_origen} — cierre del ejercicio ${ejercicio}`;
+  document.getElementById('pfCierreProvisional').textContent = fmt(provisionalAcumulada);
+  const cierre = p.cierreEsteEjercicio;
+  document.getElementById('pfCierreDefinitiva').value = cierre ? fmtInputVal(Number(cierre.aplicacion_definitiva_anual)) : '';
+  document.getElementById('pfCierreSaldoDefinitivo').value = cierre ? fmtInputVal(Number(cierre.saldo_definitivo_pendiente)) : '';
+  document.getElementById('pfCierreFecha').value = cierre?.fecha_cierre || todayStr();
+  document.getElementById('pfCierreObs').value = cierre?.observaciones || '';
+  document.getElementById('pfErrorCierre').style.display = 'none';
+  const actualizarAjuste = () => {
+    const definitiva = leerMonto(document.getElementById('pfCierreDefinitiva').value) || 0;
+    const ajuste = definitiva - provisionalAcumulada;
+    document.getElementById('pfCierreAjuste').textContent = fmt(ajuste);
+  };
+  actualizarAjuste();
+  document.getElementById('pfCierreDefinitiva').oninput = actualizarAjuste;
+  document.getElementById('modalPerdidaCierre').classList.add('show');
+  document.getElementById('pfCierreGuardarBtn').onclick = async () => {
+    const definitiva = leerMonto(document.getElementById('pfCierreDefinitiva').value);
+    const saldoDefinitivo = leerMonto(document.getElementById('pfCierreSaldoDefinitivo').value);
+    const err = document.getElementById('pfErrorCierre');
+    if (definitiva === null || definitiva < 0) { err.textContent = 'Indica la aplicación definitiva anual.'; err.style.display = 'block'; return; }
+    if (saldoDefinitivo === null || saldoDefinitivo < 0) { err.textContent = 'Indica el saldo definitivo pendiente.'; err.style.display = 'block'; return; }
+    await registrarCierreAnualPerdida(p.id, ejercicio, {
+      aplicacionProvisionalAcumulada: provisionalAcumulada, aplicacionDefinitivaAnual: definitiva,
+      saldoDefinitivoPendiente: saldoDefinitivo, observaciones: document.getElementById('pfCierreObs').value.trim() || null,
+      fechaCierre: document.getElementById('pfCierreFecha').value || todayStr(),
+    }, STATE.user?.email);
+    document.getElementById('modalPerdidaCierre').classList.remove('show');
+    toast('Cierre anual registrado. No se generó ninguna póliza ni declaración.');
+    await renderPerdidasFiscales(b);
+  };
+}
+document.getElementById('pfCierreCancelarBtn').addEventListener('click', () => document.getElementById('modalPerdidaCierre').classList.remove('show'));
+
+async function abrirModalPerdidaHistorial(p) {
+  const { data: historial } = await sb.from('fz_perdidas_fiscales_historial').select('*').eq('perdida_id', p.id).order('created_at', { ascending: false }).limit(50);
+  document.getElementById('pfHistorialLista').innerHTML = (historial||[]).length
+    ? historial.map(h=>`<div style="font-size:11.5px;padding:5px 0;border-top:1px solid var(--line);">${fechaCorta(h.created_at.slice(0,10))} · ${h.usuario||'—'} · <strong>${h.campo}</strong>${h.valor_anterior?': '+h.valor_anterior+' → '+h.valor_nuevo:(h.valor_nuevo?': '+h.valor_nuevo:'')}${h.motivo?' — '+h.motivo:''}</div>`).join('')
+    : `<p style="font-size:12px;color:var(--muted);">Sin historial todavía.</p>`;
+  document.getElementById('modalPerdidaHistorial').classList.add('show');
+}
+document.getElementById('pfHistorialCerrarBtn').addEventListener('click', () => document.getElementById('modalPerdidaHistorial').classList.remove('show'));
+
+// Cableado del detalle expandido de una pérdida — se llama después de insertar su HTML.
+function wireDetallePerdida(b, p, ejercicio) {
+  if (!p) return;
+  const el = document.getElementById('sec-perdidasfiscales');
+  const btnAct = el.querySelector(`.pf-registrar-actualizacion[data-id="${CSS.escape(p.id)}"]`);
+  if (btnAct) btnAct.addEventListener('click', (e) => { e.preventDefault(); abrirModalPerdidaActualizacion(b, p, ejercicio); });
+
+  el.querySelectorAll(`td[data-id="${CSS.escape(p.id)}"]`).forEach(td => td.addEventListener('click', () => abrirModalPerdidaAplicacion(b, p, ejercicio, td.dataset.mes)));
+
+  const btnCierre = el.querySelector(`.pf-registrar-cierre[data-id="${CSS.escape(p.id)}"]`);
+  if (btnCierre) btnCierre.addEventListener('click', (e) => { e.preventDefault(); abrirModalPerdidaCierre(b, p, ejercicio); });
+
+  const btnHist = el.querySelector(`.pf-ver-historial[data-id="${CSS.escape(p.id)}"]`);
+  if (btnHist) btnHist.addEventListener('click', (e) => { e.preventDefault(); abrirModalPerdidaHistorial(p); });
+
+  const btnSoportes = el.querySelector(`.pf-ver-soportes[data-id="${CSS.escape(p.id)}"]`);
+  const zonaSoportes = el.querySelector(`.pf-soportes-zona[data-id="${CSS.escape(p.id)}"]`);
+  if (btnSoportes && zonaSoportes) btnSoportes.addEventListener('click', async (e) => {
+    e.preventDefault();
+    if (zonaSoportes.style.display !== 'none') { zonaSoportes.style.display = 'none'; return; }
+    const { data: soportes } = await sb.from('fz_perdidas_fiscales_soportes').select('*').eq('perdida_id', p.id).order('created_at', { ascending: false });
+    zonaSoportes.innerHTML = `
+      <div style="display:flex;align-items:center;gap:8px;">
+        <label class="pt-file-btn pf-soporte-label-${p.id}">＋ Adjuntar soporte</label>
+        <input type="file" class="pf-soporte-input-${p.id}" accept=".pdf,.xlsx,.xls,.png,.jpg,.jpeg" style="display:none;">
+        <button class="btn btn-ghost btn-sm pf-soporte-guardar-${p.id}" style="padding:4px 10px;">Guardar referencia</button>
+      </div>
+      ${(soportes||[]).length ? soportes.map(s=>`<div class="pt-soporte-item"><span>${s.nombre_archivo}</span><span style="color:var(--muted);">${fechaCorta(s.created_at.slice(0,10))} · ${s.usuario||''}</span></div>`).join('') : '<p style="font-size:11px;color:var(--muted);margin-top:6px;">Sin soportes todavía.</p>'}
+    `;
+    zonaSoportes.style.display = 'block';
+    zonaSoportes.querySelector(`.pf-soporte-label-${p.id}`).addEventListener('click', () => zonaSoportes.querySelector(`.pf-soporte-input-${p.id}`).click());
+    zonaSoportes.querySelector(`.pf-soporte-guardar-${p.id}`).addEventListener('click', async () => {
+      const input = zonaSoportes.querySelector(`.pf-soporte-input-${p.id}`);
+      if (!input.files || !input.files.length) { toast('Selecciona un archivo primero.', 'error'); return; }
+      const f = input.files[0];
+      await sb.from('fz_perdidas_fiscales_soportes').insert({ perdida_id: p.id, nombre_archivo: f.name, tipo: f.type||null, usuario: STATE.user?.email||null });
+      toast('Referencia guardada.');
+      btnSoportes.click(); btnSoportes.click(); // recarga la zona
+    });
+  });
 }
 
 // Modal genérico "Agregar concepto" — reutilizable por cualquier cédula de Papeles de Trabajo.
@@ -4521,6 +4985,11 @@ async function renderPapelISRPM(b) {
   const papelVirtual = papel || { estado: 'sin_iniciar', created_at: null, updated_at: null, notas: '', created_by: null };
   const acumuladoDe = clave => { const c = conceptos.find(x=>x.clave_concepto===clave); return (c && c.id) ? Number(c.valor_aplicado) : null; };
 
+  // Integración de solo lectura con Pérdidas Fiscales — nunca impone el importe, solo lo muestra
+  // como referencia para que el contador decida. Nunca dispara ningún guardado cruzado.
+  const perdidasParaReferencia = await obtenerPerdidasFiscalesSiExisten(b.id, ejercicio);
+  const perdidasConSaldo = perdidasParaReferencia.filter(p => p.saldoDisponible !== null);
+
   // Encabezado — negocio, RFC, régimen vigente.
   const { data: regimenes } = await sb.from('fz_regimenes_fiscales_negocio').select('*').eq('business_id', b.id).is('vigente_hasta', null).order('vigente_desde', { ascending: false }).limit(1);
   let regimenTexto = 'Sin régimen registrado';
@@ -4573,8 +5042,9 @@ async function renderPapelISRPM(b) {
               const acumuladoPar = c.clave_concepto==='ingresos_nominales_mes' ? acumuladoDe('ingresos_nominales_acum') : null;
               const fmto = (CONCEPTOS_DEFAULT_ISR_PM.find(d=>d.clave===c.clave_concepto)||{}).formato || 'moneda';
               const esCierre = c.clave_concepto==='resultado_determinado';
+              const esPerdidas = c.clave_concepto==='perdidas_aplicables';
               return `<tr${esCierre?' class="pt-fila-cierre"':''}>
-                <td>${c.concepto}${c.valor_original!==null&&c.valor_original!==undefined?` <span class="pt-origen ${c.origen}">${etiquetaOrigen(c.origen)}: ${formatearValorConcepto(c.valor_original,fmto)}${Math.abs(Number(c.valor_aplicado)-Number(c.valor_original))>0.004?' → '+formatearValorConcepto(c.valor_aplicado,fmto)+' (dif. '+formatearValorConcepto(Number(c.valor_aplicado)-Number(c.valor_original),fmto)+')':''}</span>`:''}</td>
+                <td>${c.concepto}${c.valor_original!==null&&c.valor_original!==undefined?` <span class="pt-origen ${c.origen}">${etiquetaOrigen(c.origen)}: ${formatearValorConcepto(c.valor_original,fmto)}${Math.abs(Number(c.valor_aplicado)-Number(c.valor_original))>0.004?' → '+formatearValorConcepto(c.valor_aplicado,fmto)+' (dif. '+formatearValorConcepto(Number(c.valor_aplicado)-Number(c.valor_original),fmto)+')':''}</span>`:''}${esPerdidas && perdidasConSaldo.length ? `<br><span style="font-size:10px;color:var(--muted);">Referencia — Pérdidas Fiscales: ${perdidasConSaldo.map(p=>`${p.ejercicio_origen} saldo ${fmt(p.saldoDisponible)}`).join(' · ')}</span>` : ''}</td>
                 <td class="num" style="font-weight:600;">${formatearValorConcepto(c.valor_aplicado,fmto)}</td>
                 <td class="num">${acumuladoPar!==null?formatearValorConcepto(acumuladoPar,fmto):''}</td>
                 <td>${!c.valor_original && !esCierre ? `<span class="pt-origen ${c.origen}">${etiquetaOrigen(c.origen)}</span>` : ''}</td>

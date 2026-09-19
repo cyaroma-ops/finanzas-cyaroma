@@ -748,6 +748,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
           <div id="sec-papeliva"></div>
           <div id="sec-papelretisr"></div>
           <div id="sec-papelretiva"></div>
+          <div id="sec-perdidasfiscales"></div>
         </section>
         <section class="section" id="sec-pl"></section>
         <section class="section" id="sec-flujo"></section>
@@ -911,6 +912,103 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
     <div class="modal-actions">
       <button class="btn btn-ghost" id="ppAjusteCancelarBtn">Cancelar</button>
       <button class="btn btn-gold" id="ppAjusteGuardarBtn">Guardar ajuste</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: registrar pérdida fiscal (ejercicio de origen) -->
+<div class="modal-bg" id="modalPerdidaNueva">
+  <div class="modal" style="width:min(460px,92vw);">
+    <h3>Registrar pérdida fiscal</h3>
+    <div class="field">
+      <label>Ejercicio de origen</label>
+      <input type="text" id="pfEjercicioOrigen" placeholder="Ej. 2024" maxlength="4">
+    </div>
+    <div class="field">
+      <label>Pérdida fiscal original</label>
+      <input type="text" id="pfMontoOriginal" inputmode="decimal" placeholder="0.00">
+    </div>
+    <div class="field">
+      <label>Notas (opcional)</label>
+      <input type="text" id="pfNotasNueva" placeholder="Opcional">
+    </div>
+    <div id="pfErrorNueva" style="font-size:11.5px;color:var(--red);margin-top:3px;display:none;"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="pfNuevaCancelarBtn">Cancelar</button>
+      <button class="btn btn-gold" id="pfNuevaGuardarBtn">Registrar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: registrar actualización de saldo para el ejercicio de control -->
+<div class="modal-bg" id="modalPerdidaActualizacion">
+  <div class="modal" style="width:min(480px,92vw);">
+    <h3>Registrar actualización</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:10px;" id="pfActConceptoNombre"></p>
+    <div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:10px;">
+      <span>Saldo anterior</span><strong id="pfActSaldoAnterior">—</strong>
+    </div>
+    <div class="field"><label>Importe actualizado disponible</label><input type="text" id="pfActImporte" inputmode="decimal"></div>
+    <div class="grid-3">
+      <div class="field"><label>INPC inicial</label><input type="text" id="pfActInpcInicial" inputmode="decimal"></div>
+      <div class="field"><label>INPC final</label><input type="text" id="pfActInpcFinal" inputmode="decimal"></div>
+      <div class="field"><label>Factor</label><input type="text" id="pfActFactor" inputmode="decimal"></div>
+    </div>
+    <div class="field"><label>Periodo de actualización</label><input type="text" id="pfActPeriodo" placeholder="Ej. Dic 2024 - Dic 2025"></div>
+    <div class="field"><label>Observaciones</label><input type="text" id="pfActObs" placeholder="Opcional"></div>
+    <div id="pfErrorAct" style="font-size:11.5px;color:var(--red);margin-top:3px;display:none;"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="pfActCancelarBtn">Cancelar</button>
+      <button class="btn btn-gold" id="pfActGuardarBtn">Guardar actualización</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: registrar aplicación provisional acumulada de un mes -->
+<div class="modal-bg" id="modalPerdidaAplicacion">
+  <div class="modal" style="width:min(460px,92vw);">
+    <h3>Registrar aplicación provisional</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:10px;" id="pfApConceptoNombre"></p>
+    <p style="font-size:11px;color:var(--muted);margin-bottom:10px;">Importe ACUMULADO del ejercicio a esta fecha — no el consumo aislado del mes.</p>
+    <div class="field"><label>Aplicación acumulada</label><input type="text" id="pfApImporte" inputmode="decimal"></div>
+    <div id="pfApAdvertencia" style="font-size:11.5px;color:var(--red);margin-top:6px;display:none;"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="pfApCancelarBtn">Cancelar</button>
+      <button class="btn btn-gold" id="pfApGuardarBtn">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: cierre anual de una pérdida fiscal -->
+<div class="modal-bg" id="modalPerdidaCierre">
+  <div class="modal" style="width:min(480px,92vw);">
+    <h3>Cierre anual</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:10px;" id="pfCierreConceptoNombre"></p>
+    <div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:10px;">
+      <span>Aplicación provisional acumulada</span><strong id="pfCierreProvisional">—</strong>
+    </div>
+    <div class="field"><label>Aplicación definitiva anual (según declaración)</label><input type="text" id="pfCierreDefinitiva" inputmode="decimal"></div>
+    <div style="display:flex;justify-content:space-between;font-size:12.5px;margin:10px 0;">
+      <span>Ajuste</span><strong id="pfCierreAjuste">$0.00</strong>
+    </div>
+    <div class="field"><label>Saldo definitivo pendiente</label><input type="text" id="pfCierreSaldoDefinitivo" inputmode="decimal"></div>
+    <div class="field"><label>Fecha de cierre</label><input type="date" id="pfCierreFecha"></div>
+    <div class="field"><label>Observaciones</label><input type="text" id="pfCierreObs" placeholder="Explica el ajuste"></div>
+    <div id="pfErrorCierre" style="font-size:11.5px;color:var(--red);margin-top:3px;display:none;"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="pfCierreCancelarBtn">Cancelar</button>
+      <button class="btn btn-gold" id="pfCierreGuardarBtn">Registrar cierre</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: historial de una pérdida fiscal -->
+<div class="modal-bg" id="modalPerdidaHistorial">
+  <div class="modal" style="width:min(560px,92vw);max-height:80vh;overflow-y:auto;">
+    <h3>Historial</h3>
+    <div id="pfHistorialLista" style="margin-top:8px;"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="pfHistorialCerrarBtn">Cerrar</button>
     </div>
   </div>
 </div>
