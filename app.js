@@ -2631,16 +2631,17 @@ async function registrarSaldoInicialPerdida(perdidaId, mesAnioUltimaActualizacio
   return { estado: 'ok' };
 }
 
-async function registrarAplicacionProvisionalPerdida(perdidaId, ejercicioControl, periodo, montoAcumulado, usuarioEmail) {
+async function registrarAplicacionProvisionalPerdida(perdidaId, ejercicioControl, periodo, montoAcumulado, usuarioEmail, meta = {}) {
   const montoNormalizado = redondearMoneda(montoAcumulado);
   const { data: existente } = await sb.from('fz_perdidas_fiscales_aplicaciones').select('*').eq('perdida_id', perdidaId).eq('periodo', periodo).maybeSingle();
+  const extra = { origen: meta.origen || 'manual', utilidad_fiscal_tope: meta.utilidadFiscalTope ?? null, maximo_aplicable_tope: meta.maximoAplicableTope ?? null };
   if (existente) {
     const valorAnteriorReal = existente.aplicado_acumulado;
-    await sb.from('fz_perdidas_fiscales_aplicaciones').update({ aplicado_acumulado: montoNormalizado, updated_at: new Date().toISOString() }).eq('id', existente.id);
-    await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: `aplicación ${periodo}`, valor_anterior: String(valorAnteriorReal), valor_nuevo: String(montoNormalizado), usuario: usuarioEmail || null });
+    await sb.from('fz_perdidas_fiscales_aplicaciones').update({ aplicado_acumulado: montoNormalizado, updated_at: new Date().toISOString(), ...extra }).eq('id', existente.id);
+    await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: `aplicación ${periodo}`, valor_anterior: String(valorAnteriorReal), valor_nuevo: String(montoNormalizado), motivo: meta.origen==='isr_pm'?'Capturado desde ISR PM':null, usuario: usuarioEmail || null });
   } else {
-    await sb.from('fz_perdidas_fiscales_aplicaciones').insert({ perdida_id: perdidaId, ejercicio_control: ejercicioControl, periodo, aplicado_acumulado: montoNormalizado, created_by: usuarioEmail || null });
-    await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: `aplicación ${periodo}`, valor_nuevo: String(montoNormalizado), usuario: usuarioEmail || null });
+    await sb.from('fz_perdidas_fiscales_aplicaciones').insert({ perdida_id: perdidaId, ejercicio_control: ejercicioControl, periodo, aplicado_acumulado: montoNormalizado, created_by: usuarioEmail || null, ...extra });
+    await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: `aplicación ${periodo}`, valor_nuevo: String(montoNormalizado), motivo: meta.origen==='isr_pm'?'Capturado desde ISR PM':null, usuario: usuarioEmail || null });
   }
   return { estado: 'ok', montoNormalizado };
 }
@@ -2661,6 +2662,105 @@ async function registrarCierreAnualPerdida(perdidaId, ejercicioControl, datos, u
   else { await sb.from('fz_perdidas_fiscales_cierres').insert(payload); }
   await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: 'cierre anual', valor_nuevo: `Ejercicio ${ejercicioControl}: definitiva ${definitiva}, ajuste ${ajuste}, saldo definitivo ${saldoDefinitivo}`, motivo: datos.observaciones||null, usuario: usuarioEmail || null });
   return { estado: 'ok', ajuste, saldoDefinitivo };
+}
+
+// ============================================================
+// INTEGRACIÓN ISR PM ↔ PÉRDIDAS FISCALES — reutiliza fz_perdidas_fiscales_aplicaciones tal cual
+// (una fila por pérdida+periodo ya soporta varias pérdidas del mismo mes). Nunca crea tabla
+// paralela. Una captura en ISR PM → se distribuye y persiste aquí.
+// ============================================================
+
+// TOPE = MIN(utilidad fiscal susceptible de disminuirse, pérdida fiscal disponible). Si falta
+// cualquiera de los dos datos, NUNCA se asume cero — se reporta explícitamente qué falta.
+function calcularMaximoAplicablePerdidas(utilidadFiscal, saldoPerdidasDisponible) {
+  if (utilidadFiscal === null || utilidadFiscal === undefined) return { ok: false, razon: 'Falta capturar la utilidad fiscal acumulada del periodo.' };
+  if (saldoPerdidasDisponible === null || saldoPerdidasDisponible === undefined) return { ok: false, razon: 'No se pudo determinar el saldo de pérdidas fiscales disponible.' };
+  const u = redondearMoneda(Math.max(0, utilidadFiscal));
+  const s = redondearMoneda(Math.max(0, saldoPerdidasDisponible));
+  return { ok: true, maximo: Math.min(u, s), utilidad: u, saldoPerdidas: s, topeGobernante: u <= s ? 'utilidad' : 'perdidas' };
+}
+
+// Distribución FIFO por ejercicio de origen — la pérdida más antigua se agota primero. Regla
+// única, explícita y trazable (no una asignación silenciosa arbitraria). Ninguna pérdida
+// individual recibe más de su propio saldo disponible; nunca negativo.
+function distribuirAplicacionEntrePerdidas(perdidasConSaldo, montoTotal) {
+  const ordenadas = [...perdidasConSaldo].filter(p => p.saldoDisponible > 0.004).sort((a,b)=>a.ejercicio_origen.localeCompare(b.ejercicio_origen));
+  let restante = redondearMoneda(montoTotal);
+  const distribucion = [];
+  for (const p of ordenadas) {
+    if (restante <= 0.004) break;
+    const asignado = redondearMoneda(Math.min(p.saldoDisponible, restante));
+    if (asignado > 0.004) { distribucion.push({ perdidaId: p.id, ejercicioOrigen: p.ejercicio_origen, monto: asignado }); restante = redondearMoneda(restante - asignado); }
+  }
+  return { distribucion, distribuidoTotal: redondearMoneda(montoTotal - restante), sinDistribuir: restante };
+}
+
+// SOLO LECTURA — arma toda la referencia que se muestra en ISR PM. Nunca escribe nada.
+async function obtenerReferenciaPerdidasParaISRPM(businessId, ejercicio, periodo, utilidadFiscalAntesPerdidas) {
+  const perdidas = await obtenerPerdidasFiscalesSiExisten(businessId, ejercicio);
+  const perdidasConSaldo = perdidas.filter(p => p.saldoDisponible !== null && p.saldoDisponible > 0.004);
+  const saldoTotalDisponible = redondearMoneda(perdidasConSaldo.reduce((s,p)=>s+p.saldoDisponible, 0));
+  const tope = calcularMaximoAplicablePerdidas(utilidadFiscalAntesPerdidas, perdidas.length ? saldoTotalDisponible : null);
+
+  const mes = periodo.slice(5,7);
+  let aplicadoActual = 0; let algunaAplicacionExiste = false;
+  perdidas.forEach(p => {
+    const c = p.control ? p.control.porMes[mes] : null;
+    if (c && c.aplicadoAcumulado !== null) { aplicadoActual += c.aplicadoAcumulado; algunaAplicacionExiste = true; }
+  });
+  aplicadoActual = redondearMoneda(aplicadoActual);
+
+  const previsualDistribucion = tope.ok ? distribuirAplicacionEntrePerdidas(perdidasConSaldo, Math.min(aplicadoActual || tope.maximo, tope.maximo)) : null;
+  const baseResultante = tope.ok ? redondearMoneda(Math.max(0, tope.utilidad - (algunaAplicacionExiste ? aplicadoActual : 0))) : null;
+
+  return { perdidas, perdidasConSaldo, saldoTotalDisponible, tope, aplicadoActual: algunaAplicacionExiste ? aplicadoActual : null, baseResultante, previsualDistribucion };
+}
+
+// Persiste la captura desde ISR PM — SOLO se invoca desde una acción explícita de Guardar, nunca
+// desde el render. Idempotente: si ya existe aplicación para pérdida+periodo, la actualiza.
+async function guardarPerdidasAplicadasDesdeISRPM(businessId, ejercicio, periodo, montoTotalAcumulado, utilidadFiscalAntesPerdidas, usuarioEmail) {
+  const montoNormalizado = redondearMoneda(montoTotalAcumulado);
+  if (montoNormalizado < 0) return { estado: 'error', error: 'El importe no puede ser negativo.' };
+  if (montoNormalizado === 0) return { estado: 'ok', distribucion: [] };
+
+  const ref = await obtenerReferenciaPerdidasParaISRPM(businessId, ejercicio, periodo, utilidadFiscalAntesPerdidas);
+  if (!ref.tope.ok) return { estado: 'falta_dato', razon: ref.tope.razon };
+  if (montoNormalizado > ref.tope.maximo + 0.001) return { estado: 'excede_maximo', maximo: ref.tope.maximo, topeGobernante: ref.tope.topeGobernante };
+
+  const { distribucion, sinDistribuir } = distribuirAplicacionEntrePerdidas(ref.perdidasConSaldo, montoNormalizado);
+  if (sinDistribuir > 0.004) return { estado: 'sin_saldo_suficiente', sinDistribuir };
+
+  for (const d of distribucion) {
+    await registrarAplicacionProvisionalPerdida(d.perdidaId, ejercicio, periodo, d.monto, usuarioEmail, { origen: 'isr_pm', utilidadFiscalTope: ref.tope.utilidad, maximoAplicableTope: ref.tope.maximo });
+  }
+  return { estado: 'ok', distribucion, maximo: ref.tope.maximo, baseResultante: redondearMoneda(Math.max(0, utilidadFiscalAntesPerdidas - montoNormalizado)) };
+}
+
+// SOLO LECTURA — advierte (no bloquea silenciosamente) si el mes anterior tiene un acumulado
+// mayor al que se está por guardar, o si algún mes posterior quedaría por debajo del nuevo valor.
+async function verificarConsistenciaAcumuladoMensual(businessId, ejercicio, periodo, montoNuevo) {
+  const perdidas = await obtenerPerdidasFiscalesSiExisten(businessId, ejercicio);
+  const mes = Number(periodo.slice(5,7));
+  const avisos = [];
+  let ultimoAnteriorConDato = null, mesUltimoAnterior = null;
+  for (let m = mes - 1; m >= 1; m--) {
+    const mm = String(m).padStart(2,'0');
+    let suma = 0, existe = false;
+    perdidas.forEach(p => { const c = p.control?.porMes[mm]; if (c && c.aplicadoAcumulado !== null) { suma += c.aplicadoAcumulado; existe = true; } });
+    if (existe) { ultimoAnteriorConDato = redondearMoneda(suma); mesUltimoAnterior = mm; break; }
+  }
+  if (ultimoAnteriorConDato !== null && montoNuevo < ultimoAnteriorConDato - 0.004) {
+    avisos.push(`El acumulado de ${MESES_LARGO[mes-1]} ($${montoNuevo.toFixed(2)}) es menor al de ${MESES_LARGO[Number(mesUltimoAnterior)-1]} ($${ultimoAnteriorConDato.toFixed(2)}). Los acumulados no deberían disminuir salvo corrección explícita.`);
+  }
+  let primerPosteriorMenor = null;
+  for (let m = mes + 1; m <= 12; m++) {
+    const mm = String(m).padStart(2,'0');
+    let suma = 0, existe = false;
+    perdidas.forEach(p => { const c = p.control?.porMes[mm]; if (c && c.aplicadoAcumulado !== null) { suma += c.aplicadoAcumulado; existe = true; } });
+    if (existe && redondearMoneda(suma) < montoNuevo - 0.004) { primerPosteriorMenor = { mes: MESES_LARGO[m-1], valor: redondearMoneda(suma) }; break; }
+  }
+  if (primerPosteriorMenor) avisos.push(`${primerPosteriorMenor.mes} quedaría con un acumulado ($${primerPosteriorMenor.valor.toFixed(2)}) menor al que estás por guardar. Revisa ese mes — no se modifica automáticamente.`);
+  return avisos;
 }
 
 
