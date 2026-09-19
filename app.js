@@ -3899,8 +3899,8 @@ async function renderCedulaAnual(b, elId, tipoPapel, titulo, conceptosDefault, t
     mesesCols.forEach(mm => { porMesAcc[mm] = filaResultado.porMes[mm] ? filaResultado.porMes[mm].accesorios : null; });
     const campo = (campo) => mesesCols.reduce((s,mm)=> s + Number((porMesAcc[mm]||{})[campo]||0), 0);
     accesoriosGlobalHtml = `
-    <div class="card" style="margin-bottom:12px;overflow-x:auto;">
-      <h3 style="font-size:14px;margin-bottom:10px;">Actualización, recargos y control fiscal</h3>
+    <div class="pt-card">
+      <h3>Actualización, recargos y control fiscal</h3>
       <div class="table-wrap">
         <table style="min-width:900px;">
           <thead><tr><th>Concepto</th>${mesesCols.map(mm=>`<th class="num">${MESES_LARGO[Number(mm)-1].slice(0,3)}</th>`).join('')}<th class="num">Total</th></tr></thead>
@@ -3909,7 +3909,7 @@ async function renderCedulaAnual(b, elId, tipoPapel, titulo, conceptosDefault, t
             <tr><td>Actualización</td>${mesesCols.map(mm=>`<td class="num">${fmt(Number((porMesAcc[mm]||{}).importe_actualizacion_aplicado)||0)}</td>`).join('')}<td class="num">${fmt(campo('importe_actualizacion_aplicado'))}</td></tr>
             <tr><td>Recargos</td>${mesesCols.map(mm=>`<td class="num">${fmt(Number((porMesAcc[mm]||{}).importe_recargos_aplicado)||0)}</td>`).join('')}<td class="num">${fmt(campo('importe_recargos_aplicado'))}</td></tr>
             <tr><td>Ajuste redondeo SAT</td>${mesesCols.map(mm=>`<td class="num">${fmt(Number((porMesAcc[mm]||{}).monto_redondeo)||0)}</td>`).join('')}<td class="num">${fmt(campo('monto_redondeo'))}</td></tr>
-            <tr style="font-weight:700;"><td>Total fiscal</td>${mesesCols.map(mm=>`<td class="num">${fmt(Number((porMesAcc[mm]||{}).importe_final)||(filaResultado.porMes[mm]?filaResultado.porMes[mm].valor||0:0))}</td>`).join('')}<td class="num">${fmt(campo('importe_final')||filaResultado.total||0)}</td></tr>
+            <tr class="pt-fila-cierre"><td>Total fiscal</td>${mesesCols.map(mm=>`<td class="num">${fmt(Number((porMesAcc[mm]||{}).importe_final)||(filaResultado.porMes[mm]?filaResultado.porMes[mm].valor||0:0))}</td>`).join('')}<td class="num">${fmt(campo('importe_final')||filaResultado.total||0)}</td></tr>
           </tbody>
         </table>
       </div>
@@ -3935,35 +3935,35 @@ async function renderCedulaAnual(b, elId, tipoPapel, titulo, conceptosDefault, t
     });
     const sumaTotal = obj => Object.values(obj).reduce((s,v)=>s+v,0);
     filasDerivadasIVA = `
-      <tr style="font-weight:700;background:#f7f7f7;"><td style="position:sticky;left:0;background:#f7f7f7;">TOTAL IVA TRASLADADO</td>${mesesCols.map(mm=>`<td class="num">${fmt(trasladadoPorMes[mm])}</td>`).join('')}<td class="num">${fmt(sumaTotal(trasladadoPorMes))}</td></tr>
-      <tr style="font-weight:700;background:#f7f7f7;"><td style="position:sticky;left:0;background:#f7f7f7;">TOTAL IVA ACREDITABLE</td>${mesesCols.map(mm=>`<td class="num">${fmt(acreditablePorMes[mm])}</td>`).join('')}<td class="num">${fmt(sumaTotal(acreditablePorMes))}</td></tr>
-      <tr style="background:#f7f7f7;"><td style="position:sticky;left:0;background:#f7f7f7;">IVA antes de ajustes</td>${mesesCols.map(mm=>`<td class="num">${fmt(antesAjustesPorMes[mm])}</td>`).join('')}<td class="num">${fmt(sumaTotal(antesAjustesPorMes))}</td></tr>
-      <tr style="font-weight:700;background:#eef2f8;"><td style="position:sticky;left:0;background:#eef2f8;">IVA A CARGO / SALDO A FAVOR</td>${mesesCols.map(mm=>`<td class="num">${fmt(Math.abs(aCargoPorMes[mm]))}</td>`).join('')}<td class="num">${fmt(Math.abs(sumaTotal(aCargoPorMes)))}</td></tr>
+      <tr style="font-weight:700;background:#f7f9fc;border-top:1px solid var(--navy-3);"><td style="position:sticky;left:0;background:#f7f9fc;">TOTAL IVA TRASLADADO</td>${mesesCols.map(mm=>`<td class="num">${fmt(trasladadoPorMes[mm])}</td>`).join('')}<td class="num">${fmt(sumaTotal(trasladadoPorMes))}</td></tr>
+      <tr style="font-weight:700;background:#f7f9fc;"><td style="position:sticky;left:0;background:#f7f9fc;">TOTAL IVA ACREDITABLE</td>${mesesCols.map(mm=>`<td class="num">${fmt(acreditablePorMes[mm])}</td>`).join('')}<td class="num">${fmt(sumaTotal(acreditablePorMes))}</td></tr>
+      <tr style="background:#f7f9fc;"><td style="position:sticky;left:0;background:#f7f9fc;">IVA antes de ajustes</td>${mesesCols.map(mm=>`<td class="num">${fmt(antesAjustesPorMes[mm])}</td>`).join('')}<td class="num">${fmt(sumaTotal(antesAjustesPorMes))}</td></tr>
+      <tr class="pt-fila-cierre"><td style="position:sticky;left:0;background:#eef2f8;">IVA A CARGO / SALDO A FAVOR</td>${mesesCols.map(mm=>`<td class="num">${fmt(Math.abs(aCargoPorMes[mm]))}</td>`).join('')}<td class="num">${fmt(Math.abs(sumaTotal(aCargoPorMes)))}</td></tr>
     `;
   }
 
 
   el.innerHTML = `
-    <div class="card" style="margin-bottom:12px;">
+    <div class="pt-card">
       <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;align-items:flex-start;">
         <div>
-          <h3 style="margin-bottom:4px;">${titulo} — Cédula Fiscal ${ejercicio}</h3>
-          <p style="font-size:12px;color:var(--muted);">${b.name}${b.rfc?' · RFC '+b.rfc:''} · Régimen ${regimenTexto}</p>
+          <div class="pt-titulo-cedula">${titulo} — Cédula Fiscal ${ejercicio}</div>
+          <p class="pt-subtitulo">${b.name}${b.rfc?' · RFC '+b.rfc:''} · Régimen ${regimenTexto}</p>
         </div>
         <select class="ca-anio-sel" style="padding:5px 8px;border:1px solid var(--line);border-radius:6px;height:fit-content;">
           ${anios.map(a=>`<option value="${a}" ${String(a)===ejercicio?'selected':''}>${a}</option>`).join('')}
         </select>
       </div>
-      <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:10px;">
-        ${mesesCols.map(mm => `<span class="ca-mes-badge" data-mes="${mm}" title="${ESTADO_PAPEL_LABEL[estadosPorMes[mm]]}" style="cursor:pointer;font-size:11px;padding:3px 7px;border-radius:10px;background:${ESTADO_PAPEL_COLOR[estadosPorMes[mm]]}18;color:var(--navy-1);display:inline-flex;align-items:center;gap:4px;"><span style="width:6px;height:6px;border-radius:50%;background:${ESTADO_PAPEL_COLOR[estadosPorMes[mm]]};display:inline-block;"></span>${MESES_LARGO[Number(mm)-1].slice(0,3)}</span>`).join('')}
+      <div class="pt-meses-row">
+        ${mesesCols.map(mm => `<span class="pt-estado-badge" data-mes="${mm}" title="${ESTADO_PAPEL_LABEL[estadosPorMes[mm]]}" style="cursor:pointer;"><span class="pt-estado-dot" style="background:${ESTADO_PAPEL_COLOR[estadosPorMes[mm]]};"></span>${MESES_LARGO[Number(mm)-1].slice(0,3)}</span>`).join('')}
       </div>
-      <div style="font-size:10px;color:var(--muted);margin-top:6px;">
-        ${Object.entries(ESTADO_PAPEL_LABEL).filter(([k])=>k!=='pendiente').map(([k,label])=>`<span style="margin-right:10px;"><span style="width:6px;height:6px;border-radius:50%;background:${ESTADO_PAPEL_COLOR[k]};display:inline-block;margin-right:3px;"></span>${label}</span>`).join('')}
+      <div class="pt-leyenda">
+        ${Object.entries(ESTADO_PAPEL_LABEL).filter(([k])=>k!=='pendiente').map(([k,label])=>`<span><span class="pt-estado-dot" style="background:${ESTADO_PAPEL_COLOR[k]};"></span>${label}</span>`).join('')}
       </div>
     </div>
 
-    <div class="card" style="margin-bottom:12px;overflow-x:auto;">
-      <h3 style="font-size:14px;margin-bottom:10px;">Determinación anual</h3>
+    <div class="pt-card">
+      <h3>Determinación anual</h3>
       <div class="table-wrap">
         <table style="min-width:900px;">
           <thead><tr>
@@ -3972,16 +3972,16 @@ async function renderCedulaAnual(b, elId, tipoPapel, titulo, conceptosDefault, t
             <th class="num">${'Total'}</th>
           </tr></thead>
           <tbody>
-            ${filas.map(fila => `<tr>
-              <td style="position:sticky;left:0;background:#fff;">${fila.nombre}</td>
+            ${filas.map(fila => `<tr${fila.clave==='resultado_determinado'?' class="pt-fila-cierre"':''}>
+              <td style="position:sticky;left:0;background:${fila.clave==='resultado_determinado'?'#eef2f8':'#fff'};">${fila.nombre}</td>
               ${mesesCols.map(mm => {
                 const celda = fila.porMes[mm];
                 return `<td class="num ca-celda" data-mes="${mm}" style="cursor:pointer;${celda.valor===null?'color:var(--muted);':''}">${celda.valor!==null?formatearValorConcepto(celda.valor, fila.formato):'—'}</td>`;
               }).join('')}
-              <td class="num" style="font-weight:600;">${fila.total!==null?formatearValorConcepto(fila.total, fila.formato):(fila.agregacion==='no_aplica'?'—':'')}</td>
+              <td class="num">${fila.total!==null?formatearValorConcepto(fila.total, fila.formato):(fila.agregacion==='no_aplica'?'—':'')}</td>
             </tr>${opciones.accesorios ? `<tr class="ca-fila-accesorios" data-clave="${fila.clave||fila.nombre}" style="display:none;background:#f7f7f7;"><td colspan="${mesesCols.length+2}" style="padding:8px 12px;font-size:11px;">
               <strong>Accesorios — ${fila.nombre}:</strong> ${mesesCols.map(mm=>{ const a=fila.porMes[mm].accesorios; return a?`${MESES_LARGO[Number(mm)-1].slice(0,3)}: Princ.${fmt(fila.porMes[mm].valor||0)}+Act.${fmt(a.importe_actualizacion_aplicado)}+Rec.${fmt(a.importe_recargos_aplicado)}+Red.${fmt(a.monto_redondeo)}=${fmt(a.importe_final)}`:'';}).filter(Boolean).join(' · ') || 'Sin accesorios calculados todavía en ningún mes.'}
-            </td></tr>${opciones.accesorios?`<tr><td colspan="${mesesCols.length+2}" style="padding:0 0 6px 0;"><button class="btn btn-ghost btn-sm ca-toggle-accesorios" data-clave="${fila.clave||fila.nombre}" style="font-size:10px;padding:2px 8px;margin-left:4px;">Ver accesorios</button></td></tr>`:''}` : ''}`).join('')}
+            </td></tr>${opciones.accesorios?`<tr><td colspan="${mesesCols.length+2}" style="padding:0 0 6px 0;"><a href="#" class="pt-editar-link ca-toggle-accesorios" data-clave="${fila.clave||fila.nombre}" style="margin-left:4px;">Ver accesorios</a></td></tr>`:''}` : ''}`).join('')}
             ${filasDerivadasIVA}
           </tbody>
         </table>
@@ -3995,7 +3995,8 @@ async function renderCedulaAnual(b, elId, tipoPapel, titulo, conceptosDefault, t
   el.querySelectorAll('.ca-mes-badge, .ca-mes-header, .ca-celda').forEach(elx => elx.addEventListener('click', () => irAMes(elx.dataset.mes)));
 
   if (opciones.accesorios) {
-    el.querySelectorAll('.ca-toggle-accesorios').forEach(btn => btn.addEventListener('click', () => {
+    el.querySelectorAll('.ca-toggle-accesorios').forEach(btn => btn.addEventListener('click', (e) => {
+      e.preventDefault();
       const fila = el.querySelector(`.ca-fila-accesorios[data-clave="${CSS.escape(btn.dataset.clave)}"]`);
       if (fila) fila.style.display = fila.style.display === 'none' ? 'table-row' : 'none';
     }));
@@ -4210,36 +4211,36 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
     const conceptosExtra = conceptos.filter(c => !clavesConocidas.has(c.clave_concepto));
     const filaExtra = (c) => `<tr><td style="padding-left:16px;">${c.concepto}</td><td class="num">${fmt(c.valor_aplicado)}</td></tr>`;
     determinacionHtml = `
-    <div class="card" style="margin-bottom:12px;">
-      <h3 style="font-size:14px;margin-bottom:10px;">1. IVA trasladado</h3>
+    <div class="pt-card">
+      <h3>1. IVA trasladado</h3>
       <div class="table-wrap"><table><tbody>
         ${gruposTrasladado.map(filaGrupo).join('')}
-        <tr style="font-weight:700;border-top:1px solid var(--line);"><td>TOTAL IVA TRASLADADO</td><td class="num">${fmt(totalTrasladado)}</td></tr>
+        <tr class="pt-fila-resultado"><td>TOTAL IVA TRASLADADO</td><td class="num">${fmt(totalTrasladado)}</td></tr>
       </tbody></table></div>
     </div>
-    <div class="card" style="margin-bottom:12px;">
-      <h3 style="font-size:14px;margin-bottom:10px;">2. IVA acreditable</h3>
+    <div class="pt-card">
+      <h3>2. IVA acreditable</h3>
       <div class="table-wrap"><table><tbody>
         ${gruposAcreditable.map(filaGrupo).join('')}
-        <tr style="font-weight:700;border-top:1px solid var(--line);"><td>TOTAL IVA ACREDITABLE</td><td class="num">${fmt(totalAcreditable)}</td></tr>
+        <tr class="pt-fila-resultado"><td>TOTAL IVA ACREDITABLE</td><td class="num">${fmt(totalAcreditable)}</td></tr>
       </tbody></table></div>
     </div>
-    ${conceptosExtra.length ? `<div class="card" style="margin-bottom:12px;">
-      <h3 style="font-size:14px;margin-bottom:10px;">Conceptos adicionales</h3>
+    ${conceptosExtra.length ? `<div class="pt-card">
+      <h3>Conceptos adicionales</h3>
       <div class="table-wrap"><table><tbody>${conceptosExtra.map(filaExtra).join('')}</tbody></table></div>
       <p style="font-size:10.5px;color:var(--muted);margin-top:4px;">No incluidos automáticamente en la determinación final — ajústalos manualmente en Ajustes si corresponden a este periodo.</p>
     </div>` : ''}
-    <div class="card" style="margin-bottom:12px;">
-      <h3 style="font-size:14px;margin-bottom:10px;">3. Determinación final</h3>
+    <div class="pt-card">
+      <h3>3. Determinación final</h3>
       <div style="font-size:12.5px;">
-        <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>Total IVA trasladado</span><strong>${fmt(totalTrasladado)}</strong></div>
-        <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>(–) Total IVA acreditable</span><strong>${fmt(totalAcreditable)}</strong></div>
-        <div style="display:flex;justify-content:space-between;padding:5px 0;border-top:1px solid var(--line);font-weight:600;"><span>= IVA antes de ajustes</span><strong>${fmt(antesAjustes)}</strong></div>
-        <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>± Ajustes</span><strong>${fmt(ajustes)}</strong></div>
-        <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>(–) Saldo a favor de periodos anteriores</span><strong>${fmt(saldoAnterior)}</strong></div>
-        <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>(–) Compensaciones</span><strong>${fmt(compensaciones)}</strong></div>
-        <div style="display:flex;justify-content:space-between;padding:7px 0 0;border-top:1px solid var(--navy-1);margin-top:4px;font-weight:700;font-size:13.5px;"><span>${resultado>0.004?'IVA A CARGO':resultado<-0.004?'SALDO A FAVOR':'SIN IVA A CARGO NI SALDO A FAVOR'}</span><span>${fmt(Math.abs(resultado))}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>Total IVA trasladado</span><span class="pt-value">${fmt(totalTrasladado)}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>(–) Total IVA acreditable</span><span class="pt-value">${fmt(totalAcreditable)}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:5px 0;border-top:1px solid var(--line);font-weight:600;"><span>= IVA antes de ajustes</span><span class="pt-value">${fmt(antesAjustes)}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>± Ajustes</span><span class="pt-value">${fmt(ajustes)}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>(–) Saldo a favor de periodos anteriores</span><span class="pt-value">${fmt(saldoAnterior)}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>(–) Compensaciones</span><span class="pt-value">${fmt(compensaciones)}</span></div>
       </div>
+      <div class="pt-banda-cierre"><span>${resultado>0.004?'IVA A CARGO':resultado<-0.004?'SALDO A FAVOR':'SIN IVA A CARGO NI SALDO A FAVOR'}</span><span>${fmt(Math.abs(resultado))}</span></div>
       <button class="btn btn-ghost btn-sm cg-agregar-concepto" style="margin-top:10px;">+ Agregar concepto</button>
     </div>`;
     totalPeriodoConcepto = await sincronizarConceptoTotalPeriodo(papel.id, 'iva_resultado_periodo', 'IVA a cargo del periodo', Math.max(0, resultado));
@@ -4257,29 +4258,30 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
     await calcularYGuardarAccesoriosConcepto(totalPeriodoConcepto.id, b.id, periodo, tipoImpuestoVenc, Number(totalPeriodoConcepto.valor_aplicado)||0, todayStr());
     const { data: accTotal } = await sb.from('fz_papel_concepto_accesorios').select('*').eq('concepto_id', totalPeriodoConcepto.id).maybeSingle();
     controlObligacionHtml = `
-    <div class="card" style="margin-bottom:12px;">
-      <h3 style="font-size:14px;margin-bottom:10px;">Control de la obligación</h3>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;font-size:12.5px;">
-        <div><span style="color:var(--muted);">Periodo fiscal</span><br><strong>${periodo}</strong></div>
-        <div><span style="color:var(--muted);">Fecha de elaboración del papel</span><br><strong>${fechaCorta(papel.created_at.slice(0,10))}</strong></div>
-        <div><span style="color:var(--muted);">Vencimiento base</span><br><strong>${venc.fecha_vencimiento_base?fechaCorta(venc.fecha_vencimiento_base):'—'}</strong></div>
-        <div><span style="color:var(--muted);">Facilidad Art. 5.1</span><br><strong>${venc.facilidad_rfc_aplicable?'Aplicable':'No aplicable'}</strong></div>
-        <div><span style="color:var(--muted);">Vencimiento efectivo</span><br><strong>${venc.fecha_vencimiento_efectiva?fechaCorta(venc.fecha_vencimiento_efectiva):'Sin determinar'}</strong></div>
-        <div><span style="color:var(--muted);">Estado del papel</span><br><strong>${ESTADO_PAPEL_LABEL[papel.estado]||papel.estado}</strong></div>
+    <div class="pt-card">
+      <h3>Control de la obligación</h3>
+      <div class="pt-grid">
+        <div><span class="pt-label">Periodo fiscal</span><span class="pt-value">${periodo}</span></div>
+        <div><span class="pt-label">Fecha de elaboración del papel</span><span class="pt-value" style="font-weight:500;color:var(--muted);">${fechaCorta(papel.created_at.slice(0,10))}</span></div>
+        <div><span class="pt-label">Vencimiento base</span><span class="pt-value">${venc.fecha_vencimiento_base?fechaCorta(venc.fecha_vencimiento_base):'—'}</span></div>
+        <div><span class="pt-label">Facilidad Art. 5.1</span><span class="pt-value">${venc.facilidad_rfc_aplicable?'Aplicable':'No aplicable'}</span></div>
+        <div><span class="pt-label">Vencimiento efectivo</span><span class="pt-value">${venc.fecha_vencimiento_efectiva?fechaCorta(venc.fecha_vencimiento_efectiva):'Sin determinar'}</span></div>
+        <div><span class="pt-label">Estado del papel</span><span class="pt-value">${ESTADO_PAPEL_LABEL[papel.estado]||papel.estado}</span></div>
       </div>
+      <p style="font-size:10px;color:var(--muted);margin-top:8px;">La fecha de elaboración es solo informativa/auditoría — nunca representa nacimiento/exigibilidad de la obligación.</p>
     </div>
-    <div class="card" style="margin-bottom:12px;">
-      <h3 style="font-size:14px;margin-bottom:10px;">Actualización y recargos</h3>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;font-size:12.5px;">
-        <div><span style="color:var(--muted);">Calcular al</span><br><strong>${accTotal?fechaCorta(accTotal.calcular_al):'—'}</strong></div>
-        <div><span style="color:var(--muted);">Principal</span><br><strong>${fmt(Number(totalPeriodoConcepto.valor_aplicado)||0)}</strong></div>
-        <div><span style="color:var(--muted);">Actualización</span><br><strong>${fmt(Number(accTotal?.importe_actualizacion_aplicado)||0)}</strong></div>
-        <div><span style="color:var(--muted);">Recargos</span><br><strong>${fmt(Number(accTotal?.importe_recargos_aplicado)||0)}</strong></div>
-        <div><span style="color:var(--muted);">Ajuste redondeo SAT</span><br><strong>${fmt(Number(accTotal?.monto_redondeo)||0)}</strong></div>
-        <div><span style="color:var(--gold);">Total fiscal</span><br><strong style="color:var(--gold);">${fmt(Number(accTotal?.importe_final)||0)}</strong></div>
+    <div class="pt-card">
+      <h3>Actualización y recargos</h3>
+      <div class="pt-accesorios-linea">
+        <div><span class="pt-label">Calcular accesorios al</span><span class="pt-value">${accTotal?fechaCorta(accTotal.calcular_al):'—'}</span></div>
+        <div><span class="pt-label">Principal</span><span class="pt-value">${fmt(Number(totalPeriodoConcepto.valor_aplicado)||0)}</span></div>
+        <div><span class="pt-label">Actualización</span><span class="pt-value">${fmt(Number(accTotal?.importe_actualizacion_aplicado)||0)}</span></div>
+        <div><span class="pt-label">Recargos</span><span class="pt-value">${fmt(Number(accTotal?.importe_recargos_aplicado)||0)}</span></div>
+        <div><span class="pt-label">Ajuste redondeo SAT</span><span class="pt-value">${fmt(Number(accTotal?.monto_redondeo)||0)}</span></div>
+        <div><span class="pt-label" style="color:var(--gold);">Total fiscal</span><span class="pt-value" style="color:var(--gold);font-size:14px;">${fmt(Number(accTotal?.importe_final)||0)}</span></div>
       </div>
-      <button class="btn btn-ghost btn-sm cg-ver-calculo" style="margin-top:8px;">Ver cálculo detallado</button>
-      <div class="cg-calculo-detalle" style="display:none;margin-top:8px;font-size:11.5px;color:var(--muted);background:#f7f7f7;padding:8px;border-radius:8px;">
+      <a href="#" class="pt-editar-link cg-ver-calculo" style="display:inline-block;margin-top:8px;opacity:1;">Ver cálculo detallado</a>
+      <div class="cg-calculo-detalle" style="display:none;margin-top:6px;font-size:11px;color:var(--muted);background:#f7f9fc;padding:8px;border-radius:8px;">
         ${accTotal ? `Factor de actualización: ${accTotal.factor_actualizacion||1} · Meses/fracción: ${accTotal.meses_fraccion??0}<br>INPC usados: ${(accTotal.inpc_periodos_usados||[]).map(x=>`${x.periodo}: ${x.valor}`).join(', ')||'—'}<br>Tasas de recargos usadas: ${(accTotal.tasas_recargos_usadas||[]).map(x=>`${x.periodo}: ${x.tasa}%`).join(', ')||'—'}` : 'Sin cálculo todavía.'}
       </div>
     </div>`;
@@ -4288,25 +4290,25 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
 
   el.innerHTML = `
     <button class="btn btn-ghost btn-sm cg-volver" style="margin-bottom:10px;">← Volver a cédula anual</button>
-    <div class="card" style="margin-bottom:12px;">
+    <div class="pt-card">
       <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;align-items:flex-start;">
         <div>
-          <h3 style="margin-bottom:4px;">${titulo}</h3>
-          <p style="font-size:12px;color:var(--muted);">${b.name}${b.rfc?' · RFC '+b.rfc:''} · Régimen ${regimenTexto}</p>
+          <div class="pt-titulo-cedula">${titulo}</div>
+          <p class="pt-subtitulo">${b.name}${b.rfc?' · RFC '+b.rfc:''} · Régimen ${regimenTexto}</p>
         </div>
         <select class="cg-anio-sel" style="padding:5px 8px;border:1px solid var(--line);border-radius:6px;height:fit-content;">
           ${anios.map(a=>`<option value="${a}" ${String(a)===ejercicio?'selected':''}>${a}</option>`).join('')}
         </select>
       </div>
-      <div class="tag-row cg-meses-tagrow" style="margin-top:10px;">
+      <div class="tag-row cg-meses-tagrow" style="margin:8px 0 0;">
         ${MESES_LARGO.map((nombre,i) => `<div class="tag ${i+1===mesNum?'active':''}" data-mes="${String(i+1).padStart(2,'0')}">${nombre.slice(0,3)}</div>`).join('')}
       </div>
-      <p style="font-size:12px;color:var(--muted);margin-top:8px;">Estado del papel: <strong>${ESTADO_PAPEL_LABEL[papel.estado]||papel.estado}</strong></p>
+      <p class="pt-subtitulo" style="margin-top:6px;">Estado del papel: <strong style="color:var(--navy-1);">${ESTADO_PAPEL_LABEL[papel.estado]||papel.estado}</strong></p>
     </div>
 
     ${opciones.resumenIVA ? determinacionHtml : `
-    <div class="card" style="margin-bottom:12px;">
-      <h3 style="font-size:14px;margin-bottom:10px;">1. Determinación — conceptos retenidos</h3>
+    <div class="pt-card">
+      <h3>1. Determinación — conceptos retenidos</h3>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Concepto</th><th>Origen/Propuesta</th><th>Importe aplicado</th><th>Diferencia</th>${opciones.accesorios?'<th>Accesorios</th>':''}<th></th></tr></thead>
@@ -4317,17 +4319,17 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
               const fmto = formatoDe(c.clave_concepto);
               return `<tr>
                 <td>${c.concepto}</td>
-                <td style="font-size:11px;color:var(--muted);">${etiquetaOrigen(c.origen)}${c.valor_original!==null&&c.valor_original!==undefined?' — '+formatearValorConcepto(c.valor_original,fmto):''}</td>
+                <td><span class="pt-origen ${c.origen}">${etiquetaOrigen(c.origen)}</span>${c.valor_original!==null&&c.valor_original!==undefined?' '+formatearValorConcepto(c.valor_original,fmto):''}</td>
                 <td class="num" style="font-weight:600;">${formatearValorConcepto(c.valor_aplicado,fmto)}</td>
                 <td class="num" style="color:${diferencia&&Math.abs(diferencia)>0.004?'var(--gold)':'var(--muted)'};">${diferencia!==null?formatearValorConcepto(diferencia,fmto):''}</td>
-                ${opciones.accesorios ? `<td style="font-size:11px;">${acc ? `${fmt(c.valor_aplicado)} + ${fmt(acc.importe_actualizacion_aplicado)} + ${fmt(acc.importe_recargos_aplicado)} + ${fmt(acc.monto_redondeo)} = <strong>${fmt(acc.importe_final)}</strong>${acc.ajuste_manual?' <span style="color:var(--gold);">(ajustado)</span>':''}` : '<span style="color:var(--muted);">Sin calcular</span>'}</td>` : ''}
+                ${opciones.accesorios ? `<td style="font-size:11px;">${acc ? `${fmt(c.valor_aplicado)}+${fmt(acc.importe_actualizacion_aplicado)}+${fmt(acc.importe_recargos_aplicado)}+${fmt(acc.monto_redondeo)}=<strong>${fmt(acc.importe_final)}</strong>${acc.ajuste_manual?' <span style="color:var(--gold);">(aj.)</span>':''}` : '<span style="color:var(--muted);">Sin calcular</span>'}</td>` : ''}
                 <td style="white-space:nowrap;">
-                  <a href="#" class="cg-editar" data-id="${c.id}" style="font-size:11px;color:var(--muted);text-decoration:underline;cursor:pointer;">Editar</a>
-                  ${opciones.accesorios && Number(c.valor_aplicado) > 0.004 ? ` · <a href="#" class="cg-calc-accesorios" data-id="${c.id}" style="font-size:11px;color:var(--muted);text-decoration:underline;cursor:pointer;">${acc?'Recalcular':'Calcular'} accesorios</a>` : ''}
+                  <a href="#" class="cg-editar pt-editar-link" data-id="${c.id}">Editar</a>
+                  ${opciones.accesorios && Number(c.valor_aplicado) > 0.004 ? ` · <a href="#" class="cg-calc-accesorios pt-editar-link" data-id="${c.id}">${acc?'Recalcular':'Calcular'}</a>` : ''}
                 </td>
               </tr>`;
             }).join('')}
-            ${totalPeriodoConcepto ? `<tr style="font-weight:700;border-top:2px solid var(--navy-1);"><td>${totalPeriodoConcepto.concepto}</td><td></td><td class="num">${fmt(totalPeriodoConcepto.valor_aplicado)}</td><td colspan="${opciones.accesorios?3:2}"></td></tr>` : ''}
+            ${totalPeriodoConcepto ? `<tr class="pt-fila-cierre"><td>${totalPeriodoConcepto.concepto}</td><td></td><td class="num">${fmt(totalPeriodoConcepto.valor_aplicado)}</td><td colspan="${opciones.accesorios?3:2}"></td></tr>` : ''}
           </tbody>
         </table>
       </div>
@@ -4336,28 +4338,27 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
     `}
     ${controlObligacionHtml}
 
-    <div class="card" style="margin-bottom:12px;">
-      <h3 style="font-size:13px;margin-bottom:6px;color:var(--muted);">Notas y soporte</h3>
-      <div class="field" style="margin-bottom:6px;">
-        <textarea class="cg-notas" rows="2" placeholder="Observaciones (opcional)" style="width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:8px;font-family:inherit;font-size:12.5px;">${papel.notas||''}</textarea>
+    <div class="pt-card">
+      <h3 style="color:var(--muted);font-size:13px;">Notas y soporte</h3>
+      <textarea class="cg-notas" rows="2" placeholder="Observaciones (opcional)" style="width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:8px;font-family:inherit;font-size:12.5px;margin-bottom:6px;">${papel.notas||''}</textarea>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <label class="pt-file-btn cg-soporte-label">＋ Adjuntar soporte</label>
+        <input type="file" class="cg-soporte-input" accept=".pdf,.xlsx,.xls,.png,.jpg,.jpeg" style="display:none;">
+        <span class="pt-file-hint">PDF · Excel · Imagen — se guarda la referencia; almacenamiento real en fase posterior</span>
+        <button class="btn btn-ghost btn-sm cg-adjuntar" style="padding:4px 10px;">Guardar referencia</button>
       </div>
-      <div style="display:flex;gap:8px;align-items:center;">
-        <input type="file" class="cg-soporte-input" accept=".pdf,.xlsx,.xls,.png,.jpg,.jpeg" style="font-size:11.5px;">
-        <button class="btn btn-ghost btn-sm cg-adjuntar" style="padding:3px 10px;">Adjuntar</button>
-      </div>
-      ${soportes && soportes.length ? `<div style="margin-top:6px;">${soportes.map(s=>`<div style="font-size:11px;padding:3px 0;border-top:1px solid var(--line);">${s.nombre_archivo} · ${fechaCorta(s.created_at.slice(0,10))} · ${s.usuario||''}</div>`).join('')}</div>` : ''}
+      ${soportes && soportes.length ? soportes.map(s=>`<div class="pt-soporte-item"><span>${s.nombre_archivo}</span><span style="color:var(--muted);">${fechaCorta(s.created_at.slice(0,10))} · ${s.usuario||''}</span></div>`).join('') : ''}
     </div>
 
-    <div class="card">
-      <h3 style="font-size:14px;margin-bottom:10px;">Guardar papel de trabajo</h3>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;font-size:12.5px;margin-bottom:10px;">
-        <div><span style="color:var(--muted);">Estado</span><br><strong>${papel.estado}</strong></div>
-        <div><span style="color:var(--muted);">Última modificación</span><br><strong>${fechaCorta(papel.updated_at.slice(0,10))}</strong></div>
-        <div><span style="color:var(--muted);">Responsable</span><br><strong>${papel.created_by||'—'}</strong></div>
+    <div class="pt-card">
+      <div class="pt-grid">
+        <div><span class="pt-label">Estado</span><span class="pt-value">${ESTADO_PAPEL_LABEL[papel.estado]||papel.estado}</span></div>
+        <div><span class="pt-label">Última modificación</span><span class="pt-value" style="font-weight:500;">${fechaCorta(papel.updated_at.slice(0,10))}</span></div>
+        <div><span class="pt-label">Responsable</span><span class="pt-value" style="font-weight:500;">${papel.created_by||'—'}</span></div>
       </div>
-      <p style="font-size:11.5px;color:var(--gold);margin-bottom:10px;">Guardar este papel no genera movimientos contables, declaraciones ni pagos.</p>
+      <p style="font-size:10.5px;color:var(--muted);margin:8px 0;">Guardar este papel no genera movimientos contables, declaraciones ni pagos.</p>
       <button class="btn btn-gold btn-sm cg-guardar">Guardar</button>
-      <button class="btn btn-ghost btn-sm cg-historial-btn">Historial</button>
+      <a href="#" class="pt-editar-link cg-historial-btn" style="margin-left:12px;opacity:1;">Historial</a>
       <div class="cg-historial-zona" style="display:none;margin-top:10px;max-height:220px;overflow-y:auto;">
         ${(historial||[]).length ? historial.map(h=>`<div style="font-size:11px;padding:4px 0;border-top:1px solid var(--line);">${fechaCorta(h.created_at.slice(0,10))} · ${h.usuario||'—'} · ${h.campo}: ${h.valor_anterior||'—'} → ${h.valor_nuevo||'—'}${h.motivo?' — '+h.motivo:''}</div>`).join('') : '<p style="font-size:11.5px;color:var(--muted);">Sin historial todavía.</p>'}
       </div>
@@ -4367,11 +4368,17 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
   el.querySelector('.cg-anio-sel').addEventListener('change', (e) => { STATE_papelesMesGenerica[stateKey] = `${e.target.value}-${periodo.slice(5,7)}`; renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault, stateKey, opciones); });
   el.querySelectorAll('.cg-meses-tagrow .tag').forEach(tag => tag.addEventListener('click', () => { STATE_papelesMesGenerica[stateKey] = `${ejercicio}-${tag.dataset.mes}`; renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault, stateKey, opciones); }));
 
-  el.querySelector('.cg-historial-btn').addEventListener('click', () => {
+  el.querySelector('.cg-historial-btn').addEventListener('click', (e) => {
+    e.preventDefault();
     const z = el.querySelector('.cg-historial-zona');
     z.style.display = z.style.display === 'none' ? 'block' : 'none';
   });
 
+  el.querySelector('.cg-soporte-label').addEventListener('click', () => { el.querySelector('.cg-soporte-input').click(); });
+  el.querySelector('.cg-soporte-input').addEventListener('change', (e) => {
+    const nombre = e.target.files?.[0]?.name;
+    if (nombre) el.querySelector('.cg-soporte-label').textContent = '📎 ' + nombre;
+  });
   el.querySelector('.cg-adjuntar').addEventListener('click', async () => {
     const input = el.querySelector('.cg-soporte-input');
     if (!input.files || !input.files.length) { toast('Selecciona un archivo primero.', 'error'); return; }
@@ -4414,7 +4421,8 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
   }));
 
   const btnVerCalcCg = el.querySelector('.cg-ver-calculo');
-  if (btnVerCalcCg) btnVerCalcCg.addEventListener('click', () => {
+  if (btnVerCalcCg) btnVerCalcCg.addEventListener('click', (e) => {
+    e.preventDefault();
     const z = el.querySelector('.cg-calculo-detalle');
     z.style.display = z.style.display === 'none' ? 'block' : 'none';
   });
@@ -4473,24 +4481,24 @@ async function renderPapelISRPM(b) {
 
   el.innerHTML = `
     <button class="btn btn-ghost btn-sm pIsrVolverBtn" style="margin-bottom:10px;">← Volver a cédula anual</button>
-    <div class="card" style="margin-bottom:12px;">
+    <div class="pt-card">
       <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;align-items:flex-start;">
         <div>
-          <h3 style="margin-bottom:4px;">ISR Personas Morales — Papel de trabajo</h3>
-          <p style="font-size:12px;color:var(--muted);">${b.name}${b.rfc?' · RFC '+b.rfc:''} · ${regimenTexto}</p>
+          <div class="pt-titulo-cedula">ISR Personas Morales — Papel de trabajo</div>
+          <p class="pt-subtitulo">${b.name}${b.rfc?' · RFC '+b.rfc:''} · ${regimenTexto}</p>
         </div>
         <select id="pIsrAnioSel" style="padding:5px 8px;border:1px solid var(--line);border-radius:6px;height:fit-content;">
           ${anios.map(a=>`<option value="${a}" ${String(a)===ejercicio?'selected':''}>${a}</option>`).join('')}
         </select>
       </div>
-      <div class="tag-row" id="pIsrMesesTagRow" style="margin-top:10px;">
+      <div class="tag-row" id="pIsrMesesTagRow" style="margin:8px 0 0;">
         ${MESES_LARGO.map((nombre,i) => `<div class="tag ${i+1===mesNum?'active':''}" data-mes="${String(i+1).padStart(2,'0')}">${nombre.slice(0,3)}</div>`).join('')}
       </div>
-      <p style="font-size:12px;color:var(--muted);margin-top:8px;">Estado del papel: <strong>${ESTADO_PAPEL_LABEL[papel.estado]||papel.estado}</strong></p>
+      <p class="pt-subtitulo" style="margin-top:6px;">Estado del papel: <strong style="color:var(--navy-1);">${ESTADO_PAPEL_LABEL[papel.estado]||papel.estado}</strong></p>
     </div>
 
-    <div class="card" style="margin-bottom:12px;">
-      <h3 style="font-size:14px;margin-bottom:10px;">1. Determinación del impuesto</h3>
+    <div class="pt-card">
+      <h3>1. Determinación del impuesto</h3>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Concepto</th><th>Del mes</th><th>Acumulado</th><th>Origen</th><th></th></tr></thead>
@@ -4498,12 +4506,13 @@ async function renderPapelISRPM(b) {
             ${conceptos.map(c => {
               const acumuladoPar = c.clave_concepto==='ingresos_nominales_mes' ? acumuladoDe('ingresos_nominales_acum') : null;
               const fmto = (CONCEPTOS_DEFAULT_ISR_PM.find(d=>d.clave===c.clave_concepto)||{}).formato || 'moneda';
-              return `<tr>
-                <td>${c.concepto}${c.valor_original!==null&&c.valor_original!==undefined?` <span style="font-size:10px;color:var(--muted);">(Contabilidad: ${formatearValorConcepto(c.valor_original,fmto)}${Math.abs(Number(c.valor_aplicado)-Number(c.valor_original))>0.004?' → aplicado '+formatearValorConcepto(c.valor_aplicado,fmto)+' · dif. '+formatearValorConcepto(Number(c.valor_aplicado)-Number(c.valor_original),fmto):''})</span>`:''}</td>
+              const esCierre = c.clave_concepto==='resultado_determinado';
+              return `<tr${esCierre?' class="pt-fila-cierre"':''}>
+                <td>${c.concepto}${c.valor_original!==null&&c.valor_original!==undefined?` <span class="pt-origen ${c.origen}">${etiquetaOrigen(c.origen)}: ${formatearValorConcepto(c.valor_original,fmto)}${Math.abs(Number(c.valor_aplicado)-Number(c.valor_original))>0.004?' → '+formatearValorConcepto(c.valor_aplicado,fmto)+' (dif. '+formatearValorConcepto(Number(c.valor_aplicado)-Number(c.valor_original),fmto)+')':''}</span>`:''}</td>
                 <td class="num" style="font-weight:600;">${formatearValorConcepto(c.valor_aplicado,fmto)}</td>
                 <td class="num">${acumuladoPar!==null?formatearValorConcepto(acumuladoPar,fmto):''}</td>
-                <td style="font-size:11px;color:var(--muted);">${etiquetaOrigen(c.origen)}</td>
-                <td><a href="#" class="pisr-editar" data-id="${c.id}" style="font-size:11px;color:var(--muted);text-decoration:underline;cursor:pointer;">Editar</a></td>
+                <td>${!c.valor_original && !esCierre ? `<span class="pt-origen ${c.origen}">${etiquetaOrigen(c.origen)}</span>` : ''}</td>
+                <td><a href="#" class="pisr-editar pt-editar-link" data-id="${c.id}">Editar</a></td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -4512,64 +4521,63 @@ async function renderPapelISRPM(b) {
       <button class="btn btn-ghost btn-sm" id="pIsrAgregarConceptoBtn" style="margin-top:10px;">+ Agregar concepto fiscal</button>
     </div>
 
-    ${venc ? `<div class="card" style="margin-bottom:12px;">
-      <h3 style="font-size:14px;margin-bottom:10px;">2. Control de la obligación</h3>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;font-size:12.5px;">
-        <div><span style="color:var(--muted);">Periodo fiscal</span><br><strong>${periodo}</strong></div>
-        <div><span style="color:var(--muted);">Fecha de elaboración del papel</span><br><strong>${fechaCorta(papel.created_at.slice(0,10))}</strong></div>
-        <div><span style="color:var(--muted);">Vencimiento base</span><br><strong>${venc.fecha_vencimiento_base?fechaCorta(venc.fecha_vencimiento_base):'—'}</strong></div>
-        <div><span style="color:var(--muted);">Facilidad Art. 5.1</span><br><strong>${venc.facilidad_rfc_aplicable?'Aplicable':'No aplicable'}</strong></div>
-        <div><span style="color:var(--muted);">Vencimiento efectivo</span><br><strong>${venc.fecha_vencimiento_efectiva?fechaCorta(venc.fecha_vencimiento_efectiva):'Sin determinar'}</strong></div>
-        <div><span style="color:var(--muted);">Fecha usada para calcular accesorios</span><br><strong>${fechaCorta(todayStr())}</strong></div>
-        <div><span style="color:var(--muted);">Estado del papel</span><br><strong>${ESTADO_PAPEL_LABEL[papel.estado]||papel.estado}</strong></div>
+    ${venc ? `<div class="pt-card">
+      <h3>2. Control de la obligación</h3>
+      <div class="pt-grid">
+        <div><span class="pt-label">Periodo fiscal</span><span class="pt-value">${periodo}</span></div>
+        <div><span class="pt-label">Fecha de elaboración del papel</span><span class="pt-value" style="font-weight:500;color:var(--muted);">${fechaCorta(papel.created_at.slice(0,10))}</span></div>
+        <div><span class="pt-label">Vencimiento base</span><span class="pt-value">${venc.fecha_vencimiento_base?fechaCorta(venc.fecha_vencimiento_base):'—'}</span></div>
+        <div><span class="pt-label">Facilidad Art. 5.1</span><span class="pt-value">${venc.facilidad_rfc_aplicable?'Aplicable':'No aplicable'}</span></div>
+        <div><span class="pt-label">Vencimiento efectivo</span><span class="pt-value">${venc.fecha_vencimiento_efectiva?fechaCorta(venc.fecha_vencimiento_efectiva):'Sin determinar'}</span></div>
+        <div><span class="pt-label">Calcular accesorios al</span><span class="pt-value">${fechaCorta(todayStr())}</span></div>
+        <div><span class="pt-label">Estado del papel</span><span class="pt-value">${ESTADO_PAPEL_LABEL[papel.estado]||papel.estado}</span></div>
       </div>
-      <p style="font-size:10.5px;color:var(--muted);margin-top:6px;">La fecha de elaboración del papel es informativa (cuándo se trabajó este documento) — nunca representa la fecha de nacimiento/exigibilidad de la obligación, que se determina por el vencimiento base/efectivo mostrados arriba.</p>
-      ${!venc.fecha_vencimiento_efectiva ? `<p style="font-size:11.5px;color:var(--red);margin-top:8px;">${venc.vencimiento_criterio||'No se pudo determinar el vencimiento efectivo — revisa RFC/régimen/calendario del negocio.'}</p>` : ''}
+      <p style="font-size:10px;color:var(--muted);margin-top:8px;">La fecha de elaboración es solo informativa/auditoría — nunca representa nacimiento/exigibilidad de la obligación.</p>
+      ${!venc.fecha_vencimiento_efectiva ? `<p style="font-size:11.5px;color:var(--red);margin-top:6px;">${venc.vencimiento_criterio||'No se pudo determinar el vencimiento efectivo — revisa RFC/régimen/calendario del negocio.'}</p>` : ''}
     </div>
 
-    <div class="card" style="margin-bottom:12px;">
-      <h3 style="font-size:14px;margin-bottom:10px;">3. Actualización y recargos</h3>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;font-size:12.5px;">
-        <div><span style="color:var(--muted);">Calcular al</span><br><strong>${snapshot?fechaCorta(snapshot.calcular_al):'—'}</strong></div>
-        <div><span style="color:var(--muted);">Principal</span><br><strong>${fmt(Number(conceptoResultado.valor_aplicado)||0)}</strong></div>
-        <div><span style="color:var(--muted);">Actualización</span><br><strong>${fmt(Number(snapshot?.importe_actualizacion_aplicado)||0)}</strong></div>
-        <div><span style="color:var(--muted);">Recargos</span><br><strong>${fmt(Number(snapshot?.importe_recargos_aplicado)||0)}</strong></div>
-        <div><span style="color:var(--muted);">Ajuste redondeo SAT</span><br><strong>${fmt(Number(snapshot?.monto_redondeo)||0)}</strong></div>
-        <div><span style="color:var(--gold);">Total</span><br><strong style="color:var(--gold);">${fmt(Number(snapshot?.importe_final)||0)}</strong></div>
+    <div class="pt-card">
+      <h3>3. Actualización y recargos</h3>
+      <div class="pt-accesorios-linea">
+        <div><span class="pt-label">Calcular al</span><span class="pt-value">${snapshot?fechaCorta(snapshot.calcular_al):'—'}</span></div>
+        <div><span class="pt-label">Principal</span><span class="pt-value">${fmt(Number(conceptoResultado.valor_aplicado)||0)}</span></div>
+        <div><span class="pt-label">Actualización</span><span class="pt-value">${fmt(Number(snapshot?.importe_actualizacion_aplicado)||0)}</span></div>
+        <div><span class="pt-label">Recargos</span><span class="pt-value">${fmt(Number(snapshot?.importe_recargos_aplicado)||0)}</span></div>
+        <div><span class="pt-label">Ajuste redondeo SAT</span><span class="pt-value">${fmt(Number(snapshot?.monto_redondeo)||0)}</span></div>
+        <div><span class="pt-label" style="color:var(--gold);">Total fiscal</span><span class="pt-value" style="color:var(--gold);font-size:14px;">${fmt(Number(snapshot?.importe_final)||0)}</span></div>
       </div>
-      <button class="btn btn-ghost btn-sm" id="pIsrVerCalculoBtn" style="margin-top:8px;">Ver cálculo detallado</button>
-      <div id="pIsrCalculoDetalle" style="display:none;margin-top:8px;font-size:11.5px;color:var(--muted);background:#f7f7f7;padding:8px;border-radius:8px;">
+      <a href="#" class="pt-editar-link" id="pIsrVerCalculoBtn" style="display:inline-block;margin-top:8px;opacity:1;">Ver cálculo detallado</a>
+      <div id="pIsrCalculoDetalle" style="display:none;margin-top:6px;font-size:11px;color:var(--muted);background:#f7f9fc;padding:8px;border-radius:8px;">
         ${snapshot ? `Factor de actualización: ${snapshot.factor_actualizacion||1} · Meses/fracción: ${snapshot.meses_fraccion??0}<br>
         INPC usados: ${(snapshot.inpc_periodos_usados||[]).map(x=>`${x.periodo}: ${x.valor}`).join(', ')||'—'}<br>
         Tasas de recargos usadas: ${(snapshot.tasas_recargos_usadas||[]).map(x=>`${x.periodo}: ${x.tasa}%`).join(', ')||'—'}
         ${snapshot.ajuste_manual?`<br><span style="color:var(--gold);">Ajustado manualmente — ${snapshot.motivo_ajuste} (${snapshot.ajuste_usuario}, ${fechaCorta(snapshot.ajuste_fecha.slice(0,10))})</span>`:''}` : 'Sin snapshot todavía.'}
       </div>
-    </div>` : `<div class="card" style="margin-bottom:12px;"><p style="font-size:12px;color:var(--muted);">Agrega y captura el concepto "Resultado determinado" para calcular vencimiento y accesorios.</p></div>`}
+    </div>` : `<div class="pt-card"><p style="font-size:12px;color:var(--muted);">Agrega y captura el concepto "Resultado determinado" para calcular vencimiento y accesorios.</p></div>`}
 
-    <div class="card" style="margin-bottom:12px;">
-      <h3 style="font-size:14px;margin-bottom:10px;">4. Notas y soporte</h3>
-      <div class="field">
-        <label>Observaciones</label>
-        <textarea id="pIsrNotas" rows="3" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;font-family:inherit;">${papel.notas||''}</textarea>
+    <div class="pt-card">
+      <h3 style="color:var(--muted);font-size:13px;">Notas y soporte</h3>
+      <textarea id="pIsrNotas" rows="2" placeholder="Observaciones (opcional)" style="width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:8px;font-family:inherit;font-size:12.5px;margin-bottom:6px;">${papel.notas||''}</textarea>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <label class="pt-file-btn" for="pIsrSoporteInput">＋ Adjuntar soporte</label>
+        <input type="file" id="pIsrSoporteInput" accept=".pdf,.xlsx,.xls,.png,.jpg,.jpeg" style="display:none;">
+        <span class="pt-file-hint">PDF · Excel · Imagen — se guarda la referencia; el almacenamiento real se conecta en fase posterior</span>
+        <button class="btn btn-ghost btn-sm" id="pIsrAdjuntarBtn" style="padding:4px 10px;">Guardar referencia</button>
       </div>
-      <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
-        <input type="file" id="pIsrSoporteInput" accept=".pdf,.xlsx,.xls,.png,.jpg,.jpeg" style="font-size:12px;">
-        <button class="btn btn-ghost btn-sm" id="pIsrAdjuntarBtn">Adjuntar</button>
-      </div>
-      <p style="font-size:10.5px;color:var(--muted);margin-top:4px;">Por ahora se guarda la referencia del archivo (nombre/tipo/fecha); la carga real del archivo a almacenamiento se conectará en una fase posterior.</p>
-      ${soportes && soportes.length ? `<div style="margin-top:8px;">${soportes.map(s=>`<div style="font-size:11.5px;padding:4px 0;border-top:1px solid var(--line);">${s.nombre_archivo} · ${fechaCorta(s.created_at.slice(0,10))} · ${s.usuario||''}</div>`).join('')}</div>` : ''}
+      ${soportes && soportes.length ? soportes.map(s=>`<div class="pt-soporte-item"><span>${s.nombre_archivo}</span><span style="color:var(--muted);">${fechaCorta(s.created_at.slice(0,10))} · ${s.usuario||''}</span></div>`).join('') : ''}
     </div>
 
-    <div class="card">
-      <h3 style="font-size:14px;margin-bottom:10px;">5. Guardar papel de trabajo</h3>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;font-size:12.5px;margin-bottom:10px;">
-        <div><span style="color:var(--muted);">Estado</span><br><strong>${papel.estado}</strong></div>
-        <div><span style="color:var(--muted);">Última modificación</span><br><strong>${fechaCorta(papel.updated_at.slice(0,10))}</strong></div>
-        <div><span style="color:var(--muted);">Responsable</span><br><strong>${papel.created_by||'—'}</strong></div>
+    <div class="pt-card">
+      <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;align-items:center;">
+        <div class="pt-grid" style="flex:1;">
+          <div><span class="pt-label">Estado</span><span class="pt-value">${ESTADO_PAPEL_LABEL[papel.estado]||papel.estado}</span></div>
+          <div><span class="pt-label">Última modificación</span><span class="pt-value" style="font-weight:500;">${fechaCorta(papel.updated_at.slice(0,10))}</span></div>
+          <div><span class="pt-label">Responsable</span><span class="pt-value" style="font-weight:500;">${papel.created_by||'—'}</span></div>
+        </div>
       </div>
-      <p style="font-size:11.5px;color:var(--gold);margin-bottom:10px;">Guardar este papel no genera movimientos contables, declaraciones ni pagos.</p>
+      <p style="font-size:10.5px;color:var(--muted);margin:8px 0;">Guardar este papel no genera movimientos contables, declaraciones ni pagos.</p>
       <button class="btn btn-gold btn-sm" id="pIsrGuardarBtn">Guardar</button>
-      <button class="btn btn-ghost btn-sm" id="pIsrHistorialBtn">Historial</button>
+      <a href="#" class="pt-editar-link" id="pIsrHistorialBtn" style="margin-left:12px;opacity:1;">Historial</a>
       <div id="pIsrHistorialZona" style="display:none;margin-top:10px;max-height:220px;overflow-y:auto;">
         ${(historial||[]).length ? historial.map(h=>`<div style="font-size:11px;padding:4px 0;border-top:1px solid var(--line);">${fechaCorta(h.created_at.slice(0,10))} · ${h.usuario||'—'} · ${h.campo}: ${h.valor_anterior||'—'} → ${h.valor_nuevo||'—'}${h.motivo?' — '+h.motivo:''}</div>`).join('') : '<p style="font-size:11.5px;color:var(--muted);">Sin historial todavía.</p>'}
       </div>
@@ -4580,16 +4588,23 @@ async function renderPapelISRPM(b) {
   document.querySelectorAll('#pIsrMesesTagRow .tag').forEach(tag => tag.addEventListener('click', () => { STATE_papelesMesISRPM = `${ejercicio}-${tag.dataset.mes}`; renderPapelISRPM(b); }));
 
   const btnVerCalc = document.getElementById('pIsrVerCalculoBtn');
-  if (btnVerCalc) btnVerCalc.addEventListener('click', () => {
+  if (btnVerCalc) btnVerCalc.addEventListener('click', (e) => {
+    e.preventDefault();
     const z = document.getElementById('pIsrCalculoDetalle');
     z.style.display = z.style.display === 'none' ? 'block' : 'none';
   });
 
-  document.getElementById('pIsrHistorialBtn').addEventListener('click', () => {
+  document.getElementById('pIsrHistorialBtn').addEventListener('click', (e) => {
+    e.preventDefault();
     const z = document.getElementById('pIsrHistorialZona');
     z.style.display = z.style.display === 'none' ? 'block' : 'none';
   });
 
+  document.getElementById('pIsrSoporteInput').addEventListener('change', (e) => {
+    const nombre = e.target.files?.[0]?.name;
+    const lbl = document.querySelector('label[for="pIsrSoporteInput"]');
+    if (nombre && lbl) lbl.textContent = '📎 ' + nombre;
+  });
   document.getElementById('pIsrAdjuntarBtn').addEventListener('click', async () => {
     const input = document.getElementById('pIsrSoporteInput');
     if (!input.files || !input.files.length) { toast('Selecciona un archivo primero.', 'error'); return; }

@@ -283,6 +283,74 @@ td{padding:9px 12px;border-bottom:1px solid var(--line);white-space:nowrap;}
 td.wrap-text{white-space:normal;overflow-wrap:break-word;word-break:break-word;}
 tr.total-row td{font-weight:800;background:#f7f9fc;color:var(--navy-1);border-top:2px solid var(--line);}
 .table-wrap{overflow-x:auto;}
+
+/* ================= Papeles de Trabajo — sistema visual reutilizable =================
+   Reutilizable por ISR/IVA/Retenciones y, a futuro, por Centro de Operaciones. No acoplado
+   a un impuesto en particular — las diferencias entre cédulas vienen de los datos, no del
+   componente visual. */
+.pt-card{background:var(--card);border-radius:var(--radius);padding:16px 18px;box-shadow:var(--shadow);border:1px solid var(--line);margin-bottom:14px;}
+.pt-card h3{font-size:14.5px;margin-bottom:8px;color:var(--navy-1);}
+.pt-titulo-cedula{font-size:19px;font-weight:600;color:var(--navy-1);margin-bottom:2px;}
+.pt-subtitulo{font-size:12px;color:var(--muted);}
+.pt-label{font-size:11px;color:var(--muted);display:block;margin-bottom:2px;}
+.pt-value{font-size:13px;font-weight:600;color:var(--navy-1);}
+.pt-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px 16px;}
+
+/* Navegación mensual — mismos .tag, altura/padding uniformes ya heredados de la clase base */
+.pt-meses-row{display:flex;gap:4px;flex-wrap:wrap;margin-top:8px;}
+
+/* Badges de estado del papel (Sin iniciar/En trabajo/Guardado/Revisado) — punto + texto, nunca solo color */
+.pt-estado-badge{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;padding:2px 7px;border-radius:9px;background:#f0f3f8;color:var(--navy-1);white-space:nowrap;}
+.pt-estado-dot{width:6px;height:6px;border-radius:50%;display:inline-block;flex:none;}
+.pt-leyenda{font-size:10px;color:var(--muted);margin-top:5px;}
+.pt-leyenda span{margin-right:10px;white-space:nowrap;}
+
+/* Badges de origen del dato (Contabilidad/Sistema/Captura manual) */
+.pt-origen{display:inline-block;font-size:10px;padding:1px 6px;border-radius:6px;background:#eef2f8;color:var(--navy-3);font-weight:600;letter-spacing:.2px;}
+.pt-origen.contabilidad{background:var(--blue-bg);color:var(--blue);}
+.pt-origen.sistema{background:#f0e9f7;color:#6a3f9e;}
+
+/* Fila de resultado/subtotal dentro de una tabla — nunca color fuerte, solo peso+borde+fondo tenue */
+.pt-fila-resultado td{font-weight:700;border-top:1px solid var(--navy-3);background:#f7f9fc;}
+.pt-fila-cierre td{font-weight:700;border-top:2px solid var(--navy-1);background:#eef2f8;font-size:13.5px;padding-top:8px;padding-bottom:8px;}
+
+/* Banda de cierre (IVA Determinación final) */
+.pt-banda-cierre{display:flex;justify-content:space-between;align-items:baseline;padding:9px 12px;margin-top:6px;border-top:2px solid var(--navy-1);background:#eef2f8;border-radius:0 0 8px 8px;font-weight:700;font-size:14px;}
+.pt-banda-cierre span:last-child{color:var(--navy-1);}
+
+/* Fila Editar — discreta, hover-reveal en escritorio, siempre visible en táctil */
+.pt-editar-link{font-size:11px;color:var(--muted);text-decoration:underline;cursor:pointer;opacity:.55;transition:opacity .12s;}
+tr:hover .pt-editar-link, tr:focus-within .pt-editar-link{opacity:1;}
+@media (hover:none){ .pt-editar-link{opacity:1;} }
+
+/* Actualización y recargos — línea horizontal cuando hay espacio */
+.pt-accesorios-linea{display:flex;flex-wrap:wrap;gap:14px;font-size:12.5px;}
+.pt-accesorios-linea > div{min-width:110px;}
+
+/* Control de archivo adjunto — reemplaza el input nativo */
+.pt-file-btn{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:5px 12px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--navy-1);cursor:pointer;font-weight:600;}
+.pt-file-btn:hover{background:#f7f9fc;}
+.pt-file-hint{font-size:10.5px;color:var(--muted);margin-left:6px;}
+.pt-soporte-item{display:flex;justify-content:space-between;align-items:center;font-size:11.5px;padding:4px 0;border-top:1px solid var(--line);}
+
+/* Responsive — 1024/768/414/375. Tablas conservan scroll horizontal (.table-wrap ya lo hace);
+   aquí se ajustan grids y navegación para no romper ni superponer contenido. */
+@media (max-width: 1024px){
+  .pt-grid{grid-template-columns:repeat(auto-fit,minmax(130px,1fr));}
+}
+@media (max-width: 768px){
+  .pt-grid{grid-template-columns:repeat(2,1fr);}
+  .pt-accesorios-linea{gap:10px;}
+  .pt-accesorios-linea > div{min-width:44%;}
+}
+@media (max-width: 480px){
+  .pt-card{padding:12px 14px;}
+  .pt-grid{grid-template-columns:repeat(2,1fr);gap:6px 10px;}
+  .pt-titulo-cedula{font-size:16.5px;}
+  .pt-meses-row{overflow-x:auto;flex-wrap:nowrap;padding-bottom:2px;}
+  .pt-banda-cierre{font-size:12.5px;padding:8px 10px;}
+}
+
 .table-wrap.scroll-sticky{max-height:65vh;overflow-y:auto;}
 .table-wrap.scroll-sticky table thead th{position:sticky;top:0;background:#f7f9fc;z-index:4;}
 .table-wrap.scroll-sticky table tfoot td,.table-wrap.scroll-sticky table tfoot th{position:sticky;bottom:0;z-index:4;}
