@@ -677,6 +677,9 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
           <div class="tag-row" id="papelesTabBar"></div>
           <div id="sec-resumenfederal"></div>
           <div id="sec-papelisrpm"></div>
+          <div id="sec-papeliva"></div>
+          <div id="sec-papelretisr"></div>
+          <div id="sec-papelretiva"></div>
         </section>
         <section class="section" id="sec-pl"></section>
         <section class="section" id="sec-flujo"></section>
@@ -779,6 +782,67 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
     <div class="modal-actions">
       <button class="btn btn-ghost" id="cancelEditBiz">Cancelar</button>
       <button class="btn btn-gold" id="saveEditBiz">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: agregar concepto — reutilizable por todas las cédulas de Papeles de Trabajo -->
+<div class="modal-bg" id="modalPapelConcepto">
+  <div class="modal" style="width:min(460px,92vw);">
+    <h3>Agregar concepto</h3>
+    <div class="field">
+      <label>Nombre del concepto</label>
+      <input type="text" id="ppConceptoNombre" placeholder="Ej. Ingresos por servicios adicionales">
+      <div id="ppConceptoErrorNombre" style="font-size:11.5px;color:var(--red);margin-top:3px;display:none;"></div>
+    </div>
+    <div class="field">
+      <label>Valor</label>
+      <input type="text" id="ppConceptoValor" inputmode="decimal" placeholder="0.00">
+    </div>
+    <div class="field">
+      <label>Origen</label>
+      <select id="ppConceptoOrigen">
+        <option value="manual">Captura manual / Contador</option>
+        <option value="sistema">Sistema</option>
+        <option value="contabilidad">Contabilidad</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Observación (opcional)</label>
+      <input type="text" id="ppConceptoObservacion" placeholder="Opcional">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="ppConceptoCancelarBtn">Cancelar</button>
+      <button class="btn btn-gold" id="ppConceptoGuardarBtn">Agregar concepto</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: ajustar valor de un concepto — reutilizable por todas las cédulas -->
+<div class="modal-bg" id="modalPapelAjuste">
+  <div class="modal" style="width:min(460px,92vw);">
+    <h3>Ajustar valor</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:10px;" id="ppAjusteConceptoNombre"></p>
+    <div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:6px;">
+      <span>Propuesta / original</span>
+      <strong id="ppAjusteOriginal">—</strong>
+    </div>
+    <div class="field">
+      <label>Nuevo valor aplicado</label>
+      <input type="text" id="ppAjusteNuevoValor" inputmode="decimal">
+    </div>
+    <div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:10px;">
+      <span>Diferencia</span>
+      <strong id="ppAjusteDiferencia">$0.00</strong>
+    </div>
+    <div class="field" id="ppAjusteMotivoZona">
+      <label>Motivo del ajuste (obligatorio)</label>
+      <input type="text" id="ppAjusteMotivo" placeholder="Ej. Factura cancelada posteriormente">
+      <div id="ppAjusteErrorMotivo" style="font-size:11.5px;color:var(--red);margin-top:3px;display:none;"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="ppAjusteCancelarBtn">Cancelar</button>
+      <button class="btn btn-gold" id="ppAjusteGuardarBtn">Guardar ajuste</button>
     </div>
   </div>
 </div>

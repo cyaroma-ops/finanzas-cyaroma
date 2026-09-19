@@ -3711,6 +3711,33 @@ let STATE_impuestosUltimoMes = null;
 let STATE_papelesTab = 'resumen';
 let STATE_papelesAnio = todayStr().slice(0,4);
 
+const CONCEPTOS_DEFAULT_IVA = [
+  { clave: 'iva_trasladado_16', nombre: 'IVA trasladado — gravado 16%' },
+  { clave: 'iva_trasladado_0', nombre: 'IVA trasladado — tasa 0%' },
+  { clave: 'iva_trasladado_exento', nombre: 'IVA trasladado — exento' },
+  { clave: 'iva_trasladado_no_objeto', nombre: 'IVA trasladado — no objeto' },
+  { clave: 'iva_acreditable_compras', nombre: 'IVA acreditable — compras/gastos' },
+  { clave: 'iva_acreditable_servicios', nombre: 'IVA acreditable — servicios' },
+  { clave: 'iva_acreditable_inversiones', nombre: 'IVA acreditable — inversiones' },
+  { clave: 'iva_ajustes', nombre: 'Ajustes' },
+  { clave: 'iva_saldo_favor_anterior', nombre: 'Saldo a favor de periodos anteriores' },
+  { clave: 'iva_compensaciones', nombre: 'Compensaciones' },
+];
+const CONCEPTOS_DEFAULT_RETENCIONES_ISR = [
+  { clave: 'ret_isr_salarios', nombre: 'ISR retenido — salarios' },
+  { clave: 'ret_isr_asimilados', nombre: 'ISR retenido — asimilados a salarios' },
+  { clave: 'ret_isr_honorarios', nombre: 'ISR retenido — servicios profesionales/honorarios' },
+  { clave: 'ret_isr_arrendamiento', nombre: 'ISR retenido — arrendamiento' },
+  { clave: 'ret_isr_resico', nombre: 'ISR retenido — servicios de PF RESICO' },
+  { clave: 'ret_isr_otras', nombre: 'Otras retenciones de ISR' },
+];
+const CONCEPTOS_DEFAULT_RETENCIONES_IVA = [
+  { clave: 'ret_iva_honorarios', nombre: 'IVA retenido — servicios profesionales' },
+  { clave: 'ret_iva_arrendamiento', nombre: 'IVA retenido — arrendamiento' },
+  { clave: 'ret_iva_fletes', nombre: 'IVA retenido — fletes/autotransporte' },
+  { clave: 'ret_iva_otras', nombre: 'Otras retenciones de IVA' },
+];
+
 const CONCEPTOS_DEFAULT_ISR_PM = [
   { clave: 'ingresos_nominales_mes', nombre: 'Ingresos nominales del mes' },
   { clave: 'ingresos_nominales_acum', nombre: 'Ingresos nominales acumulados' },
@@ -3730,11 +3757,14 @@ async function renderPapelesTrabajo() {
   const tabs = [
     { id: 'resumen', label: 'Resumen Federal' },
     { id: 'isrpm', label: 'ISR Personas Morales' },
+    { id: 'iva', label: 'IVA' },
+    { id: 'retisr', label: 'Retenciones ISR' },
+    { id: 'retiva', label: 'Retenciones IVA' },
   ];
   tabBarEl.innerHTML = tabs.map(t => `<div class="tag ${STATE_papelesTab===t.id?'active':''}" data-tab="${t.id}">${t.label}</div>`).join('');
   tabBarEl.querySelectorAll('.tag').forEach(tag => tag.addEventListener('click', () => { STATE_papelesTab = tag.dataset.tab; renderPapelesTrabajo(); }));
 
-  const mapaVistas = { resumen: 'sec-resumenfederal', isrpm: 'sec-papelisrpm' };
+  const mapaVistas = { resumen: 'sec-resumenfederal', isrpm: 'sec-papelisrpm', iva: 'sec-papeliva', retisr: 'sec-papelretisr', retiva: 'sec-papelretiva' };
   Object.entries(mapaVistas).forEach(([tab, id]) => {
     const el = document.getElementById(id);
     if (el) el.style.display = (STATE_papelesTab === tab) ? '' : 'none';
@@ -3745,6 +3775,9 @@ async function renderPapelesTrabajo() {
 
   if (STATE_papelesTab === 'resumen') await renderResumenFederal(b);
   else if (STATE_papelesTab === 'isrpm') await renderPapelISRPM(b);
+  else if (STATE_papelesTab === 'iva') await renderCedulaGenerica(b, 'sec-papeliva', 'iva', 'IVA — Papel de trabajo', CONCEPTOS_DEFAULT_IVA, 'ivaMesISRPM', { resumenIVA: true, accesorios: false });
+  else if (STATE_papelesTab === 'retisr') await renderCedulaGenerica(b, 'sec-papelretisr', 'retenciones_isr', 'Retenciones de ISR — Papel de trabajo', CONCEPTOS_DEFAULT_RETENCIONES_ISR, 'retIsrMes', { resumenIVA: false, accesorios: true });
+  else if (STATE_papelesTab === 'retiva') await renderCedulaGenerica(b, 'sec-papelretiva', 'retenciones_iva', 'Retenciones de IVA — Papel de trabajo', CONCEPTOS_DEFAULT_RETENCIONES_IVA, 'retIvaMes', { resumenIVA: false, accesorios: true });
 }
 
 // Resumen Federal — vista anual. Determinado (del papel), Presentado (fz_declaraciones_fiscales)
@@ -3799,6 +3832,189 @@ async function renderResumenFederal(b) {
   document.getElementById('rfAnioSel').addEventListener('change', (e) => { STATE_papelesAnio = e.target.value; renderResumenFederal(b); });
 }
 
+// Modal genérico "Agregar concepto" — reutilizable por cualquier cédula de Papeles de Trabajo.
+function abrirModalPapelConcepto(onGuardar) {
+  document.getElementById('ppConceptoNombre').value = '';
+  document.getElementById('ppConceptoValor').value = '';
+  document.getElementById('ppConceptoOrigen').value = 'manual';
+  document.getElementById('ppConceptoObservacion').value = '';
+  document.getElementById('ppConceptoErrorNombre').style.display = 'none';
+  document.getElementById('modalPapelConcepto').classList.add('show');
+  document.getElementById('ppConceptoGuardarBtn').onclick = async () => {
+    const nombre = document.getElementById('ppConceptoNombre').value.trim();
+    const err = document.getElementById('ppConceptoErrorNombre');
+    if (!nombre) { err.textContent = 'El nombre del concepto es obligatorio.'; err.style.display = 'block'; return; }
+    const valor = leerMonto(document.getElementById('ppConceptoValor').value) || 0;
+    const origen = document.getElementById('ppConceptoOrigen').value;
+    const observacion = document.getElementById('ppConceptoObservacion').value.trim();
+    document.getElementById('modalPapelConcepto').classList.remove('show');
+    await onGuardar({ concepto: nombre, valorAplicado: valor, origen, observacion: observacion || null });
+  };
+}
+document.getElementById('ppConceptoCancelarBtn').addEventListener('click', () => document.getElementById('modalPapelConcepto').classList.remove('show'));
+
+// Modal genérico "Ajustar valor" — reutilizable. Exige motivo solo cuando hay propuesta real y
+// el valor realmente cambia (nunca sobrescribe una propuesta contable en silencio).
+function abrirModalPapelAjuste(concepto, onGuardar) {
+  const huboPropuesta = concepto.valor_original !== null && concepto.valor_original !== undefined;
+  document.getElementById('ppAjusteConceptoNombre').textContent = concepto.concepto;
+  document.getElementById('ppAjusteOriginal').textContent = huboPropuesta ? fmt(concepto.valor_original) : 'Sin propuesta (captura manual)';
+  document.getElementById('ppAjusteNuevoValor').value = fmtInputVal(Number(concepto.valor_aplicado)||0);
+  document.getElementById('ppAjusteMotivo').value = concepto.motivo_ajuste || '';
+  document.getElementById('ppAjusteMotivoZona').style.display = huboPropuesta ? 'block' : 'none';
+  document.getElementById('ppAjusteErrorMotivo').style.display = 'none';
+  const actualizarDiferencia = () => {
+    const nuevo = leerMonto(document.getElementById('ppAjusteNuevoValor').value) || 0;
+    const diff = huboPropuesta ? nuevo - Number(concepto.valor_original) : null;
+    document.getElementById('ppAjusteDiferencia').textContent = diff !== null ? fmt(diff) : '—';
+    document.getElementById('ppAjusteDiferencia').style.color = diff && Math.abs(diff)>0.004 ? 'var(--gold)' : 'var(--muted)';
+  };
+  actualizarDiferencia();
+  document.getElementById('ppAjusteNuevoValor').oninput = actualizarDiferencia;
+  document.getElementById('modalPapelAjuste').classList.add('show');
+  document.getElementById('ppAjusteGuardarBtn').onclick = async () => {
+    const nuevoValor = leerMonto(document.getElementById('ppAjusteNuevoValor').value) || 0;
+    const motivo = document.getElementById('ppAjusteMotivo').value.trim();
+    const cambioReal = Math.abs(nuevoValor - Number(concepto.valor_aplicado)) > 0.004;
+    if (huboPropuesta && cambioReal && !motivo) {
+      const err = document.getElementById('ppAjusteErrorMotivo');
+      err.textContent = 'El motivo es obligatorio cuando se modifica una propuesta contable.'; err.style.display = 'block';
+      return;
+    }
+    document.getElementById('modalPapelAjuste').classList.remove('show');
+    await onGuardar(nuevoValor, motivo || null);
+  };
+}
+document.getElementById('ppAjusteCancelarBtn').addEventListener('click', () => document.getElementById('modalPapelAjuste').classList.remove('show'));
+
+let STATE_papelesMesGenerica = {};
+
+// Cédula genérica — reutilizada por IVA, Retenciones ISR y Retenciones IVA (misma tabla de
+// conceptos, mismos modales). "Retenciones" NO calcula base/tasa del impuesto que originó la
+// retención — solo conserva el importe a enterar, con accesorios calculados POR CONCEPTO
+// (nunca sobre una suma global previa), reutilizando el mismo motor validado.
+async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault, stateKey, opciones) {
+  const el = document.getElementById(elId);
+  el.innerHTML = `<div class="empty">Cargando…</div>`;
+  const anios = Array.from({length:6}, (_,i) => Number(todayStr().slice(0,4)) - 4 + i);
+  if (!STATE_papelesMesGenerica[stateKey]) STATE_papelesMesGenerica[stateKey] = todayStr().slice(0,7);
+  const periodo = STATE_papelesMesGenerica[stateKey];
+  const ejercicio = periodo.slice(0,4);
+
+  const papel = await obtenerOCrearPapelTrabajo(b.id, tipoPapel, ejercicio, 'mensual', periodo);
+  let { data: conceptos } = await sb.from('fz_papel_conceptos').select('*').eq('papel_id', papel.id).order('orden', { ascending: true });
+  if (!conceptos || !conceptos.length) {
+    for (let i = 0; i < conceptosDefault.length; i++) {
+      const c = conceptosDefault[i];
+      await agregarConceptoPapel(papel.id, { concepto: c.nombre, claveConcepto: c.clave, orden: i, origen: 'manual', valorAplicado: 0, requiereAccesorios: !!opciones.accesorios });
+    }
+    ({ data: conceptos } = await sb.from('fz_papel_conceptos').select('*').eq('papel_id', papel.id).order('orden', { ascending: true }));
+  }
+  const conceptoIds = conceptos.map(c=>c.id);
+  const { data: accesoriosRows } = conceptoIds.length ? await sb.from('fz_papel_concepto_accesorios').select('*').in('concepto_id', conceptoIds) : { data: [] };
+  const accesoriosPorConcepto = Object.fromEntries((accesoriosRows||[]).map(a=>[a.concepto_id, a]));
+
+  const meses = Array.from({length:12}, (_,i) => `${ejercicio}-${String(i+1).padStart(2,'0')}`);
+
+  let resumenHtml = '';
+  if (opciones.resumenIVA) {
+    const valorDe = clave => Number((conceptos.find(c=>c.clave_concepto===clave)||{}).valor_aplicado || 0);
+    const trasladado = valorDe('iva_trasladado_16') + valorDe('iva_trasladado_0');
+    const acreditable = valorDe('iva_acreditable_compras') + valorDe('iva_acreditable_servicios') + valorDe('iva_acreditable_inversiones');
+    const ajustes = valorDe('iva_ajustes'), saldoAnterior = valorDe('iva_saldo_favor_anterior'), compensaciones = valorDe('iva_compensaciones');
+    const resultado = trasladado - acreditable + ajustes - saldoAnterior - compensaciones;
+    resumenHtml = `<div class="card" style="margin-top:12px;">
+      <div style="display:flex;justify-content:space-between;font-size:12.5px;padding:3px 0;"><span>IVA trasladado</span><strong>${fmt(trasladado)}</strong></div>
+      <div style="display:flex;justify-content:space-between;font-size:12.5px;padding:3px 0;"><span>(–) IVA acreditable</span><strong>${fmt(acreditable)}</strong></div>
+      <div style="display:flex;justify-content:space-between;font-size:12.5px;padding:3px 0;"><span>Ajustes</span><strong>${fmt(ajustes)}</strong></div>
+      <div style="display:flex;justify-content:space-between;font-size:12.5px;padding:3px 0;"><span>(–) Saldo a favor anterior</span><strong>${fmt(saldoAnterior)}</strong></div>
+      <div style="display:flex;justify-content:space-between;font-size:12.5px;padding:3px 0;"><span>(–) Compensaciones</span><strong>${fmt(compensaciones)}</strong></div>
+      <div style="display:flex;justify-content:space-between;font-size:13px;padding:6px 0 0;border-top:1px solid var(--line);margin-top:4px;font-weight:700;color:${resultado>=0?'var(--red)':'var(--green)'};"><span>${resultado>=0?'IVA a cargo':'Saldo a favor'}</span><span>${fmt(Math.abs(resultado))}</span></div>
+    </div>`;
+  }
+
+  el.innerHTML = `
+    <div class="card-head" style="margin-bottom:6px;">
+      <h3>${titulo}</h3>
+      <div style="display:flex;gap:8px;">
+        <select class="cg-anio-sel" style="padding:5px 8px;border:1px solid var(--line);border-radius:6px;">
+          ${anios.map(a=>`<option value="${a}" ${String(a)===ejercicio?'selected':''}>${a}</option>`).join('')}
+        </select>
+        <select class="cg-mes-sel" style="padding:5px 8px;border:1px solid var(--line);border-radius:6px;">
+          ${meses.map(m=>`<option value="${m}" ${m===periodo?'selected':''}>${MESES_LARGO[Number(m.slice(5,7))-1]}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:4px;">Estado del papel: <strong>${papel.estado}</strong> · Este papel es de trabajo — guardarlo no genera pólizas, declaraciones ni pagos.</p>
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Concepto</th><th>Origen</th><th>Propuesto</th><th>Aplicado</th><th>Diferencia</th>${opciones.accesorios?'<th>Accesorios</th>':''}<th></th></tr></thead>
+          <tbody>
+            ${conceptos.map(c => {
+              const diferencia = (c.valor_original!==null && c.valor_original!==undefined) ? Number(c.valor_aplicado) - Number(c.valor_original) : null;
+              const acc = accesoriosPorConcepto[c.id];
+              return `<tr>
+                <td>${c.concepto}</td>
+                <td style="font-size:11px;color:var(--muted);">${c.origen}</td>
+                <td class="num">${c.valor_original!==null && c.valor_original!==undefined ? fmt(c.valor_original) : '—'}</td>
+                <td class="num" style="font-weight:600;">${fmt(c.valor_aplicado)}</td>
+                <td class="num" style="color:${diferencia&&Math.abs(diferencia)>0.004?'var(--gold)':'var(--muted)'};">${diferencia!==null?fmt(diferencia):''}</td>
+                ${opciones.accesorios ? `<td style="font-size:11px;">${acc ? `Act. ${fmt(acc.importe_actualizacion_aplicado)} · Rec. ${fmt(acc.importe_recargos_aplicado)}${acc.ajuste_manual?' <span style="color:var(--gold);">(ajustado)</span>':''}` : '<span style="color:var(--muted);">—</span>'}</td>` : ''}
+                <td style="white-space:nowrap;">
+                  <button class="btn btn-ghost btn-sm cg-editar" data-id="${c.id}" style="padding:3px 8px;">Editar</button>
+                  ${opciones.accesorios && Number(c.valor_aplicado) > 0.004 ? `<button class="btn btn-ghost btn-sm cg-calc-accesorios" data-id="${c.id}" style="padding:3px 8px;">Calcular accesorios</button>` : ''}
+                </td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+      <button class="btn btn-ghost btn-sm cg-agregar-concepto" style="margin-top:10px;">+ Agregar concepto</button>
+      <button class="btn btn-gold btn-sm cg-guardar" style="margin-top:10px;margin-left:8px;">Guardar papel</button>
+    </div>
+    ${resumenHtml}
+  `;
+  el.querySelector('.cg-anio-sel').addEventListener('change', (e) => { STATE_papelesMesGenerica[stateKey] = `${e.target.value}-${periodo.slice(5,7)}`; renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault, stateKey, opciones); });
+  el.querySelector('.cg-mes-sel').addEventListener('change', (e) => { STATE_papelesMesGenerica[stateKey] = e.target.value; renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault, stateKey, opciones); });
+
+  el.querySelector('.cg-agregar-concepto').addEventListener('click', () => {
+    abrirModalPapelConcepto(async (datos) => {
+      await agregarConceptoPapel(papel.id, { concepto: datos.concepto, orden: conceptos.length, origen: datos.origen, valorAplicado: datos.valorAplicado, requiereAccesorios: !!opciones.accesorios });
+      toast('Concepto agregado.');
+      await renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault, stateKey, opciones);
+    });
+  });
+
+  el.querySelectorAll('.cg-editar').forEach(btn => btn.addEventListener('click', () => {
+    const concepto = conceptos.find(c => c.id === btn.dataset.id);
+    abrirModalPapelAjuste(concepto, async (nuevoValor, motivo) => {
+      const r = await actualizarValorConceptoPapel(concepto.id, nuevoValor, motivo, STATE.user?.email);
+      if (r.estado === 'falta_motivo') { toast('Falta el motivo del ajuste.', 'error'); return; }
+      if (r.estado === 'error') { toast('Error: ' + r.error, 'error'); return; }
+      toast('Valor actualizado.');
+      await renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault, stateKey, opciones);
+    });
+  }));
+
+  el.querySelectorAll('.cg-calc-accesorios').forEach(btn => btn.addEventListener('click', async () => {
+    const concepto = conceptos.find(c => c.id === btn.dataset.id);
+    // El concepto en sí es el "saldo principal" del renglón — cada retención se calcula de forma
+    // individual, nunca sobre una suma global previa. Tipo de vencimiento genérico (retención).
+    const tipoImpuestoVenc = tipoPapel === 'retenciones_isr' ? 'retencion_isr' : (tipoPapel === 'retenciones_iva' ? 'retencion_iva' : 'iva');
+    await calcularYGuardarAccesoriosConcepto(concepto.id, b.id, periodo, tipoImpuestoVenc, Number(concepto.valor_aplicado), todayStr());
+    toast('Accesorios calculados para este concepto.');
+    await renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault, stateKey, opciones);
+  }));
+
+  el.querySelector('.cg-guardar').addEventListener('click', async () => {
+    await sb.from('fz_papeles_trabajo').update({ estado: 'guardado', updated_at: new Date().toISOString() }).eq('id', papel.id);
+    registrarAuditoria(b.id, 'editar', 'Papeles de Trabajo', `Papel ${tipoPapel} ${periodo} guardado`);
+    toast('Papel guardado. No se generó ninguna póliza ni declaración.');
+    await renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault, stateKey, opciones);
+  });
+}
+
 async function renderPapelISRPM(b) {
   const el = document.getElementById('sec-papelisrpm');
   el.innerHTML = `<div class="empty">Cargando…</div>`;
@@ -3835,7 +4051,7 @@ async function renderPapelISRPM(b) {
     <div class="card">
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Concepto</th><th>Origen</th><th>Valor propuesto</th><th>Valor aplicado</th><th>Diferencia</th><th>Motivo</th></tr></thead>
+          <thead><tr><th>Concepto</th><th>Origen</th><th>Valor propuesto</th><th>Valor aplicado</th><th>Diferencia</th><th>Motivo</th><th></th></tr></thead>
           <tbody>
             ${conceptos.map(c => {
               const diferencia = (c.valor_original!==null && c.valor_original!==undefined) ? Number(c.valor_aplicado) - Number(c.valor_original) : null;
@@ -3843,9 +4059,10 @@ async function renderPapelISRPM(b) {
                 <td>${c.concepto}</td>
                 <td style="font-size:11px;color:var(--muted);">${c.origen}</td>
                 <td class="num">${c.valor_original!==null && c.valor_original!==undefined ? fmt(c.valor_original) : '—'}</td>
-                <td><input type="text" class="pisr-valor" data-id="${c.id}" inputmode="decimal" value="${fmtInputVal(Number(c.valor_aplicado)||0)}" style="width:110px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;text-align:right;"></td>
+                <td class="num" style="font-weight:600;">${fmt(c.valor_aplicado)}</td>
                 <td class="num" style="color:${diferencia&&Math.abs(diferencia)>0.004?'var(--gold)':'var(--muted)'};">${diferencia!==null?fmt(diferencia):''}</td>
                 <td style="font-size:11px;color:var(--muted);">${c.motivo_ajuste||''}</td>
+                <td><button class="btn btn-ghost btn-sm pisr-editar" data-id="${c.id}" style="padding:3px 8px;">Editar</button></td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -3858,28 +4075,26 @@ async function renderPapelISRPM(b) {
   document.getElementById('pIsrAnioSel').addEventListener('change', (e) => { STATE_papelesMesISRPM = `${e.target.value}-${periodo.slice(5,7)}`; renderPapelISRPM(b); });
   document.getElementById('pIsrMesSel').addEventListener('change', (e) => { STATE_papelesMesISRPM = e.target.value; renderPapelISRPM(b); });
 
-  document.getElementById('pIsrAgregarConceptoBtn').addEventListener('click', async () => {
-    const nombre = prompt('Nombre del concepto a agregar:');
-    if (!nombre || !nombre.trim()) return;
-    await agregarConceptoPapel(papel.id, { concepto: nombre.trim(), orden: conceptos.length, origen: 'manual', valorAplicado: 0 });
-    await renderPapelISRPM(b);
+  document.getElementById('pIsrAgregarConceptoBtn').addEventListener('click', () => {
+    abrirModalPapelConcepto(async (datos) => {
+      await agregarConceptoPapel(papel.id, { concepto: datos.concepto, orden: conceptos.length, origen: datos.origen, valorAplicado: datos.valorAplicado });
+      toast('Concepto agregado.');
+      await renderPapelISRPM(b);
+    });
   });
 
+  document.querySelectorAll('.pisr-editar').forEach(btn => btn.addEventListener('click', () => {
+    const concepto = conceptos.find(c => c.id === btn.dataset.id);
+    abrirModalPapelAjuste(concepto, async (nuevoValor, motivo) => {
+      const r = await actualizarValorConceptoPapel(concepto.id, nuevoValor, motivo, STATE.user?.email);
+      if (r.estado === 'falta_motivo') { toast('Falta el motivo del ajuste.', 'error'); return; }
+      if (r.estado === 'error') { toast('Error: ' + r.error, 'error'); return; }
+      toast('Valor actualizado.');
+      await renderPapelISRPM(b);
+    });
+  }));
+
   document.getElementById('pIsrGuardarBtn').addEventListener('click', async () => {
-    for (const c of conceptos) {
-      const input = document.querySelector(`.pisr-valor[data-id="${c.id}"]`);
-      const nuevoValor = leerMonto(input.value) || 0;
-      if (Math.abs(nuevoValor - Number(c.valor_aplicado)) > 0.004) {
-        const huboPropuesta = c.valor_original !== null && c.valor_original !== undefined;
-        let motivo = c.motivo_ajuste;
-        if (huboPropuesta) {
-          motivo = prompt(`"${c.concepto}" tenía una propuesta contable de ${fmt(c.valor_original)} — indica el motivo del ajuste a ${fmt(nuevoValor)}:`);
-          if (motivo === null) continue; // se canceló este renglón, no se guarda su cambio
-        }
-        const r = await actualizarValorConceptoPapel(c.id, nuevoValor, motivo, STATE.user?.email);
-        if (r.estado === 'falta_motivo') { toast(`Falta motivo para "${c.concepto}".`, 'error'); return; }
-      }
-    }
     await sb.from('fz_papeles_trabajo').update({ estado: 'guardado', updated_at: new Date().toISOString() }).eq('id', papel.id);
     registrarAuditoria(b.id, 'editar', 'Papeles de Trabajo', `Papel ISR PM ${periodo} guardado`);
     toast('Papel guardado. No se generó ninguna póliza ni declaración.');
