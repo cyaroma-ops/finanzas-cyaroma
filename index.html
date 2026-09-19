@@ -1024,6 +1024,31 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   </div>
 </div>
 
+<!-- Modal: Pérdida fiscal aplicada acumulada — desde ISR Personas Morales -->
+<div class="modal-bg" id="modalPerdidasAplicadasISRPM">
+  <div class="modal" style="width:min(520px,92vw);">
+    <h3>Pérdida fiscal aplicada acumulada</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:10px;" id="pisrPerdConceptoNombre"></p>
+    <div class="pt-grid" style="margin-bottom:10px;">
+      <div><span class="pt-label">Utilidad fiscal antes de pérdidas</span><span class="pt-value" id="pisrPerdUtilidad">—</span></div>
+      <div><span class="pt-label">Pérdida fiscal disponible</span><span class="pt-value" id="pisrPerdDisponible">—</span></div>
+      <div><span class="pt-label">Máximo aplicable</span><span class="pt-value" style="color:var(--gold);" id="pisrPerdMaximo">—</span></div>
+      <div><span class="pt-label">Base después de pérdidas</span><span class="pt-value" id="pisrPerdBase">—</span></div>
+    </div>
+    <div class="field"><label>Pérdida fiscal aplicada acumulada</label><input type="text" id="pisrPerdImporte" inputmode="decimal"></div>
+    <div id="pisrPerdDistribucionZona" style="display:none;margin:10px 0;">
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:6px;">Distribución entre pérdidas (la más antigua se aplica primero — puedes ajustarla):</p>
+      <div id="pisrPerdDistribucionLista"></div>
+    </div>
+    <div id="pisrPerdAvisos" style="font-size:11.5px;color:var(--gold);margin-top:6px;display:none;"></div>
+    <div id="pisrPerdError" style="font-size:11.5px;color:var(--red);margin-top:6px;display:none;"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="pisrPerdCancelarBtn">Cancelar</button>
+      <button class="btn btn-gold" id="pisrPerdGuardarBtn">Guardar</button>
+    </div>
+  </div>
+</div>
+
 <!-- Modal: agregar/editar día inhábil fiscal -->
 <div class="modal-bg" id="modalDiaInhabil">
   <div class="modal" style="width:min(440px,92vw);">

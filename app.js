@@ -4653,37 +4653,46 @@ function abrirModalPerdidaAplicacion(b, p, ejercicio, mes) {
   document.getElementById('pfApAdvertencia').style.display = 'none';
   document.getElementById('modalPerdidaAplicacion').classList.add('show');
 
-  // Referencia informativa — lo que el contador ya capturó en ISR PM para ESTE mes (no es lo
-  // mismo que el acumulado que se pide aquí, así que se muestra como dato de apoyo, no se
-  // auto-rellena el campo).
   document.querySelectorAll('.pf-ap-referencia-isr').forEach(el => el.remove());
+  let totalIsrPmDelMes = null; // suma real de ISR PM para este mes, entre TODAS las pérdidas — usado para coordinar, no solo mostrar
   (async () => {
     const papelIsrMes = await obtenerPapelTrabajoSiExiste(b.id, 'isr_pm', ejercicio, 'mensual', periodo);
     if (!papelIsrMes) return;
     const { data: conceptoIsr } = await sb.from('fz_papel_conceptos').select('valor_aplicado').eq('papel_id', papelIsrMes.id).eq('clave_concepto', 'perdidas_aplicables').maybeSingle();
-    if (conceptoIsr && Number(conceptoIsr.valor_aplicado) > 0) {
+    if (conceptoIsr) {
+      totalIsrPmDelMes = redondearMoneda(conceptoIsr.valor_aplicado);
       const ref = document.createElement('p');
       ref.className = 'pf-ap-referencia-isr';
       ref.style.cssText = 'font-size:10.5px;color:var(--muted);margin-top:4px;';
-      ref.textContent = `Referencia — ISR PM capturó ${fmt(conceptoIsr.valor_aplicado)} de pérdidas aplicadas en ${MESES_LARGO[Number(mes)-1]} (no es el acumulado; confírmalo tú).`;
+      ref.textContent = `ISR PM ya tiene un papel guardado para ${MESES_LARGO[Number(mes)-1]} con ${fmt(totalIsrPmDelMes)} de pérdidas aplicadas (acumulado total entre pérdidas). Editar aquí manualmente puede desincronizarlo.`;
       document.getElementById('pfApImporte').parentElement.appendChild(ref);
     }
   })();
 
+  let confirmadoDivergencia = false;
   document.getElementById('pfApGuardarBtn').onclick = async () => {
     const importe = leerMonto(document.getElementById('pfApImporte').value);
     if (importe === null || importe < 0) { toast('Indica el importe acumulado.', 'error'); return; }
     const importeNormalizado = redondearMoneda(importe);
     const saldoNormalizado = p.saldoDisponible !== null ? redondearMoneda(p.saldoDisponible) : null;
+    const adv = document.getElementById('pfApAdvertencia');
     if (saldoNormalizado !== null && importeNormalizado > saldoNormalizado) {
-      const adv = document.getElementById('pfApAdvertencia');
       if (adv.style.display === 'none') {
         adv.textContent = `Este importe excede el saldo disponible (${fmt(saldoNormalizado)}). Vuelve a presionar Guardar para confirmarlo de todas formas, o corrígelo.`;
         adv.style.display = 'block';
-        return; // primera vez: solo advierte, no guarda — exige confirmación explícita
+        return;
       }
     }
-    await registrarAplicacionProvisionalPerdida(p.id, ejercicio, periodo, importeNormalizado, STATE.user?.email);
+    // Coordinación con ISR PM — nunca dejar que diverjan en silencio. Si existe un papel de ISR
+    // PM para este mes y esta pérdida es la única con saldo, el total de esa pérdida debería
+    // coincidir con lo que ISR PM tiene capturado; si no coincide, se exige confirmación explícita.
+    if (!confirmadoDivergencia && totalIsrPmDelMes !== null && Math.abs(totalIsrPmDelMes - importeNormalizado) > 0.004) {
+      adv.textContent = `ISR PM tiene ${fmt(totalIsrPmDelMes)} capturado para este mes — distinto de lo que estás por guardar aquí (${fmt(importeNormalizado)}). Esta edición manual quedará DESINCRONIZADA de ISR PM. Vuelve a presionar Guardar para confirmarlo de todas formas (recomendado: edita desde ISR PM en su lugar).`;
+      adv.style.display = 'block';
+      confirmadoDivergencia = true;
+      return;
+    }
+    await registrarAplicacionProvisionalPerdida(p.id, ejercicio, periodo, importeNormalizado, STATE.user?.email, { origen: 'manual' });
     document.getElementById('modalPerdidaAplicacion').classList.remove('show');
     toast('Aplicación registrada.');
     await renderPerdidasFiscales(b);
@@ -4803,6 +4812,84 @@ document.getElementById('ppConceptoCancelarBtn').addEventListener('click', () =>
 
 // Modal genérico "Ajustar valor" — reutilizable. Exige motivo solo cuando hay propuesta real y
 // el valor realmente cambia (nunca sobrescribe una propuesta contable en silencio).
+// Modal dedicado — captura de "Pérdidas fiscales aplicadas" desde ISR PM. Una sola acción de
+// Guardar sincroniza ambos lados: el concepto propio de ISR PM (para que se siga viendo en su
+// papel) y la Cédula de Pérdidas Fiscales (fuente de control real), usando exactamente las
+// mismas funciones ya probadas — nunca una tabla ni una lógica paralela.
+function abrirModalPerdidasAplicadasISRPM(b, concepto, ejercicio, periodo, utilidadFiscalActual, refInicial, callbackRerender, conceptoBase) {
+  document.getElementById('pisrPerdConceptoNombre').textContent = `${MESES_LARGO[Number(periodo.slice(5,7))-1]} ${ejercicio} — acumulado del ejercicio`;
+  document.getElementById('pisrPerdUtilidad').textContent = utilidadFiscalActual!==null ? fmt(utilidadFiscalActual) : '—';
+  document.getElementById('pisrPerdImporte').value = refInicial.aplicadoActual!==null ? fmtInputVal(refInicial.aplicadoActual) : (concepto.valor_aplicado ? fmtInputVal(Number(concepto.valor_aplicado)) : '');
+  document.getElementById('pisrPerdAvisos').style.display = 'none';
+  document.getElementById('pisrPerdError').style.display = 'none';
+
+  const actualizarVistaTope = (ref) => {
+    document.getElementById('pisrPerdDisponible').textContent = ref.perdidas.length ? fmt(ref.saldoTotalDisponible) : '—';
+    document.getElementById('pisrPerdMaximo').textContent = ref.tope.ok ? fmt(ref.tope.maximo) : '—';
+    if (!ref.tope.ok) {
+      document.getElementById('pisrPerdError').textContent = ref.tope.razon;
+      document.getElementById('pisrPerdError').style.display = 'block';
+    }
+  };
+  actualizarVistaTope(refInicial);
+
+  const actualizarBaseYDistribucion = () => {
+    const importe = leerMonto(document.getElementById('pisrPerdImporte').value) || 0;
+    const base = utilidadFiscalActual !== null ? redondearMoneda(Math.max(0, utilidadFiscalActual - importe)) : null;
+    document.getElementById('pisrPerdBase').textContent = base !== null ? fmt(base) : '—';
+    const zona = document.getElementById('pisrPerdDistribucionZona');
+    const lista = document.getElementById('pisrPerdDistribucionLista');
+    if (refInicial.perdidasConSaldo.length > 1 && importe > 0.004) {
+      const { distribucion } = distribuirAplicacionEntrePerdidas(refInicial.perdidasConSaldo, importe);
+      lista.innerHTML = distribucion.map(d => `<div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0;"><span>Pérdida ${d.ejercicioOrigen}</span><strong>${fmt(d.monto)}</strong></div>`).join('') || '<p style="font-size:11px;color:var(--muted);">Sin saldo suficiente para distribuir ese importe.</p>';
+      zona.style.display = 'block';
+    } else { zona.style.display = 'none'; }
+  };
+  actualizarBaseYDistribucion();
+  document.getElementById('pisrPerdImporte').oninput = actualizarBaseYDistribucion;
+
+  document.getElementById('modalPerdidasAplicadasISRPM').classList.add('show');
+
+  let confirmadoConAviso = false;
+  document.getElementById('pisrPerdGuardarBtn').onclick = async () => {
+    const err = document.getElementById('pisrPerdError'), avisos = document.getElementById('pisrPerdAvisos');
+    const importe = leerMonto(document.getElementById('pisrPerdImporte').value);
+    if (importe === null || importe < 0) { err.textContent = 'Indica un importe válido (puede ser $0.00).'; err.style.display = 'block'; return; }
+
+    if (!confirmadoConAviso) {
+      const listaAvisos = await verificarConsistenciaAcumuladoMensual(b.id, ejercicio, periodo, redondearMoneda(importe));
+      if (listaAvisos.length) {
+        avisos.innerHTML = listaAvisos.join('<br>') + '<br><strong>Vuelve a presionar Guardar para confirmar de todas formas.</strong>';
+        avisos.style.display = 'block';
+        confirmadoConAviso = true;
+        return;
+      }
+    }
+
+    const r = await guardarPerdidasAplicadasDesdeISRPM(b.id, ejercicio, periodo, importe, utilidadFiscalActual, STATE.user?.email);
+    if (r.estado === 'falta_dato') { err.textContent = r.razon; err.style.display = 'block'; return; }
+    if (r.estado === 'excede_maximo') { err.textContent = `Máximo aplicable: ${fmt(r.maximo)}. El importe capturado excede la ${r.topeGobernante==='utilidad'?'utilidad fiscal disponible':'pérdida fiscal disponible'} para aplicar en este periodo.`; err.style.display = 'block'; return; }
+    if (r.estado === 'sin_saldo_suficiente') { err.textContent = 'No hay saldo suficiente entre las pérdidas disponibles para cubrir este importe.'; err.style.display = 'block'; return; }
+    if (r.estado === 'error') { err.textContent = 'Error: ' + r.error; err.style.display = 'block'; return; }
+
+    // Sincroniza el propio concepto de ISR PM con el mismo importe — nunca dos números que puedan divergir.
+    const { concepto: conceptoReal } = await asegurarConceptoPersistido(b.id, 'isr_pm', ejercicio, 'mensual', periodo, concepto);
+    await actualizarValorConceptoPapel(conceptoReal.id, redondearMoneda(importe), null, STATE.user?.email);
+
+    // La fila Base reacciona automáticamente — nunca queda negativa por la aplicación de pérdidas.
+    if (utilidadFiscalActual !== null && conceptoBase) {
+      const baseNueva = redondearMoneda(Math.max(0, utilidadFiscalActual - importe));
+      const { concepto: baseReal } = await asegurarConceptoPersistido(b.id, 'isr_pm', ejercicio, 'mensual', periodo, conceptoBase);
+      await actualizarValorConceptoPapel(baseReal.id, baseNueva, null, STATE.user?.email);
+    }
+
+    document.getElementById('modalPerdidasAplicadasISRPM').classList.remove('show');
+    toast('Pérdida fiscal aplicada actualizada — sincronizada con la Cédula de Pérdidas Fiscales.');
+    await callbackRerender(b);
+  };
+}
+document.getElementById('pisrPerdCancelarBtn').addEventListener('click', () => document.getElementById('modalPerdidasAplicadasISRPM').classList.remove('show'));
+
 function abrirModalPapelAjuste(concepto, onGuardar) {
   const huboPropuesta = concepto.valor_original !== null && concepto.valor_original !== undefined;
   document.getElementById('ppAjusteConceptoNombre').textContent = concepto.concepto;
@@ -5159,8 +5246,10 @@ async function renderPapelISRPM(b) {
 
   // Integración de solo lectura con Pérdidas Fiscales — nunca impone el importe, solo lo muestra
   // como referencia para que el contador decida. Nunca dispara ningún guardado cruzado.
-  const perdidasParaReferencia = await obtenerPerdidasFiscalesSiExisten(b.id, ejercicio);
-  const perdidasConSaldo = perdidasParaReferencia.filter(p => p.saldoDisponible !== null);
+  const conceptoUtilidadFiscal = conceptos.find(c=>c.clave_concepto==='utilidad_fiscal');
+  const utilidadFiscalActual = (conceptoUtilidadFiscal && conceptoUtilidadFiscal.id) ? Number(conceptoUtilidadFiscal.valor_aplicado) : null;
+  const refPerdidas = await obtenerReferenciaPerdidasParaISRPM(b.id, ejercicio, periodo, utilidadFiscalActual);
+  const perdidasConSaldo = refPerdidas.perdidasConSaldo;
 
   // Encabezado — negocio, RFC, régimen vigente.
   const { data: regimenes } = await sb.from('fz_regimenes_fiscales_negocio').select('*').eq('business_id', b.id).is('vigente_hasta', null).order('vigente_desde', { ascending: false }).limit(1);
@@ -5216,12 +5305,23 @@ async function renderPapelISRPM(b) {
               const esCierre = c.clave_concepto==='resultado_determinado';
               const esPerdidas = c.clave_concepto==='perdidas_aplicables';
               return `<tr${esCierre?' class="pt-fila-cierre"':''}>
-                <td>${c.concepto}${c.valor_original!==null&&c.valor_original!==undefined?` <span class="pt-origen ${c.origen}">${etiquetaOrigen(c.origen)}: ${formatearValorConcepto(c.valor_original,fmto)}${Math.abs(Number(c.valor_aplicado)-Number(c.valor_original))>0.004?' → '+formatearValorConcepto(c.valor_aplicado,fmto)+' (dif. '+formatearValorConcepto(Number(c.valor_aplicado)-Number(c.valor_original),fmto)+')':''}</span>`:''}${esPerdidas && perdidasConSaldo.length ? `<br><span style="font-size:10px;color:var(--muted);">Referencia — Pérdidas Fiscales: ${perdidasConSaldo.map(p=>`${p.ejercicio_origen} saldo ${fmt(p.saldoDisponible)}`).join(' · ')}</span>` : ''}</td>
+                <td>${c.concepto}${c.valor_original!==null&&c.valor_original!==undefined?` <span class="pt-origen ${c.origen}">${etiquetaOrigen(c.origen)}: ${formatearValorConcepto(c.valor_original,fmto)}${Math.abs(Number(c.valor_aplicado)-Number(c.valor_original))>0.004?' → '+formatearValorConcepto(c.valor_aplicado,fmto)+' (dif. '+formatearValorConcepto(Number(c.valor_aplicado)-Number(c.valor_original),fmto)+')':''}</span>`:''}</td>
                 <td class="num" style="font-weight:600;">${formatearValorConcepto(c.valor_aplicado,fmto)}</td>
                 <td class="num">${acumuladoPar!==null?formatearValorConcepto(acumuladoPar,fmto):''}</td>
                 <td>${!c.valor_original && !esCierre ? `<span class="pt-origen ${c.origen}">${etiquetaOrigen(c.origen)}</span>` : ''}</td>
-                <td><a href="#" class="pisr-editar pt-editar-link" data-idx="${idx}">Editar</a></td>
-              </tr>`;
+                <td><a href="#" class="${esPerdidas?'pisr-editar-perdidas':'pisr-editar'} pt-editar-link" data-idx="${idx}">Editar</a></td>
+              </tr>${esPerdidas ? `<tr><td colspan="5" style="padding:10px 0 12px;background:#f7f9fc;">
+                <div class="pt-grid" style="padding:0 12px;">
+                  <div><span class="pt-label">Utilidad fiscal antes de pérdidas</span><span class="pt-value">${refPerdidas.tope.ok||utilidadFiscalActual!==null?fmt(utilidadFiscalActual||0):'—'}</span></div>
+                  <div><span class="pt-label">Pérdida fiscal disponible</span><span class="pt-value">${refPerdidas.perdidas.length?fmt(refPerdidas.saldoTotalDisponible):'—'}</span></div>
+                  <div><span class="pt-label">Máximo aplicable</span><span class="pt-value" style="color:var(--gold);">${refPerdidas.tope.ok?fmt(refPerdidas.tope.maximo):'—'}</span></div>
+                  <div><span class="pt-label">Pérdida aplicada acumulada</span><span class="pt-value">${refPerdidas.aplicadoActual!==null?fmt(refPerdidas.aplicadoActual):'—'}</span></div>
+                  <div><span class="pt-label">Base después de pérdidas</span><span class="pt-value">${refPerdidas.baseResultante!==null?fmt(refPerdidas.baseResultante):'—'}</span></div>
+                  <div><span class="pt-label">Estado</span><span class="pt-value" style="font-weight:500;">${perdidasConSaldo.length?perdidasConSaldo.map(p=>p.control&&p.control.mesAgotamiento?`${p.ejercicio_origen}: agotada ${MESES_LARGO[Number(p.control.mesAgotamiento)-1]}`:`${p.ejercicio_origen}: disponible`).join(' · '):(refPerdidas.perdidas.length?'Sin saldo disponible':'Sin pérdidas registradas')}</span></div>
+                </div>
+                ${!refPerdidas.tope.ok ? `<p style="font-size:11px;color:var(--red);padding:6px 12px 0;">${refPerdidas.tope.razon}</p>` : ''}
+                <a href="#" class="pt-editar-link pisr-ver-cedula-perdidas" style="display:inline-block;margin:6px 12px 0;opacity:1;">Ver Cédula de Pérdidas Fiscales →</a>
+              </td></tr>` : ''}`;
             }).join('')}
           </tbody>
         </table>
@@ -5355,6 +5455,17 @@ async function renderPapelISRPM(b) {
       toast('Valor actualizado.');
       await renderPapelISRPM(b);
     });
+  }));
+
+  document.querySelectorAll('.pisr-editar-perdidas').forEach(btn => btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    const concepto = conceptos[Number(btn.dataset.idx)];
+    abrirModalPerdidasAplicadasISRPM(b, concepto, ejercicio, periodo, utilidadFiscalActual, refPerdidas, renderPapelISRPM, conceptos.find(x=>x.clave_concepto==='base'));
+  }));
+  document.querySelectorAll('.pisr-ver-cedula-perdidas').forEach(a => a.addEventListener('click', (e) => {
+    e.preventDefault();
+    STATE_papelesTab = 'perdidas'; STATE_perdidasEjercicio = ejercicio;
+    renderPapelesTrabajo();
   }));
 
   document.getElementById('pIsrGuardarBtn').addEventListener('click', async () => {
