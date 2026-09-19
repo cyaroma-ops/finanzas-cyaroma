@@ -2930,16 +2930,41 @@ async function obtenerPropuestaContable(businessId, tipoPapel, claveConcepto, pe
   const { data: mapeos } = await sb.from('fz_mapeo_cuenta_concepto_fiscal').select('subcuenta_id').eq('business_id', businessId).eq('tipo_papel', tipoPapel).eq('clave_concepto', claveConcepto);
   if (!mapeos || !mapeos.length) return { hayPropuesta: false };
   const { start, end } = monthBounds(periodo);
-  const { filas } = await getLibroPartidaDobleConOrigen(businessId, end, start);
   const subIds = new Set(mapeos.map(m=>m.subcuenta_id));
   let total = 0;
   const fuentes = [];
+
+  // Fuente 1 — motor de partida doble (pólizas, facturas, bancos, etc.). Se suma el NETO
+  // (abono − cargo), respetando la naturaleza contable — nunca el valor absoluto por línea, que
+  // distorsionaría el total ante cualquier ajuste/nota de crédito posterior sobre la misma cuenta.
+  const { filas } = await getLibroPartidaDobleConOrigen(businessId, end, start);
   filas.filter(f => f.clave.startsWith('sub:') && subIds.has(f.clave.slice(4))).forEach(f => {
     const monto = f.abono - f.cargo;
-    total += Math.abs(monto);
-    fuentes.push({ tipoFuente: 'subcuenta', subcuentaId: f.clave.slice(4), importe: Math.abs(monto), fecha: f.fecha, referenciaTabla: f.origenTabla||null, referenciaId: f.origenId||null });
+    total += monto;
+    fuentes.push({ tipoFuente: 'subcuenta', subcuentaId: f.clave.slice(4), importe: monto, fecha: f.fecha, referenciaTabla: f.origenTabla||null, referenciaId: f.origenId||null });
   });
-  return { hayPropuesta: fuentes.length > 0, total, fuentes };
+
+  // Fuente 2 — módulo de Ventas (fz_ventas). Las categorías de venta vinculadas a una subcuenta
+  // (fz_conceptos_venta.subcuenta_vinculada_id) registran lo vendido en venta_data, pero NO
+  // generan póliza automática — por eso nunca aparecen en el motor de partida doble anterior.
+  // Se usa venta_data ("lo vendido") y no recon_data ("lo realmente recibido" — ese es para
+  // conciliación de caja/bancos, no para el ingreso fiscal del periodo).
+  const { data: conceptosVenta } = await sb.from('fz_conceptos_venta').select('id, subcuenta_vinculada_id, tipo').eq('business_id', businessId);
+  const conceptosVentaMapeados = (conceptosVenta||[]).filter(cv => cv.subcuenta_vinculada_id && subIds.has(cv.subcuenta_vinculada_id));
+  if (conceptosVentaMapeados.length) {
+    const { data: ventas } = await sb.from('fz_ventas').select('id, fecha, venta_data').eq('business_id', businessId).gte('fecha', start).lte('fecha', end);
+    (ventas||[]).forEach(v => {
+      conceptosVentaMapeados.forEach(cv => {
+        const monto = Number((v.venta_data||{})[cv.id]) || 0;
+        if (!monto) return;
+        const signo = cv.tipo === 'resta' ? -1 : 1;
+        total += monto * signo;
+        fuentes.push({ tipoFuente: 'venta', subcuentaId: cv.subcuenta_vinculada_id, importe: monto * signo, fecha: v.fecha, referenciaTabla: 'fz_ventas', referenciaId: v.id });
+      });
+    });
+  }
+
+  return { hayPropuesta: fuentes.length > 0, total: redondearMoneda(total), fuentes };
 }
 
 // ============================================================
