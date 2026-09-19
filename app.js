@@ -2295,6 +2295,14 @@ async function crearDeclaracionFiscal(businessId, pagoImpuestoId, datos) {
     if (!datos.numero_complementaria) return { estado: 'error', error: 'Falta el número de secuencia de la complementaria.' };
     const { data: yaExisteMismoNumero } = await sb.from('fz_declaraciones_fiscales').select('id').eq('pago_impuesto_id', pagoImpuestoId).eq('tipo_declaracion', 'complementaria').eq('numero_complementaria', datos.numero_complementaria).maybeSingle();
     if (yaExisteMismoNumero) return { estado: 'error', error: `Ya existe la Complementaria ${datos.numero_complementaria} para esta obligación.` };
+    // La anterior referenciada debe ser REALMENTE la vigente en este momento — nunca una
+    // declaración ya superada. Esto es lo que impide la bifurcación (dos complementarias
+    // naciendo del mismo padre); el índice único en base de datos es el respaldo final ante
+    // doble clic/concurrencia, pero este mensaje es más claro para el usuario.
+    const vigenteActual = await obtenerDeclaracionVigente(pagoImpuestoId);
+    if (!vigenteActual || datos.declaracion_anterior_id !== vigenteActual.id) {
+      return { estado: 'error', error: 'La declaración anterior indicada ya no es la vigente — alguien más pudo haber registrado otra complementaria. Recarga y vuelve a intentar.' };
+    }
   }
 
   const payload = {
@@ -2318,13 +2326,43 @@ async function crearDeclaracionFiscal(businessId, pagoImpuestoId, datos) {
 }
 
 // La declaración VIGENTE de una obligación es la "punta" de la cadena Normal→Complementaria 1→
-// Complementaria 2→... : la única declaración que ninguna otra referencia como su anterior. Si
-// no hay ninguna declaración, regresa null (nunca se inventa una).
+// Complementaria 2→... : la única declaración (no anulada) que ninguna otra (no anulada)
+// referencia como su anterior. Una declaración anulada nunca puede ser la vigente — si estaba en
+// la punta y se anula, la cadena "retrocede" naturalmente a la anterior no anulada, sin
+// reasignar nada. Si no hay ninguna declaración vigente, regresa null (nunca se inventa una).
 async function obtenerDeclaracionVigente(pagoImpuestoId) {
   const { data: todas } = await sb.from('fz_declaraciones_fiscales').select('*').eq('pago_impuesto_id', pagoImpuestoId).order('created_at', { ascending: true });
   if (!todas || !todas.length) return null;
-  const referenciadas = new Set(todas.filter(d=>d.declaracion_anterior_id).map(d=>d.declaracion_anterior_id));
-  return todas.find(d => !referenciadas.has(d.id)) || todas[todas.length-1];
+  const candidatas = todas.filter(d => d.estado !== 'anulada');
+  if (!candidatas.length) return null;
+  const referenciadas = new Set(candidatas.filter(d=>d.declaracion_anterior_id).map(d=>d.declaracion_anterior_id));
+  return candidatas.find(d => !referenciadas.has(d.id)) || candidatas[candidatas.length-1];
+}
+
+// Anula una declaración — NUNCA DELETE físico. Bloquea si rompería la cadena (tiene una
+// declaración posterior no anulada encadenada a ella) o si tiene pagos vigentes vinculados (esos
+// pagos deben revertirse primero, nunca se tocan automáticamente). Al anular la que estaba
+// vigente, la cadena retrocede sola a la anterior no anulada — obtenerDeclaracionVigente ya lo
+// resuelve, sin reasignar declaracion_id de ningún pago existente.
+async function anularDeclaracionFiscal(declaracionId, motivo, usuarioEmail) {
+  if (!STATE.esAdministrador) return { estado: 'sin_permiso' };
+  if (!motivo || !motivo.trim()) return { estado: 'falta_motivo' };
+  const { data: decl } = await sb.from('fz_declaraciones_fiscales').select('*').eq('id', declaracionId).maybeSingle();
+  if (!decl) return { estado: 'no_encontrada' };
+  if (decl.estado === 'anulada') return { estado: 'ya_anulada' };
+
+  const { data: descendientes } = await sb.from('fz_declaraciones_fiscales').select('id,estado').eq('declaracion_anterior_id', declaracionId);
+  if ((descendientes||[]).some(d => d.estado !== 'anulada')) {
+    return { estado: 'tiene_descendientes', error: 'No se puede anular: existe una declaración posterior (Complementaria) encadenada a esta. Anula primero esa, o revisa la cadena.' };
+  }
+  const { data: aplicaciones } = await sb.from('fz_aplicaciones_pago_fiscal').select('id').eq('declaracion_id', declaracionId).is('revertido_at', null);
+  if (aplicaciones && aplicaciones.length) {
+    return { estado: 'tiene_pagos', error: 'No se puede anular: tiene pagos vigentes vinculados. Revierte primero esos pagos desde su Historial.' };
+  }
+
+  const { error } = await sb.from('fz_declaraciones_fiscales').update({ estado: 'anulada', anulado_en: new Date().toISOString(), anulado_por: usuarioEmail || null, motivo_anulacion: motivo.trim() }).eq('id', declaracionId);
+  if (error) return { estado: 'error', error: error.message };
+  return { estado: 'anulada' };
 }
 
 // Importe exigible REAL de una obligación, a una fecha de pago — fuente única que usan tanto el
@@ -3463,14 +3501,37 @@ async function estadosDeImpuesto(p) {
     ? { texto: 'Declarada' + (p.tipo_declaracion === 'complementaria' ? ' (Complementaria)' : ''), color: 'var(--green)' }
     : { texto: 'No presentada', color: 'var(--gold)' };
   let pago;
+
+  // Si existe una declaración fiscal formal (Fase 5+), el estado se deriva del saldo económico
+  // REAL (declaración vigente − aplicaciones vigentes), fuente única compartida con el modal de
+  // pago — así una Complementaria que aumente o disminuya el importe se refleja de inmediato,
+  // sin tocar el histórico. Si no hay ninguna declaración (registros legacy/"otro"), se conserva
+  // el comportamiento anterior tal cual, sin cambios (compatibilidad con el E2E ya validado).
+  const { declaracion: declFiscal, saldoPrincipal } = await obtenerSaldoPrincipalYDeclaracion(p.id);
+  if (declFiscal) {
+    if (saldoPrincipal < -0.004) {
+      pago = { texto: `Pago en exceso — requiere tratamiento (${fmt(Math.abs(saldoPrincipal))})`, color: 'var(--gold)' };
+    } else if (saldoPrincipal <= 0.004) {
+      const { data: aplicacionesVigentes } = await sb.from('fz_aplicaciones_pago_fiscal').select('monto_recargos,monto_actualizacion').eq('pago_impuesto_id', p.id).is('revertido_at', null);
+      const recargosVigentes = (aplicacionesVigentes||[]).reduce((s,a)=>s+Number(a.monto_recargos||0),0);
+      const actualizacionVigente = (aplicacionesVigentes||[]).reduce((s,a)=>s+Number(a.monto_actualizacion||0),0);
+      if (recargosVigentes > 0.004) pago = { texto: 'Pagado con recargos', color: 'var(--red)' };
+      else if (actualizacionVigente > 0.004) pago = { texto: 'Pagado con actualización', color: 'var(--gold)' };
+      else pago = { texto: 'Pagado a tiempo', color: 'var(--green)' };
+    } else {
+      const yaAlgoPagado = Number(declFiscal.importe_declarado||0) - saldoPrincipal > 0.004;
+      pago = yaAlgoPagado
+        ? { texto: `Complementaria vigente — pendiente ${fmt(saldoPrincipal)}`, color: 'var(--gold)' }
+        : (hoy > p.fecha_limite ? { texto: 'Pendiente (vencido)', color: 'var(--red)' } : { texto: 'Pendiente', color: 'var(--gold)' });
+    }
+    return { determinacion, declaracion, pago };
+  }
+
+  // Sin declaración formal — comportamiento legacy, sin cambios.
   const importePagado = Number(p.importe_pagado) || 0;
   const monto = Number(p.monto);
   if (monto <= 0.004) pago = { texto: 'No aplica', color: 'var(--muted)' };
   else if (importePagado >= monto - 0.004) {
-    // Cubierto al 100% según sus aplicaciones reales — SIEMPRE "Pagado". El matiz (a tiempo /
-    // con actualización / con recargos) se deriva de los accesorios REALES de las aplicaciones
-    // VIGENTES (nunca revertidas) — nunca comparando fecha_pago contra la fecha_limite legacy
-    // (día 17 fijo), y el redondeo SAT nunca cuenta como recargo ni actualización.
     const { data: aplicacionesVigentes } = await sb.from('fz_aplicaciones_pago_fiscal').select('monto_recargos,monto_actualizacion').eq('pago_impuesto_id', p.id).is('revertido_at', null);
     const recargosVigentes = (aplicacionesVigentes||[]).reduce((s,a)=>s+Number(a.monto_recargos||0),0);
     const actualizacionVigente = (aplicacionesVigentes||[]).reduce((s,a)=>s+Number(a.monto_actualizacion||0),0);
@@ -5145,10 +5206,14 @@ async function abrirModalPagoImpuesto(pago, b) {
     }
     html += (declaraciones||[]).length
       ? declaraciones.map(d => `
-        <div style="padding:5px 8px;border:1px solid var(--line);border-radius:8px;margin-bottom:5px;font-size:11.5px;${vigente&&d.id===vigente.id?'':'opacity:0.6;'}">
-          <strong>${d.tipo_declaracion==='normal'?'Normal':'Complementaria '+d.numero_complementaria}</strong>${vigente&&d.id===vigente.id?' <span style="color:var(--green);">— vigente</span>':''}
-          ${d.fecha_presentacion?' · Presentada '+fechaCorta(d.fecha_presentacion):''}${d.numero_operacion?' · Op. '+d.numero_operacion:''}
+        <div style="padding:5px 8px;border:1px solid var(--line);border-radius:8px;margin-bottom:5px;font-size:11.5px;${(vigente&&d.id===vigente.id)||d.estado==='anulada'?'':'opacity:0.6;'}${d.estado==='anulada'?'background:#fdf2f2;':''}">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:6px;">
+            <span><strong>${d.tipo_declaracion==='normal'?'Normal':'Complementaria '+d.numero_complementaria}</strong>${vigente&&d.id===vigente.id?' <span style="color:var(--green);">— vigente</span>':''}${d.estado==='anulada'?' <span style="color:var(--red);">— Anulada</span>':''}
+            ${d.fecha_presentacion?' · Presentada '+fechaCorta(d.fecha_presentacion):''}${d.numero_operacion?' · Op. '+d.numero_operacion:''}</span>
+            ${STATE.esAdministrador && d.estado!=='anulada' ? `<button class="btn btn-ghost btn-sm di-anular-declaracion" data-id="${d.id}" style="font-size:10.5px;padding:2px 8px;color:var(--red);">Anular</button>` : ''}
+          </div>
           <div style="color:var(--muted);margin-top:2px;">Importe declarado: ${fmt(d.importe_declarado||0)}${d.linea_captura?' · Línea: '+d.linea_captura:''}${d.fecha_vigencia_linea?' (vigente hasta '+fechaCorta(d.fecha_vigencia_linea)+')':''}</div>
+          ${d.estado==='anulada' ? `<div style="font-size:11px;color:var(--red);margin-top:2px;">Anulada el ${fechaCorta(d.anulado_en.slice(0,10))} por ${d.anulado_por||'—'} — ${d.motivo_anulacion||'sin motivo'}</div>` : ''}
           ${(pagosPorDeclaracion[d.id]||[]).length ? `<div style="margin-top:3px;">${pagosPorDeclaracion[d.id].map(filaPago).join('')}</div>` : `<div style="font-size:11px;color:var(--muted);padding-left:10px;">Sin pagos aplicados a esta declaración todavía.</div>`}
         </div>`).join('')
       : `<p style="font-size:11.5px;color:var(--muted);">Sin declaraciones registradas todavía — el pago no podrá aplicarse hasta que exista al menos una.</p>`;
@@ -5159,6 +5224,19 @@ async function abrirModalPagoImpuesto(pago, b) {
       </div>`;
     }
     document.getElementById('piDeclaracionesLista').innerHTML = html;
+    document.querySelectorAll('.di-anular-declaracion').forEach(btn => btn.addEventListener('click', async () => {
+      const motivo = prompt('Motivo de la anulación (obligatorio, queda en el historial):');
+      if (motivo === null) return;
+      if (!motivo.trim()) { toast('Necesitas escribir un motivo.', 'error'); return; }
+      if (!confirm('¿Confirmas anular esta declaración? No se borra — queda visible en el historial marcada como anulada.')) return;
+      const r = await anularDeclaracionFiscal(btn.dataset.id, motivo.trim(), STATE.user?.email);
+      if (r.estado === 'tiene_descendientes' || r.estado === 'tiene_pagos') { toast(r.error, 'error'); return; }
+      if (r.estado === 'error') { toast('Error: ' + r.error, 'error'); return; }
+      if (r.estado !== 'anulada') { toast('No se pudo anular (' + r.estado + ').', 'error'); return; }
+      registrarAuditoria(b.id, 'editar', 'Pagos de Impuestos', `Declaración anulada — motivo: ${motivo.trim()}`);
+      toast('Declaración anulada.');
+      await abrirModalPagoImpuesto(pago, b);
+    }));
 
     document.getElementById('piRegistrarDeclaracionBtn').onclick = () => {
       const yaHayNormal = (declaraciones||[]).some(d=>d.tipo_declaracion==='normal');
