@@ -2517,16 +2517,29 @@ async function obtenerPerdidasFiscalesSiExisten(businessId, ejercicioControl) {
     sb.from('fz_perdidas_fiscales_aplicaciones').select('*').in('perdida_id', perdidaIds).eq('ejercicio_control', ejercicioControl),
     sb.from('fz_perdidas_fiscales_cierres').select('*').in('perdida_id', perdidaIds),
   ]);
-  const ejercicioAnterior = String(Number(ejercicioControl) - 1);
   return perdidas.map(p => {
     const actualizacionVigente = (actualizaciones||[]).find(a => a.perdida_id === p.id && a.ejercicio_actualizacion === ejercicioControl) || null;
-    const cierreAnterior = (cierres||[]).find(c => c.perdida_id === p.id && c.ejercicio_control === ejercicioAnterior) || null;
+
+    // Antecedente más reciente ANTERIOR a este ejercicio de control — no solo el inmediato
+    // anterior, para no perder la cadena cuando hay huecos entre ejercicios consultados.
+    const cierresAnteriores = (cierres||[]).filter(c => c.perdida_id === p.id && c.ejercicio_control < ejercicioControl).sort((a,b)=>a.ejercicio_control.localeCompare(b.ejercicio_control));
+    const cierreAnterior = cierresAnteriores.length ? cierresAnteriores[cierresAnteriores.length-1] : null;
     const cierreEsteEjercicio = (cierres||[]).find(c => c.perdida_id === p.id && c.ejercicio_control === ejercicioControl) || null;
+    const actualizacionesAnteriores = (actualizaciones||[]).filter(a => a.perdida_id === p.id && a.ejercicio_actualizacion < ejercicioControl).sort((a,b)=>a.ejercicio_actualizacion.localeCompare(b.ejercicio_actualizacion));
+    const actualizacionAnterior = actualizacionesAnteriores.length ? actualizacionesAnteriores[actualizacionesAnteriores.length-1] : null;
+    const existeAlgunAntecedente = (actualizaciones||[]).some(a => a.perdida_id === p.id) || (cierres||[]).some(c => c.perdida_id === p.id);
+
     let saldoDisponible;
     if (actualizacionVigente) saldoDisponible = Number(actualizacionVigente.importe_actualizado);
-    else if (cierreAnterior) saldoDisponible = Number(cierreAnterior.saldo_definitivo_pendiente);
-    else if (ejercicioControl === p.ejercicio_origen) saldoDisponible = Number(p.monto_original);
-    else saldoDisponible = null; // sin fuente sustentada para ese ejercicio — no se inventa
+    // El antecedente más reciente entre el cierre y la actualización previos — el que sea posterior en el tiempo.
+    else if (cierreAnterior && (!actualizacionAnterior || cierreAnterior.ejercicio_control >= actualizacionAnterior.ejercicio_actualizacion)) saldoDisponible = Number(cierreAnterior.saldo_definitivo_pendiente);
+    else if (actualizacionAnterior) saldoDisponible = Number(actualizacionAnterior.importe_actualizado);
+    // Nunca existió ningún antecedente para esta pérdida — el punto de partida real es el monto
+    // original, sin importar en qué ejercicio de control se esté consultando (antes esto se
+    // restringía incorrectamente solo al ejercicio de origen, dejando en NULL el caso normal de
+    // primera actualización en un ejercicio posterior).
+    else if (!existeAlgunAntecedente) saldoDisponible = Number(p.monto_original);
+    else saldoDisponible = null; // hubo antecedentes pero ninguno aplica a este ejercicio — no se inventa
     const aplicacionesPorMes = {};
     (aplicaciones||[]).filter(a => a.perdida_id === p.id).forEach(a => { aplicacionesPorMes[a.periodo.slice(5,7)] = a.aplicado_acumulado; });
     const control = saldoDisponible !== null ? calcularControlProvisionalPerdida(saldoDisponible, aplicacionesPorMes) : null;
@@ -4570,6 +4583,7 @@ function abrirModalPerdidaActualizacion(b, p, ejercicio) {
 
   const resultadoDiv = document.getElementById('pfActResultadoCatalogo');
   let periodosDeterminados = null; // { periodoAntiguo, periodoReciente } — calculados, nunca elegidos por el contador
+  let bloqueadoPorFaltaDeAntecedente = false;
 
   (async () => {
     // Determinación automática: encadena desde la última actualización registrada, o desde
@@ -4581,8 +4595,12 @@ function abrirModalPerdidaActualizacion(b, p, ejercicio) {
       resultadoDiv.innerHTML = `<span style="color:var(--red);">INPC pendiente en catálogo para ${r.faltantes.join(' y ')}. Complétalo en Configuración → Recargos y Actualización antes de continuar.</span>`;
       return;
     }
-    const saldoAnterior = p.saldoDisponible !== null ? p.saldoDisponible : 0;
-    const calculado = saldoAnterior * r.factor;
+    if (p.saldoDisponible === null) {
+      resultadoDiv.innerHTML = `<span style="color:var(--red);">No se pudo determinar el saldo base para esta actualización — falta un antecedente fiscal (actualización o cierre) de un ejercicio anterior. Revisa el control de esta pérdida antes de continuar.</span>`;
+      bloqueadoPorFaltaDeAntecedente = true;
+      return;
+    }
+    const calculado = p.saldoDisponible * r.factor;
     resultadoDiv.innerHTML = `Periodo INPC: ${periodosDeterminados.periodoAntiguo} → ${periodosDeterminados.periodoReciente} (determinado automáticamente)<br>INPC ${periodosDeterminados.periodoAntiguo}: <strong>${r.valorAntiguo}</strong> · INPC ${periodosDeterminados.periodoReciente}: <strong>${r.valorReciente}</strong> · Factor: <strong>${r.factor.toFixed(4)}</strong><br>Saldo actualizado calculado: <strong style="color:var(--navy-1);">${fmt(calculado)}</strong>`;
   })();
 
@@ -4595,6 +4613,7 @@ function abrirModalPerdidaActualizacion(b, p, ejercicio) {
   document.getElementById('modalPerdidaActualizacion').classList.add('show');
   document.getElementById('pfActGuardarBtn').onclick = async () => {
     const err = document.getElementById('pfErrorAct');
+    if (bloqueadoPorFaltaDeAntecedente) { err.textContent = 'No se puede calcular: falta un antecedente fiscal de un ejercicio anterior para esta pérdida.'; err.style.display = 'block'; return; }
     if (!periodosDeterminados) { err.textContent = 'Espera a que termine de calcular.'; err.style.display = 'block'; return; }
     const ajusteVisible = document.getElementById('pfActAjusteZona').style.display !== 'none';
     const importeAjustado = ajusteVisible ? leerMonto(document.getElementById('pfActImporteAjustado').value) : null;
