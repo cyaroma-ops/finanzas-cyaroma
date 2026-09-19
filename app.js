@@ -2507,6 +2507,22 @@ async function ajustarAccesoriosConceptoPapel(conceptoId, actualizacionAplicada,
   return { estado: 'ajustado' };
 }
 
+// Sincroniza un concepto sintético "total del periodo" (origen='sistema') cuyo único propósito es
+// servir de ancla para Control de la obligación + Accesorios a nivel consolidado — nunca es una
+// segunda fuente de verdad: su valor SIEMPRE se deriva de los conceptos reales en cada render, y
+// si el contador nunca lo ha ajustado manualmente, su valor aplicado sigue el cálculo al vuelo.
+async function sincronizarConceptoTotalPeriodo(papelId, claveTotal, nombreTotal, valorCalculado) {
+  const { data: existente } = await sb.from('fz_papel_conceptos').select('*').eq('papel_id', papelId).eq('clave_concepto', claveTotal).maybeSingle();
+  if (!existente) {
+    return await agregarConceptoPapel(papelId, { concepto: nombreTotal, claveConcepto: claveTotal, orden: 999, origen: 'sistema', valorOriginal: valorCalculado, valorAplicado: valorCalculado, requiereAccesorios: true });
+  }
+  const fueAjustadoManualmente = Math.abs(Number(existente.valor_aplicado) - Number(existente.valor_original||0)) > 0.004;
+  const cambios = { valor_original: valorCalculado, updated_at: new Date().toISOString() };
+  if (!fueAjustadoManualmente) cambios.valor_aplicado = valorCalculado;
+  await sb.from('fz_papel_conceptos').update(cambios).eq('id', existente.id);
+  return { ...existente, ...cambios };
+}
+
 async function obtenerPropuestaContable(businessId, tipoPapel, claveConcepto, periodo) {
   const { data: mapeos } = await sb.from('fz_mapeo_cuenta_concepto_fiscal').select('subcuenta_id').eq('business_id', businessId).eq('tipo_papel', tipoPapel).eq('clave_concepto', claveConcepto);
   if (!mapeos || !mapeos.length) return { hayPropuesta: false };
@@ -3720,45 +3736,55 @@ let STATE_papelesUltimoMes = {}; // último mes visitado en el drill-down, por c
 // ("Total/Acumulado") de la cédula anual. Nunca es un SUM(Ene:Dic) ciego para todos los
 // conceptos: 'suma' = movimientos mensuales acumulables; 'ultimo' = coeficientes/porcentajes/
 // saldos donde importa el valor más reciente capturado; 'no_aplica' = sin total con sentido.
+// Formato por tipo de dato — 'moneda' | 'porcentaje' | 'coeficiente' | 'numero' | 'saldo'.
+// 'saldo' se formatea como moneda pero nunca fuerza rojo por ser cero (semántica visual distinta).
+function formatearValorConcepto(valor, formato) {
+  const n = Number(valor)||0;
+  if (formato === 'coeficiente') return n.toFixed(4);
+  if (formato === 'porcentaje') return (n*100).toFixed(2) + '%';
+  if (formato === 'numero') return n.toLocaleString('es-MX');
+  return fmt(n); // 'moneda' | 'saldo'
+}
+
 const CONCEPTOS_DEFAULT_IVA = [
-  { clave: 'iva_trasladado_16', nombre: 'IVA trasladado — gravado 16%', agregacion: 'suma' },
-  { clave: 'iva_trasladado_0', nombre: 'IVA trasladado — tasa 0%', agregacion: 'suma' },
-  { clave: 'iva_trasladado_exento', nombre: 'IVA trasladado — exento', agregacion: 'suma' },
-  { clave: 'iva_trasladado_no_objeto', nombre: 'IVA trasladado — no objeto', agregacion: 'suma' },
-  { clave: 'iva_acreditable_compras', nombre: 'IVA acreditable — compras/gastos', agregacion: 'suma' },
-  { clave: 'iva_acreditable_servicios', nombre: 'IVA acreditable — servicios', agregacion: 'suma' },
-  { clave: 'iva_acreditable_inversiones', nombre: 'IVA acreditable — inversiones', agregacion: 'suma' },
-  { clave: 'iva_ajustes', nombre: 'Ajustes', agregacion: 'suma' },
-  { clave: 'iva_saldo_favor_anterior', nombre: 'Saldo a favor de periodos anteriores', agregacion: 'ultimo' },
-  { clave: 'iva_compensaciones', nombre: 'Compensaciones', agregacion: 'suma' },
+  { clave: 'iva_trasladado_16', nombre: 'IVA trasladado — gravado 16%', agregacion: 'suma', formato: 'moneda' },
+  { clave: 'iva_trasladado_0', nombre: 'IVA trasladado — tasa 0%', agregacion: 'suma', formato: 'moneda' },
+  { clave: 'iva_trasladado_exento', nombre: 'IVA trasladado — exento', agregacion: 'suma', formato: 'moneda' },
+  { clave: 'iva_trasladado_no_objeto', nombre: 'IVA trasladado — no objeto', agregacion: 'suma', formato: 'moneda' },
+  { clave: 'iva_acreditable_compras', nombre: 'IVA acreditable — compras/gastos', agregacion: 'suma', formato: 'moneda' },
+  { clave: 'iva_acreditable_servicios', nombre: 'IVA acreditable — servicios', agregacion: 'suma', formato: 'moneda' },
+  { clave: 'iva_acreditable_inversiones', nombre: 'IVA acreditable — inversiones', agregacion: 'suma', formato: 'moneda' },
+  { clave: 'iva_ajustes', nombre: 'Ajustes', agregacion: 'suma', formato: 'moneda' },
+  { clave: 'iva_saldo_favor_anterior', nombre: 'Saldo a favor de periodos anteriores', agregacion: 'ultimo', formato: 'saldo' },
+  { clave: 'iva_compensaciones', nombre: 'Compensaciones', agregacion: 'suma', formato: 'moneda' },
 ];
 const CONCEPTOS_DEFAULT_RETENCIONES_ISR = [
-  { clave: 'ret_isr_salarios', nombre: 'ISR retenido — salarios', agregacion: 'suma' },
-  { clave: 'ret_isr_asimilados', nombre: 'ISR retenido — asimilados a salarios', agregacion: 'suma' },
-  { clave: 'ret_isr_honorarios', nombre: 'ISR retenido — servicios profesionales/honorarios', agregacion: 'suma' },
-  { clave: 'ret_isr_arrendamiento', nombre: 'ISR retenido — arrendamiento', agregacion: 'suma' },
-  { clave: 'ret_isr_resico', nombre: 'ISR retenido — servicios de PF RESICO', agregacion: 'suma' },
-  { clave: 'ret_isr_otras', nombre: 'Otras retenciones de ISR', agregacion: 'suma' },
+  { clave: 'ret_isr_salarios', nombre: 'ISR retenido — salarios', agregacion: 'suma', formato: 'moneda' },
+  { clave: 'ret_isr_asimilados', nombre: 'ISR retenido — asimilados a salarios', agregacion: 'suma', formato: 'moneda' },
+  { clave: 'ret_isr_honorarios', nombre: 'ISR retenido — servicios profesionales/honorarios', agregacion: 'suma', formato: 'moneda' },
+  { clave: 'ret_isr_arrendamiento', nombre: 'ISR retenido — arrendamiento', agregacion: 'suma', formato: 'moneda' },
+  { clave: 'ret_isr_resico', nombre: 'ISR retenido — servicios de PF RESICO', agregacion: 'suma', formato: 'moneda' },
+  { clave: 'ret_isr_otras', nombre: 'Otras retenciones de ISR', agregacion: 'suma', formato: 'moneda' },
 ];
 const CONCEPTOS_DEFAULT_RETENCIONES_IVA = [
-  { clave: 'ret_iva_honorarios', nombre: 'IVA retenido — servicios profesionales', agregacion: 'suma' },
-  { clave: 'ret_iva_arrendamiento', nombre: 'IVA retenido — arrendamiento', agregacion: 'suma' },
-  { clave: 'ret_iva_fletes', nombre: 'IVA retenido — fletes/autotransporte', agregacion: 'suma' },
-  { clave: 'ret_iva_otras', nombre: 'Otras retenciones de IVA', agregacion: 'suma' },
+  { clave: 'ret_iva_honorarios', nombre: 'IVA retenido — servicios profesionales', agregacion: 'suma', formato: 'moneda' },
+  { clave: 'ret_iva_arrendamiento', nombre: 'IVA retenido — arrendamiento', agregacion: 'suma', formato: 'moneda' },
+  { clave: 'ret_iva_fletes', nombre: 'IVA retenido — fletes/autotransporte', agregacion: 'suma', formato: 'moneda' },
+  { clave: 'ret_iva_otras', nombre: 'Otras retenciones de IVA', agregacion: 'suma', formato: 'moneda' },
 ];
 
 const CONCEPTOS_DEFAULT_ISR_PM = [
-  { clave: 'ingresos_nominales_mes', nombre: 'Ingresos nominales del mes', agregacion: 'suma' },
-  { clave: 'ingresos_nominales_acum', nombre: 'Ingresos nominales acumulados', agregacion: 'ultimo' },
-  { clave: 'coeficiente_utilidad', nombre: 'Coeficiente de utilidad', agregacion: 'ultimo' },
-  { clave: 'utilidad_fiscal', nombre: 'Utilidad fiscal', agregacion: 'ultimo' },
-  { clave: 'ptu_aplicable', nombre: 'PTU aplicable', agregacion: 'suma' },
-  { clave: 'perdidas_aplicables', nombre: 'Pérdidas fiscales aplicadas', agregacion: 'suma' },
-  { clave: 'base', nombre: 'Base', agregacion: 'ultimo' },
-  { clave: 'isr_determinado', nombre: 'ISR determinado', agregacion: 'ultimo' },
-  { clave: 'pagos_provisionales_anteriores', nombre: 'Pagos provisionales anteriores', agregacion: 'ultimo' },
-  { clave: 'retenciones', nombre: 'Retenciones', agregacion: 'suma' },
-  { clave: 'resultado_determinado', nombre: 'Resultado determinado', agregacion: 'suma' },
+  { clave: 'ingresos_nominales_mes', nombre: 'Ingresos nominales del mes', agregacion: 'suma', formato: 'moneda' },
+  { clave: 'ingresos_nominales_acum', nombre: 'Ingresos nominales acumulados', agregacion: 'ultimo', formato: 'moneda' },
+  { clave: 'coeficiente_utilidad', nombre: 'Coeficiente de utilidad', agregacion: 'ultimo', formato: 'coeficiente' },
+  { clave: 'utilidad_fiscal', nombre: 'Utilidad fiscal', agregacion: 'ultimo', formato: 'moneda' },
+  { clave: 'ptu_aplicable', nombre: 'PTU aplicable', agregacion: 'suma', formato: 'moneda' },
+  { clave: 'perdidas_aplicables', nombre: 'Pérdidas fiscales aplicadas', agregacion: 'suma', formato: 'moneda' },
+  { clave: 'base', nombre: 'Base', agregacion: 'ultimo', formato: 'moneda' },
+  { clave: 'isr_determinado', nombre: 'ISR determinado', agregacion: 'ultimo', formato: 'moneda' },
+  { clave: 'pagos_provisionales_anteriores', nombre: 'Pagos provisionales anteriores', agregacion: 'ultimo', formato: 'moneda' },
+  { clave: 'retenciones', nombre: 'Retenciones', agregacion: 'suma', formato: 'moneda' },
+  { clave: 'resultado_determinado', nombre: 'Resultado determinado', agregacion: 'suma', formato: 'moneda' },
 ];
 
 function etiquetaOrigen(origen) {
@@ -3844,32 +3870,78 @@ async function renderCedulaAnual(b, elId, tipoPapel, titulo, conceptosDefault, t
   const { filas, estadosPorMes } = await construirMatrizAnual(b.id, tipoPapel, ejercicio, conceptosDefault);
   const mesesCols = Array.from({length:12}, (_,i) => String(i+1).padStart(2,'0'));
 
-  // Bloque de accesorios — ISR/IVA: una sola línea (concepto "resultado_determinado" u homólogo).
-  // Retenciones: cada concepto conserva el suyo, nunca mezclado (se expande por renglón).
+  // Bloque de accesorios consolidado — ISR PM usa "resultado_determinado" (ya en filas, viene del
+  // default). IVA/Retenciones usan su concepto sintético "total del periodo", que NO está en
+  // conceptosDefault, así que se busca directo en los papeles del año (misma fuente, sin duplicar).
+  const claveAccesorioGlobal = { isr_pm: 'resultado_determinado', iva: 'iva_resultado_periodo', retenciones_isr: 'ret_isr_total_periodo', retenciones_iva: 'ret_iva_total_periodo' }[tipoPapel];
   let accesoriosGlobalHtml = '';
-  if (opciones.accesoriosGlobal) {
-    const filaResultado = filas.find(f => f.clave === 'resultado_determinado');
+  if (opciones.accesoriosGlobal && claveAccesorioGlobal) {
+    let filaResultado = filas.find(f => f.clave === claveAccesorioGlobal);
+    if (!filaResultado) {
+      // No viene en conceptosDefault (caso IVA/Retenciones) — se construye igual que una fila
+      // normal de la matriz, buscando el mismo concepto sintético mes a mes.
+      const { data: papelesDelAnio } = await sb.from('fz_papeles_trabajo').select('*').eq('business_id', b.id).eq('tipo_papel', tipoPapel).eq('ejercicio', ejercicio).eq('periodicidad', 'mensual');
+      const papelIds = (papelesDelAnio||[]).map(p=>p.id);
+      const { data: conceptosSint } = papelIds.length ? await sb.from('fz_papel_conceptos').select('*').in('papel_id', papelIds).eq('clave_concepto', claveAccesorioGlobal) : { data: [] };
+      const conceptoIdsSint = (conceptosSint||[]).map(c=>c.id);
+      const { data: accSint } = conceptoIdsSint.length ? await sb.from('fz_papel_concepto_accesorios').select('*').in('concepto_id', conceptoIdsSint) : { data: [] };
+      const accPorConceptoSint = Object.fromEntries((accSint||[]).map(a=>[a.concepto_id, a]));
+      const papelPorMesSint = {}; (papelesDelAnio||[]).forEach(p=>{ if (p.periodo) papelPorMesSint[p.periodo.slice(5,7)] = p; });
+      const porMesSint = {};
+      mesesCols.forEach(mm => {
+        const pm = papelPorMesSint[mm];
+        const c = pm ? (conceptosSint||[]).find(x=>x.papel_id===pm.id) : null;
+        porMesSint[mm] = { valor: c ? Number(c.valor_aplicado) : null, accesorios: c ? accPorConceptoSint[c.id]||null : null };
+      });
+      filaResultado = { porMes: porMesSint, total: Object.values(porMesSint).map(x=>x.valor).filter(v=>v!==null).reduce((s,v)=>s+v,0) };
+    }
     const porMesAcc = {};
-    mesesCols.forEach(mm => { porMesAcc[mm] = filaResultado ? filaResultado.porMes[mm].accesorios : null; });
+    mesesCols.forEach(mm => { porMesAcc[mm] = filaResultado.porMes[mm] ? filaResultado.porMes[mm].accesorios : null; });
     const campo = (campo) => mesesCols.reduce((s,mm)=> s + Number((porMesAcc[mm]||{})[campo]||0), 0);
     accesoriosGlobalHtml = `
-    <div class="card" style="margin-bottom:12px;">
+    <div class="card" style="margin-bottom:12px;overflow-x:auto;">
       <h3 style="font-size:14px;margin-bottom:10px;">Actualización, recargos y control fiscal</h3>
       <div class="table-wrap">
-        <table>
+        <table style="min-width:900px;">
           <thead><tr><th>Concepto</th>${mesesCols.map(mm=>`<th class="num">${MESES_LARGO[Number(mm)-1].slice(0,3)}</th>`).join('')}<th class="num">Total</th></tr></thead>
           <tbody>
-            <tr><td>Principal</td>${mesesCols.map(mm=>`<td class="num">${fmt(filaResultado?filaResultado.porMes[mm].valor||0:0)}</td>`).join('')}<td class="num" style="font-weight:600;">${fmt(filaResultado?filaResultado.total||0:0)}</td></tr>
+            <tr><td>Principal</td>${mesesCols.map(mm=>`<td class="num">${fmt(filaResultado.porMes[mm]?filaResultado.porMes[mm].valor||0:0)}</td>`).join('')}<td class="num" style="font-weight:600;">${fmt(filaResultado.total||0)}</td></tr>
             <tr><td>Actualización</td>${mesesCols.map(mm=>`<td class="num">${fmt(Number((porMesAcc[mm]||{}).importe_actualizacion_aplicado)||0)}</td>`).join('')}<td class="num">${fmt(campo('importe_actualizacion_aplicado'))}</td></tr>
             <tr><td>Recargos</td>${mesesCols.map(mm=>`<td class="num">${fmt(Number((porMesAcc[mm]||{}).importe_recargos_aplicado)||0)}</td>`).join('')}<td class="num">${fmt(campo('importe_recargos_aplicado'))}</td></tr>
             <tr><td>Ajuste redondeo SAT</td>${mesesCols.map(mm=>`<td class="num">${fmt(Number((porMesAcc[mm]||{}).monto_redondeo)||0)}</td>`).join('')}<td class="num">${fmt(campo('monto_redondeo'))}</td></tr>
-            <tr style="font-weight:700;"><td>Total fiscal</td>${mesesCols.map(mm=>`<td class="num">${fmt(Number((porMesAcc[mm]||{}).importe_final)||(filaResultado?filaResultado.porMes[mm].valor||0:0))}</td>`).join('')}<td class="num">${fmt(campo('importe_final')||filaResultado?.total||0)}</td></tr>
+            <tr style="font-weight:700;"><td>Total fiscal</td>${mesesCols.map(mm=>`<td class="num">${fmt(Number((porMesAcc[mm]||{}).importe_final)||(filaResultado.porMes[mm]?filaResultado.porMes[mm].valor||0:0))}</td>`).join('')}<td class="num">${fmt(campo('importe_final')||filaResultado.total||0)}</td></tr>
           </tbody>
         </table>
       </div>
-      ${!filaResultado ? `<p style="font-size:11px;color:var(--muted);margin-top:6px;">Este bloque se completa cuando el concepto que determina el resultado del periodo tenga accesorios calculados en el detalle mensual.</p>` : ''}
+      ${!filaResultado.total ? `<p style="font-size:11px;color:var(--muted);margin-top:6px;">Este bloque se completa al abrir cada mes en el detalle y capturar/calcular el resultado del periodo.</p>` : ''}
     </div>`;
   }
+
+  // Filas derivadas de IVA (nunca guardadas — se calculan al leer, misma fuente que el detalle mensual).
+  let filasDerivadasIVA = '';
+  if (tipoPapel === 'iva') {
+    const sumaFila = (clave) => { const f = filas.find(x=>x.clave===clave); return f ? mesesCols.reduce((acc,mm)=>({...acc,[mm]:(f.porMes[mm].valor||0)}),{}) : {}; };
+    const trasladadoPorMes = {}, acreditablePorMes = {};
+    mesesCols.forEach(mm => {
+      trasladadoPorMes[mm] = ['iva_trasladado_16','iva_trasladado_0','iva_trasladado_exento','iva_trasladado_no_objeto'].reduce((s,cl)=>{ const f=filas.find(x=>x.clave===cl); return s + (f&&f.porMes[mm].valor!==null?f.porMes[mm].valor:0); },0);
+      acreditablePorMes[mm] = ['iva_acreditable_compras','iva_acreditable_servicios','iva_acreditable_inversiones'].reduce((s,cl)=>{ const f=filas.find(x=>x.clave===cl); return s + (f&&f.porMes[mm].valor!==null?f.porMes[mm].valor:0); },0);
+    });
+    const filaDe = (clave) => filas.find(x=>x.clave===clave);
+    const antesAjustesPorMes = {}, aCargoPorMes = {};
+    mesesCols.forEach(mm => {
+      const ajustes = (filaDe('iva_ajustes')?.porMes[mm].valor)||0, saldoAnt = (filaDe('iva_saldo_favor_anterior')?.porMes[mm].valor)||0, comp = (filaDe('iva_compensaciones')?.porMes[mm].valor)||0;
+      antesAjustesPorMes[mm] = trasladadoPorMes[mm] - acreditablePorMes[mm];
+      aCargoPorMes[mm] = antesAjustesPorMes[mm] + ajustes - saldoAnt - comp;
+    });
+    const sumaTotal = obj => Object.values(obj).reduce((s,v)=>s+v,0);
+    filasDerivadasIVA = `
+      <tr style="font-weight:700;background:#f7f7f7;"><td style="position:sticky;left:0;background:#f7f7f7;">TOTAL IVA TRASLADADO</td>${mesesCols.map(mm=>`<td class="num">${fmt(trasladadoPorMes[mm])}</td>`).join('')}<td class="num">${fmt(sumaTotal(trasladadoPorMes))}</td></tr>
+      <tr style="font-weight:700;background:#f7f7f7;"><td style="position:sticky;left:0;background:#f7f7f7;">TOTAL IVA ACREDITABLE</td>${mesesCols.map(mm=>`<td class="num">${fmt(acreditablePorMes[mm])}</td>`).join('')}<td class="num">${fmt(sumaTotal(acreditablePorMes))}</td></tr>
+      <tr style="background:#f7f7f7;"><td style="position:sticky;left:0;background:#f7f7f7;">IVA antes de ajustes</td>${mesesCols.map(mm=>`<td class="num">${fmt(antesAjustesPorMes[mm])}</td>`).join('')}<td class="num">${fmt(sumaTotal(antesAjustesPorMes))}</td></tr>
+      <tr style="font-weight:700;background:#eef2f8;"><td style="position:sticky;left:0;background:#eef2f8;">IVA A CARGO / SALDO A FAVOR</td>${mesesCols.map(mm=>`<td class="num">${fmt(Math.abs(aCargoPorMes[mm]))}</td>`).join('')}<td class="num">${fmt(Math.abs(sumaTotal(aCargoPorMes)))}</td></tr>
+    `;
+  }
+
 
   el.innerHTML = `
     <div class="card" style="margin-bottom:12px;">
@@ -3883,7 +3955,10 @@ async function renderCedulaAnual(b, elId, tipoPapel, titulo, conceptosDefault, t
         </select>
       </div>
       <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:10px;">
-        ${mesesCols.map(mm => `<span class="ca-mes-badge" data-mes="${mm}" style="cursor:pointer;font-size:10.5px;padding:3px 8px;border-radius:10px;background:${ESTADO_PAPEL_COLOR[estadosPorMes[mm]]}22;color:${ESTADO_PAPEL_COLOR[estadosPorMes[mm]]};border:1px solid ${ESTADO_PAPEL_COLOR[estadosPorMes[mm]]}55;">${MESES_LARGO[Number(mm)-1].slice(0,3)}: ${ESTADO_PAPEL_LABEL[estadosPorMes[mm]]}</span>`).join('')}
+        ${mesesCols.map(mm => `<span class="ca-mes-badge" data-mes="${mm}" title="${ESTADO_PAPEL_LABEL[estadosPorMes[mm]]}" style="cursor:pointer;font-size:11px;padding:3px 7px;border-radius:10px;background:${ESTADO_PAPEL_COLOR[estadosPorMes[mm]]}18;color:var(--navy-1);display:inline-flex;align-items:center;gap:4px;"><span style="width:6px;height:6px;border-radius:50%;background:${ESTADO_PAPEL_COLOR[estadosPorMes[mm]]};display:inline-block;"></span>${MESES_LARGO[Number(mm)-1].slice(0,3)}</span>`).join('')}
+      </div>
+      <div style="font-size:10px;color:var(--muted);margin-top:6px;">
+        ${Object.entries(ESTADO_PAPEL_LABEL).filter(([k])=>k!=='pendiente').map(([k,label])=>`<span style="margin-right:10px;"><span style="width:6px;height:6px;border-radius:50%;background:${ESTADO_PAPEL_COLOR[k]};display:inline-block;margin-right:3px;"></span>${label}</span>`).join('')}
       </div>
     </div>
 
@@ -3901,12 +3976,13 @@ async function renderCedulaAnual(b, elId, tipoPapel, titulo, conceptosDefault, t
               <td style="position:sticky;left:0;background:#fff;">${fila.nombre}</td>
               ${mesesCols.map(mm => {
                 const celda = fila.porMes[mm];
-                return `<td class="num ca-celda" data-mes="${mm}" style="cursor:pointer;${celda.valor===null?'color:var(--muted);':''}">${celda.valor!==null?fmt(celda.valor):'—'}</td>`;
+                return `<td class="num ca-celda" data-mes="${mm}" style="cursor:pointer;${celda.valor===null?'color:var(--muted);':''}">${celda.valor!==null?formatearValorConcepto(celda.valor, fila.formato):'—'}</td>`;
               }).join('')}
-              <td class="num" style="font-weight:600;">${fila.total!==null?fmt(fila.total):(fila.agregacion==='no_aplica'?'—':'')}</td>
+              <td class="num" style="font-weight:600;">${fila.total!==null?formatearValorConcepto(fila.total, fila.formato):(fila.agregacion==='no_aplica'?'—':'')}</td>
             </tr>${opciones.accesorios ? `<tr class="ca-fila-accesorios" data-clave="${fila.clave||fila.nombre}" style="display:none;background:#f7f7f7;"><td colspan="${mesesCols.length+2}" style="padding:8px 12px;font-size:11px;">
               <strong>Accesorios — ${fila.nombre}:</strong> ${mesesCols.map(mm=>{ const a=fila.porMes[mm].accesorios; return a?`${MESES_LARGO[Number(mm)-1].slice(0,3)}: Princ.${fmt(fila.porMes[mm].valor||0)}+Act.${fmt(a.importe_actualizacion_aplicado)}+Rec.${fmt(a.importe_recargos_aplicado)}+Red.${fmt(a.monto_redondeo)}=${fmt(a.importe_final)}`:'';}).filter(Boolean).join(' · ') || 'Sin accesorios calculados todavía en ningún mes.'}
             </td></tr>${opciones.accesorios?`<tr><td colspan="${mesesCols.length+2}" style="padding:0 0 6px 0;"><button class="btn btn-ghost btn-sm ca-toggle-accesorios" data-clave="${fila.clave||fila.nombre}" style="font-size:10px;padding:2px 8px;margin-left:4px;">Ver accesorios</button></td></tr>`:''}` : ''}`).join('')}
+            ${filasDerivadasIVA}
           </tbody>
         </table>
       </div>
@@ -3954,15 +4030,15 @@ async function renderPapelesTrabajo() {
       else { STATE_papelesMesISRPM = STATE_papelesUltimoMes.isrpm || STATE_papelesMesISRPM || todayStr().slice(0,7); await renderPapelISRPM(b); }
     }
     else if (STATE_papelesTab === 'iva') {
-      if (STATE_papelesVista.iva === 'anual') await renderCedulaAnual(b, 'sec-papeliva', 'iva', 'IVA', CONCEPTOS_DEFAULT_IVA, 'iva', { accesoriosGlobal: false, accesorios: false });
+      if (STATE_papelesVista.iva === 'anual') await renderCedulaAnual(b, 'sec-papeliva', 'iva', 'IVA', CONCEPTOS_DEFAULT_IVA, 'iva', { accesoriosGlobal: true, accesorios: false });
       else { STATE_papelesMesGenerica['ivaMesISRPM'] = STATE_papelesUltimoMes.iva || STATE_papelesMesGenerica['ivaMesISRPM'] || todayStr().slice(0,7); await renderCedulaGenerica(b, 'sec-papeliva', 'iva', 'IVA — Papel de trabajo', CONCEPTOS_DEFAULT_IVA, 'ivaMesISRPM', { resumenIVA: true, accesorios: false }); }
     }
     else if (STATE_papelesTab === 'retisr') {
-      if (STATE_papelesVista.retisr === 'anual') await renderCedulaAnual(b, 'sec-papelretisr', 'retenciones_isr', 'Retenciones ISR', CONCEPTOS_DEFAULT_RETENCIONES_ISR, 'retisr', { accesoriosGlobal: false, accesorios: true });
+      if (STATE_papelesVista.retisr === 'anual') await renderCedulaAnual(b, 'sec-papelretisr', 'retenciones_isr', 'Retenciones ISR', CONCEPTOS_DEFAULT_RETENCIONES_ISR, 'retisr', { accesoriosGlobal: true, accesorios: true });
       else { STATE_papelesMesGenerica['retIsrMes'] = STATE_papelesUltimoMes.retisr || STATE_papelesMesGenerica['retIsrMes'] || todayStr().slice(0,7); await renderCedulaGenerica(b, 'sec-papelretisr', 'retenciones_isr', 'Retenciones de ISR — Papel de trabajo', CONCEPTOS_DEFAULT_RETENCIONES_ISR, 'retIsrMes', { resumenIVA: false, accesorios: true }); }
     }
     else if (STATE_papelesTab === 'retiva') {
-      if (STATE_papelesVista.retiva === 'anual') await renderCedulaAnual(b, 'sec-papelretiva', 'retenciones_iva', 'Retenciones IVA', CONCEPTOS_DEFAULT_RETENCIONES_IVA, 'retiva', { accesoriosGlobal: false, accesorios: true });
+      if (STATE_papelesVista.retiva === 'anual') await renderCedulaAnual(b, 'sec-papelretiva', 'retenciones_iva', 'Retenciones IVA', CONCEPTOS_DEFAULT_RETENCIONES_IVA, 'retiva', { accesoriosGlobal: true, accesorios: true });
       else { STATE_papelesMesGenerica['retIvaMes'] = STATE_papelesUltimoMes.retiva || STATE_papelesMesGenerica['retIvaMes'] || todayStr().slice(0,7); await renderCedulaGenerica(b, 'sec-papelretiva', 'retenciones_iva', 'Retenciones de IVA — Papel de trabajo', CONCEPTOS_DEFAULT_RETENCIONES_IVA, 'retIvaMes', { resumenIVA: false, accesorios: true }); }
     }
   } catch (err) {
@@ -4116,25 +4192,99 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
   const { data: soportes } = await sb.from('fz_papel_soportes').select('*').eq('papel_id', papel.id).order('created_at', { ascending: false });
   const { data: historial } = await sb.from('fz_papel_historial').select('*').eq('papel_id', papel.id).order('created_at', { ascending: false }).limit(30);
 
-  let resumenHtml = '';
+  const formatoDe = clave => (conceptosDefault.find(d=>d.clave===clave)||{}).formato || 'moneda';
+  const tabKeyDeTipo = { iva: 'iva', retenciones_isr: 'retisr', retenciones_iva: 'retiva' }[tipoPapel] || tipoPapel;
+  const valorDe = clave => Number((conceptos.find(c=>c.clave_concepto===clave)||{}).valor_aplicado || 0);
+
+  let determinacionHtml = '', totalPeriodoConcepto = null;
   if (opciones.resumenIVA) {
-    const valorDe = clave => Number((conceptos.find(c=>c.clave_concepto===clave)||{}).valor_aplicado || 0);
-    const trasladado = valorDe('iva_trasladado_16') + valorDe('iva_trasladado_0');
-    const acreditable = valorDe('iva_acreditable_compras') + valorDe('iva_acreditable_servicios') + valorDe('iva_acreditable_inversiones');
+    const gruposTrasladado = ['iva_trasladado_16','iva_trasladado_0','iva_trasladado_exento','iva_trasladado_no_objeto'];
+    const gruposAcreditable = ['iva_acreditable_compras','iva_acreditable_servicios','iva_acreditable_inversiones'];
+    const totalTrasladado = gruposTrasladado.reduce((s,cl)=>s+valorDe(cl),0);
+    const totalAcreditable = gruposAcreditable.reduce((s,cl)=>s+valorDe(cl),0);
+    const antesAjustes = totalTrasladado - totalAcreditable;
     const ajustes = valorDe('iva_ajustes'), saldoAnterior = valorDe('iva_saldo_favor_anterior'), compensaciones = valorDe('iva_compensaciones');
-    const resultado = trasladado - acreditable + ajustes - saldoAnterior - compensaciones;
-    resumenHtml = `<div class="card" style="margin-bottom:12px;">
-      <h3 style="font-size:14px;margin-bottom:10px;">2. Determinación final</h3>
-      <div style="display:flex;justify-content:space-between;font-size:12.5px;padding:3px 0;"><span>IVA trasladado</span><strong>${fmt(trasladado)}</strong></div>
-      <div style="display:flex;justify-content:space-between;font-size:12.5px;padding:3px 0;"><span>(–) IVA acreditable</span><strong>${fmt(acreditable)}</strong></div>
-      <div style="display:flex;justify-content:space-between;font-size:12.5px;padding:3px 0;"><span>Ajustes</span><strong>${fmt(ajustes)}</strong></div>
-      <div style="display:flex;justify-content:space-between;font-size:12.5px;padding:3px 0;"><span>(–) Saldo a favor anterior</span><strong>${fmt(saldoAnterior)}</strong></div>
-      <div style="display:flex;justify-content:space-between;font-size:12.5px;padding:3px 0;"><span>(–) Compensaciones</span><strong>${fmt(compensaciones)}</strong></div>
-      <div style="display:flex;justify-content:space-between;font-size:13px;padding:6px 0 0;border-top:1px solid var(--line);margin-top:4px;font-weight:700;color:${resultado>=0?'var(--red)':'var(--green)'};"><span>${resultado>=0?'IVA a cargo':'Saldo a favor'}</span><span>${fmt(Math.abs(resultado))}</span></div>
+    const resultado = antesAjustes + ajustes - saldoAnterior - compensaciones;
+    const filaGrupo = (clave) => { const c = conceptos.find(x=>x.clave_concepto===clave); return c ? `<tr><td style="padding-left:16px;">${c.concepto}</td><td class="num">${fmt(c.valor_aplicado)}</td></tr>` : ''; };
+    const clavesConocidas = new Set([...gruposTrasladado, ...gruposAcreditable, 'iva_ajustes','iva_saldo_favor_anterior','iva_compensaciones','iva_resultado_periodo']);
+    const conceptosExtra = conceptos.filter(c => !clavesConocidas.has(c.clave_concepto));
+    const filaExtra = (c) => `<tr><td style="padding-left:16px;">${c.concepto}</td><td class="num">${fmt(c.valor_aplicado)}</td></tr>`;
+    determinacionHtml = `
+    <div class="card" style="margin-bottom:12px;">
+      <h3 style="font-size:14px;margin-bottom:10px;">1. IVA trasladado</h3>
+      <div class="table-wrap"><table><tbody>
+        ${gruposTrasladado.map(filaGrupo).join('')}
+        <tr style="font-weight:700;border-top:1px solid var(--line);"><td>TOTAL IVA TRASLADADO</td><td class="num">${fmt(totalTrasladado)}</td></tr>
+      </tbody></table></div>
+    </div>
+    <div class="card" style="margin-bottom:12px;">
+      <h3 style="font-size:14px;margin-bottom:10px;">2. IVA acreditable</h3>
+      <div class="table-wrap"><table><tbody>
+        ${gruposAcreditable.map(filaGrupo).join('')}
+        <tr style="font-weight:700;border-top:1px solid var(--line);"><td>TOTAL IVA ACREDITABLE</td><td class="num">${fmt(totalAcreditable)}</td></tr>
+      </tbody></table></div>
+    </div>
+    ${conceptosExtra.length ? `<div class="card" style="margin-bottom:12px;">
+      <h3 style="font-size:14px;margin-bottom:10px;">Conceptos adicionales</h3>
+      <div class="table-wrap"><table><tbody>${conceptosExtra.map(filaExtra).join('')}</tbody></table></div>
+      <p style="font-size:10.5px;color:var(--muted);margin-top:4px;">No incluidos automáticamente en la determinación final — ajústalos manualmente en Ajustes si corresponden a este periodo.</p>
+    </div>` : ''}
+    <div class="card" style="margin-bottom:12px;">
+      <h3 style="font-size:14px;margin-bottom:10px;">3. Determinación final</h3>
+      <div style="font-size:12.5px;">
+        <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>Total IVA trasladado</span><strong>${fmt(totalTrasladado)}</strong></div>
+        <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>(–) Total IVA acreditable</span><strong>${fmt(totalAcreditable)}</strong></div>
+        <div style="display:flex;justify-content:space-between;padding:5px 0;border-top:1px solid var(--line);font-weight:600;"><span>= IVA antes de ajustes</span><strong>${fmt(antesAjustes)}</strong></div>
+        <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>± Ajustes</span><strong>${fmt(ajustes)}</strong></div>
+        <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>(–) Saldo a favor de periodos anteriores</span><strong>${fmt(saldoAnterior)}</strong></div>
+        <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>(–) Compensaciones</span><strong>${fmt(compensaciones)}</strong></div>
+        <div style="display:flex;justify-content:space-between;padding:7px 0 0;border-top:1px solid var(--navy-1);margin-top:4px;font-weight:700;font-size:13.5px;"><span>${resultado>0.004?'IVA A CARGO':resultado<-0.004?'SALDO A FAVOR':'SIN IVA A CARGO NI SALDO A FAVOR'}</span><span>${fmt(Math.abs(resultado))}</span></div>
+      </div>
+      <button class="btn btn-ghost btn-sm cg-agregar-concepto" style="margin-top:10px;">+ Agregar concepto</button>
+    </div>`;
+    totalPeriodoConcepto = await sincronizarConceptoTotalPeriodo(papel.id, 'iva_resultado_periodo', 'IVA a cargo del periodo', Math.max(0, resultado));
+  } else if (opciones.accesorios) {
+    const totalConceptos = conceptos.filter(c => !['ret_isr_total_periodo','ret_iva_total_periodo'].includes(c.clave_concepto)).reduce((s,c)=>s+Number(c.valor_aplicado||0), 0);
+    const claveT = tipoPapel === 'retenciones_isr' ? 'ret_isr_total_periodo' : 'ret_iva_total_periodo';
+    const nombreT = tipoPapel === 'retenciones_isr' ? 'TOTAL RETENCIONES ISR DEL PERIODO' : 'TOTAL RETENCIONES IVA DEL PERIODO';
+    totalPeriodoConcepto = await sincronizarConceptoTotalPeriodo(papel.id, claveT, nombreT, totalConceptos);
+  }
+
+  let controlObligacionHtml = '';
+  if (totalPeriodoConcepto) {
+    const tipoImpuestoVenc = tipoPapel === 'retenciones_isr' ? 'retencion_isr' : (tipoPapel === 'retenciones_iva' ? 'retencion_iva' : 'iva');
+    const venc = await calcularVencimientoEfectivo(b.id, periodo, tipoImpuestoVenc);
+    await calcularYGuardarAccesoriosConcepto(totalPeriodoConcepto.id, b.id, periodo, tipoImpuestoVenc, Number(totalPeriodoConcepto.valor_aplicado)||0, todayStr());
+    const { data: accTotal } = await sb.from('fz_papel_concepto_accesorios').select('*').eq('concepto_id', totalPeriodoConcepto.id).maybeSingle();
+    controlObligacionHtml = `
+    <div class="card" style="margin-bottom:12px;">
+      <h3 style="font-size:14px;margin-bottom:10px;">Control de la obligación</h3>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;font-size:12.5px;">
+        <div><span style="color:var(--muted);">Periodo fiscal</span><br><strong>${periodo}</strong></div>
+        <div><span style="color:var(--muted);">Fecha de elaboración del papel</span><br><strong>${fechaCorta(papel.created_at.slice(0,10))}</strong></div>
+        <div><span style="color:var(--muted);">Vencimiento base</span><br><strong>${venc.fecha_vencimiento_base?fechaCorta(venc.fecha_vencimiento_base):'—'}</strong></div>
+        <div><span style="color:var(--muted);">Facilidad Art. 5.1</span><br><strong>${venc.facilidad_rfc_aplicable?'Aplicable':'No aplicable'}</strong></div>
+        <div><span style="color:var(--muted);">Vencimiento efectivo</span><br><strong>${venc.fecha_vencimiento_efectiva?fechaCorta(venc.fecha_vencimiento_efectiva):'Sin determinar'}</strong></div>
+        <div><span style="color:var(--muted);">Estado del papel</span><br><strong>${ESTADO_PAPEL_LABEL[papel.estado]||papel.estado}</strong></div>
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:12px;">
+      <h3 style="font-size:14px;margin-bottom:10px;">Actualización y recargos</h3>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;font-size:12.5px;">
+        <div><span style="color:var(--muted);">Calcular al</span><br><strong>${accTotal?fechaCorta(accTotal.calcular_al):'—'}</strong></div>
+        <div><span style="color:var(--muted);">Principal</span><br><strong>${fmt(Number(totalPeriodoConcepto.valor_aplicado)||0)}</strong></div>
+        <div><span style="color:var(--muted);">Actualización</span><br><strong>${fmt(Number(accTotal?.importe_actualizacion_aplicado)||0)}</strong></div>
+        <div><span style="color:var(--muted);">Recargos</span><br><strong>${fmt(Number(accTotal?.importe_recargos_aplicado)||0)}</strong></div>
+        <div><span style="color:var(--muted);">Ajuste redondeo SAT</span><br><strong>${fmt(Number(accTotal?.monto_redondeo)||0)}</strong></div>
+        <div><span style="color:var(--gold);">Total fiscal</span><br><strong style="color:var(--gold);">${fmt(Number(accTotal?.importe_final)||0)}</strong></div>
+      </div>
+      <button class="btn btn-ghost btn-sm cg-ver-calculo" style="margin-top:8px;">Ver cálculo detallado</button>
+      <div class="cg-calculo-detalle" style="display:none;margin-top:8px;font-size:11.5px;color:var(--muted);background:#f7f7f7;padding:8px;border-radius:8px;">
+        ${accTotal ? `Factor de actualización: ${accTotal.factor_actualizacion||1} · Meses/fracción: ${accTotal.meses_fraccion??0}<br>INPC usados: ${(accTotal.inpc_periodos_usados||[]).map(x=>`${x.periodo}: ${x.valor}`).join(', ')||'—'}<br>Tasas de recargos usadas: ${(accTotal.tasas_recargos_usadas||[]).map(x=>`${x.periodo}: ${x.tasa}%`).join(', ')||'—'}` : 'Sin cálculo todavía.'}
+      </div>
     </div>`;
   }
 
-  const tabKeyDeTipo = { iva: 'iva', retenciones_isr: 'retisr', retenciones_iva: 'retiva' }[tipoPapel] || tipoPapel;
 
   el.innerHTML = `
     <button class="btn btn-ghost btn-sm cg-volver" style="margin-bottom:10px;">← Volver a cédula anual</button>
@@ -4154,49 +4304,52 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
       <p style="font-size:12px;color:var(--muted);margin-top:8px;">Estado del papel: <strong>${ESTADO_PAPEL_LABEL[papel.estado]||papel.estado}</strong></p>
     </div>
 
+    ${opciones.resumenIVA ? determinacionHtml : `
     <div class="card" style="margin-bottom:12px;">
-      <h3 style="font-size:14px;margin-bottom:10px;">1. ${opciones.resumenIVA ? 'IVA trasladado y acreditable' : 'Determinación — conceptos retenidos'}</h3>
+      <h3 style="font-size:14px;margin-bottom:10px;">1. Determinación — conceptos retenidos</h3>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Concepto</th><th>Origen/Propuesta</th><th>Importe aplicado</th><th>Diferencia</th>${opciones.accesorios?'<th>Accesorios</th>':''}<th></th></tr></thead>
           <tbody>
-            ${conceptos.map(c => {
+            ${conceptos.filter(c => !['ret_isr_total_periodo','ret_iva_total_periodo'].includes(c.clave_concepto)).map(c => {
               const diferencia = (c.valor_original!==null && c.valor_original!==undefined) ? Number(c.valor_aplicado) - Number(c.valor_original) : null;
               const acc = accesoriosPorConcepto[c.id];
+              const fmto = formatoDe(c.clave_concepto);
               return `<tr>
                 <td>${c.concepto}</td>
-                <td style="font-size:11px;color:var(--muted);">${etiquetaOrigen(c.origen)}${c.valor_original!==null&&c.valor_original!==undefined?' — '+fmt(c.valor_original):''}</td>
-                <td class="num" style="font-weight:600;">${fmt(c.valor_aplicado)}</td>
-                <td class="num" style="color:${diferencia&&Math.abs(diferencia)>0.004?'var(--gold)':'var(--muted)'};">${diferencia!==null?fmt(diferencia):''}</td>
+                <td style="font-size:11px;color:var(--muted);">${etiquetaOrigen(c.origen)}${c.valor_original!==null&&c.valor_original!==undefined?' — '+formatearValorConcepto(c.valor_original,fmto):''}</td>
+                <td class="num" style="font-weight:600;">${formatearValorConcepto(c.valor_aplicado,fmto)}</td>
+                <td class="num" style="color:${diferencia&&Math.abs(diferencia)>0.004?'var(--gold)':'var(--muted)'};">${diferencia!==null?formatearValorConcepto(diferencia,fmto):''}</td>
                 ${opciones.accesorios ? `<td style="font-size:11px;">${acc ? `${fmt(c.valor_aplicado)} + ${fmt(acc.importe_actualizacion_aplicado)} + ${fmt(acc.importe_recargos_aplicado)} + ${fmt(acc.monto_redondeo)} = <strong>${fmt(acc.importe_final)}</strong>${acc.ajuste_manual?' <span style="color:var(--gold);">(ajustado)</span>':''}` : '<span style="color:var(--muted);">Sin calcular</span>'}</td>` : ''}
                 <td style="white-space:nowrap;">
-                  <button class="btn btn-ghost btn-sm cg-editar" data-id="${c.id}" style="padding:3px 8px;">Editar</button>
-                  ${opciones.accesorios && Number(c.valor_aplicado) > 0.004 ? `<button class="btn btn-ghost btn-sm cg-calc-accesorios" data-id="${c.id}" style="padding:3px 8px;">${acc?'Recalcular':'Calcular'} accesorios</button>` : ''}
+                  <a href="#" class="cg-editar" data-id="${c.id}" style="font-size:11px;color:var(--muted);text-decoration:underline;cursor:pointer;">Editar</a>
+                  ${opciones.accesorios && Number(c.valor_aplicado) > 0.004 ? ` · <a href="#" class="cg-calc-accesorios" data-id="${c.id}" style="font-size:11px;color:var(--muted);text-decoration:underline;cursor:pointer;">${acc?'Recalcular':'Calcular'} accesorios</a>` : ''}
                 </td>
               </tr>`;
             }).join('')}
+            ${totalPeriodoConcepto ? `<tr style="font-weight:700;border-top:2px solid var(--navy-1);"><td>${totalPeriodoConcepto.concepto}</td><td></td><td class="num">${fmt(totalPeriodoConcepto.valor_aplicado)}</td><td colspan="${opciones.accesorios?3:2}"></td></tr>` : ''}
           </tbody>
         </table>
       </div>
       <button class="btn btn-ghost btn-sm cg-agregar-concepto" style="margin-top:10px;">+ Agregar concepto</button>
     </div>
-    ${resumenHtml}
+    `}
+    ${controlObligacionHtml}
 
     <div class="card" style="margin-bottom:12px;">
-      <h3 style="font-size:14px;margin-bottom:10px;">${opciones.resumenIVA?'3':'2'}. Notas y soporte</h3>
-      <div class="field">
-        <label>Observaciones</label>
-        <textarea class="cg-notas" rows="3" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;font-family:inherit;">${papel.notas||''}</textarea>
+      <h3 style="font-size:13px;margin-bottom:6px;color:var(--muted);">Notas y soporte</h3>
+      <div class="field" style="margin-bottom:6px;">
+        <textarea class="cg-notas" rows="2" placeholder="Observaciones (opcional)" style="width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:8px;font-family:inherit;font-size:12.5px;">${papel.notas||''}</textarea>
       </div>
-      <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
-        <input type="file" class="cg-soporte-input" accept=".pdf,.xlsx,.xls,.png,.jpg,.jpeg" style="font-size:12px;">
-        <button class="btn btn-ghost btn-sm cg-adjuntar">Adjuntar</button>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <input type="file" class="cg-soporte-input" accept=".pdf,.xlsx,.xls,.png,.jpg,.jpeg" style="font-size:11.5px;">
+        <button class="btn btn-ghost btn-sm cg-adjuntar" style="padding:3px 10px;">Adjuntar</button>
       </div>
-      ${soportes && soportes.length ? `<div style="margin-top:8px;">${soportes.map(s=>`<div style="font-size:11.5px;padding:4px 0;border-top:1px solid var(--line);">${s.nombre_archivo} · ${fechaCorta(s.created_at.slice(0,10))} · ${s.usuario||''}</div>`).join('')}</div>` : ''}
+      ${soportes && soportes.length ? `<div style="margin-top:6px;">${soportes.map(s=>`<div style="font-size:11px;padding:3px 0;border-top:1px solid var(--line);">${s.nombre_archivo} · ${fechaCorta(s.created_at.slice(0,10))} · ${s.usuario||''}</div>`).join('')}</div>` : ''}
     </div>
 
     <div class="card">
-      <h3 style="font-size:14px;margin-bottom:10px;">${opciones.resumenIVA?'4':'3'}. Guardar papel de trabajo</h3>
+      <h3 style="font-size:14px;margin-bottom:10px;">Guardar papel de trabajo</h3>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;font-size:12.5px;margin-bottom:10px;">
         <div><span style="color:var(--muted);">Estado</span><br><strong>${papel.estado}</strong></div>
         <div><span style="color:var(--muted);">Última modificación</span><br><strong>${fechaCorta(papel.updated_at.slice(0,10))}</strong></div>
@@ -4228,7 +4381,8 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
     await renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault, stateKey, opciones);
   });
 
-  el.querySelector('.cg-agregar-concepto').addEventListener('click', () => {
+  const btnAgregarCg = el.querySelector('.cg-agregar-concepto');
+  if (btnAgregarCg) btnAgregarCg.addEventListener('click', () => {
     abrirModalPapelConcepto(async (datos) => {
       await agregarConceptoPapel(papel.id, { concepto: datos.concepto, orden: conceptos.length, origen: datos.origen, valorAplicado: datos.valorAplicado, requiereAccesorios: !!opciones.accesorios });
       toast('Concepto agregado.');
@@ -4236,7 +4390,8 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
     });
   });
 
-  el.querySelectorAll('.cg-editar').forEach(btn => btn.addEventListener('click', () => {
+  el.querySelectorAll('.cg-editar').forEach(btn => btn.addEventListener('click', (e) => {
+    e.preventDefault();
     const concepto = conceptos.find(c => c.id === btn.dataset.id);
     abrirModalPapelAjuste(concepto, async (nuevoValor, motivo) => {
       const r = await actualizarValorConceptoPapel(concepto.id, nuevoValor, motivo, STATE.user?.email);
@@ -4247,7 +4402,8 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
     });
   }));
 
-  el.querySelectorAll('.cg-calc-accesorios').forEach(btn => btn.addEventListener('click', async () => {
+  el.querySelectorAll('.cg-calc-accesorios').forEach(btn => btn.addEventListener('click', async (e) => {
+    e.preventDefault();
     const concepto = conceptos.find(c => c.id === btn.dataset.id);
     // El concepto en sí es el "saldo principal" del renglón — cada retención se calcula de forma
     // individual, nunca sobre una suma global previa. Tipo de vencimiento genérico (retención).
@@ -4256,6 +4412,12 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
     toast('Accesorios calculados para este concepto.');
     await renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault, stateKey, opciones);
   }));
+
+  const btnVerCalcCg = el.querySelector('.cg-ver-calculo');
+  if (btnVerCalcCg) btnVerCalcCg.addEventListener('click', () => {
+    const z = el.querySelector('.cg-calculo-detalle');
+    z.style.display = z.style.display === 'none' ? 'block' : 'none';
+  });
 
   el.querySelector('.cg-guardar').addEventListener('click', async () => {
     const notas = el.querySelector('.cg-notas').value;
@@ -4335,12 +4497,13 @@ async function renderPapelISRPM(b) {
           <tbody>
             ${conceptos.map(c => {
               const acumuladoPar = c.clave_concepto==='ingresos_nominales_mes' ? acumuladoDe('ingresos_nominales_acum') : null;
+              const fmto = (CONCEPTOS_DEFAULT_ISR_PM.find(d=>d.clave===c.clave_concepto)||{}).formato || 'moneda';
               return `<tr>
-                <td>${c.concepto}${c.valor_original!==null&&c.valor_original!==undefined?` <span style="font-size:10px;color:var(--muted);">(Contabilidad: ${fmt(c.valor_original)}${Math.abs(Number(c.valor_aplicado)-Number(c.valor_original))>0.004?' → aplicado '+fmt(c.valor_aplicado)+' · dif. '+fmt(Number(c.valor_aplicado)-Number(c.valor_original)):''})</span>`:''}</td>
-                <td class="num" style="font-weight:600;">${fmt(c.valor_aplicado)}</td>
-                <td class="num">${acumuladoPar!==null?fmt(acumuladoPar):''}</td>
+                <td>${c.concepto}${c.valor_original!==null&&c.valor_original!==undefined?` <span style="font-size:10px;color:var(--muted);">(Contabilidad: ${formatearValorConcepto(c.valor_original,fmto)}${Math.abs(Number(c.valor_aplicado)-Number(c.valor_original))>0.004?' → aplicado '+formatearValorConcepto(c.valor_aplicado,fmto)+' · dif. '+formatearValorConcepto(Number(c.valor_aplicado)-Number(c.valor_original),fmto):''})</span>`:''}</td>
+                <td class="num" style="font-weight:600;">${formatearValorConcepto(c.valor_aplicado,fmto)}</td>
+                <td class="num">${acumuladoPar!==null?formatearValorConcepto(acumuladoPar,fmto):''}</td>
                 <td style="font-size:11px;color:var(--muted);">${etiquetaOrigen(c.origen)}</td>
-                <td><button class="btn btn-ghost btn-sm pisr-editar" data-id="${c.id}" style="padding:3px 8px;">Editar</button></td>
+                <td><a href="#" class="pisr-editar" data-id="${c.id}" style="font-size:11px;color:var(--muted);text-decoration:underline;cursor:pointer;">Editar</a></td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -4444,7 +4607,8 @@ async function renderPapelISRPM(b) {
     });
   });
 
-  document.querySelectorAll('.pisr-editar').forEach(btn => btn.addEventListener('click', () => {
+  document.querySelectorAll('.pisr-editar').forEach(btn => btn.addEventListener('click', (e) => {
+    e.preventDefault();
     const concepto = conceptos.find(c => c.id === btn.dataset.id);
     abrirModalPapelAjuste(concepto, async (nuevoValor, motivo) => {
       const r = await actualizarValorConceptoPapel(concepto.id, nuevoValor, motivo, STATE.user?.email);
