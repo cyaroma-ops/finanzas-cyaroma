@@ -652,10 +652,15 @@ async function abrirEditarNegocio(negocio) {
   document.getElementById('editBizMotivoExclusion').value = negocio.facilidad_art5_1_motivo_exclusion || '';
   document.getElementById('editBizMotivoExclusionZona').style.display = negocio.facilidad_art5_1_excluido ? 'block' : 'none';
 
+  const { data: catalogoRegimenes } = await sb.from('fz_catalogo_regimenes_fiscales').select('*').eq('activo', true).order('clave', { ascending: true });
+  document.getElementById('editBizRegimenNuevo').innerHTML = '<option value="">— selecciona un régimen —</option>' +
+    (catalogoRegimenes||[]).map(r => `<option value="${r.clave}">${r.clave} — ${r.descripcion}</option>`).join('');
+
   const { data: regimenes } = await sb.from('fz_regimenes_fiscales_negocio').select('*').eq('business_id', negocio.id).is('vigente_hasta', null).order('vigente_desde', { ascending: false });
   const vigente = regimenes && regimenes.length ? regimenes[0] : null;
+  const descVigente = vigente ? (catalogoRegimenes||[]).find(r=>r.clave===vigente.clave_regimen) : null;
   document.getElementById('editBizRegimenActual').textContent = vigente
-    ? `Vigente: ${vigente.clave_regimen}${vigente.vigente_desde?' (desde '+fechaCorta(vigente.vigente_desde)+')':''}`
+    ? `Vigente: ${vigente.clave_regimen}${descVigente?' — '+descVigente.descripcion:''}${vigente.vigente_desde?' (desde '+fechaCorta(vigente.vigente_desde)+')':''}`
     : 'Sin régimen registrado todavía.';
 
   document.getElementById('modalEditBiz').dataset.bizId = negocio.id;

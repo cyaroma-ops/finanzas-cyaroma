@@ -750,7 +750,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <label>Régimen fiscal vigente</label>
         <div id="editBizRegimenActual" style="font-size:12px;color:var(--muted);margin-bottom:4px;"></div>
         <div style="display:flex;gap:6px;">
-          <input type="text" id="editBizRegimenNuevo" placeholder="Clave o nombre del régimen" style="flex:1;">
+          <select id="editBizRegimenNuevo" style="flex:1;"><option value="">— selecciona un régimen —</option></select>
           <input type="date" id="editBizRegimenDesde" style="width:150px;">
         </div>
         <div style="font-size:11px;color:var(--muted);margin-top:3px;">Si capturas uno nuevo, cierra automáticamente la vigencia del anterior (si había) y este queda como vigente.</div>
