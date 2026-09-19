@@ -2509,6 +2509,14 @@ function conceptoSinIntencionExplicita(concepto) {
   return v === null || v === undefined || Math.abs(Number(v)) < 0.005;
 }
 
+// Neto de una línea del libro de partida doble RESPETANDO su naturaleza contable — activo,
+// costo y gasto son de naturaleza deudora (aumentan por cargo); pasivo, capital e ingreso son de
+// naturaleza acreedora (aumentan por abono). Usar siempre esto en vez de "abono - cargo" a secas.
+function netoNaturaleza(fila) {
+  const deudora = fila.tipo === 'activo' || fila.tipo === 'costo' || fila.tipo === 'gasto';
+  return deudora ? (fila.cargo - fila.abono) : (fila.abono - fila.cargo);
+}
+
 // ============================================================
 // CADENA DE CÁLCULO ISR PM — Fase 1 profesional. Ingresos → acumulado → coeficiente →
 // utilidad fiscal → PTU → pérdidas → base → tasa → ISR causado → pagos anteriores/retenciones →
@@ -2939,6 +2947,72 @@ async function sincronizarConceptoTotalPeriodo(papelId, claveTotal, nombreTotal,
   return { ...existente, ...cambios };
 }
 
+// ============================================================
+// RESOLUTOR ÚNICO DE VALOR EFECTIVO — transversal a ISR PM, IVA, Retenciones ISR y Retenciones
+// IVA. Es LA MISMA lógica que usa el detalle mensual, la cédula anual (versión por lotes) y el
+// diagnóstico — nunca puede haber dos resultados distintos para el mismo negocio+papel+concepto+
+// periodo. Prioridad: 1) valor con intención explícita ya persistido (override real o fuente ya
+// registrada) → se respeta tal cual; 2) propuesta contable (ya incluye, vía el mapeo configurado,
+// tanto fuentes especializadas de realización — si el mapeo apunta a esas subcuentas — como el
+// mapeo contable genérico); 3) ausencia real = null. Nunca "si existe registro, úsalo" a secas.
+// ============================================================
+async function resolverValorFiscalEfectivo(businessId, tipoPapel, claveConcepto, periodo, conceptoPersistido) {
+  if (conceptoPersistido && !conceptoSinIntencionExplicita(conceptoPersistido)) {
+    const tieneOrigen = conceptoPersistido.valor_original !== null && conceptoPersistido.valor_original !== undefined;
+    return {
+      valor: Number(conceptoPersistido.valor_aplicado), origen: conceptoPersistido.origen || 'manual',
+      valorOrigen: tieneOrigen ? Number(conceptoPersistido.valor_original) : null,
+      esOverride: tieneOrigen && Math.abs(Number(conceptoPersistido.valor_aplicado) - Number(conceptoPersistido.valor_original)) > 0.005,
+      motivo: conceptoPersistido.motivo_ajuste || null,
+    };
+  }
+  const prop = await obtenerPropuestaContable(businessId, tipoPapel, claveConcepto, periodo);
+  if (prop.hayPropuesta) return { valor: redondearMoneda(prop.total), origen: 'contabilidad', valorOrigen: redondearMoneda(prop.total), esOverride: false, motivo: null };
+  return { valor: null, origen: 'manual', valorOrigen: null, esOverride: false, motivo: null };
+}
+
+// SOLO LECTURA, POR LOTES — resuelve la propuesta contable de un concepto para los 12 meses de un
+// ejercicio en un solo pase (una consulta al mapeo, una al libro de partida doble del año completo,
+// una a Ventas del año completo) — NUNCA una consulta por mes/celda. Usa exactamente la misma
+// regla de precedencia (Ventas especializada vs. libro contable) que obtenerPropuestaContable, para
+// que ambas nunca puedan divergir.
+async function obtenerPropuestasAnualesPorConcepto(businessId, tipoPapel, claveConcepto, ejercicio) {
+  const { data: mapeos } = await sb.from('fz_mapeo_cuenta_concepto_fiscal').select('subcuenta_id').eq('business_id', businessId).eq('tipo_papel', tipoPapel).eq('clave_concepto', claveConcepto);
+  const porMes = {}; for (let m=1;m<=12;m++) porMes[String(m).padStart(2,'0')] = null;
+  if (!mapeos || !mapeos.length) return porMes;
+  const subIds = new Set(mapeos.map(m=>m.subcuenta_id));
+
+  const { data: conceptosVenta } = await sb.from('fz_conceptos_venta').select('id, subcuenta_vinculada_id, tipo').eq('business_id', businessId);
+  const subIdsConVentaVinculada = new Set((conceptosVenta||[]).filter(cv=>cv.subcuenta_vinculada_id).map(cv=>cv.subcuenta_vinculada_id));
+  const subIdsParaLibro = new Set([...subIds].filter(id => !subIdsConVentaVinculada.has(id)));
+  const subIdsParaVentas = new Set([...subIds].filter(id => subIdsConVentaVinculada.has(id)));
+
+  const desde = `${ejercicio}-01-01`, hasta = `${ejercicio}-12-31`;
+  const acumular = (mm, monto) => { porMes[mm] = redondearMoneda((porMes[mm]||0) + monto); };
+
+  if (subIdsParaLibro.size) {
+    const { filas } = await getLibroPartidaDobleConOrigen(businessId, hasta, desde);
+    filas.filter(f => f.clave.startsWith('sub:') && subIdsParaLibro.has(f.clave.slice(4)) && f.fecha >= desde && f.fecha <= hasta).forEach(f => {
+      acumular(f.fecha.slice(5,7), netoNaturaleza(f));
+    });
+  }
+  if (subIdsParaVentas.size) {
+    const conceptosVentaMapeados = (conceptosVenta||[]).filter(cv => cv.subcuenta_vinculada_id && subIdsParaVentas.has(cv.subcuenta_vinculada_id));
+    const { data: ventas } = await sb.from('fz_ventas').select('id, fecha, venta_data').eq('business_id', businessId).gte('fecha', desde).lte('fecha', hasta);
+    (ventas||[]).forEach(v => {
+      const mm = v.fecha.slice(5,7);
+      conceptosVentaMapeados.forEach(cv => {
+        const monto = Number((v.venta_data||{})[cv.id]) || 0;
+        if (!monto) return;
+        const signo = cv.tipo === 'resta' ? -1 : 1;
+        acumular(mm, monto * signo);
+      });
+    });
+  }
+  return porMes; // 'MM' -> total|null (null = ningún movimiento ese mes; 0 = movimientos con neto exacto cero)
+}
+
+
 async function obtenerPropuestaContable(businessId, tipoPapel, claveConcepto, periodo) {
   const { data: mapeos } = await sb.from('fz_mapeo_cuenta_concepto_fiscal').select('subcuenta_id').eq('business_id', businessId).eq('tipo_papel', tipoPapel).eq('clave_concepto', claveConcepto);
   if (!mapeos || !mapeos.length) return { hayPropuesta: false };
@@ -2952,7 +3026,7 @@ async function obtenerPropuestaContable(businessId, tipoPapel, claveConcepto, pe
   // distorsionaría el total ante cualquier ajuste/nota de crédito posterior sobre la misma cuenta.
   const { filas } = await getLibroPartidaDobleConOrigen(businessId, end, start);
   filas.filter(f => f.clave.startsWith('sub:') && subIds.has(f.clave.slice(4))).forEach(f => {
-    const monto = f.abono - f.cargo;
+    const monto = netoNaturaleza(f);
     total += monto;
     fuentes.push({ tipoFuente: 'subcuenta', subcuentaId: f.clave.slice(4), importe: monto, fecha: f.fecha, referenciaTabla: f.origenTabla||null, referenciaId: f.origenId||null });
   });
@@ -3016,7 +3090,7 @@ async function diagnosticarFuenteFiscal(businessId, tipoPapel, claveConcepto, pe
     const subIdsParaLibroSet = new Set(subIdsParaLibro);
     const { filas } = await getLibroPartidaDobleConOrigen(businessId, end, start);
     filas.filter(f => f.clave.startsWith('sub:') && subIdsParaLibroSet.has(f.clave.slice(4))).forEach(f => {
-      diag.movimientosContables.push({ fecha: f.fecha, subcuentaId: f.clave.slice(4), cargo: f.cargo, abono: f.abono, neto: redondearMoneda(f.abono - f.cargo), origenTabla: f.origenTabla||null, origenId: f.origenId||null });
+      diag.movimientosContables.push({ fecha: f.fecha, subcuentaId: f.clave.slice(4), cargo: f.cargo, abono: f.abono, neto: redondearMoneda(netoNaturaleza(f)), origenTabla: f.origenTabla||null, origenId: f.origenId||null });
       if (f.cargo > 0.004) diag.ajustesDetectados = true;
     });
   }
@@ -3038,6 +3112,20 @@ async function diagnosticarFuenteFiscal(businessId, tipoPapel, claveConcepto, pe
 
 // SOLO LECTURA — el mapeo vigente de un concepto fiscal, con el nombre de cada subcuenta para
 // mostrarlo en la UI de configuración.
+// SOLO LECTURA — identifica en el catálogo real las subcuentas de realización que el motor
+// existente (sincronizarRealizacionFactura) ya crea bajo demanda, por el patrón EXACTO de nombre
+// que ese motor usa (obtenerOCrearSubcuentaPorNombre) — nunca inventa un nombre ni un id. Si el
+// motor todavía no ha creado esa subcuenta para este negocio, la lista viene vacía.
+async function identificarSubcuentasEspecializadas(businessId, claveConcepto) {
+  const { data: subs } = await sb.from('fz_subcuentas').select('id, nombre').eq('business_id', businessId);
+  const lista = subs || [];
+  if (claveConcepto === 'iva_trasladado_16') return lista.filter(s => s.nombre === 'IVA Trasladado — Cobrado');
+  if (claveConcepto === 'iva_acreditable_compras' || claveConcepto === 'iva_acreditable_servicios') return lista.filter(s => s.nombre === 'IVA Acreditable — Pagado');
+  if (claveConcepto.startsWith('ret_isr_')) return lista.filter(s => /^Retención ISR — .+ — Retenida$/.test(s.nombre));
+  if (claveConcepto.startsWith('ret_iva_')) return lista.filter(s => /^Retención IVA — .+ — Retenida$/.test(s.nombre));
+  return [];
+}
+
 async function obtenerMapeoFuenteFiscal(businessId, tipoPapel, claveConcepto) {
   const { data: mapeos } = await sb.from('fz_mapeo_cuenta_concepto_fiscal').select('id, subcuenta_id').eq('business_id', businessId).eq('tipo_papel', tipoPapel).eq('clave_concepto', claveConcepto);
   if (!mapeos || !mapeos.length) return [];
@@ -4346,6 +4434,19 @@ async function construirMatrizAnual(businessId, tipoPapel, ejercicio, conceptosD
   const { data: todosAccesorios } = conceptoIds.length ? await sb.from('fz_papel_concepto_accesorios').select('*').in('concepto_id', conceptoIds) : { data: [] };
   const accesoriosPorConcepto = Object.fromEntries((todosAccesorios||[]).map(a=>[a.concepto_id, a]));
 
+  // Conceptos CALCULADOS nunca reciben propuesta contable directa (se calculan de sus insumos) —
+  // el resto son candidatos. Esto es lo que hace transversal la corrección: la MISMA función
+  // sirve a ISR PM, IVA, Retenciones ISR y Retenciones IVA sin cuatro implementaciones distintas.
+  const clavesCalculadas = tipoPapel === 'isr_pm' ? new Set(CONCEPTOS_CALCULADOS_ISR_PM) : new Set();
+
+  // Resolutor único, POR LOTES — una sola consulta por concepto candidato para el año completo,
+  // nunca una consulta por mes/celda. Misma regla de precedencia que usa el detalle mensual.
+  const propuestasPorConcepto = {};
+  for (const def of conceptosDefault) {
+    if (clavesCalculadas.has(def.clave)) continue;
+    propuestasPorConcepto[def.clave] = await obtenerPropuestasAnualesPorConcepto(businessId, tipoPapel, def.clave, ejercicio);
+  }
+
   // Fila por concepto default — asegura orden consistente aunque falten meses.
   const filas = conceptosDefault.map(def => {
     const porMes = {}; // 'MM' -> { concepto (fila real), accesorios }
@@ -4353,10 +4454,20 @@ async function construirMatrizAnual(businessId, tipoPapel, ejercicio, conceptosD
       const mm = String(m).padStart(2,'0');
       const papelMes = papelPorMes[mm];
       const conceptoMes = papelMes ? (todosConceptos||[]).find(c => c.papel_id === papelMes.id && c.clave_concepto === def.clave) : null;
+      let valorEfectivo, origenEfectivo;
+      if (conceptoMes && !conceptoSinIntencionExplicita(conceptoMes)) {
+        // Override real / valor con intención explícita ya persistido — se respeta tal cual.
+        valorEfectivo = Number(conceptoMes.valor_aplicado); origenEfectivo = conceptoMes.origen;
+      } else {
+        // Sin intención (virtual o cero/legado sin huella) — usa la propuesta por lotes ya
+        // resuelta arriba, exactamente la misma que usaría el detalle mensual para este mes.
+        const propuestaMes = propuestasPorConcepto[def.clave] ? propuestasPorConcepto[def.clave][mm] : null;
+        valorEfectivo = propuestaMes; origenEfectivo = propuestaMes !== null ? 'contabilidad' : (conceptoMes ? conceptoMes.origen : null);
+      }
       porMes[mm] = {
-        valor: conceptoMes ? Number(conceptoMes.valor_aplicado) : null,
+        valor: valorEfectivo,
         conceptoId: conceptoMes ? conceptoMes.id : null,
-        origen: conceptoMes ? conceptoMes.origen : null,
+        origen: origenEfectivo,
         accesorios: conceptoMes ? accesoriosPorConcepto[conceptoMes.id] || null : null,
       };
     }
@@ -4367,6 +4478,104 @@ async function construirMatrizAnual(businessId, tipoPapel, ejercicio, conceptosD
     else total = null; // 'no_aplica'
     return { ...def, porMes, total };
   });
+
+  // ---- Cadena matemática EN VIVO — reutiliza exactamente las fórmulas ya usadas por cada cédula
+  // mensual (calcularCadenaISRPM para ISR PM; la cascada de IVA y la suma de Retenciones, copiadas
+  // literalmente de renderCedulaGenerica). Solo lectura — nada de esto se persiste por construir
+  // la matriz. Si un mes nunca se abrió/guardó, sus resultados igual se calculan en memoria a
+  // partir de los insumos YA resueltos arriba.
+  const filaPorClave = {}; filas.forEach(f => { if (f.clave) filaPorClave[f.clave] = f; });
+  const valorMes = (clave, mm) => filaPorClave[clave] ? filaPorClave[clave].porMes[mm].valor : null;
+
+  if (tipoPapel === 'isr_pm') {
+    const perdidas = await obtenerPerdidasFiscalesSiExisten(businessId, ejercicio);
+    const perdidasAplicadasPorMes = {};
+    for (let m = 1; m <= 12; m++) {
+      const mm = String(m).padStart(2,'0');
+      let suma = 0;
+      perdidas.forEach(p => { const c = p.control ? p.control.porMes[mm] : null; if (c && c.aplicadoAcumulado !== null) suma += c.aplicadoAcumulado; });
+      perdidasAplicadasPorMes[mm] = redondearMoneda(suma);
+    }
+    const setSiVacio = (clave, mm, valor) => { const f = filaPorClave[clave]; if (f && f.porMes[mm].valor === null && valor !== null) { f.porMes[mm].valor = valor; f.porMes[mm].origen = 'contabilidad'; } };
+
+    let ingresosAcum = 0, pagosAnterioresAcum = 0;
+    for (let m = 1; m <= 12; m++) {
+      const mm = String(m).padStart(2,'0');
+      const ingresosMes = valorMes('ingresos_nominales_mes', mm);
+      const coeficiente = valorMes('coeficiente_utilidad', mm);
+      const ptuAplicable = valorMes('ptu_aplicable', mm) ?? 0;
+      const retenciones = valorMes('retenciones', mm) ?? 0;
+      const perdidasAplicadas = perdidasAplicadasPorMes[mm] || 0;
+      let pagosProvisionalesAnteriores = valorMes('pagos_provisionales_anteriores', mm);
+      if (pagosProvisionalesAnteriores === null) pagosProvisionalesAnteriores = (m === 1) ? 0 : pagosAnterioresAcum;
+
+      const ingresosAcumPrevio = ingresosAcum;
+      if (ingresosMes !== null) ingresosAcum = redondearMoneda(ingresosAcum + ingresosMes);
+
+      const cadena = calcularCadenaISRPM({ ingresosAcumPrevio, ingresosMes, coeficiente, ptuAplicable, perdidasAplicadas, pagosProvisionalesAnteriores, retenciones });
+
+      setSiVacio('ingresos_nominales_acum', mm, cadena.ingresosAcum);
+      setSiVacio('utilidad_fiscal', mm, cadena.utilidadFiscal);
+      setSiVacio('base', mm, cadena.base);
+      setSiVacio('isr_determinado', mm, cadena.isrDeterminado);
+      setSiVacio('resultado_determinado', mm, cadena.isrDeterminado);
+
+      if (cadena.isrDeterminado !== null) pagosAnterioresAcum = redondearMoneda(pagosAnterioresAcum + cadena.isrDeterminado);
+    }
+  }
+
+  if (tipoPapel === 'iva' || tipoPapel === 'retenciones_isr' || tipoPapel === 'retenciones_iva') {
+    // Concepto sintético del resultado del periodo — no está en conceptosDefault (se construye
+    // aparte en la cédula mensual), así que se agrega aquí como fila propia. Si ya existe un
+    // valor real persistido con intención explícita para ese mes, se respeta tal cual.
+    const claveResultado = tipoPapel === 'iva' ? 'iva_resultado_periodo' : (tipoPapel === 'retenciones_isr' ? 'ret_isr_total_periodo' : 'ret_iva_total_periodo');
+    const nombreResultado = tipoPapel === 'iva' ? 'IVA a cargo del periodo' : (tipoPapel === 'retenciones_isr' ? 'Total Retenciones ISR del periodo' : 'Total Retenciones IVA del periodo');
+    const porMesResultado = {};
+    for (let m = 1; m <= 12; m++) {
+      const mm = String(m).padStart(2,'0');
+      const papelMes = papelPorMes[mm];
+      const conceptoMes = papelMes ? (todosConceptos||[]).find(c => c.papel_id === papelMes.id && c.clave_concepto === claveResultado) : null;
+      if (conceptoMes && !conceptoSinIntencionExplicita(conceptoMes)) {
+        porMesResultado[mm] = { valor: Number(conceptoMes.valor_aplicado), conceptoId: conceptoMes.id, origen: conceptoMes.origen, accesorios: accesoriosPorConcepto[conceptoMes.id] || null };
+        continue;
+      }
+      let valor = null;
+      if (tipoPapel === 'iva') {
+        // Misma fórmula EXACTA que usa renderCedulaGenerica (opciones.resumenIVA) — copiada
+        // literalmente, nunca reinventada. "—" solo si NINGÚN insumo tiene valor este mes.
+        const gruposTrasladado = ['iva_trasladado_16','iva_trasladado_0','iva_trasladado_exento','iva_trasladado_no_objeto'];
+        const gruposAcreditable = ['iva_acreditable_compras','iva_acreditable_servicios','iva_acreditable_inversiones'];
+        const otras = ['iva_ajustes','iva_saldo_favor_anterior','iva_compensaciones'];
+        const todasLasClaves = [...gruposTrasladado, ...gruposAcreditable, ...otras];
+        const hayAlgunInsumo = todasLasClaves.some(cl => valorMes(cl, mm) !== null);
+        if (hayAlgunInsumo) {
+          const totalTrasladado = gruposTrasladado.reduce((s,cl)=>s+(valorMes(cl,mm)??0),0);
+          const totalAcreditable = gruposAcreditable.reduce((s,cl)=>s+(valorMes(cl,mm)??0),0);
+          const antesAjustes = totalTrasladado - totalAcreditable;
+          const ajustes = valorMes('iva_ajustes',mm) ?? 0, saldoAnterior = valorMes('iva_saldo_favor_anterior',mm) ?? 0, compensaciones = valorMes('iva_compensaciones',mm) ?? 0;
+          const resultado = antesAjustes + ajustes - saldoAnterior - compensaciones;
+          valor = redondearMoneda(Math.max(0, resultado));
+        }
+      } else {
+        // Retenciones ISR/IVA — misma suma EXACTA que usa renderCedulaGenerica (opciones.accesorios).
+        const hayAlgunInsumo = conceptosDefault.some(d => valorMes(d.clave, mm) !== null);
+        if (hayAlgunInsumo) valor = redondearMoneda(conceptosDefault.reduce((s,d)=>s+(valorMes(d.clave,mm)??0),0));
+      }
+      porMesResultado[mm] = { valor, conceptoId: conceptoMes ? conceptoMes.id : null, origen: valor !== null ? 'contabilidad' : null, accesorios: conceptoMes ? accesoriosPorConcepto[conceptoMes.id]||null : null };
+    }
+    const valoresNoNulosR = Object.values(porMesResultado).map(x=>x.valor).filter(v=>v!==null);
+    filas.push({ clave: claveResultado, nombre: nombreResultado, agregacion: 'suma', porMes: porMesResultado, total: valoresNoNulosR.reduce((s,v)=>s+v,0) });
+  }
+
+  // Recalcular el total de cada fila CALCULADA de ISR PM afectada por el post-procesamiento.
+  if (tipoPapel === 'isr_pm') {
+    ['ingresos_nominales_acum','utilidad_fiscal','base','isr_determinado','resultado_determinado'].forEach(clave => {
+      const f = filaPorClave[clave]; if (!f) return;
+      const valoresNoNulos = Object.values(f.porMes).map(x=>x.valor).filter(v=>v!==null);
+      if (f.agregacion === 'suma') f.total = valoresNoNulos.reduce((s,v)=>s+v, 0);
+      else if (f.agregacion === 'ultimo') f.total = valoresNoNulos.length ? valoresNoNulos[valoresNoNulos.length-1] : null;
+    });
+  }
 
   // Conceptos agregados manualmente que no están en la lista default — se muestran también,
   // agregación 'suma' por default (son valores capturados libremente por el contador).
@@ -4755,16 +4964,26 @@ async function renderResumenFederal(b) {
 
   const tiposFederales = ['isr_pm','iva','retenciones_isr','retenciones_iva'];
   const { data: papeles } = await sb.from('fz_papeles_trabajo').select('*').eq('business_id', b.id).eq('ejercicio', STATE_papelesAnio).in('tipo_papel', tiposFederales);
-  const papelesIds = (papeles||[]).map(p=>p.id);
-  const { data: conceptos } = papelesIds.length ? await sb.from('fz_papel_conceptos').select('papel_id,valor_aplicado').in('papel_id', papelesIds) : { data: [] };
-  const determinadoPorPapel = {};
-  (conceptos||[]).forEach(c => { determinadoPorPapel[c.papel_id] = (determinadoPorPapel[c.papel_id]||0) + Number(c.valor_aplicado||0); });
+
+  // Las 4 cédulas se resuelven con la MISMA función que usa cada cédula anual — nunca una quinta
+  // lógica paralela. El resultado ya viene calculado en vivo (insumos + cadena/cascada/suma),
+  // sin exigir que el mes se haya guardado.
+  const CLAVE_RESULTADO_POR_TIPO = { isr_pm: 'resultado_determinado', iva: 'iva_resultado_periodo', retenciones_isr: 'ret_isr_total_periodo', retenciones_iva: 'ret_iva_total_periodo' };
+  const CONCEPTOS_POR_TIPO = { isr_pm: CONCEPTOS_DEFAULT_ISR_PM, iva: CONCEPTOS_DEFAULT_IVA, retenciones_isr: CONCEPTOS_DEFAULT_RETENCIONES_ISR, retenciones_iva: CONCEPTOS_DEFAULT_RETENCIONES_IVA };
+  const resultadoPorMesPorTipo = {};
+  for (const t of tiposFederales) {
+    const matriz = await construirMatrizAnual(b.id, t, STATE_papelesAnio, CONCEPTOS_POR_TIPO[t]);
+    const filaResultado = matriz.filas.find(f => f.clave === CLAVE_RESULTADO_POR_TIPO[t]);
+    resultadoPorMesPorTipo[t] = filaResultado ? filaResultado.porMes : {};
+  }
 
   const filas = meses.map(mes => {
+    const mm = mes.slice(5,7);
     const porTipo = {};
     tiposFederales.forEach(t => {
       const papel = (papeles||[]).find(p=>p.tipo_papel===t && p.periodo===mes);
-      porTipo[t] = papel ? { estado: papel.estado, determinado: determinadoPorPapel[papel.id]||0, papelId: papel.id } : null;
+      const valorVivo = resultadoPorMesPorTipo[t][mm] ? resultadoPorMesPorTipo[t][mm].valor : null;
+      porTipo[t] = (papel || valorVivo !== null) ? { estado: papel ? papel.estado : 'sin_iniciar', determinado: valorVivo, papelId: papel ? papel.id : null } : null;
     });
     return { mes, porTipo };
   });
@@ -4790,7 +5009,7 @@ async function renderResumenFederal(b) {
           <tbody>
             ${filas.map(f => `<tr>
               <td>${f.mes}</td>
-              ${tiposFederales.map(t => `<td class="num">${f.porTipo[t] ? fmt(f.porTipo[t].determinado) + ' <span style="font-size:10px;color:var(--muted);">('+f.porTipo[t].estado+')</span>' : '<span style="color:var(--muted);">— sin papel —</span>'}</td>`).join('')}
+              ${tiposFederales.map(t => `<td class="num">${f.porTipo[t] ? (f.porTipo[t].determinado!==null ? fmt(f.porTipo[t].determinado) + ' <span style="font-size:10px;color:var(--muted);">('+f.porTipo[t].estado+')</span>' : '<span style="color:var(--muted);">— (faltan insumos)</span>') : '<span style="color:var(--muted);">— sin papel —</span>'}</td>`).join('')}
             </tr>`).join('')}
           </tbody>
         </table>
@@ -5219,14 +5438,13 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
     const real = (conceptosReales||[]).find(c => c.clave_concepto === def.clave);
     return real || { id: null, papel_id: null, clave_concepto: def.clave, concepto: def.nombre, orden: i, origen: 'manual', valor_original: null, valor_aplicado: null, motivo_ajuste: null, requiere_accesorios: !!opciones.accesorios };
   });
-  // Capa de fuentes fiscales — genérica, reutilizable para cualquier concepto de cualquier papel.
-  // Solo propone si existe un mapeo configurado (fz_mapeo_cuenta_concepto_fiscal); si no existe,
-  // el concepto permanece en captura manual sin inventar ningún valor.
+  // Resolución de valor efectivo — LA MISMA función (resolverValorFiscalEfectivo) que usa la
+  // cédula anual, ISR PM y el diagnóstico. Cubre IVA y ambas Retenciones sin código separado.
   for (const c of conceptos) {
-    if (!conceptoSinIntencionExplicita(c)) continue;
-    const prop = await obtenerPropuestaContable(b.id, tipoPapel, c.clave_concepto, periodo);
-    if (prop.hayPropuesta) {
-      c.valor_original = redondearMoneda(prop.total); c.valor_aplicado = redondearMoneda(prop.total); c.origen = 'contabilidad';
+    const eraSinIntencion = conceptoSinIntencionExplicita(c);
+    const resuelto = await resolverValorFiscalEfectivo(b.id, tipoPapel, c.clave_concepto, periodo, c.id ? c : null);
+    if (eraSinIntencion && resuelto.valor !== null) {
+      c.valor_original = resuelto.valorOrigen; c.valor_aplicado = resuelto.valor; c.origen = resuelto.origen;
       if (c.id) c._sincronizarOrigenAlGuardar = true;
     }
   }
@@ -5532,15 +5750,16 @@ async function renderPapelISRPM(b) {
   const papelVirtual = papel || { estado: 'sin_iniciar', created_at: null, updated_at: null, notas: '', created_by: null };
   const acumuladoDe = clave => { const c = conceptos.find(x=>x.clave_concepto===clave); return (c && c.id) ? Number(c.valor_aplicado) : null; };
 
-  // ---- Propuesta contable automática para INSUMOS con fuente disponible (reutiliza la función
-  // ya existente — nunca una fuente ni una tabla nueva) ----
+  // ---- Resolución de valor efectivo — LA MISMA función que usa la cédula anual y el
+  // diagnóstico (resolverValorFiscalEfectivo), nunca una lógica paralela equivalente. ----
   const conceptoIngresosMes = conceptos.find(c=>c.clave_concepto==='ingresos_nominales_mes');
-  if (conceptoIngresosMes && conceptoSinIntencionExplicita(conceptoIngresosMes)) {
-    const prop = await obtenerPropuestaContable(b.id, 'isr_pm', 'ingresos_nominales_mes', periodo);
-    if (prop.hayPropuesta) {
-      conceptoIngresosMes.valor_original = redondearMoneda(prop.total);
-      conceptoIngresosMes.valor_aplicado = redondearMoneda(prop.total);
-      conceptoIngresosMes.origen = 'contabilidad';
+  if (conceptoIngresosMes) {
+    const eraSinIntencion = conceptoSinIntencionExplicita(conceptoIngresosMes);
+    const resuelto = await resolverValorFiscalEfectivo(b.id, 'isr_pm', 'ingresos_nominales_mes', periodo, conceptoIngresosMes.id ? conceptoIngresosMes : null);
+    if (eraSinIntencion && resuelto.valor !== null) {
+      conceptoIngresosMes.valor_original = resuelto.valorOrigen;
+      conceptoIngresosMes.valor_aplicado = resuelto.valor;
+      conceptoIngresosMes.origen = resuelto.origen;
       if (conceptoIngresosMes.id) conceptoIngresosMes._sincronizarOrigenAlGuardar = true; // ya persistido con el cero viejo — la corrección se escribe solo al Guardar/Editar explícito, nunca por abrir
     }
   }
@@ -7812,6 +8031,10 @@ async function renderFuentesFiscales() {
   // SOLO LECTURA — el mapeo vigente de cada concepto del tipo de papel seleccionado.
   const mapeosPorConcepto = {};
   for (const c of conceptos) mapeosPorConcepto[c.clave] = await obtenerMapeoFuenteFiscal(b.id, STATE_fuentesFiscalesTab, c.clave);
+  // SOLO LECTURA — subcuentas de realización REALES ya creadas por el motor existente, si el
+  // catálogo ya las tiene.
+  const especializadasPorConcepto = {};
+  for (const c of conceptos) especializadasPorConcepto[c.clave] = await identificarSubcuentasEspecializadas(b.id, c.clave);
 
   el.innerHTML = `
     <div class="pt-card">
@@ -7830,9 +8053,14 @@ async function renderFuentesFiscales() {
               const especializada = FUENTES_ESPECIALIZADAS[c.clave];
               if (especializada) return `<tr><td>${c.nombre}</td><td><span class="pt-origen sistema">${especializada}</span></td><td style="font-size:10.5px;color:var(--muted);">No compite con mapeo contable</td></tr>`;
               const mapeo = mapeosPorConcepto[c.clave];
+              const idsMapeados = new Set(mapeo.map(m=>m.subcuentaId));
+              const detectadas = (especializadasPorConcepto[c.clave]||[]).filter(s=>!idsMapeados.has(s.id));
               return `<tr>
                 <td>${c.nombre}</td>
-                <td>${mapeo.length ? mapeo.map(m=>`<span class="pt-origen contabilidad">${m.nombre}</span>`).join(' ') : `<span class="pt-origen">Sin mapeo — captura manual</span>`}</td>
+                <td>
+                  ${mapeo.length ? mapeo.map(m=>`<span class="pt-origen contabilidad">${m.nombre}</span>`).join(' ') : `<span class="pt-origen">Sin mapeo — captura manual</span>`}
+                  ${detectadas.length ? `<div style="margin-top:4px;"><span class="pt-origen sistema">Fuente especializada detectada: ${detectadas.map(s=>s.nombre).join(', ')}</span> <a href="#" class="pt-editar-link ff-usar-especializada" data-clave="${c.clave}" style="opacity:1;">Usar esta fuente</a></div>` : ''}
+                </td>
                 <td><a href="#" class="pt-editar-link ff-configurar" data-clave="${c.clave}">Configurar</a> · <a href="#" class="pt-editar-link ff-diagnosticar" data-clave="${c.clave}">Diagnosticar</a></td>
               </tr>`;
             }).join('')}
@@ -7853,6 +8081,15 @@ async function renderFuentesFiscales() {
     e.preventDefault();
     const concepto = conceptos.find(c=>c.clave===a.dataset.clave);
     abrirModalDiagnosticoFuente(b, STATE_fuentesFiscalesTab, concepto);
+  }));
+  el.querySelectorAll('.ff-usar-especializada').forEach(a => a.addEventListener('click', async (e) => {
+    e.preventDefault();
+    const clave = a.dataset.clave;
+    const yaMapeadas = mapeosPorConcepto[clave].map(m=>m.subcuentaId);
+    const nuevas = (especializadasPorConcepto[clave]||[]).map(s=>s.id);
+    await guardarMapeoFuenteFiscal(b.id, STATE_fuentesFiscalesTab, clave, [...new Set([...yaMapeadas, ...nuevas])], STATE.user?.email);
+    toast('Fuente especializada conectada.');
+    await renderFuentesFiscales();
   }));
 }
 
