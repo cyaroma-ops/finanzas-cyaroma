@@ -2496,6 +2496,19 @@ function redondearMoneda(valor) {
   return Math.round((Number(valor) + Number.EPSILON) * 100) / 100;
 }
 
+// Distingue "cero/legado sin ninguna huella de intención" de "override real del contador". Un
+// concepto YA persistido puede seguir siendo candidato a recibir la propuesta automática si no
+// conserva ningún rastro de decisión explícita: sin fuente registrada (valor_original null), sin
+// motivo de ajuste registrado, y su valor aplicado es cero. Si tiene cualquiera de esas huellas,
+// se respeta tal cual — nunca se sobrescribe. null ≠ 0 ≠ override manual se mantiene distinguible.
+function conceptoSinIntencionExplicita(concepto) {
+  if (!concepto || !concepto.id) return true; // virtual — nunca persistido, sin ninguna huella posible
+  if (concepto.valor_original !== null && concepto.valor_original !== undefined) return false; // ya tiene un origen registrado
+  if (concepto.motivo_ajuste) return false; // hubo un ajuste explícito alguna vez
+  const v = concepto.valor_aplicado;
+  return v === null || v === undefined || Math.abs(Number(v)) < 0.005;
+}
+
 // ============================================================
 // CADENA DE CÁLCULO ISR PM — Fase 1 profesional. Ingresos → acumulado → coeficiente →
 // utilidad fiscal → PTU → pérdidas → base → tasa → ISR causado → pagos anteriores/retenciones →
@@ -5210,9 +5223,12 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
   // Solo propone si existe un mapeo configurado (fz_mapeo_cuenta_concepto_fiscal); si no existe,
   // el concepto permanece en captura manual sin inventar ningún valor.
   for (const c of conceptos) {
-    if (c.id || c.valor_original !== null) continue;
+    if (!conceptoSinIntencionExplicita(c)) continue;
     const prop = await obtenerPropuestaContable(b.id, tipoPapel, c.clave_concepto, periodo);
-    if (prop.hayPropuesta) { c.valor_original = redondearMoneda(prop.total); c.valor_aplicado = redondearMoneda(prop.total); c.origen = 'contabilidad'; }
+    if (prop.hayPropuesta) {
+      c.valor_original = redondearMoneda(prop.total); c.valor_aplicado = redondearMoneda(prop.total); c.origen = 'contabilidad';
+      if (c.id) c._sincronizarOrigenAlGuardar = true;
+    }
   }
   conceptos.push(...(conceptosReales||[]).filter(c => !conceptosDefault.some(d=>d.clave===c.clave_concepto) && !['ret_isr_total_periodo','ret_iva_total_periodo','iva_resultado_periodo'].includes(c.clave_concepto)));
   const papelVirtual = papel || { estado: 'sin_iniciar', created_at: null, updated_at: null, notas: '', created_by: null };
@@ -5439,6 +5455,7 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
     const concepto = conceptos[Number(btn.dataset.idx)];
     abrirModalPapelAjuste(concepto, async (nuevoValor, motivo) => {
       const { concepto: conceptoReal } = await asegurarConceptoPersistido(b.id, tipoPapel, ejercicio, 'mensual', periodo, concepto);
+      if (concepto._sincronizarOrigenAlGuardar) await sb.from('fz_papel_conceptos').update({ valor_original: concepto.valor_original, origen: concepto.origen }).eq('id', conceptoReal.id);
       const r = await actualizarValorConceptoPapel(conceptoReal.id, nuevoValor, motivo, STATE.user?.email);
       if (r.estado === 'falta_motivo') { toast('Falta el motivo del ajuste.', 'error'); return; }
       if (r.estado === 'error') { toast('Error: ' + r.error, 'error'); return; }
@@ -5483,6 +5500,7 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
     const papelReal = await obtenerOCrearPapelTrabajo(b.id, tipoPapel, ejercicio, 'mensual', periodo);
     for (const c of conceptos) {
       if (!c.id && c.valor_aplicado !== null) await agregarConceptoPapel(papelReal.id, { concepto: c.concepto, claveConcepto: c.clave_concepto, orden: c.orden||0, origen: c.origen||'manual', valorAplicado: Number(c.valor_aplicado), requiereAccesorios: !!opciones.accesorios });
+      else if (c.id && c._sincronizarOrigenAlGuardar) await sb.from('fz_papel_conceptos').update({ valor_original: c.valor_original, valor_aplicado: c.valor_aplicado, origen: c.origen }).eq('id', c.id);
     }
     await sb.from('fz_papeles_trabajo').update({ estado: 'guardado', notas, updated_at: new Date().toISOString() }).eq('id', papelReal.id);
     registrarAuditoria(b.id, 'editar', 'Papeles de Trabajo', `Papel ${tipoPapel} ${periodo} guardado`);
@@ -5517,9 +5535,14 @@ async function renderPapelISRPM(b) {
   // ---- Propuesta contable automática para INSUMOS con fuente disponible (reutiliza la función
   // ya existente — nunca una fuente ni una tabla nueva) ----
   const conceptoIngresosMes = conceptos.find(c=>c.clave_concepto==='ingresos_nominales_mes');
-  if (conceptoIngresosMes && !conceptoIngresosMes.id && conceptoIngresosMes.valor_original===null) {
+  if (conceptoIngresosMes && conceptoSinIntencionExplicita(conceptoIngresosMes)) {
     const prop = await obtenerPropuestaContable(b.id, 'isr_pm', 'ingresos_nominales_mes', periodo);
-    if (prop.hayPropuesta) { conceptoIngresosMes.valor_original = redondearMoneda(prop.total); conceptoIngresosMes.valor_aplicado = redondearMoneda(prop.total); conceptoIngresosMes.origen = 'contabilidad'; }
+    if (prop.hayPropuesta) {
+      conceptoIngresosMes.valor_original = redondearMoneda(prop.total);
+      conceptoIngresosMes.valor_aplicado = redondearMoneda(prop.total);
+      conceptoIngresosMes.origen = 'contabilidad';
+      if (conceptoIngresosMes.id) conceptoIngresosMes._sincronizarOrigenAlGuardar = true; // ya persistido con el cero viejo — la corrección se escribe solo al Guardar/Editar explícito, nunca por abrir
+    }
   }
 
   // ---- INSUMOS de la cadena — NULL cuando genuinamente no hay dato (virtual, sin fuente, sin
@@ -5775,6 +5798,10 @@ async function renderPapelISRPM(b) {
       // El concepto puede ser virtual (todavía no existe en BD) — la edición explícita del
       // contador es precisamente la acción que debe persistirlo, junto con su papel.
       const { concepto: conceptoReal } = await asegurarConceptoPersistido(b.id, 'isr_pm', ejercicio, 'mensual', periodo, concepto);
+      // Si ya era real pero traía un cero histórico sin intención (corregido solo en memoria con
+      // la propuesta contable), se sincroniza su origen a la BD ANTES de aplicar el ajuste — para
+      // que la diferencia y el motivo se calculen contra el origen real, no contra el cero viejo.
+      if (concepto._sincronizarOrigenAlGuardar) await sb.from('fz_papel_conceptos').update({ valor_original: concepto.valor_original, origen: concepto.origen }).eq('id', conceptoReal.id);
       const r = await actualizarValorConceptoPapel(conceptoReal.id, nuevoValor, motivo, STATE.user?.email);
       if (r.estado === 'falta_motivo') { toast('Falta el motivo del ajuste.', 'error'); return; }
       if (r.estado === 'error') { toast('Error: ' + r.error, 'error'); return; }
@@ -5815,6 +5842,7 @@ async function renderPapelISRPM(b) {
     const papelReal = await obtenerOCrearPapelTrabajo(b.id, 'isr_pm', ejercicio, 'mensual', periodo);
     for (const c of conceptos) {
       if (!c.id && c.valor_aplicado !== null) await agregarConceptoPapel(papelReal.id, { concepto: c.concepto, claveConcepto: c.clave_concepto, orden: c.orden||0, origen: c.origen||'manual', valorAplicado: Number(c.valor_aplicado) });
+      else if (c.id && c._sincronizarOrigenAlGuardar) await sb.from('fz_papel_conceptos').update({ valor_original: c.valor_original, valor_aplicado: c.valor_aplicado, origen: c.origen }).eq('id', c.id);
     }
     await sb.from('fz_papeles_trabajo').update({ estado: 'guardado', notas, updated_at: new Date().toISOString() }).eq('id', papelReal.id);
     registrarAuditoria(b.id, 'editar', 'Papeles de Trabajo', `Papel ISR PM ${periodo} guardado`);
