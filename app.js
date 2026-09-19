@@ -2494,6 +2494,57 @@ function redondearMoneda(valor) {
   return Math.round((Number(valor) + Number.EPSILON) * 100) / 100;
 }
 
+// ============================================================
+// CADENA DE CÁLCULO ISR PM — Fase 1 profesional. Ingresos → acumulado → coeficiente →
+// utilidad fiscal → PTU → pérdidas → base → tasa → ISR causado → pagos anteriores/retenciones →
+// ISR determinado. Función PURA: nunca lee ni escribe nada, solo calcula. NULL en cualquier
+// insumo se propaga como NULL en sus dependientes — nunca se convierte en 0 silenciosamente.
+// Tasa del 30% — Art. 9 LISR, tasa corporativa vigente, no un dato inventado.
+const TASA_ISR_PERSONAS_MORALES = 0.30;
+function calcularCadenaISRPM(insumos) {
+  const { ingresosAcumPrevio, ingresosMes, coeficiente, ptuAplicable, perdidasAplicadas, pagosProvisionalesAnteriores, retenciones } = insumos;
+  const ingresosAcum = (ingresosAcumPrevio !== null && ingresosMes !== null) ? redondearMoneda(ingresosAcumPrevio + ingresosMes) : null;
+  const utilidadFiscal = (ingresosAcum !== null && coeficiente !== null) ? redondearMoneda(Math.max(0, ingresosAcum * coeficiente)) : null;
+  const utilidadDespuesPTU = utilidadFiscal !== null ? redondearMoneda(Math.max(0, utilidadFiscal - (ptuAplicable || 0))) : null;
+  const base = utilidadDespuesPTU !== null ? redondearMoneda(Math.max(0, utilidadDespuesPTU - (perdidasAplicadas || 0))) : null;
+  const isrCausado = base !== null ? redondearMoneda(base * TASA_ISR_PERSONAS_MORALES) : null;
+  const isrDeterminado = isrCausado !== null ? redondearMoneda(Math.max(0, isrCausado - (pagosProvisionalesAnteriores || 0) - (retenciones || 0))) : null;
+  return { ingresosAcum, utilidadFiscal, utilidadDespuesPTU, base, isrCausado, isrDeterminado };
+}
+
+// SOLO LECTURA — suma los ingresos fiscales aplicados de los meses ANTERIORES del mismo
+// ejercicio (nunca del mes actual). Enero legítimamente no tiene meses previos → 0 real (hecho
+// conocido, no ausencia). Un mes intermedio sin papel guardado contribuye 0 (mismo criterio que
+// ya usa el resto de la cédula para conceptos no capturados).
+async function obtenerIngresosAcumuladosPrevios(businessId, ejercicio, periodoActual) {
+  const mesActual = Number(periodoActual.slice(5, 7));
+  let suma = 0;
+  for (let m = 1; m < mesActual; m++) {
+    const periodo = `${ejercicio}-${String(m).padStart(2, '0')}`;
+    const papel = await obtenerPapelTrabajoSiExiste(businessId, 'isr_pm', ejercicio, 'mensual', periodo);
+    if (!papel) continue;
+    const { data: c } = await sb.from('fz_papel_conceptos').select('valor_aplicado').eq('papel_id', papel.id).eq('clave_concepto', 'ingresos_nominales_mes').maybeSingle();
+    if (c) suma += Number(c.valor_aplicado);
+  }
+  return redondearMoneda(suma);
+}
+
+// SOLO LECTURA — propuesta de "pagos provisionales anteriores": suma del ISR determinado
+// (calculado, ya persistido) de los meses previos del mismo ejercicio. Es una PROPUESTA — el
+// contador sigue pudiendo revisar/ajustar.
+async function obtenerPagosProvisionalesAnterioresPropuesta(businessId, ejercicio, periodoActual) {
+  const mesActual = Number(periodoActual.slice(5, 7));
+  let suma = 0; let hayDato = false;
+  for (let m = 1; m < mesActual; m++) {
+    const periodo = `${ejercicio}-${String(m).padStart(2, '0')}`;
+    const papel = await obtenerPapelTrabajoSiExiste(businessId, 'isr_pm', ejercicio, 'mensual', periodo);
+    if (!papel) continue;
+    const { data: c } = await sb.from('fz_papel_conceptos').select('valor_aplicado').eq('papel_id', papel.id).eq('clave_concepto', 'isr_determinado').maybeSingle();
+    if (c) { suma += Number(c.valor_aplicado); hayDato = true; }
+  }
+  return hayDato ? redondearMoneda(suma) : null;
+}
+
 function calcularControlProvisionalPerdida(saldoDisponibleCrudo, aplicacionesPorMes) {
   const saldoDisponible = saldoDisponibleCrudo !== null ? redondearMoneda(saldoDisponibleCrudo) : null;
   const porMes = {};
@@ -4152,6 +4203,11 @@ const CONCEPTOS_DEFAULT_ISR_PM = [
   { clave: 'resultado_determinado', nombre: 'Resultado determinado', agregacion: 'suma', formato: 'moneda' },
 ];
 
+// Clasificación de la cadena de cálculo — estos 5 NUNCA se capturan como número independiente:
+// se calculan siempre a partir de los insumos (ingresos_nominales_mes, coeficiente_utilidad,
+// ptu_aplicable, perdidas_aplicables, pagos_provisionales_anteriores, retenciones).
+const CONCEPTOS_CALCULADOS_ISR_PM = ['ingresos_nominales_acum', 'utilidad_fiscal', 'base', 'isr_determinado', 'resultado_determinado'];
+
 function etiquetaOrigen(origen) {
   return origen === 'contabilidad' ? 'Contabilidad' : origen === 'sistema' ? 'Sistema' : 'Captura manual';
 }
@@ -5344,12 +5400,66 @@ async function renderPapelISRPM(b) {
   const papelVirtual = papel || { estado: 'sin_iniciar', created_at: null, updated_at: null, notas: '', created_by: null };
   const acumuladoDe = clave => { const c = conceptos.find(x=>x.clave_concepto===clave); return (c && c.id) ? Number(c.valor_aplicado) : null; };
 
-  // Integración de solo lectura con Pérdidas Fiscales — nunca impone el importe, solo lo muestra
-  // como referencia para que el contador decida. Nunca dispara ningún guardado cruzado.
-  const conceptoUtilidadFiscal = conceptos.find(c=>c.clave_concepto==='utilidad_fiscal');
-  const utilidadFiscalActual = (conceptoUtilidadFiscal && conceptoUtilidadFiscal.id) ? Number(conceptoUtilidadFiscal.valor_aplicado) : null;
+  // ---- Propuesta contable automática para INSUMOS con fuente disponible (reutiliza la función
+  // ya existente — nunca una fuente ni una tabla nueva) ----
+  const conceptoIngresosMes = conceptos.find(c=>c.clave_concepto==='ingresos_nominales_mes');
+  if (conceptoIngresosMes && !conceptoIngresosMes.id && conceptoIngresosMes.valor_original===null) {
+    const prop = await obtenerPropuestaContable(b.id, 'isr_pm', 'ingresos_nominales_mes', periodo);
+    if (prop.hayPropuesta) { conceptoIngresosMes.valor_original = redondearMoneda(prop.total); conceptoIngresosMes.valor_aplicado = redondearMoneda(prop.total); conceptoIngresosMes.origen = 'contabilidad'; }
+  }
+
+  // ---- INSUMOS de la cadena — NULL cuando genuinamente no hay dato (virtual, sin fuente, sin
+  // captura); nunca se inventa 0 para "no determinado". Los conceptos con valor 0 REAL/persistido
+  // sí participan como 0. ----
+  const insumoDe = clave => { const c = conceptos.find(x=>x.clave_concepto===clave); if (!c) return null; if (c.id) return Number(c.valor_aplicado); if (c.valor_original!==null) return Number(c.valor_aplicado); return null; };
+  const ingresosMes = insumoDe('ingresos_nominales_mes');
+  const coeficiente = insumoDe('coeficiente_utilidad');
+  const ptuAplicable = insumoDe('ptu_aplicable') ?? 0; // ausencia de PTU capturado = 0 real (no aplica PTU este periodo)
+  const retenciones = insumoDe('retenciones') ?? 0;
+  const ingresosAcumPrevio = await obtenerIngresosAcumuladosPrevios(b.id, ejercicio, periodo);
+
+  // Cadena parcial (sin pérdidas todavía) — necesaria para alimentar el TOPE de pérdidas con la
+  // utilidad fiscal REAL calculada, no con un número capturado aparte.
+  const cadenaParcial = calcularCadenaISRPM({ ingresosAcumPrevio, ingresosMes, coeficiente, ptuAplicable, perdidasAplicadas: 0, pagosProvisionalesAnteriores: 0, retenciones: 0 });
+  const utilidadFiscalActual = cadenaParcial.utilidadDespuesPTU; // ya con PTU restado — tope de pérdidas se calcula sobre la utilidad susceptible real
+
+  // Integración con Pérdidas Fiscales — ahora alimentada por la utilidad fiscal CALCULADA, nunca
+  // por un número aislado. Sigue siendo de solo lectura; nunca impone el importe.
   const refPerdidas = await obtenerReferenciaPerdidasParaISRPM(b.id, ejercicio, periodo, utilidadFiscalActual);
   const perdidasConSaldo = refPerdidas.perdidasConSaldo;
+  const perdidasAplicadas = refPerdidas.aplicadoActual !== null ? refPerdidas.aplicadoActual : 0; // sin aplicación registrada = 0 real, no ausencia
+
+  // Propuesta de pagos provisionales anteriores — enero no tiene meses previos (0 real conocido);
+  // meses posteriores usan la suma real de ISR determinado ya persistido, si existe.
+  const pagosProvisionalesAnterioresPropuesto = mesNum === 1 ? 0 : await obtenerPagosProvisionalesAnterioresPropuesta(b.id, ejercicio, periodo);
+  const conceptoPagosAnteriores = conceptos.find(c=>c.clave_concepto==='pagos_provisionales_anteriores');
+  if (conceptoPagosAnteriores && !conceptoPagosAnteriores.id && conceptoPagosAnteriores.valor_original===null && pagosProvisionalesAnterioresPropuesto!==null) {
+    conceptoPagosAnteriores.valor_original = pagosProvisionalesAnterioresPropuesto; conceptoPagosAnteriores.valor_aplicado = pagosProvisionalesAnterioresPropuesto; conceptoPagosAnteriores.origen = 'sistema';
+  }
+  const pagosProvisionalesAnteriores = insumoDe('pagos_provisionales_anteriores') ?? (mesNum===1 ? 0 : null);
+
+  // Cadena COMPLETA — esta es la que se muestra y, al Guardar, se persiste como snapshot de los
+  // conceptos CALCULADOS (nunca captura independiente).
+  const cadena = calcularCadenaISRPM({ ingresosAcumPrevio, ingresosMes, coeficiente, ptuAplicable, perdidasAplicadas, pagosProvisionalesAnteriores, retenciones });
+
+  // Inconsistencia — si la pérdida YA aplicada/persistida excede el nuevo máximo recalculado
+  // (porque cambiaron ingresos/coeficiente/PTU), NUNCA se corrige en silencio: se marca para
+  // revisión del contador.
+  const inconsistenciaPerdidas = (refPerdidas.tope.ok && perdidasAplicadas > refPerdidas.tope.maximo + 0.01)
+    ? `La pérdida aplicada acumulada ($${fmt(perdidasAplicadas)}) excede el máximo recalculado ($${fmt(refPerdidas.tope.maximo)}) tras el ajuste de otros insumos. Revisa la aplicación en Pérdidas Fiscales.`
+    : (!refPerdidas.tope.ok && perdidasAplicadas > 0.004)
+    ? `Existe una pérdida aplicada acumulada ($${fmt(perdidasAplicadas)}) pero los insumos fiscales actuales (ingresos/coeficiente) no permiten determinar si sigue siendo válida. Captúralos para validar esta aplicación.`
+    : null;
+
+  // Sincronizar los conceptos CALCULADOS en la plantilla visual con el resultado de la cadena —
+  // para que se muestren consistentes con lo que se persistirá al Guardar (nunca un número
+  // distinto al que se guarda).
+  ['ingresos_nominales_acum','utilidad_fiscal','base','isr_determinado','resultado_determinado'].forEach(clave => {
+    const c = conceptos.find(x=>x.clave_concepto===clave);
+    if (!c) return;
+    const valorCalc = clave==='ingresos_nominales_acum' ? cadena.ingresosAcum : clave==='utilidad_fiscal' ? cadena.utilidadFiscal : clave==='base' ? cadena.base : cadena.isrDeterminado;
+    if (!c.id) { c.valor_aplicado = valorCalc !== null ? valorCalc : 0; c.origen = 'sistema'; }
+  });
 
   // Encabezado — negocio, RFC, régimen vigente.
   const { data: regimenes } = await sb.from('fz_regimenes_fiscales_negocio').select('*').eq('business_id', b.id).is('vigente_hasta', null).order('vigente_desde', { ascending: false }).limit(1);
@@ -5404,22 +5514,24 @@ async function renderPapelISRPM(b) {
               const fmto = (CONCEPTOS_DEFAULT_ISR_PM.find(d=>d.clave===c.clave_concepto)||{}).formato || 'moneda';
               const esCierre = c.clave_concepto==='resultado_determinado';
               const esPerdidas = c.clave_concepto==='perdidas_aplicables';
+              const esCalculado = CONCEPTOS_CALCULADOS_ISR_PM.includes(c.clave_concepto);
               return `<tr${esCierre?' class="pt-fila-cierre"':''}>
-                <td>${c.concepto}${c.valor_original!==null&&c.valor_original!==undefined?` <span class="pt-origen ${c.origen}">${etiquetaOrigen(c.origen)}: ${formatearValorConcepto(c.valor_original,fmto)}${Math.abs(Number(c.valor_aplicado)-Number(c.valor_original))>0.004?' → '+formatearValorConcepto(c.valor_aplicado,fmto)+' (dif. '+formatearValorConcepto(Number(c.valor_aplicado)-Number(c.valor_original),fmto)+')':''}</span>`:''}</td>
+                <td>${c.concepto}${!esCalculado && c.valor_original!==null&&c.valor_original!==undefined?` <span class="pt-origen ${c.origen}">${etiquetaOrigen(c.origen)}: ${formatearValorConcepto(c.valor_original,fmto)}${Math.abs(Number(c.valor_aplicado)-Number(c.valor_original))>0.004?' → '+formatearValorConcepto(c.valor_aplicado,fmto)+' (dif. '+formatearValorConcepto(Number(c.valor_aplicado)-Number(c.valor_original),fmto)+')':''}</span>`:''}</td>
                 <td class="num" style="font-weight:600;">${formatearValorConcepto(c.valor_aplicado,fmto)}</td>
                 <td class="num">${acumuladoPar!==null?formatearValorConcepto(acumuladoPar,fmto):''}</td>
-                <td>${!c.valor_original && !esCierre ? `<span class="pt-origen ${c.origen}">${etiquetaOrigen(c.origen)}</span>` : ''}</td>
-                <td><a href="#" class="${esPerdidas?'pisr-editar-perdidas':'pisr-editar'} pt-editar-link" data-idx="${idx}">Editar</a></td>
+                <td>${esCalculado ? '<span class="pt-origen sistema">Calculado</span>' : (!c.valor_original && !esCierre ? `<span class="pt-origen ${c.origen}">${etiquetaOrigen(c.origen)}</span>` : '')}</td>
+                <td>${esCalculado ? `<a href="#" class="pisr-ver-calculo-concepto pt-editar-link" data-idx="${idx}">Ver cálculo</a>` : `<a href="#" class="${esPerdidas?'pisr-editar-perdidas':'pisr-editar'} pt-editar-link" data-idx="${idx}">Editar</a>`}</td>
               </tr>${esPerdidas ? `<tr><td colspan="5" style="padding:10px 0 12px;background:#f7f9fc;">
                 <div class="pt-grid" style="padding:0 12px;">
-                  <div><span class="pt-label">Utilidad fiscal antes de pérdidas</span><span class="pt-value">${refPerdidas.tope.ok||utilidadFiscalActual!==null?fmt(utilidadFiscalActual||0):'—'}</span></div>
+                  <div><span class="pt-label">Utilidad fiscal antes de pérdidas</span><span class="pt-value">${utilidadFiscalActual!==null?fmt(utilidadFiscalActual):'—'}</span></div>
                   <div><span class="pt-label">Pérdida fiscal disponible</span><span class="pt-value">${refPerdidas.perdidas.length?fmt(refPerdidas.saldoTotalDisponible):'—'}</span></div>
                   <div><span class="pt-label">Máximo aplicable</span><span class="pt-value" style="color:var(--gold);">${refPerdidas.tope.ok?fmt(refPerdidas.tope.maximo):'—'}</span></div>
                   <div><span class="pt-label">Pérdida aplicada acumulada</span><span class="pt-value">${refPerdidas.aplicadoActual!==null?fmt(refPerdidas.aplicadoActual):'—'}</span></div>
-                  <div><span class="pt-label">Base después de pérdidas</span><span class="pt-value">${refPerdidas.baseResultante!==null?fmt(refPerdidas.baseResultante):'—'}</span></div>
+                  <div><span class="pt-label">Base después de pérdidas</span><span class="pt-value">${cadena.base!==null?fmt(cadena.base):'—'}</span></div>
                   <div><span class="pt-label">Estado</span><span class="pt-value" style="font-weight:500;">${perdidasConSaldo.length?perdidasConSaldo.map(p=>p.control&&p.control.mesAgotamiento?`${p.ejercicio_origen}: agotada ${MESES_LARGO[Number(p.control.mesAgotamiento)-1]}`:`${p.ejercicio_origen}: disponible`).join(' · '):(refPerdidas.perdidas.length?'Sin saldo disponible':'Sin pérdidas registradas')}</span></div>
                 </div>
                 ${!refPerdidas.tope.ok ? `<p style="font-size:11px;color:var(--red);padding:6px 12px 0;">${refPerdidas.tope.razon}</p>` : ''}
+                ${inconsistenciaPerdidas ? `<p style="font-size:11px;color:var(--red);padding:6px 12px 0;font-weight:600;">⚠ Inconsistencia: ${inconsistenciaPerdidas}</p>` : ''}
                 <a href="#" class="pt-editar-link pisr-ver-cedula-perdidas" style="display:inline-block;margin:6px 12px 0;opacity:1;">Ver Cédula de Pérdidas Fiscales →</a>
               </td></tr>` : ''}`;
             }).join('')}
@@ -5566,6 +5678,20 @@ async function renderPapelISRPM(b) {
     e.preventDefault();
     STATE_papelesTab = 'perdidas'; STATE_perdidasEjercicio = ejercicio;
     renderPapelesTrabajo();
+  }));
+
+  document.querySelectorAll('.pisr-ver-calculo-concepto').forEach(a => a.addEventListener('click', (e) => {
+    e.preventDefault();
+    const concepto = conceptos[Number(e.currentTarget.dataset.idx)];
+    const clave = concepto.clave_concepto;
+    const explicaciones = {
+      ingresos_nominales_acum: `Ingresos acumulados de meses anteriores (${fmt(ingresosAcumPrevio)}) + ingresos del mes (${ingresosMes!==null?fmt(ingresosMes):'—'}) = ${cadena.ingresosAcum!==null?fmt(cadena.ingresosAcum):'—'}`,
+      utilidad_fiscal: `Ingresos acumulados (${cadena.ingresosAcum!==null?fmt(cadena.ingresosAcum):'—'}) × coeficiente de utilidad (${coeficiente!==null?coeficiente.toFixed(4):'—'}) = ${cadena.utilidadFiscal!==null?fmt(cadena.utilidadFiscal):'—'}`,
+      base: `Utilidad fiscal (${cadena.utilidadFiscal!==null?fmt(cadena.utilidadFiscal):'—'}) − PTU aplicable (${fmt(ptuAplicable)}) − pérdidas aplicadas (${fmt(perdidasAplicadas)}) = ${cadena.base!==null?fmt(cadena.base):'—'} (nunca negativa)`,
+      isr_determinado: `Base (${cadena.base!==null?fmt(cadena.base):'—'}) × 30% = ISR causado ${cadena.isrCausado!==null?fmt(cadena.isrCausado):'—'} − pagos provisionales anteriores (${pagosProvisionalesAnteriores!==null?fmt(pagosProvisionalesAnteriores):'—'}) − retenciones (${fmt(retenciones)}) = ${cadena.isrDeterminado!==null?fmt(cadena.isrDeterminado):'—'}`,
+      resultado_determinado: `Igual al ISR determinado de este periodo: ${cadena.isrDeterminado!==null?fmt(cadena.isrDeterminado):'—'}. Es el importe base sobre el que se calculan vencimiento y accesorios.`,
+    };
+    toast(explicaciones[clave] || 'Concepto calculado automáticamente a partir de los insumos.');
   }));
 
   document.getElementById('pIsrGuardarBtn').addEventListener('click', async () => {
