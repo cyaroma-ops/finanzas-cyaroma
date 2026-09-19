@@ -2979,7 +2979,10 @@ async function resolverValorFiscalEfectivo(businessId, tipoPapel, claveConcepto,
 async function obtenerPropuestasAnualesPorConcepto(businessId, tipoPapel, claveConcepto, ejercicio) {
   const { data: mapeos } = await sb.from('fz_mapeo_cuenta_concepto_fiscal').select('subcuenta_id').eq('business_id', businessId).eq('tipo_papel', tipoPapel).eq('clave_concepto', claveConcepto);
   const porMes = {}; for (let m=1;m<=12;m++) porMes[String(m).padStart(2,'0')] = null;
-  if (!mapeos || !mapeos.length) return porMes;
+  if (!mapeos || !mapeos.length) return porMes; // ausencia ABSOLUTA de fuente/serie — los 12 meses quedan en null (—)
+  // El mapeo SÍ existe: la serie está "iniciada" — cada mes defaultea a 0 (se consultó la fuente y
+  // el resultado real de ese mes específico es "ningún movimiento", un hecho determinado, nunca —).
+  for (let m=1;m<=12;m++) porMes[String(m).padStart(2,'0')] = 0;
   const subIds = new Set(mapeos.map(m=>m.subcuenta_id));
 
   const { data: conceptosVenta } = await sb.from('fz_conceptos_venta').select('id, subcuenta_vinculada_id, tipo').eq('business_id', businessId);
@@ -3009,7 +3012,7 @@ async function obtenerPropuestasAnualesPorConcepto(businessId, tipoPapel, claveC
       });
     });
   }
-  return porMes; // 'MM' -> total|null (null = ningún movimiento ese mes; 0 = movimientos con neto exacto cero)
+  return porMes; // 'MM' -> siempre numérico si hay mapeo (0 = sin movimiento ese mes); null SOLO si no hay mapeo en absoluto
 }
 
 
@@ -3051,7 +3054,7 @@ async function obtenerPropuestaContable(businessId, tipoPapel, claveConcepto, pe
     });
   }
 
-  return { hayPropuesta: fuentes.length > 0, total: redondearMoneda(total), fuentes };
+  return { hayPropuesta: true, total: redondearMoneda(total), fuentes };
 }
 
 // SOLO LECTURA — diagnóstico completo de la cadena de fuente fiscal para un concepto y periodo.
@@ -4498,11 +4501,14 @@ async function construirMatrizAnual(businessId, tipoPapel, ejercicio, conceptosD
     }
     const setSiVacio = (clave, mm, valor) => { const f = filaPorClave[clave]; if (f && f.porMes[mm].valor === null && valor !== null) { f.porMes[mm].valor = valor; f.porMes[mm].origen = 'contabilidad'; } };
 
-    let ingresosAcum = 0, pagosAnterioresAcum = 0;
+    let ingresosAcum = 0, pagosAnterioresAcum = 0, ultimoCoeficienteConocido = null;
     for (let m = 1; m <= 12; m++) {
       const mm = String(m).padStart(2,'0');
       const ingresosMes = valorMes('ingresos_nominales_mes', mm);
-      const coeficiente = valorMes('coeficiente_utilidad', mm);
+      let coeficiente = valorMes('coeficiente_utilidad', mm);
+      if (coeficiente === null) coeficiente = ultimoCoeficienteConocido; // arrastra el último capturado — variable acumulativa, no se reinicia cada mes
+      else ultimoCoeficienteConocido = coeficiente;
+      setSiVacio('coeficiente_utilidad', mm, coeficiente);
       const ptuAplicable = valorMes('ptu_aplicable', mm) ?? 0;
       const retenciones = valorMes('retenciones', mm) ?? 0;
       const perdidasAplicadas = perdidasAplicadasPorMes[mm] || 0;
@@ -4567,9 +4573,10 @@ async function construirMatrizAnual(businessId, tipoPapel, ejercicio, conceptosD
     filas.push({ clave: claveResultado, nombre: nombreResultado, agregacion: 'suma', porMes: porMesResultado, total: valoresNoNulosR.reduce((s,v)=>s+v,0) });
   }
 
-  // Recalcular el total de cada fila CALCULADA de ISR PM afectada por el post-procesamiento.
+  // Recalcular el total de cada fila CALCULADA de ISR PM afectada por el post-procesamiento
+  // (incluye coeficiente_utilidad, cuyo porMes se rellenó con el arrastre entre meses).
   if (tipoPapel === 'isr_pm') {
-    ['ingresos_nominales_acum','utilidad_fiscal','base','isr_determinado','resultado_determinado'].forEach(clave => {
+    ['coeficiente_utilidad','ingresos_nominales_acum','utilidad_fiscal','base','isr_determinado','resultado_determinado'].forEach(clave => {
       const f = filaPorClave[clave]; if (!f) return;
       const valoresNoNulos = Object.values(f.porMes).map(x=>x.valor).filter(v=>v!==null);
       if (f.agregacion === 'suma') f.total = valoresNoNulos.reduce((s,v)=>s+v, 0);
@@ -5461,18 +5468,22 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
 
   const formatoDe = clave => (conceptosDefault.find(d=>d.clave===clave)||{}).formato || 'moneda';
   const tabKeyDeTipo = { iva: 'iva', retenciones_isr: 'retisr', retenciones_iva: 'retiva' }[tipoPapel] || tipoPapel;
-  const valorDe = clave => Number((conceptos.find(c=>c.clave_concepto===clave)||{}).valor_aplicado || 0);
+  // null genuino (concepto sin fuente y sin captura) se propaga — nunca se convierte en 0 aquí.
+  const valorDe = clave => { const c = conceptos.find(x=>x.clave_concepto===clave); if (!c) return null; return (c.valor_aplicado===null||c.valor_aplicado===undefined) ? null : Number(c.valor_aplicado); };
+  const fmtN = v => v!==null ? fmt(v) : '—';
 
   let determinacionHtml = '', totalPeriodoConcepto = null;
   if (opciones.resumenIVA) {
     const gruposTrasladado = ['iva_trasladado_16','iva_trasladado_0','iva_trasladado_exento','iva_trasladado_no_objeto'];
     const gruposAcreditable = ['iva_acreditable_compras','iva_acreditable_servicios','iva_acreditable_inversiones'];
-    const totalTrasladado = gruposTrasladado.reduce((s,cl)=>s+valorDe(cl),0);
-    const totalAcreditable = gruposAcreditable.reduce((s,cl)=>s+valorDe(cl),0);
-    const antesAjustes = totalTrasladado - totalAcreditable;
+    const valsTrasladado = gruposTrasladado.map(valorDe), valsAcreditable = gruposAcreditable.map(valorDe);
+    const totalTrasladado = valsTrasladado.some(v=>v!==null) ? valsTrasladado.reduce((s,v)=>s+(v??0),0) : null;
+    const totalAcreditable = valsAcreditable.some(v=>v!==null) ? valsAcreditable.reduce((s,v)=>s+(v??0),0) : null;
+    const antesAjustes = (totalTrasladado!==null || totalAcreditable!==null) ? (totalTrasladado??0) - (totalAcreditable??0) : null;
     const ajustes = valorDe('iva_ajustes'), saldoAnterior = valorDe('iva_saldo_favor_anterior'), compensaciones = valorDe('iva_compensaciones');
-    const resultado = antesAjustes + ajustes - saldoAnterior - compensaciones;
-    const filaGrupo = (clave) => { const c = conceptos.find(x=>x.clave_concepto===clave); return c ? `<tr><td style="padding-left:16px;">${c.concepto}</td><td class="num">${fmt(c.valor_aplicado)}</td></tr>` : ''; };
+    const hayAlgunInsumo = antesAjustes!==null || ajustes!==null || saldoAnterior!==null || compensaciones!==null;
+    const resultado = hayAlgunInsumo ? (antesAjustes??0) + (ajustes??0) - (saldoAnterior??0) - (compensaciones??0) : null;
+    const filaGrupo = (clave) => { const c = conceptos.find(x=>x.clave_concepto===clave); return c ? `<tr><td style="padding-left:16px;">${c.concepto}</td><td class="num">${fmtN(valorDe(clave))}</td></tr>` : ''; };
     const clavesConocidas = new Set([...gruposTrasladado, ...gruposAcreditable, 'iva_ajustes','iva_saldo_favor_anterior','iva_compensaciones','iva_resultado_periodo']);
     const conceptosExtra = conceptos.filter(c => !clavesConocidas.has(c.clave_concepto));
     const filaExtra = (c) => `<tr><td style="padding-left:16px;">${c.concepto}</td><td class="num">${fmt(c.valor_aplicado)}</td></tr>`;
@@ -5481,14 +5492,14 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
       <h3>1. IVA trasladado</h3>
       <div class="table-wrap"><table><tbody>
         ${gruposTrasladado.map(filaGrupo).join('')}
-        <tr class="pt-fila-resultado"><td>TOTAL IVA TRASLADADO</td><td class="num">${fmt(totalTrasladado)}</td></tr>
+        <tr class="pt-fila-resultado"><td>TOTAL IVA TRASLADADO</td><td class="num">${fmtN(totalTrasladado)}</td></tr>
       </tbody></table></div>
     </div>
     <div class="pt-card">
       <h3>2. IVA acreditable</h3>
       <div class="table-wrap"><table><tbody>
         ${gruposAcreditable.map(filaGrupo).join('')}
-        <tr class="pt-fila-resultado"><td>TOTAL IVA ACREDITABLE</td><td class="num">${fmt(totalAcreditable)}</td></tr>
+        <tr class="pt-fila-resultado"><td>TOTAL IVA ACREDITABLE</td><td class="num">${fmtN(totalAcreditable)}</td></tr>
       </tbody></table></div>
     </div>
     ${conceptosExtra.length ? `<div class="pt-card">
@@ -5499,19 +5510,21 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
     <div class="pt-card">
       <h3>3. Determinación final</h3>
       <div style="font-size:12.5px;">
-        <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>Total IVA trasladado</span><span class="pt-value">${fmt(totalTrasladado)}</span></div>
-        <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>(–) Total IVA acreditable</span><span class="pt-value">${fmt(totalAcreditable)}</span></div>
-        <div style="display:flex;justify-content:space-between;padding:5px 0;border-top:1px solid var(--line);font-weight:600;"><span>= IVA antes de ajustes</span><span class="pt-value">${fmt(antesAjustes)}</span></div>
-        <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>± Ajustes</span><span class="pt-value">${fmt(ajustes)}</span></div>
-        <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>(–) Saldo a favor de periodos anteriores</span><span class="pt-value">${fmt(saldoAnterior)}</span></div>
-        <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>(–) Compensaciones</span><span class="pt-value">${fmt(compensaciones)}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>Total IVA trasladado</span><span class="pt-value">${fmtN(totalTrasladado)}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>(–) Total IVA acreditable</span><span class="pt-value">${fmtN(totalAcreditable)}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:5px 0;border-top:1px solid var(--line);font-weight:600;"><span>= IVA antes de ajustes</span><span class="pt-value">${fmtN(antesAjustes)}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>± Ajustes</span><span class="pt-value">${fmtN(ajustes)}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>(–) Saldo a favor de periodos anteriores</span><span class="pt-value">${fmtN(saldoAnterior)}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>(–) Compensaciones</span><span class="pt-value">${fmtN(compensaciones)}</span></div>
       </div>
-      <div class="pt-banda-cierre"><span>${resultado>0.004?'IVA A CARGO':resultado<-0.004?'SALDO A FAVOR':'SIN IVA A CARGO NI SALDO A FAVOR'}</span><span>${fmt(Math.abs(resultado))}</span></div>
+      <div class="pt-banda-cierre"><span>${resultado===null?'SIN INSUMOS SUFICIENTES':(resultado>0.004?'IVA A CARGO':resultado<-0.004?'SALDO A FAVOR':'SIN IVA A CARGO NI SALDO A FAVOR')}</span><span>${resultado===null?'—':fmt(Math.abs(resultado))}</span></div>
       <button class="btn btn-ghost btn-sm cg-agregar-concepto" style="margin-top:10px;">+ Agregar concepto</button>
     </div>`;
-    totalPeriodoConcepto = (conceptosReales||[]).find(c=>c.clave_concepto==='iva_resultado_periodo') || { id: null, clave_concepto: 'iva_resultado_periodo', concepto: 'IVA a cargo del periodo', valor_aplicado: Math.max(0, resultado), valor_original: Math.max(0, resultado) };
+    totalPeriodoConcepto = (conceptosReales||[]).find(c=>c.clave_concepto==='iva_resultado_periodo') || { id: null, clave_concepto: 'iva_resultado_periodo', concepto: 'IVA a cargo del periodo', valor_aplicado: resultado!==null?Math.max(0, resultado):null, valor_original: resultado!==null?Math.max(0, resultado):null };
   } else if (opciones.accesorios) {
-    const totalConceptos = conceptos.filter(c => !['ret_isr_total_periodo','ret_iva_total_periodo'].includes(c.clave_concepto)).reduce((s,c)=>s+Number(c.valor_aplicado||0), 0);
+    const conceptosRelevantes = conceptos.filter(c => !['ret_isr_total_periodo','ret_iva_total_periodo'].includes(c.clave_concepto));
+    const valsRet = conceptosRelevantes.map(c => (c.valor_aplicado===null||c.valor_aplicado===undefined) ? null : Number(c.valor_aplicado));
+    const totalConceptos = valsRet.some(v=>v!==null) ? valsRet.reduce((s,v)=>s+(v??0),0) : null;
     const claveT = tipoPapel === 'retenciones_isr' ? 'ret_isr_total_periodo' : 'ret_iva_total_periodo';
     const nombreT = tipoPapel === 'retenciones_isr' ? 'TOTAL RETENCIONES ISR DEL PERIODO' : 'TOTAL RETENCIONES IVA DEL PERIODO';
     totalPeriodoConcepto = (conceptosReales||[]).find(c=>c.clave_concepto===claveT) || { id: null, clave_concepto: claveT, concepto: nombreT, valor_aplicado: totalConceptos, valor_original: null };
@@ -5542,7 +5555,7 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
       <h3>Actualización y recargos</h3>
       <div class="pt-accesorios-linea">
         <div><span class="pt-label">Calcular accesorios al</span><span class="pt-value">${accTotal?fechaCorta(accTotal.calcular_al):'—'}</span></div>
-        <div><span class="pt-label">Principal</span><span class="pt-value">${fmt(Number(totalPeriodoConcepto.valor_aplicado)||0)}</span></div>
+        <div><span class="pt-label">Principal</span><span class="pt-value">${totalPeriodoConcepto.valor_aplicado!==null?fmt(Number(totalPeriodoConcepto.valor_aplicado)):'—'}</span></div>
         <div><span class="pt-label">Actualización</span><span class="pt-value">${formatAccesorioCampo(accTotal,'importe_actualizacion_aplicado')}</span></div>
         <div><span class="pt-label">Recargos</span><span class="pt-value">${formatAccesorioCampo(accTotal,'importe_recargos_aplicado')}</span></div>
         <div><span class="pt-label">Ajuste redondeo SAT</span><span class="pt-value">${formatAccesorioCampo(accTotal,'monto_redondeo')}</span></div>
