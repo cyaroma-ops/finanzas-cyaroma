@@ -2967,6 +2967,55 @@ async function obtenerPropuestaContable(businessId, tipoPapel, claveConcepto, pe
   return { hayPropuesta: fuentes.length > 0, total: redondearMoneda(total), fuentes };
 }
 
+// SOLO LECTURA — diagnóstico completo de la cadena de fuente fiscal para un concepto y periodo.
+// Nunca escribe nada. Reporta exactamente lo que encuentra en cada eslabón, incluyendo lo que NO
+// pudo relacionarse (ventas sin subcuenta vinculada) — nunca lo convierte en $0.00 ni lo oculta.
+async function diagnosticarFuenteFiscal(businessId, tipoPapel, claveConcepto, periodo) {
+  const diag = { mapeo: [], ventasEncontradas: [], ventasSinVinculo: [], movimientosContables: [], ajustesDetectados: false, duplicidadPosible: false, propuestaFinal: null, razonSinPropuesta: null };
+
+  const { data: mapeos } = await sb.from('fz_mapeo_cuenta_concepto_fiscal').select('id, subcuenta_id').eq('business_id', businessId).eq('tipo_papel', tipoPapel).eq('clave_concepto', claveConcepto);
+  if (!mapeos || !mapeos.length) { diag.razonSinPropuesta = 'No existe ningún mapeo configurado para este concepto — verifica en Fuentes Fiscales que se haya guardado correctamente.'; return diag; }
+  const subIds = mapeos.map(m=>m.subcuenta_id);
+  const { data: subsInfo } = await sb.from('fz_subcuentas').select('id, nombre').in('id', subIds);
+  diag.mapeo = subIds.map(id => ({ subcuentaId: id, nombre: (subsInfo||[]).find(s=>s.id===id)?.nombre || '(subcuenta eliminada — el mapeo apunta a un id que ya no existe en el catálogo)' }));
+
+  const subIdsSet = new Set(subIds);
+  const { start, end } = monthBounds(periodo);
+
+  const { data: todosConceptosVenta } = await sb.from('fz_conceptos_venta').select('id, nombre, subcuenta_vinculada_id, tipo').eq('business_id', businessId);
+  const { data: ventasDelPeriodo } = await sb.from('fz_ventas').select('id, fecha, venta_data').eq('business_id', businessId).gte('fecha', start).lte('fecha', end);
+  const subIdsConVentaVinculada = new Set((todosConceptosVenta||[]).filter(cv=>cv.subcuenta_vinculada_id).map(cv=>cv.subcuenta_vinculada_id));
+
+  (ventasDelPeriodo||[]).forEach(v => {
+    Object.entries(v.venta_data||{}).forEach(([conceptoVentaId, importe]) => {
+      const cv = (todosConceptosVenta||[]).find(c=>c.id===conceptoVentaId);
+      const monto = Number(importe)||0;
+      if (!monto) return;
+      const registro = { fecha: v.fecha, ventaId: v.id, conceptoVentaId, conceptoNombre: cv?.nombre || '(concepto de venta eliminado)', importe: monto, subcuentaVinculada: cv?.subcuenta_vinculada_id || null };
+      if (cv && cv.subcuenta_vinculada_id && subIdsSet.has(cv.subcuenta_vinculada_id)) { registro.coincideMapeo = true; diag.ventasEncontradas.push(registro); }
+      else if (!cv || !cv.subcuenta_vinculada_id) { registro.coincideMapeo = false; registro.razon = 'Este concepto de venta no tiene subcuenta vinculada configurada en el Catálogo de Cuentas — no puede relacionarse con ningún mapeo fiscal todavía.'; diag.ventasSinVinculo.push(registro); }
+      else { registro.coincideMapeo = false; registro.razon = `Vinculado a otra subcuenta ("${(subsInfo||[]).find(s=>s.id===cv.subcuenta_vinculada_id)?.nombre || cv.subcuenta_vinculada_id}"), distinta de las mapeadas para este concepto fiscal.`; diag.ventasSinVinculo.push(registro); }
+    });
+  });
+
+  const subIdsParaLibro = subIds.filter(id => !subIdsConVentaVinculada.has(id));
+  if (subIdsParaLibro.length) {
+    const subIdsParaLibroSet = new Set(subIdsParaLibro);
+    const { filas } = await getLibroPartidaDobleConOrigen(businessId, end, start);
+    filas.filter(f => f.clave.startsWith('sub:') && subIdsParaLibroSet.has(f.clave.slice(4))).forEach(f => {
+      diag.movimientosContables.push({ fecha: f.fecha, subcuentaId: f.clave.slice(4), cargo: f.cargo, abono: f.abono, neto: redondearMoneda(f.abono - f.cargo), origenTabla: f.origenTabla||null, origenId: f.origenId||null });
+      if (f.cargo > 0.004) diag.ajustesDetectados = true;
+    });
+  }
+
+  const propuestaReal = await obtenerPropuestaContable(businessId, tipoPapel, claveConcepto, periodo);
+  diag.propuestaFinal = propuestaReal.hayPropuesta ? propuestaReal.total : null;
+  diag.importeVentas = redondearMoneda(diag.ventasEncontradas.reduce((s,v)=>s+v.importe*(((todosConceptosVenta||[]).find(c=>c.id===v.conceptoVentaId)?.tipo)==='resta'?-1:1),0));
+  diag.importeContable = redondearMoneda(diag.movimientosContables.reduce((s,m)=>s+m.neto,0));
+  if (!propuestaReal.hayPropuesta) diag.razonSinPropuesta = diag.ventasSinVinculo.length ? 'Existen ventas reales en el periodo, pero ninguna pudo relacionarse con el mapeo configurado (ver sección de ventas sin vínculo).' : 'No se encontró ningún movimiento (ni en Ventas ni en Contabilidad) para las subcuentas mapeadas, en este periodo.';
+  return diag;
+}
+
 // ============================================================
 // CAPA DE FUENTES FISCALES — configuración del mapeo dato contable ↔ concepto fiscal. Genérica y
 // reutilizable por cualquier tipo de papel (isr_pm, iva, retenciones_isr, retenciones_iva, los que
@@ -7690,6 +7739,7 @@ document.getElementById('piEliminarBtn').addEventListener('click', async () => {
 // explícitamente desde el modal.
 // ============================================================
 let STATE_fuentesFiscalesTab = 'isr_pm';
+let STATE_fuentesFiscalesPeriodo = null;
 
 function conceptosDePapel(tipoPapel) {
   if (tipoPapel === 'isr_pm') return CONCEPTOS_DEFAULT_ISR_PM.filter(c => !CONCEPTOS_CALCULADOS_ISR_PM.includes(c.clave));
@@ -7698,6 +7748,23 @@ function conceptosDePapel(tipoPapel) {
   if (tipoPapel === 'retenciones_iva') return CONCEPTOS_DEFAULT_RETENCIONES_IVA;
   return [];
 }
+
+// Conceptos con fuente especializada YA definida — no deben ofrecer mapeo contable normal,
+// para no competir con la fuente que ya les corresponde (punto 12).
+const FUENTES_ESPECIALIZADAS = {
+  perdidas_aplicables: 'Cédula de Pérdidas Fiscales',
+  pagos_provisionales_anteriores: 'Sistema — suma de meses anteriores del mismo ejercicio',
+};
+
+// Tipos de cuenta mayor sugeridos como primera opción al configurar un concepto — reduce el
+// catálogo completo a las cuentas más probables sin bloquear al contador (siempre puede pedir
+// "Mostrar otras cuentas"). Solo se definen sugerencias donde hay confianza real; el resto
+// muestra el catálogo completo directamente, sin inventar una regla dudosa.
+const TIPOS_SUGERIDOS_POR_CONCEPTO = {
+  ingresos_nominales_mes: ['ingreso'],
+  iva_trasladado_16: ['ingreso'], iva_trasladado_0: ['ingreso'], iva_trasladado_exento: ['ingreso'], iva_trasladado_no_objeto: ['ingreso'],
+  iva_acreditable_compras: ['gasto', 'costo'], iva_acreditable_servicios: ['gasto', 'costo'], iva_acreditable_inversiones: ['activo'],
+};
 
 async function renderFuentesFiscales() {
   const el = document.getElementById('sec-fuentesfiscales');
@@ -7712,6 +7779,7 @@ async function renderFuentesFiscales() {
     { id: 'retenciones_iva', label: 'Retenciones IVA' },
   ];
   const conceptos = conceptosDePapel(STATE_fuentesFiscalesTab);
+  if (!STATE_fuentesFiscalesPeriodo) STATE_fuentesFiscalesPeriodo = todayStr().slice(0,7);
 
   // SOLO LECTURA — el mapeo vigente de cada concepto del tipo de papel seleccionado.
   const mapeosPorConcepto = {};
@@ -7731,11 +7799,13 @@ async function renderFuentesFiscales() {
           <thead><tr><th>Concepto</th><th>Fuente configurada</th><th></th></tr></thead>
           <tbody>
             ${conceptos.map(c => {
+              const especializada = FUENTES_ESPECIALIZADAS[c.clave];
+              if (especializada) return `<tr><td>${c.nombre}</td><td><span class="pt-origen sistema">${especializada}</span></td><td style="font-size:10.5px;color:var(--muted);">No compite con mapeo contable</td></tr>`;
               const mapeo = mapeosPorConcepto[c.clave];
               return `<tr>
                 <td>${c.nombre}</td>
                 <td>${mapeo.length ? mapeo.map(m=>`<span class="pt-origen contabilidad">${m.nombre}</span>`).join(' ') : `<span class="pt-origen">Sin mapeo — captura manual</span>`}</td>
-                <td><a href="#" class="pt-editar-link ff-configurar" data-clave="${c.clave}">Configurar</a></td>
+                <td><a href="#" class="pt-editar-link ff-configurar" data-clave="${c.clave}">Configurar</a> · <a href="#" class="pt-editar-link ff-diagnosticar" data-clave="${c.clave}">Diagnosticar</a></td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -7751,6 +7821,11 @@ async function renderFuentesFiscales() {
     const concepto = conceptos.find(c=>c.clave===a.dataset.clave);
     abrirModalFuenteFiscal(b, STATE_fuentesFiscalesTab, concepto, mapeosPorConcepto[concepto.clave]);
   }));
+  el.querySelectorAll('.ff-diagnosticar').forEach(a => a.addEventListener('click', (e) => {
+    e.preventDefault();
+    const concepto = conceptos.find(c=>c.clave===a.dataset.clave);
+    abrirModalDiagnosticoFuente(b, STATE_fuentesFiscalesTab, concepto);
+  }));
 }
 
 async function abrirModalFuenteFiscal(b, tipoPapel, concepto, mapeoActual) {
@@ -7758,15 +7833,46 @@ async function abrirModalFuenteFiscal(b, tipoPapel, concepto, mapeoActual) {
   const cuentas = await loadCuentasMayor(b.id);
   const subcuentas = await loadSubcuentas(b.id);
   const idsMapeados = new Set(mapeoActual.map(m=>m.subcuentaId));
+  const tiposSugeridos = TIPOS_SUGERIDOS_POR_CONCEPTO[concepto.clave] || null;
   const lista = document.getElementById('ffListaSubcuentas');
-  lista.innerHTML = cuentas.map(cm => {
+
+  const renderGrupo = (soloSugeridas) => cuentas.filter(cm => !soloSugeridas || !tiposSugeridos || tiposSugeridos.includes(cm.tipo)).map(cm => {
     const subs = subcuentas.filter(s=>s.cuenta_mayor_id===cm.id && !s.subcuenta_padre_id);
     if (!subs.length) return '';
+    const esExtraordinaria = soloSugeridas ? false : (tiposSugeridos && !tiposSugeridos.includes(cm.tipo));
     return `<div style="margin-bottom:8px;">
-      <div style="font-weight:600;color:var(--navy-1);font-size:11.5px;margin-bottom:3px;">${cm.nombre}</div>
+      <div style="font-weight:600;color:var(--navy-1);font-size:11.5px;margin-bottom:3px;">${cm.nombre}${esExtraordinaria?' <span class="pt-origen" style="font-weight:400;">cuenta adicional</span>':''}</div>
       ${subs.map(s=>`<label style="display:flex;align-items:center;gap:6px;padding:2px 0;"><input type="checkbox" class="ff-check" value="${s.id}" ${idsMapeados.has(s.id)?'checked':''}> ${s.nombre}</label>`).join('')}
     </div>`;
-  }).join('') || '<p style="font-size:11.5px;color:var(--muted);">Este negocio todavía no tiene subcuentas configuradas en su Catálogo de Cuentas.</p>';
+  }).join('');
+
+  if (!tiposSugeridos) {
+    // Sin sugerencia definida con confianza para este concepto — se muestra el catálogo completo
+    // directamente, sin obligar a un clic adicional que no aportaría nada.
+    lista.innerHTML = renderGrupo(false) || '<p style="font-size:11.5px;color:var(--muted);">Este negocio todavía no tiene subcuentas configuradas en su Catálogo de Cuentas.</p>';
+  } else {
+    const sugeridasHtml = renderGrupo(true);
+    lista.innerHTML = `
+      <div class="ff-grupo-sugeridas">${sugeridasHtml || '<p style="font-size:11px;color:var(--muted);">Sin cuentas del tipo sugerido todavía en el catálogo.</p>'}</div>
+      <a href="#" class="pt-editar-link ff-mostrar-otras" style="display:inline-block;margin-top:6px;opacity:1;">Mostrar otras cuentas / agregar cuenta extraordinaria</a>
+      <div class="ff-grupo-otras" style="display:none;margin-top:8px;border-top:1px solid var(--line);padding-top:8px;"></div>
+    `;
+    const zonaOtras = lista.querySelector('.ff-grupo-otras');
+    // Las cuentas fuera del tipo sugerido pero YA mapeadas se muestran de entrada como "cuenta
+    // adicional seleccionada por el contador" — nunca se ocultan solo porque no son la sugerencia.
+    const otrasHtml = cuentas.filter(cm => !tiposSugeridos.includes(cm.tipo)).map(cm => {
+      const subs = subcuentas.filter(s=>s.cuenta_mayor_id===cm.id && !s.subcuenta_padre_id);
+      if (!subs.length) return '';
+      return `<div style="margin-bottom:8px;">
+        <div style="font-weight:600;color:var(--navy-1);font-size:11.5px;margin-bottom:3px;">${cm.nombre} <span class="pt-origen" style="font-weight:400;">cuenta adicional</span></div>
+        ${subs.map(s=>`<label style="display:flex;align-items:center;gap:6px;padding:2px 0;"><input type="checkbox" class="ff-check" value="${s.id}" ${idsMapeados.has(s.id)?'checked':''}> ${s.nombre}</label>`).join('')}
+      </div>`;
+    }).join('');
+    zonaOtras.innerHTML = otrasHtml || '<p style="font-size:11px;color:var(--muted);">Sin otras cuentas en el catálogo.</p>';
+    const yaHayExtraordinariaSeleccionada = [...idsMapeados].some(id => { const s = subcuentas.find(x=>x.id===id); const cm = s ? cuentas.find(c=>c.id===s.cuenta_mayor_id) : null; return cm && !tiposSugeridos.includes(cm.tipo); });
+    if (yaHayExtraordinariaSeleccionada) zonaOtras.style.display = 'block';
+    lista.querySelector('.ff-mostrar-otras').addEventListener('click', (e) => { e.preventDefault(); zonaOtras.style.display = zonaOtras.style.display === 'none' ? 'block' : 'none'; });
+  }
 
   document.getElementById('modalFuenteFiscal').classList.add('show');
   document.getElementById('ffGuardarBtn').onclick = async () => {
@@ -7778,6 +7884,62 @@ async function abrirModalFuenteFiscal(b, tipoPapel, concepto, mapeoActual) {
   };
 }
 document.getElementById('ffCancelarBtn').addEventListener('click', () => document.getElementById('modalFuenteFiscal').classList.remove('show'));
+
+// SOLO LECTURA — nunca crea papel, nunca modifica contabilidad. Muestra exactamente lo que
+// diagnosticarFuenteFiscal encuentra en cada eslabón, incluyendo lo que no pudo relacionarse.
+async function abrirModalDiagnosticoFuente(b, tipoPapel, concepto) {
+  document.getElementById('dfConceptoNombre').textContent = `${concepto.nombre} — ${b.name}`;
+  if (!STATE_fuentesFiscalesPeriodo) STATE_fuentesFiscalesPeriodo = todayStr().slice(0,7);
+  document.getElementById('dfPeriodo').value = STATE_fuentesFiscalesPeriodo;
+  document.getElementById('modalDiagnosticoFuente').classList.add('show');
+
+  const pintar = async () => {
+    const periodo = document.getElementById('dfPeriodo').value || STATE_fuentesFiscalesPeriodo;
+    document.getElementById('dfContenido').innerHTML = `<div class="empty">Diagnosticando…</div>`;
+    const diag = await diagnosticarFuenteFiscal(b.id, tipoPapel, concepto.clave, periodo);
+    document.getElementById('dfContenido').innerHTML = `
+      <div class="pt-card">
+        <h3 style="font-size:13px;">A. Mapeo fiscal</h3>
+        ${diag.mapeo.length ? `<table style="width:100%;font-size:11.5px;"><thead><tr><th>Subcuenta</th><th>ID</th></tr></thead><tbody>
+          ${diag.mapeo.map(m=>`<tr><td>${m.nombre}</td><td style="color:var(--muted);">${m.subcuentaId}</td></tr>`).join('')}
+        </tbody></table><p style="font-size:10.5px;color:var(--muted);margin-top:4px;">${diag.mapeo.length} subcuenta(s) mapeada(s).</p>` : `<p style="color:var(--red);">Sin mapeo configurado — por eso no hay propuesta.</p>`}
+      </div>
+      ${diag.mapeo.length ? `
+      <div class="pt-card">
+        <h3 style="font-size:13px;">B. Fuente Ventas</h3>
+        ${diag.ventasEncontradas.length ? `<table style="width:100%;font-size:11px;"><thead><tr><th>Fecha</th><th>Concepto de venta</th><th>Importe</th></tr></thead><tbody>
+          ${diag.ventasEncontradas.map(v=>`<tr><td>${v.fecha}</td><td>${v.conceptoNombre}</td><td class="num">${fmt(v.importe)}</td></tr>`).join('')}
+        </tbody></table>` : `<p style="color:var(--muted);">Ninguna venta coincide con el mapeo en este periodo.</p>`}
+        ${diag.ventasSinVinculo.length ? `<p style="font-size:11px;color:var(--gold);margin-top:8px;font-weight:600;">⚠ ${diag.ventasSinVinculo.length} venta(s) NO pudieron relacionarse:</p>
+        <table style="width:100%;font-size:11px;"><tbody>
+          ${diag.ventasSinVinculo.map(v=>`<tr><td>${v.fecha}</td><td>${v.conceptoNombre}</td><td class="num">${fmt(v.importe)}</td><td style="color:var(--muted);font-size:10px;">${v.razon}</td></tr>`).join('')}
+        </tbody></table>` : ''}
+        <p style="font-size:10.5px;color:var(--muted);margin-top:6px;">Importe desde Ventas: <strong>${fmt(diag.importeVentas||0)}</strong></p>
+      </div>
+      <div class="pt-card">
+        <h3 style="font-size:13px;">C. Fuente Contable</h3>
+        ${diag.movimientosContables.length ? `<table style="width:100%;font-size:11px;"><thead><tr><th>Fecha</th><th>Cargo</th><th>Abono</th><th>Neto</th><th>Origen</th></tr></thead><tbody>
+          ${diag.movimientosContables.map(m=>`<tr><td>${m.fecha}</td><td class="num">${fmt(m.cargo)}</td><td class="num">${fmt(m.abono)}</td><td class="num">${fmt(m.neto)}</td><td style="font-size:10px;color:var(--muted);">${m.origenTabla||'—'}</td></tr>`).join('')}
+        </tbody></table>` : `<p style="color:var(--muted);">Sin movimientos en el libro de partida doble para las subcuentas sin fuente especializada de Ventas.</p>`}
+        <p style="font-size:10.5px;color:var(--muted);margin-top:6px;">Importe desde Contabilidad: <strong>${fmt(diag.importeContable||0)}</strong>${diag.ajustesDetectados?' · incluye ajuste(s)/cargo(s)':''}</p>
+      </div>
+      <div class="pt-card">
+        <h3 style="font-size:13px;">D. Resultado</h3>
+        <div class="pt-grid">
+          <div><span class="pt-label">Mapeo encontrado</span><span class="pt-value">${diag.mapeo.length?'Sí':'No'}</span></div>
+          <div><span class="pt-label">Ventas encontradas</span><span class="pt-value">${diag.ventasEncontradas.length}</span></div>
+          <div><span class="pt-label">Movimientos contables</span><span class="pt-value">${diag.movimientosContables.length}</span></div>
+          <div><span class="pt-label">Ventas sin vínculo</span><span class="pt-value" style="color:${diag.ventasSinVinculo.length?'var(--gold)':'inherit'};">${diag.ventasSinVinculo.length}</span></div>
+        </div>
+        <div class="pt-banda-cierre" style="margin-top:10px;"><span>PROPUESTA FINAL</span><span>${diag.propuestaFinal!==null?fmt(diag.propuestaFinal):'—'}</span></div>
+        ${diag.propuestaFinal===null ? `<p style="font-size:11px;color:var(--red);margin-top:6px;">${diag.razonSinPropuesta}</p>` : ''}
+      </div>` : ''}
+    `;
+  };
+  document.getElementById('dfPeriodo').onchange = () => { STATE_fuentesFiscalesPeriodo = document.getElementById('dfPeriodo').value; pintar(); };
+  await pintar();
+}
+document.getElementById('dfCerrarBtn').addEventListener('click', () => document.getElementById('modalDiagnosticoFuente').classList.remove('show'));
 
 async function renderRecargos() {
   const el = document.getElementById('sec-recargos');

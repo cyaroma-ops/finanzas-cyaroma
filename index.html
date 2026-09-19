@@ -1064,6 +1064,22 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   </div>
 </div>
 
+<!-- Modal: diagnóstico de fuente fiscal — solo lectura -->
+<div class="modal-bg" id="modalDiagnosticoFuente">
+  <div class="modal" style="width:min(640px,94vw);max-height:85vh;overflow-y:auto;">
+    <h3>Diagnóstico de fuente</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:10px;" id="dfConceptoNombre"></p>
+    <div class="field" style="margin-bottom:10px;">
+      <label>Periodo a diagnosticar</label>
+      <input type="month" id="dfPeriodo">
+    </div>
+    <div id="dfContenido" style="font-size:12px;"></div>
+    <div class="modal-actions">
+      <button class="btn btn-gold" id="dfCerrarBtn">Cerrar</button>
+    </div>
+  </div>
+</div>
+
 <!-- Modal: agregar/editar día inhábil fiscal -->
 <div class="modal-bg" id="modalDiaInhabil">
   <div class="modal" style="width:min(440px,92vw);">
