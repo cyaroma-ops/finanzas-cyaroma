@@ -2392,6 +2392,15 @@ async function obtenerOCrearPapelTrabajo(businessId, tipoPapel, ejercicio, perio
   return nuevo;
 }
 
+// SOLO LECTURA — nunca inserta. Usada por las pantallas de render/apertura: abrir o visualizar un
+// periodo jamás debe crear/materializar su papel fiscal. Regresa null si no existe todavía.
+async function obtenerPapelTrabajoSiExiste(businessId, tipoPapel, ejercicio, periodicidad, periodo) {
+  let query = sb.from('fz_papeles_trabajo').select('*').eq('business_id', businessId).eq('tipo_papel', tipoPapel).eq('ejercicio', ejercicio);
+  query = periodo ? query.eq('periodo', periodo) : query.is('periodo', null);
+  const { data: existentes } = await query.order('created_at', { ascending: true });
+  return existentes && existentes.length ? existentes[0] : null;
+}
+
 async function registrarHistorialPapel(papelId, conceptoId, campo, valorAnterior, valorNuevo, motivo, usuarioEmail) {
   await sb.from('fz_papel_historial').insert({
     papel_id: papelId, concepto_id: conceptoId || null, campo,
@@ -2412,6 +2421,21 @@ async function agregarConceptoPapel(papelId, datos) {
   if (error) throw error;
   await registrarHistorialPapel(papelId, nuevo.id, 'creación', null, `${datos.concepto}: ${valorAplicadoInicial}`, 'Concepto agregado', STATE.user?.email);
   return nuevo;
+}
+
+// Asegura que el papel y un concepto queden REALMENTE persistidos — se invoca exclusivamente
+// desde acciones explícitas del usuario (Guardar, Editar, Calcular accesorios), NUNCA desde el
+// render de apertura. Si el concepto ya es real (tiene id), no hace nada. Si es un renglón
+// virtual de la plantilla (id null — todavía no existe en BD), lo crea con su valor visual actual.
+async function asegurarConceptoPersistido(businessId, tipoPapel, ejercicio, periodicidad, periodo, concepto) {
+  const papel = await obtenerOCrearPapelTrabajo(businessId, tipoPapel, ejercicio, periodicidad, periodo);
+  if (concepto.id) return { papel, concepto };
+  const nuevo = await agregarConceptoPapel(papel.id, {
+    concepto: concepto.concepto, claveConcepto: concepto.clave_concepto, orden: concepto.orden || 0,
+    origen: concepto.origen || 'manual', valorAplicado: Number(concepto.valor_aplicado) || 0,
+    requiereAccesorios: !!concepto.requiere_accesorios,
+  });
+  return { papel, concepto: nuevo };
 }
 
 async function actualizarValorConceptoPapel(conceptoId, nuevoValorAplicado, motivo, usuarioEmail) {
@@ -4190,23 +4214,23 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
   const ejercicio = periodo.slice(0,4);
   const mesNum = Number(periodo.slice(5,7));
 
-  const papel = await obtenerOCrearPapelTrabajo(b.id, tipoPapel, ejercicio, 'mensual', periodo);
-  let { data: conceptos } = await sb.from('fz_papel_conceptos').select('*').eq('papel_id', papel.id).order('orden', { ascending: true });
-  if (!conceptos || !conceptos.length) {
-    for (let i = 0; i < conceptosDefault.length; i++) {
-      const c = conceptosDefault[i];
-      await agregarConceptoPapel(papel.id, { concepto: c.nombre, claveConcepto: c.clave, orden: i, origen: 'manual', valorAplicado: 0, requiereAccesorios: !!opciones.accesorios });
-    }
-    ({ data: conceptos } = await sb.from('fz_papel_conceptos').select('*').eq('papel_id', papel.id).order('orden', { ascending: true }));
-  }
-  const conceptoIds = conceptos.map(c=>c.id);
+  // SOLO LECTURA — abrir/visualizar este periodo NUNCA debe crear ni materializar su papel.
+  const papel = await obtenerPapelTrabajoSiExiste(b.id, tipoPapel, ejercicio, 'mensual', periodo);
+  const { data: conceptosReales } = papel ? await sb.from('fz_papel_conceptos').select('*').eq('papel_id', papel.id).order('orden', { ascending: true }) : { data: [] };
+  const conceptos = conceptosDefault.map((def, i) => {
+    const real = (conceptosReales||[]).find(c => c.clave_concepto === def.clave);
+    return real || { id: null, papel_id: null, clave_concepto: def.clave, concepto: def.nombre, orden: i, origen: 'manual', valor_original: null, valor_aplicado: 0, motivo_ajuste: null, requiere_accesorios: !!opciones.accesorios };
+  });
+  conceptos.push(...(conceptosReales||[]).filter(c => !conceptosDefault.some(d=>d.clave===c.clave_concepto) && !['ret_isr_total_periodo','ret_iva_total_periodo','iva_resultado_periodo'].includes(c.clave_concepto)));
+  const papelVirtual = papel || { estado: 'sin_iniciar', created_at: null, updated_at: null, notas: '', created_by: null };
+  const conceptoIds = conceptos.filter(c=>c.id).map(c=>c.id);
   const { data: accesoriosRows } = conceptoIds.length ? await sb.from('fz_papel_concepto_accesorios').select('*').in('concepto_id', conceptoIds) : { data: [] };
   const accesoriosPorConcepto = Object.fromEntries((accesoriosRows||[]).map(a=>[a.concepto_id, a]));
 
   const { data: regimenes } = await sb.from('fz_regimenes_fiscales_negocio').select('clave_regimen').eq('business_id', b.id).is('vigente_hasta', null).order('vigente_desde', { ascending: false }).limit(1);
   const regimenTexto = regimenes && regimenes.length ? regimenes[0].clave_regimen : 'Sin régimen registrado';
-  const { data: soportes } = await sb.from('fz_papel_soportes').select('*').eq('papel_id', papel.id).order('created_at', { ascending: false });
-  const { data: historial } = await sb.from('fz_papel_historial').select('*').eq('papel_id', papel.id).order('created_at', { ascending: false }).limit(30);
+  const { data: soportes } = papel ? await sb.from('fz_papel_soportes').select('*').eq('papel_id', papel.id).order('created_at', { ascending: false }) : { data: [] };
+  const { data: historial } = papel ? await sb.from('fz_papel_historial').select('*').eq('papel_id', papel.id).order('created_at', { ascending: false }).limit(30) : { data: [] };
 
   const formatoDe = clave => (conceptosDefault.find(d=>d.clave===clave)||{}).formato || 'moneda';
   const tabKeyDeTipo = { iva: 'iva', retenciones_isr: 'retisr', retenciones_iva: 'retiva' }[tipoPapel] || tipoPapel;
@@ -4258,30 +4282,32 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
       <div class="pt-banda-cierre"><span>${resultado>0.004?'IVA A CARGO':resultado<-0.004?'SALDO A FAVOR':'SIN IVA A CARGO NI SALDO A FAVOR'}</span><span>${fmt(Math.abs(resultado))}</span></div>
       <button class="btn btn-ghost btn-sm cg-agregar-concepto" style="margin-top:10px;">+ Agregar concepto</button>
     </div>`;
-    totalPeriodoConcepto = await sincronizarConceptoTotalPeriodo(papel.id, 'iva_resultado_periodo', 'IVA a cargo del periodo', Math.max(0, resultado));
+    totalPeriodoConcepto = (conceptosReales||[]).find(c=>c.clave_concepto==='iva_resultado_periodo') || { id: null, clave_concepto: 'iva_resultado_periodo', concepto: 'IVA a cargo del periodo', valor_aplicado: Math.max(0, resultado), valor_original: Math.max(0, resultado) };
   } else if (opciones.accesorios) {
     const totalConceptos = conceptos.filter(c => !['ret_isr_total_periodo','ret_iva_total_periodo'].includes(c.clave_concepto)).reduce((s,c)=>s+Number(c.valor_aplicado||0), 0);
     const claveT = tipoPapel === 'retenciones_isr' ? 'ret_isr_total_periodo' : 'ret_iva_total_periodo';
     const nombreT = tipoPapel === 'retenciones_isr' ? 'TOTAL RETENCIONES ISR DEL PERIODO' : 'TOTAL RETENCIONES IVA DEL PERIODO';
-    totalPeriodoConcepto = await sincronizarConceptoTotalPeriodo(papel.id, claveT, nombreT, totalConceptos);
+    totalPeriodoConcepto = (conceptosReales||[]).find(c=>c.clave_concepto===claveT) || { id: null, clave_concepto: claveT, concepto: nombreT, valor_aplicado: totalConceptos, valor_original: null };
   }
 
   let controlObligacionHtml = '';
   if (totalPeriodoConcepto) {
     const tipoImpuestoVenc = tipoPapel === 'retenciones_isr' ? 'retencion_isr' : (tipoPapel === 'retenciones_iva' ? 'retencion_iva' : 'iva');
     const venc = await calcularVencimientoEfectivo(b.id, periodo, tipoImpuestoVenc);
-    await calcularYGuardarAccesoriosConcepto(totalPeriodoConcepto.id, b.id, periodo, tipoImpuestoVenc, Number(totalPeriodoConcepto.valor_aplicado)||0, todayStr());
-    const { data: accTotal } = await sb.from('fz_papel_concepto_accesorios').select('*').eq('concepto_id', totalPeriodoConcepto.id).maybeSingle();
+    // SOLO LECTURA — si el concepto total ya es real, se lee su snapshot existente (si lo hay)
+    // sin recalcular/guardar por abrir la pantalla. El cálculo requiere la acción explícita
+    // "Calcular accesorios".
+    const accTotal = totalPeriodoConcepto.id ? (await sb.from('fz_papel_concepto_accesorios').select('*').eq('concepto_id', totalPeriodoConcepto.id).maybeSingle()).data : null;
     controlObligacionHtml = `
     <div class="pt-card">
       <h3>Control de la obligación</h3>
       <div class="pt-grid">
         <div><span class="pt-label">Periodo fiscal</span><span class="pt-value">${periodo}</span></div>
-        <div><span class="pt-label">Fecha de elaboración del papel</span><span class="pt-value" style="font-weight:500;color:var(--muted);">${fechaCorta(papel.created_at.slice(0,10))}</span></div>
+        <div><span class="pt-label">Fecha de elaboración del papel</span><span class="pt-value" style="font-weight:500;color:var(--muted);">${papelVirtual.created_at?fechaCorta(papelVirtual.created_at.slice(0,10)):"—"}</span></div>
         <div><span class="pt-label">Vencimiento base</span><span class="pt-value">${venc.fecha_vencimiento_base?fechaCorta(venc.fecha_vencimiento_base):'—'}</span></div>
         <div><span class="pt-label">Facilidad Art. 5.1</span><span class="pt-value">${venc.facilidad_rfc_aplicable?'Aplicable':'No aplicable'}</span></div>
         <div><span class="pt-label">Vencimiento efectivo</span><span class="pt-value">${venc.fecha_vencimiento_efectiva?fechaCorta(venc.fecha_vencimiento_efectiva):'Sin determinar'}</span></div>
-        <div><span class="pt-label">Estado del papel</span><span class="pt-value">${ESTADO_PAPEL_LABEL[papel.estado]||papel.estado}</span></div>
+        <div><span class="pt-label">Estado del papel</span><span class="pt-value">${ESTADO_PAPEL_LABEL[papelVirtual.estado]||papelVirtual.estado}</span></div>
       </div>
       <p style="font-size:10px;color:var(--muted);margin-top:8px;">La fecha de elaboración es solo informativa/auditoría — nunca representa nacimiento/exigibilidad de la obligación.</p>
     </div>
@@ -4295,6 +4321,7 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
         <div><span class="pt-label">Ajuste redondeo SAT</span><span class="pt-value">${formatAccesorioCampo(accTotal,'monto_redondeo')}</span></div>
         <div><span class="pt-label" style="color:var(--gold);">Total fiscal</span><span class="pt-value" style="color:var(--gold);font-size:14px;">${formatAccesorioCampo(accTotal,'importe_final')}</span></div>
       </div>
+      ${!accTotal ? `<a href="#" class="pt-editar-link cg-calcular-acc-total" style="display:inline-block;margin-top:8px;opacity:1;color:var(--gold);">Calcular accesorios</a>` : `<a href="#" class="pt-editar-link cg-calcular-acc-total" style="display:inline-block;margin-top:8px;opacity:1;">Recalcular</a>`}
       <a href="#" class="pt-editar-link cg-ver-calculo" style="display:inline-block;margin-top:8px;opacity:1;">Ver cálculo detallado</a>
       <div class="cg-calculo-detalle" style="display:none;margin-top:6px;font-size:11px;color:var(--muted);background:#f7f9fc;padding:8px;border-radius:8px;">
         ${accTotal ? `Factor de actualización: ${accTotal.factor_actualizacion||1} · Meses/fracción: ${accTotal.meses_fraccion??0}<br>INPC usados: ${(accTotal.inpc_periodos_usados||[]).map(x=>`${x.periodo}: ${x.valor}`).join(', ')||'—'}<br>Tasas de recargos usadas: ${(accTotal.tasas_recargos_usadas||[]).map(x=>`${x.periodo}: ${x.tasa}%`).join(', ')||'—'}` : 'Sin cálculo todavía.'}
@@ -4318,7 +4345,7 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
       <div class="tag-row cg-meses-tagrow" style="margin:8px 0 0;">
         ${MESES_LARGO.map((nombre,i) => `<div class="tag ${i+1===mesNum?'active':''}" data-mes="${String(i+1).padStart(2,'0')}">${nombre.slice(0,3)}</div>`).join('')}
       </div>
-      <p class="pt-subtitulo" style="margin-top:6px;">Estado del papel: <strong style="color:var(--navy-1);">${ESTADO_PAPEL_LABEL[papel.estado]||papel.estado}</strong></p>
+      <p class="pt-subtitulo" style="margin-top:6px;">Estado del papel: <strong style="color:var(--navy-1);">${ESTADO_PAPEL_LABEL[papelVirtual.estado]||papelVirtual.estado}</strong></p>
     </div>
 
     ${opciones.resumenIVA ? determinacionHtml : `
@@ -4328,9 +4355,9 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
         <table>
           <thead><tr><th>Concepto</th><th>Origen/Propuesta</th><th>Importe aplicado</th><th>Diferencia</th>${opciones.accesorios?'<th>Accesorios</th>':''}<th></th></tr></thead>
           <tbody>
-            ${conceptos.filter(c => !['ret_isr_total_periodo','ret_iva_total_periodo'].includes(c.clave_concepto)).map(c => {
+            ${conceptos.map((c, idx) => {
               const diferencia = (c.valor_original!==null && c.valor_original!==undefined) ? Number(c.valor_aplicado) - Number(c.valor_original) : null;
-              const acc = accesoriosPorConcepto[c.id];
+              const acc = c.id ? accesoriosPorConcepto[c.id] : null;
               const fmto = formatoDe(c.clave_concepto);
               return `<tr>
                 <td>${c.concepto}</td>
@@ -4339,8 +4366,8 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
                 <td class="num" style="color:${diferencia&&Math.abs(diferencia)>0.004?'var(--gold)':'var(--muted)'};">${diferencia!==null?formatearValorConcepto(diferencia,fmto):''}</td>
                 ${opciones.accesorios ? `<td style="font-size:11px;">${acc ? `${fmt(c.valor_aplicado)}+${fmt(acc.importe_actualizacion_aplicado)}+${fmt(acc.importe_recargos_aplicado)}+${fmt(acc.monto_redondeo)}=<strong>${fmt(acc.importe_final)}</strong>${acc.ajuste_manual?' <span style="color:var(--gold);">(aj.)</span>':''}` : '<span style="color:var(--muted);">Sin calcular</span>'}</td>` : ''}
                 <td style="white-space:nowrap;">
-                  <a href="#" class="cg-editar pt-editar-link" data-id="${c.id}">Editar</a>
-                  ${opciones.accesorios && Number(c.valor_aplicado) > 0.004 ? ` · <a href="#" class="cg-calc-accesorios pt-editar-link" data-id="${c.id}">${acc?'Recalcular':'Calcular'}</a>` : ''}
+                  <a href="#" class="cg-editar pt-editar-link" data-idx="${idx}">Editar</a>
+                  ${opciones.accesorios && Number(c.valor_aplicado) > 0.004 ? ` · <a href="#" class="cg-calc-accesorios pt-editar-link" data-idx="${idx}">${acc?'Recalcular':'Calcular'}</a>` : ''}
                 </td>
               </tr>`;
             }).join('')}
@@ -4355,7 +4382,7 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
 
     <div class="pt-card">
       <h3 style="color:var(--muted);font-size:13px;">Notas y soporte</h3>
-      <textarea class="cg-notas" rows="2" placeholder="Observaciones (opcional)" style="width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:8px;font-family:inherit;font-size:12.5px;margin-bottom:6px;">${papel.notas||''}</textarea>
+      <textarea class="cg-notas" rows="2" placeholder="Observaciones (opcional)" style="width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:8px;font-family:inherit;font-size:12.5px;margin-bottom:6px;">${papelVirtual.notas||''}</textarea>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
         <label class="pt-file-btn cg-soporte-label">＋ Adjuntar soporte</label>
         <input type="file" class="cg-soporte-input" accept=".pdf,.xlsx,.xls,.png,.jpg,.jpeg" style="display:none;">
@@ -4367,9 +4394,9 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
 
     <div class="pt-card">
       <div class="pt-grid">
-        <div><span class="pt-label">Estado</span><span class="pt-value">${ESTADO_PAPEL_LABEL[papel.estado]||papel.estado}</span></div>
-        <div><span class="pt-label">Última modificación</span><span class="pt-value" style="font-weight:500;">${fechaCorta(papel.updated_at.slice(0,10))}</span></div>
-        <div><span class="pt-label">Responsable</span><span class="pt-value" style="font-weight:500;">${papel.created_by||'—'}</span></div>
+        <div><span class="pt-label">Estado</span><span class="pt-value">${ESTADO_PAPEL_LABEL[papelVirtual.estado]||papelVirtual.estado}</span></div>
+        <div><span class="pt-label">Última modificación</span><span class="pt-value" style="font-weight:500;">${papelVirtual.updated_at?fechaCorta(papelVirtual.updated_at.slice(0,10)):"—"}</span></div>
+        <div><span class="pt-label">Responsable</span><span class="pt-value" style="font-weight:500;">${papelVirtual.created_by||'—'}</span></div>
       </div>
       <p style="font-size:10.5px;color:var(--muted);margin:8px 0;">Guardar este papel no genera movimientos contables, declaraciones ni pagos.</p>
       <button class="btn btn-gold btn-sm cg-guardar">Guardar</button>
@@ -4398,7 +4425,8 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
     const input = el.querySelector('.cg-soporte-input');
     if (!input.files || !input.files.length) { toast('Selecciona un archivo primero.', 'error'); return; }
     const f = input.files[0];
-    await sb.from('fz_papel_soportes').insert({ papel_id: papel.id, nombre_archivo: f.name, tipo: f.type||null, usuario: STATE.user?.email||null });
+    const papelReal = await obtenerOCrearPapelTrabajo(b.id, tipoPapel, ejercicio, 'mensual', periodo);
+    await sb.from('fz_papel_soportes').insert({ papel_id: papelReal.id, nombre_archivo: f.name, tipo: f.type||null, usuario: STATE.user?.email||null });
     toast('Referencia del archivo guardada.');
     await renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault, stateKey, opciones);
   });
@@ -4406,7 +4434,8 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
   const btnAgregarCg = el.querySelector('.cg-agregar-concepto');
   if (btnAgregarCg) btnAgregarCg.addEventListener('click', () => {
     abrirModalPapelConcepto(async (datos) => {
-      await agregarConceptoPapel(papel.id, { concepto: datos.concepto, orden: conceptos.length, origen: datos.origen, valorAplicado: datos.valorAplicado, requiereAccesorios: !!opciones.accesorios });
+      const papelReal = await obtenerOCrearPapelTrabajo(b.id, tipoPapel, ejercicio, 'mensual', periodo);
+      await agregarConceptoPapel(papelReal.id, { concepto: datos.concepto, orden: conceptos.length, origen: datos.origen, valorAplicado: datos.valorAplicado, requiereAccesorios: !!opciones.accesorios });
       toast('Concepto agregado.');
       await renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault, stateKey, opciones);
     });
@@ -4414,9 +4443,10 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
 
   el.querySelectorAll('.cg-editar').forEach(btn => btn.addEventListener('click', (e) => {
     e.preventDefault();
-    const concepto = conceptos.find(c => c.id === btn.dataset.id);
+    const concepto = conceptos[Number(btn.dataset.idx)];
     abrirModalPapelAjuste(concepto, async (nuevoValor, motivo) => {
-      const r = await actualizarValorConceptoPapel(concepto.id, nuevoValor, motivo, STATE.user?.email);
+      const { concepto: conceptoReal } = await asegurarConceptoPersistido(b.id, tipoPapel, ejercicio, 'mensual', periodo, concepto);
+      const r = await actualizarValorConceptoPapel(conceptoReal.id, nuevoValor, motivo, STATE.user?.email);
       if (r.estado === 'falta_motivo') { toast('Falta el motivo del ajuste.', 'error'); return; }
       if (r.estado === 'error') { toast('Error: ' + r.error, 'error'); return; }
       toast('Valor actualizado.');
@@ -4426,14 +4456,25 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
 
   el.querySelectorAll('.cg-calc-accesorios').forEach(btn => btn.addEventListener('click', async (e) => {
     e.preventDefault();
-    const concepto = conceptos.find(c => c.id === btn.dataset.id);
+    const concepto = conceptos[Number(btn.dataset.idx)];
     // El concepto en sí es el "saldo principal" del renglón — cada retención se calcula de forma
     // individual, nunca sobre una suma global previa. Tipo de vencimiento genérico (retención).
     const tipoImpuestoVenc = tipoPapel === 'retenciones_isr' ? 'retencion_isr' : (tipoPapel === 'retenciones_iva' ? 'retencion_iva' : 'iva');
-    await calcularYGuardarAccesoriosConcepto(concepto.id, b.id, periodo, tipoImpuestoVenc, Number(concepto.valor_aplicado), todayStr());
+    const { concepto: conceptoReal } = await asegurarConceptoPersistido(b.id, tipoPapel, ejercicio, 'mensual', periodo, concepto);
+    await calcularYGuardarAccesoriosConcepto(conceptoReal.id, b.id, periodo, tipoImpuestoVenc, Number(conceptoReal.valor_aplicado), todayStr());
     toast('Accesorios calculados para este concepto.');
     await renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault, stateKey, opciones);
   }));
+
+  const btnCalcularAccTotal = el.querySelector('.cg-calcular-acc-total');
+  if (btnCalcularAccTotal) btnCalcularAccTotal.addEventListener('click', async (e) => {
+    e.preventDefault();
+    const tipoImpuestoVenc = tipoPapel === 'retenciones_isr' ? 'retencion_isr' : (tipoPapel === 'retenciones_iva' ? 'retencion_iva' : 'iva');
+    const { concepto: totalReal } = await asegurarConceptoPersistido(b.id, tipoPapel, ejercicio, 'mensual', periodo, totalPeriodoConcepto);
+    await calcularYGuardarAccesoriosConcepto(totalReal.id, b.id, periodo, tipoImpuestoVenc, Number(totalReal.valor_aplicado)||0, todayStr());
+    toast('Accesorios calculados.');
+    await renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault, stateKey, opciones);
+  });
 
   const btnVerCalcCg = el.querySelector('.cg-ver-calculo');
   if (btnVerCalcCg) btnVerCalcCg.addEventListener('click', (e) => {
@@ -4444,7 +4485,13 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
 
   el.querySelector('.cg-guardar').addEventListener('click', async () => {
     const notas = el.querySelector('.cg-notas').value;
-    await sb.from('fz_papeles_trabajo').update({ estado: 'guardado', notas, updated_at: new Date().toISOString() }).eq('id', papel.id);
+    // Guardar es la acción explícita que persiste el papel completo, incluyendo los renglones
+    // virtuales que el contador no llegó a editar individualmente.
+    const papelReal = await obtenerOCrearPapelTrabajo(b.id, tipoPapel, ejercicio, 'mensual', periodo);
+    for (const c of conceptos) {
+      if (!c.id) await agregarConceptoPapel(papelReal.id, { concepto: c.concepto, claveConcepto: c.clave_concepto, orden: c.orden||0, origen: c.origen||'manual', valorAplicado: Number(c.valor_aplicado)||0, requiereAccesorios: !!opciones.accesorios });
+    }
+    await sb.from('fz_papeles_trabajo').update({ estado: 'guardado', notas, updated_at: new Date().toISOString() }).eq('id', papelReal.id);
     registrarAuditoria(b.id, 'editar', 'Papeles de Trabajo', `Papel ${tipoPapel} ${periodo} guardado`);
     toast('Papel guardado. No se generó ninguna póliza ni declaración.');
     await renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault, stateKey, opciones);
@@ -4460,16 +4507,19 @@ async function renderPapelISRPM(b) {
   const ejercicio = periodo.slice(0,4);
   const mesNum = Number(periodo.slice(5,7));
 
-  const papel = await obtenerOCrearPapelTrabajo(b.id, 'isr_pm', ejercicio, 'mensual', periodo);
-  let { data: conceptos } = await sb.from('fz_papel_conceptos').select('*').eq('papel_id', papel.id).order('orden', { ascending: true });
-  if (!conceptos || !conceptos.length) {
-    for (let i = 0; i < CONCEPTOS_DEFAULT_ISR_PM.length; i++) {
-      const c = CONCEPTOS_DEFAULT_ISR_PM[i];
-      await agregarConceptoPapel(papel.id, { concepto: c.nombre, claveConcepto: c.clave, orden: i, origen: 'manual', valorAplicado: 0 });
-    }
-    ({ data: conceptos } = await sb.from('fz_papel_conceptos').select('*').eq('papel_id', papel.id).order('orden', { ascending: true }));
-  }
-  const acumuladoDe = clave => { const c = conceptos.find(x=>x.clave_concepto===clave); return c ? Number(c.valor_aplicado) : null; };
+  // SOLO LECTURA — abrir/visualizar este periodo NUNCA debe crear ni materializar su papel.
+  const papel = await obtenerPapelTrabajoSiExiste(b.id, 'isr_pm', ejercicio, 'mensual', periodo);
+  const { data: conceptosReales } = papel ? await sb.from('fz_papel_conceptos').select('*').eq('papel_id', papel.id).order('orden', { ascending: true }) : { data: [] };
+  // Plantilla: cada concepto default se muestra con su valor real si ya fue persistido, o como
+  // renglón VIRTUAL (id null, valor 0 solo visual) si el papel/concepto todavía no existen — esto
+  // nunca escribe nada en BD, es puramente para facilitar la captura.
+  const conceptos = CONCEPTOS_DEFAULT_ISR_PM.map((def, i) => {
+    const real = (conceptosReales||[]).find(c => c.clave_concepto === def.clave);
+    return real || { id: null, papel_id: null, clave_concepto: def.clave, concepto: def.nombre, orden: i, origen: 'manual', valor_original: null, valor_aplicado: 0, motivo_ajuste: null };
+  });
+  conceptos.push(...(conceptosReales||[]).filter(c => !CONCEPTOS_DEFAULT_ISR_PM.some(d=>d.clave===c.clave_concepto)));
+  const papelVirtual = papel || { estado: 'sin_iniciar', created_at: null, updated_at: null, notas: '', created_by: null };
+  const acumuladoDe = clave => { const c = conceptos.find(x=>x.clave_concepto===clave); return (c && c.id) ? Number(c.valor_aplicado) : null; };
 
   // Encabezado — negocio, RFC, régimen vigente.
   const { data: regimenes } = await sb.from('fz_regimenes_fiscales_negocio').select('*').eq('business_id', b.id).is('vigente_hasta', null).order('vigente_desde', { ascending: false }).limit(1);
@@ -4479,20 +4529,21 @@ async function renderPapelISRPM(b) {
     regimenTexto = `${regimenes[0].clave_regimen}${cat?' — '+cat.descripcion:''}`;
   }
 
-  // Control de la obligación + Actualización/recargos — se calculan sobre "resultado_determinado",
-  // el concepto que representa el ISR determinado del mes. Reutiliza el motor ya validado.
+  // Control de la obligación + Actualización/recargos — SOLO LECTURA. Si "resultado_determinado"
+  // todavía no es un concepto real (no se ha capturado/guardado), no se calcula nada y la sección
+  // lo indica explícitamente. Si ya es real, se LEE el snapshot existente (si lo hay) sin volver a
+  // calcularlo/guardarlo por el solo hecho de abrir — el cálculo requiere la acción explícita
+  // "Calcular accesorios".
   const conceptoResultado = conceptos.find(c=>c.clave_concepto==='resultado_determinado');
   let venc = null, snapshot = null;
-  if (conceptoResultado) {
+  if (conceptoResultado && conceptoResultado.id) {
     venc = await calcularVencimientoEfectivo(b.id, periodo, 'isr_provisional');
-    const saldoParaAccesorios = Number(conceptoResultado.valor_aplicado)||0;
-    await calcularYGuardarAccesoriosConcepto(conceptoResultado.id, b.id, periodo, 'isr_provisional', saldoParaAccesorios, todayStr());
     const { data: acc } = await sb.from('fz_papel_concepto_accesorios').select('*').eq('concepto_id', conceptoResultado.id).maybeSingle();
     snapshot = acc;
   }
 
-  const { data: soportes } = await sb.from('fz_papel_soportes').select('*').eq('papel_id', papel.id).order('created_at', { ascending: false });
-  const { data: historial } = await sb.from('fz_papel_historial').select('*').eq('papel_id', papel.id).order('created_at', { ascending: false }).limit(30);
+  const { data: soportes } = papel ? await sb.from('fz_papel_soportes').select('*').eq('papel_id', papel.id).order('created_at', { ascending: false }) : { data: [] };
+  const { data: historial } = papel ? await sb.from('fz_papel_historial').select('*').eq('papel_id', papel.id).order('created_at', { ascending: false }).limit(30) : { data: [] };
 
   el.innerHTML = `
     <button class="btn btn-ghost btn-sm pIsrVolverBtn" style="margin-bottom:10px;">← Volver a cédula anual</button>
@@ -4509,7 +4560,7 @@ async function renderPapelISRPM(b) {
       <div class="tag-row" id="pIsrMesesTagRow" style="margin:8px 0 0;">
         ${MESES_LARGO.map((nombre,i) => `<div class="tag ${i+1===mesNum?'active':''}" data-mes="${String(i+1).padStart(2,'0')}">${nombre.slice(0,3)}</div>`).join('')}
       </div>
-      <p class="pt-subtitulo" style="margin-top:6px;">Estado del papel: <strong style="color:var(--navy-1);">${ESTADO_PAPEL_LABEL[papel.estado]||papel.estado}</strong></p>
+      <p class="pt-subtitulo" style="margin-top:6px;">Estado del papel: <strong style="color:var(--navy-1);">${ESTADO_PAPEL_LABEL[papelVirtual.estado]||papelVirtual.estado}</strong></p>
     </div>
 
     <div class="pt-card">
@@ -4518,7 +4569,7 @@ async function renderPapelISRPM(b) {
         <table>
           <thead><tr><th>Concepto</th><th>Del mes</th><th>Acumulado</th><th>Origen</th><th></th></tr></thead>
           <tbody>
-            ${conceptos.map(c => {
+            ${conceptos.map((c, idx) => {
               const acumuladoPar = c.clave_concepto==='ingresos_nominales_mes' ? acumuladoDe('ingresos_nominales_acum') : null;
               const fmto = (CONCEPTOS_DEFAULT_ISR_PM.find(d=>d.clave===c.clave_concepto)||{}).formato || 'moneda';
               const esCierre = c.clave_concepto==='resultado_determinado';
@@ -4527,7 +4578,7 @@ async function renderPapelISRPM(b) {
                 <td class="num" style="font-weight:600;">${formatearValorConcepto(c.valor_aplicado,fmto)}</td>
                 <td class="num">${acumuladoPar!==null?formatearValorConcepto(acumuladoPar,fmto):''}</td>
                 <td>${!c.valor_original && !esCierre ? `<span class="pt-origen ${c.origen}">${etiquetaOrigen(c.origen)}</span>` : ''}</td>
-                <td><a href="#" class="pisr-editar pt-editar-link" data-id="${c.id}">Editar</a></td>
+                <td><a href="#" class="pisr-editar pt-editar-link" data-idx="${idx}">Editar</a></td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -4540,12 +4591,12 @@ async function renderPapelISRPM(b) {
       <h3>2. Control de la obligación</h3>
       <div class="pt-grid">
         <div><span class="pt-label">Periodo fiscal</span><span class="pt-value">${periodo}</span></div>
-        <div><span class="pt-label">Fecha de elaboración del papel</span><span class="pt-value" style="font-weight:500;color:var(--muted);">${fechaCorta(papel.created_at.slice(0,10))}</span></div>
+        <div><span class="pt-label">Fecha de elaboración del papel</span><span class="pt-value" style="font-weight:500;color:var(--muted);">${papelVirtual.created_at?fechaCorta(papelVirtual.created_at.slice(0,10)):"—"}</span></div>
         <div><span class="pt-label">Vencimiento base</span><span class="pt-value">${venc.fecha_vencimiento_base?fechaCorta(venc.fecha_vencimiento_base):'—'}</span></div>
         <div><span class="pt-label">Facilidad Art. 5.1</span><span class="pt-value">${venc.facilidad_rfc_aplicable?'Aplicable':'No aplicable'}</span></div>
         <div><span class="pt-label">Vencimiento efectivo</span><span class="pt-value">${venc.fecha_vencimiento_efectiva?fechaCorta(venc.fecha_vencimiento_efectiva):'Sin determinar'}</span></div>
         <div><span class="pt-label">Calcular accesorios al</span><span class="pt-value">${fechaCorta(todayStr())}</span></div>
-        <div><span class="pt-label">Estado del papel</span><span class="pt-value">${ESTADO_PAPEL_LABEL[papel.estado]||papel.estado}</span></div>
+        <div><span class="pt-label">Estado del papel</span><span class="pt-value">${ESTADO_PAPEL_LABEL[papelVirtual.estado]||papelVirtual.estado}</span></div>
       </div>
       <p style="font-size:10px;color:var(--muted);margin-top:8px;">La fecha de elaboración es solo informativa/auditoría — nunca representa nacimiento/exigibilidad de la obligación.</p>
       ${!venc.fecha_vencimiento_efectiva ? `<p style="font-size:11.5px;color:var(--red);margin-top:6px;">${venc.vencimiento_criterio||'No se pudo determinar el vencimiento efectivo — revisa RFC/régimen/calendario del negocio.'}</p>` : ''}
@@ -4562,6 +4613,7 @@ async function renderPapelISRPM(b) {
         <div><span class="pt-label" style="color:var(--gold);">Total fiscal</span><span class="pt-value" style="color:var(--gold);font-size:14px;">${formatAccesorioCampo(snapshot,'importe_final')}</span></div>
       </div>
       <a href="#" class="pt-editar-link" id="pIsrVerCalculoBtn" style="display:inline-block;margin-top:8px;opacity:1;">Ver cálculo detallado</a>
+      ${!snapshot ? ` · <a href="#" class="pt-editar-link" id="pIsrCalcularAccBtn" style="display:inline-block;margin-top:8px;opacity:1;color:var(--gold);">Calcular accesorios</a>` : ` · <a href="#" class="pt-editar-link" id="pIsrCalcularAccBtn" style="display:inline-block;margin-top:8px;opacity:1;">Recalcular</a>`}
       <div id="pIsrCalculoDetalle" style="display:none;margin-top:6px;font-size:11px;color:var(--muted);background:#f7f9fc;padding:8px;border-radius:8px;">
         ${snapshot ? `Factor de actualización: ${snapshot.factor_actualizacion||1} · Meses/fracción: ${snapshot.meses_fraccion??0}<br>
         INPC usados: ${(snapshot.inpc_periodos_usados||[]).map(x=>`${x.periodo}: ${x.valor}`).join(', ')||'—'}<br>
@@ -4572,7 +4624,7 @@ async function renderPapelISRPM(b) {
 
     <div class="pt-card">
       <h3 style="color:var(--muted);font-size:13px;">Notas y soporte</h3>
-      <textarea id="pIsrNotas" rows="2" placeholder="Observaciones (opcional)" style="width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:8px;font-family:inherit;font-size:12.5px;margin-bottom:6px;">${papel.notas||''}</textarea>
+      <textarea id="pIsrNotas" rows="2" placeholder="Observaciones (opcional)" style="width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:8px;font-family:inherit;font-size:12.5px;margin-bottom:6px;">${papelVirtual.notas||''}</textarea>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
         <label class="pt-file-btn" for="pIsrSoporteInput">＋ Adjuntar soporte</label>
         <input type="file" id="pIsrSoporteInput" accept=".pdf,.xlsx,.xls,.png,.jpg,.jpeg" style="display:none;">
@@ -4585,9 +4637,9 @@ async function renderPapelISRPM(b) {
     <div class="pt-card">
       <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;align-items:center;">
         <div class="pt-grid" style="flex:1;">
-          <div><span class="pt-label">Estado</span><span class="pt-value">${ESTADO_PAPEL_LABEL[papel.estado]||papel.estado}</span></div>
-          <div><span class="pt-label">Última modificación</span><span class="pt-value" style="font-weight:500;">${fechaCorta(papel.updated_at.slice(0,10))}</span></div>
-          <div><span class="pt-label">Responsable</span><span class="pt-value" style="font-weight:500;">${papel.created_by||'—'}</span></div>
+          <div><span class="pt-label">Estado</span><span class="pt-value">${ESTADO_PAPEL_LABEL[papelVirtual.estado]||papelVirtual.estado}</span></div>
+          <div><span class="pt-label">Última modificación</span><span class="pt-value" style="font-weight:500;">${papelVirtual.updated_at?fechaCorta(papelVirtual.updated_at.slice(0,10)):"—"}</span></div>
+          <div><span class="pt-label">Responsable</span><span class="pt-value" style="font-weight:500;">${papelVirtual.created_by||'—'}</span></div>
         </div>
       </div>
       <p style="font-size:10.5px;color:var(--muted);margin:8px 0;">Guardar este papel no genera movimientos contables, declaraciones ni pagos.</p>
@@ -4609,6 +4661,15 @@ async function renderPapelISRPM(b) {
     z.style.display = z.style.display === 'none' ? 'block' : 'none';
   });
 
+  const btnCalcularAcc = document.getElementById('pIsrCalcularAccBtn');
+  if (btnCalcularAcc) btnCalcularAcc.addEventListener('click', async (e) => {
+    e.preventDefault();
+    const { concepto: conceptoReal } = await asegurarConceptoPersistido(b.id, 'isr_pm', ejercicio, 'mensual', periodo, conceptoResultado);
+    await calcularYGuardarAccesoriosConcepto(conceptoReal.id, b.id, periodo, 'isr_provisional', Number(conceptoReal.valor_aplicado)||0, todayStr());
+    toast('Accesorios calculados.');
+    await renderPapelISRPM(b);
+  });
+
   document.getElementById('pIsrHistorialBtn').addEventListener('click', (e) => {
     e.preventDefault();
     const z = document.getElementById('pIsrHistorialZona');
@@ -4624,14 +4685,16 @@ async function renderPapelISRPM(b) {
     const input = document.getElementById('pIsrSoporteInput');
     if (!input.files || !input.files.length) { toast('Selecciona un archivo primero.', 'error'); return; }
     const f = input.files[0];
-    await sb.from('fz_papel_soportes').insert({ papel_id: papel.id, nombre_archivo: f.name, tipo: f.type||null, usuario: STATE.user?.email||null });
+    const papelReal = await obtenerOCrearPapelTrabajo(b.id, 'isr_pm', ejercicio, 'mensual', periodo);
+    await sb.from('fz_papel_soportes').insert({ papel_id: papelReal.id, nombre_archivo: f.name, tipo: f.type||null, usuario: STATE.user?.email||null });
     toast('Referencia del archivo guardada.');
     await renderPapelISRPM(b);
   });
 
   document.getElementById('pIsrAgregarConceptoBtn').addEventListener('click', () => {
     abrirModalPapelConcepto(async (datos) => {
-      await agregarConceptoPapel(papel.id, { concepto: datos.concepto, orden: conceptos.length, origen: datos.origen, valorAplicado: datos.valorAplicado });
+      const papelReal = await obtenerOCrearPapelTrabajo(b.id, 'isr_pm', ejercicio, 'mensual', periodo);
+      await agregarConceptoPapel(papelReal.id, { concepto: datos.concepto, orden: conceptos.length, origen: datos.origen, valorAplicado: datos.valorAplicado });
       toast('Concepto agregado.');
       await renderPapelISRPM(b);
     });
@@ -4639,9 +4702,12 @@ async function renderPapelISRPM(b) {
 
   document.querySelectorAll('.pisr-editar').forEach(btn => btn.addEventListener('click', (e) => {
     e.preventDefault();
-    const concepto = conceptos.find(c => c.id === btn.dataset.id);
+    const concepto = conceptos[Number(btn.dataset.idx)];
     abrirModalPapelAjuste(concepto, async (nuevoValor, motivo) => {
-      const r = await actualizarValorConceptoPapel(concepto.id, nuevoValor, motivo, STATE.user?.email);
+      // El concepto puede ser virtual (todavía no existe en BD) — la edición explícita del
+      // contador es precisamente la acción que debe persistirlo, junto con su papel.
+      const { concepto: conceptoReal } = await asegurarConceptoPersistido(b.id, 'isr_pm', ejercicio, 'mensual', periodo, concepto);
+      const r = await actualizarValorConceptoPapel(conceptoReal.id, nuevoValor, motivo, STATE.user?.email);
       if (r.estado === 'falta_motivo') { toast('Falta el motivo del ajuste.', 'error'); return; }
       if (r.estado === 'error') { toast('Error: ' + r.error, 'error'); return; }
       toast('Valor actualizado.');
@@ -4651,7 +4717,13 @@ async function renderPapelISRPM(b) {
 
   document.getElementById('pIsrGuardarBtn').addEventListener('click', async () => {
     const notas = document.getElementById('pIsrNotas').value;
-    await sb.from('fz_papeles_trabajo').update({ estado: 'guardado', notas, updated_at: new Date().toISOString() }).eq('id', papel.id);
+    // Guardar es la acción explícita que persiste el papel completo — incluyendo los renglones
+    // virtuales que el contador no llegó a editar individualmente, con su valor visual actual.
+    const papelReal = await obtenerOCrearPapelTrabajo(b.id, 'isr_pm', ejercicio, 'mensual', periodo);
+    for (const c of conceptos) {
+      if (!c.id) await agregarConceptoPapel(papelReal.id, { concepto: c.concepto, claveConcepto: c.clave_concepto, orden: c.orden||0, origen: c.origen||'manual', valorAplicado: Number(c.valor_aplicado)||0 });
+    }
+    await sb.from('fz_papeles_trabajo').update({ estado: 'guardado', notas, updated_at: new Date().toISOString() }).eq('id', papelReal.id);
     registrarAuditoria(b.id, 'editar', 'Papeles de Trabajo', `Papel ISR PM ${periodo} guardado`);
     toast('Papel guardado. No se generó ninguna póliza ni declaración.');
     await renderPapelISRPM(b);
