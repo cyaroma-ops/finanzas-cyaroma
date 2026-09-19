@@ -3456,7 +3456,7 @@ let STATE_impuestosTab = 'resumen';
 
 // Los 3 controles son independientes entre sí — un mismo impuesto puede estar,
 // por ejemplo, Determinado + Declarada + Pendiente de pago, todo a la vez.
-function estadosDeImpuesto(p) {
+async function estadosDeImpuesto(p) {
   const hoy = todayStr();
   const determinacion = { texto: 'Determinado', color: 'var(--navy-3)' }; // si existe el registro, ya está determinado
   const declaracion = p.declarada
@@ -3467,9 +3467,15 @@ function estadosDeImpuesto(p) {
   const monto = Number(p.monto);
   if (monto <= 0.004) pago = { texto: 'No aplica', color: 'var(--muted)' };
   else if (importePagado >= monto - 0.004) {
-    // Cubierto al 100% según sus aplicaciones reales — SIEMPRE "Pagado"; fecha_pago (si existe)
-    // solo decide el matiz de a tiempo/con recargos, nunca bloquea este estado.
-    if (p.fecha_pago && p.fecha_pago > p.fecha_limite) pago = { texto: 'Pagado con recargos', color: 'var(--red)' };
+    // Cubierto al 100% según sus aplicaciones reales — SIEMPRE "Pagado". El matiz (a tiempo /
+    // con actualización / con recargos) se deriva de los accesorios REALES de las aplicaciones
+    // VIGENTES (nunca revertidas) — nunca comparando fecha_pago contra la fecha_limite legacy
+    // (día 17 fijo), y el redondeo SAT nunca cuenta como recargo ni actualización.
+    const { data: aplicacionesVigentes } = await sb.from('fz_aplicaciones_pago_fiscal').select('monto_recargos,monto_actualizacion').eq('pago_impuesto_id', p.id).is('revertido_at', null);
+    const recargosVigentes = (aplicacionesVigentes||[]).reduce((s,a)=>s+Number(a.monto_recargos||0),0);
+    const actualizacionVigente = (aplicacionesVigentes||[]).reduce((s,a)=>s+Number(a.monto_actualizacion||0),0);
+    if (recargosVigentes > 0.004) pago = { texto: 'Pagado con recargos', color: 'var(--red)' };
+    else if (actualizacionVigente > 0.004) pago = { texto: 'Pagado con actualización', color: 'var(--gold)' };
     else pago = { texto: 'Pagado a tiempo', color: 'var(--green)' };
   } else if (importePagado > 0.004) {
     pago = { texto: `Parcial (${fmt(importePagado)} de ${fmt(monto)})`, color: 'var(--gold)' };
@@ -3546,9 +3552,9 @@ async function renderImpuestosResumen(b) {
   const totalVencido = vencidos.reduce((s,p)=>s+Number(p.monto),0);
   const totalRecargosHistorico = (todosPendientes||[]).filter(p=>p.fecha_pago && p.recargos).reduce((s,p)=>s+Number(p.recargos||0),0);
 
-  const filaResumen = (nombre, fila) => {
+  const filaResumen = async (nombre, fila) => {
     if (!fila) return `<tr><td>${nombre}</td><td colspan="4" class="empty">En cálculo — aún no se determina para este mes.</td></tr>`;
-    const est = estadosDeImpuesto(fila);
+    const est = await estadosDeImpuesto(fila);
     return `<tr>
       <td>${nombre}</td>
       <td class="num" style="font-weight:600;">${fmt(fila.monto)}</td>
@@ -3557,6 +3563,12 @@ async function renderImpuestosResumen(b) {
       <td style="color:${est.pago.color};font-size:12px;font-weight:600;">${est.pago.texto}</td>
     </tr>`;
   };
+
+  const filaIvaHtml = await filaResumen('IVA a cargo', ivaFila);
+  const filaIsrHtml = await filaResumen('ISR Provisional', isrFila);
+  const filasRetencionesHtml = retencionesDelMes.length
+    ? (await Promise.all(retencionesDelMes.map(p => filaResumen(`${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]} — ${p.concepto}`, p)))).join('')
+    : `<tr><td>Retenciones de ISR/IVA</td><td colspan="4" class="empty">Sin retenciones este mes.</td></tr>`;
 
   el.innerHTML = `
     <div class="card">
@@ -3575,9 +3587,9 @@ async function renderImpuestosResumen(b) {
         <table>
           <thead><tr><th>Impuesto</th><th>Monto</th><th>Determinación</th><th>Declaración</th><th>Pago</th></tr></thead>
           <tbody>
-            ${filaResumen('IVA a cargo', ivaFila)}
-            ${filaResumen('ISR Provisional', isrFila)}
-            ${retencionesDelMes.length ? retencionesDelMes.map(p => filaResumen(`${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]} — ${p.concepto}`, p)).join('') : `<tr><td>Retenciones de ISR/IVA</td><td colspan="4" class="empty">Sin retenciones este mes.</td></tr>`}
+            ${filaIvaHtml}
+            ${filaIsrHtml}
+            ${filasRetencionesHtml}
           </tbody>
         </table>
       </div>
@@ -4447,6 +4459,17 @@ async function renderImpuestosRetenciones(b) {
   const anioActual = Number(todayStr().slice(0,4));
   const anios = Array.from({length:6}, (_,i) => anioActual - 4 + i);
 
+  const filasRetencionesTablaHtml = (retenciones||[]).length ? (await Promise.all(retenciones.map(async p => {
+    const est = await estadosDeImpuesto(p);
+    return `<tr class="ret-filtro-cat" data-cat="${p.concepto||'Sin categoría'}" style="cursor:pointer;${filtroCat===(p.concepto||'Sin categoría')?'background:#eef2f8;':''}">
+                <td>${p.periodo}</td><td>${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]}</td><td>${p.concepto||'Sin categoría'}</td>
+                <td class="num">${fmt(p.monto)}</td>
+                <td style="color:${est.determinacion.color};font-size:12px;">${est.determinacion.texto}</td>
+                <td style="color:${est.declaracion.color};font-size:12px;">${est.declaracion.texto}</td>
+                <td style="color:${est.pago.color};font-size:12px;font-weight:600;">${est.pago.texto}</td>
+              </tr>`;
+  }))).join('') : `<tr><td colspan="7" class="empty">Sin retenciones determinadas en ${anio}.</td></tr>`;
+
   el.innerHTML = `
     <div class="field" style="max-width:180px;margin-bottom:14px;">
       <label>Año</label>
@@ -4459,16 +4482,7 @@ async function renderImpuestosRetenciones(b) {
         <table>
           <thead><tr><th>Periodo</th><th>Tipo</th><th>Categoría</th><th>Monto</th><th>Determinación</th><th>Declaración</th><th>Pago</th></tr></thead>
           <tbody>
-            ${(retenciones||[]).length ? retenciones.map(p => {
-              const est = estadosDeImpuesto(p);
-              return `<tr class="ret-filtro-cat" data-cat="${p.concepto||'Sin categoría'}" style="cursor:pointer;${filtroCat===(p.concepto||'Sin categoría')?'background:#eef2f8;':''}">
-                <td>${p.periodo}</td><td>${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]}</td><td>${p.concepto||'Sin categoría'}</td>
-                <td class="num">${fmt(p.monto)}</td>
-                <td style="color:${est.determinacion.color};font-size:12px;">${est.determinacion.texto}</td>
-                <td style="color:${est.declaracion.color};font-size:12px;">${est.declaracion.texto}</td>
-                <td style="color:${est.pago.color};font-size:12px;font-weight:600;">${est.pago.texto}</td>
-              </tr>`;
-            }).join('') : `<tr><td colspan="7" class="empty">Sin retenciones determinadas en ${anio}.</td></tr>`}
+            ${filasRetencionesTablaHtml}
           </tbody>
         </table>
       </div>
@@ -4668,6 +4682,30 @@ async function pintarPagosImpuestos(contenido, b, miToken) {
   // asíncrono de arriba (provisiones, duplicados). Nunca se escribe el DOM si ya quedó obsoleto.
   if (miToken !== __pagosImpuestosRenderToken) return;
 
+  const filasPagosTablaHtml = (pagos||[]).length ? (await Promise.all(pagos.map(async p => {
+    const est = await estadosDeImpuesto(p);
+    const deltaActualizacion = p.monto_actualizado ? Math.max(0, p.monto_actualizado - Number(p.monto)) : null;
+    const bloqueado = idsNoEliminables.has(p.id);
+    return `<tr>
+                <td>${p.periodo}</td><td>${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]||p.tipo_impuesto}</td><td class="wrap-text" style="max-width:220px;">${p.concepto||''}</td>
+                <td class="num">${fmt(p.monto)}</td><td>${fechaCorta(p.fecha_limite)}</td>
+                <td><input type="date" class="pi-fecha-pago-input" data-id="${p.id}" value="${p.fecha_pago||''}" style="border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12.5px;"></td>
+                <td style="color:${est.determinacion.color};font-size:12px;">${est.determinacion.texto}</td>
+                <td style="color:${est.declaracion.color};font-size:12px;">${est.declaracion.texto}</td>
+                <td style="color:${est.pago.color};font-weight:600;font-size:12px;">${est.pago.texto}</td>
+                <td class="num">${deltaActualizacion!==null?fmt(deltaActualizacion):''}</td>
+                <td class="num">${p.recargos?fmt(p.recargos):''}</td>
+                <td class="num" style="font-weight:600;">${p.total_pagado?fmt(p.total_pagado):''}</td>
+                <td style="position:relative;">
+                  <button class="btn btn-ghost btn-sm pi-menu-btn" data-id="${p.id}" style="padding:3px 10px;">⋯</button>
+                  <div class="pi-menu-dropdown" data-menu="${p.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:110px;overflow:hidden;">
+                    <button class="pi-editar" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Editar</button>
+                    ${bloqueado ? '' : `<button class="pi-eliminar" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>`}
+                  </div>
+                </td>
+              </tr>`;
+  }))).join('') : `<tr><td colspan="13" class="empty">No hay impuestos registrados en ${STATE_piAnio}.</td></tr>`;
+
   contenido.innerHTML = `
     <p style="font-size:12px;color:var(--muted);margin-bottom:14px;max-width:700px;">El IVA a cargo de cada mes se agrega solo (viene del cálculo de IVA y Retenciones) — los demás impuestos (ISR Provisional, Retenciones, Otro) los registras con el botón de abajo. Marca la fecha de pago directo en la tabla; si fue tarde, se calculan solos la actualización y los recargos.</p>
     ${duplicadosRealizacion.length ? `
@@ -4760,29 +4798,7 @@ async function pintarPagosImpuestos(contenido, b, miToken) {
         <table>
           <thead><tr><th>Periodo</th><th>Tipo</th><th>Concepto</th><th>Monto principal</th><th>Fecha límite</th><th>Fecha de pago</th><th>Determinación</th><th>Declaración</th><th>Pago</th><th>Actualización</th><th>Recargos</th><th>Total</th><th></th></tr></thead>
           <tbody>
-            ${(pagos||[]).length ? pagos.map(p => {
-              const est = estadosDeImpuesto(p);
-              const deltaActualizacion = p.monto_actualizado ? Math.max(0, p.monto_actualizado - Number(p.monto)) : null;
-              const bloqueado = idsNoEliminables.has(p.id);
-              return `<tr>
-                <td>${p.periodo}</td><td>${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]||p.tipo_impuesto}</td><td class="wrap-text" style="max-width:220px;">${p.concepto||''}</td>
-                <td class="num">${fmt(p.monto)}</td><td>${fechaCorta(p.fecha_limite)}</td>
-                <td><input type="date" class="pi-fecha-pago-input" data-id="${p.id}" value="${p.fecha_pago||''}" style="border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12.5px;"></td>
-                <td style="color:${est.determinacion.color};font-size:12px;">${est.determinacion.texto}</td>
-                <td style="color:${est.declaracion.color};font-size:12px;">${est.declaracion.texto}</td>
-                <td style="color:${est.pago.color};font-weight:600;font-size:12px;">${est.pago.texto}</td>
-                <td class="num">${deltaActualizacion!==null?fmt(deltaActualizacion):''}</td>
-                <td class="num">${p.recargos?fmt(p.recargos):''}</td>
-                <td class="num" style="font-weight:600;">${p.total_pagado?fmt(p.total_pagado):''}</td>
-                <td style="position:relative;">
-                  <button class="btn btn-ghost btn-sm pi-menu-btn" data-id="${p.id}" style="padding:3px 10px;">⋯</button>
-                  <div class="pi-menu-dropdown" data-menu="${p.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:110px;overflow:hidden;">
-                    <button class="pi-editar" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Editar</button>
-                    ${bloqueado ? '' : `<button class="pi-eliminar" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>`}
-                  </div>
-                </td>
-              </tr>`;
-            }).join('') : `<tr><td colspan="13" class="empty">No hay impuestos registrados en ${STATE_piAnio}.</td></tr>`}
+            ${filasPagosTablaHtml}
           </tbody>
         </table>
       </div>
@@ -4852,11 +4868,11 @@ async function pintarPagosImpuestos(contenido, b, miToken) {
   document.getElementById('piNuevoBtn').addEventListener('click', () => abrirModalPagoImpuesto(null, b));
   document.getElementById('piDiagnosticoFiscalBtn').addEventListener('click', () => abrirDiagnosticoFiscal(b.id, STATE.currentMonth));
   document.getElementById('piAplicarPagoBtn').addEventListener('click', () => abrirModalAplicarPagoFiscal(b));
-  document.getElementById('piExcelBtn').addEventListener('click', () => {
+  document.getElementById('piExcelBtn').addEventListener('click', async () => {
     if (!(pagos||[]).length) { toast('No hay impuestos registrados en ' + STATE_piAnio + '.', 'error'); return; }
     const wb = XLSX.utils.book_new();
-    const filas = pagos.map(p => {
-      const est = estadosDeImpuesto(p);
+    const filas = await Promise.all(pagos.map(async p => {
+      const est = await estadosDeImpuesto(p);
       return {
         Periodo: p.periodo, Tipo: TIPO_IMPUESTO_LABEL[p.tipo_impuesto]||p.tipo_impuesto, Concepto: p.concepto||'',
         'Monto principal': p.monto, 'Fecha límite': p.fecha_limite, 'Fecha de pago': p.fecha_pago||'',
@@ -4864,25 +4880,26 @@ async function pintarPagosImpuestos(contenido, b, miToken) {
         Actualización: p.monto_actualizado ? Math.max(0, p.monto_actualizado-Number(p.monto)) : '',
         Recargos: p.recargos||'', Total: p.total_pagado||'',
       };
-    });
+    }));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filas), 'Pagos de Impuestos');
     XLSX.writeFile(wb, `Pagos de Impuestos - ${b.name} - ${STATE_piAnio}.xlsx`);
   });
-  document.getElementById('piPdfBtn').addEventListener('click', () => {
+  document.getElementById('piPdfBtn').addEventListener('click', async () => {
     if (!(pagos||[]).length) { toast('No hay impuestos registrados en ' + STATE_piAnio + '.', 'error'); return; }
     const { doc, margin, y } = iniciarPdfConEncabezado(b, `Pagos de Impuestos — ${STATE_piAnio}`);
+    const bodyPdf = await Promise.all(pagos.map(async p => {
+      const est = await estadosDeImpuesto(p);
+      return [
+        p.periodo, TIPO_IMPUESTO_LABEL[p.tipo_impuesto]||p.tipo_impuesto, p.concepto||'',
+        fmt(p.monto), fechaCorta(p.fecha_limite), p.fecha_pago?fechaCorta(p.fecha_pago):'—',
+        est.determinacion.texto, est.declaracion.texto, est.pago.texto,
+        p.monto_actualizado ? fmt(Math.max(0, p.monto_actualizado-Number(p.monto))) : '', p.recargos?fmt(p.recargos):'', p.total_pagado?fmt(p.total_pagado):'',
+      ];
+    }));
     doc.autoTable({
       startY: y, margin: { left: margin, right: margin },
       head: [['Periodo', 'Tipo', 'Concepto', 'Monto principal', 'Fecha límite', 'Fecha de pago', 'Determinación', 'Declaración', 'Pago', 'Actualización', 'Recargos', 'Total']],
-      body: pagos.map(p => {
-        const est = estadosDeImpuesto(p);
-        return [
-          p.periodo, TIPO_IMPUESTO_LABEL[p.tipo_impuesto]||p.tipo_impuesto, p.concepto||'',
-          fmt(p.monto), fechaCorta(p.fecha_limite), p.fecha_pago?fechaCorta(p.fecha_pago):'—',
-          est.determinacion.texto, est.declaracion.texto, est.pago.texto,
-          p.monto_actualizado ? fmt(Math.max(0, p.monto_actualizado-Number(p.monto))) : '', p.recargos?fmt(p.recargos):'', p.total_pagado?fmt(p.total_pagado):'',
-        ];
-      }),
+      body: bodyPdf,
       styles: { fontSize: 7 }, headStyles: { fillColor: [10,31,61] },
     });
     doc.save(`Pagos de Impuestos - ${b.name} - ${STATE_piAnio}.pdf`);
