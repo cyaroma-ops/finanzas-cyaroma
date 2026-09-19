@@ -758,6 +758,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <section class="section" id="sec-auditoria"></section>
         <section class="section" id="sec-negocios"></section>
         <section class="section" id="sec-configuracion"></section>
+        <section class="section" id="sec-fuentesfiscales"></section>
       </div>
     </main>
   </div>
@@ -1045,6 +1046,20 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
     <div class="modal-actions">
       <button class="btn btn-ghost" id="pisrPerdCancelarBtn">Cancelar</button>
       <button class="btn btn-gold" id="pisrPerdGuardarBtn">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: configurar fuente fiscal de un concepto — qué subcuentas contables lo proponen -->
+<div class="modal-bg" id="modalFuenteFiscal">
+  <div class="modal" style="width:min(480px,92vw);max-height:80vh;overflow-y:auto;">
+    <h3>Configurar fuente fiscal</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:10px;" id="ffConceptoNombre"></p>
+    <p style="font-size:11px;color:var(--muted);margin-bottom:10px;">Marca las subcuentas cuyo movimiento del periodo debe proponerse automáticamente para este concepto. Si no marcas ninguna, el concepto queda en captura manual.</p>
+    <div id="ffListaSubcuentas" style="font-size:12.5px;"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="ffCancelarBtn">Cancelar</button>
+      <button class="btn btn-gold" id="ffGuardarBtn">Guardar</button>
     </div>
   </div>
 </div>

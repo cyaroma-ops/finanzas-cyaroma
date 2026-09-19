@@ -745,6 +745,7 @@ const SECTION_META = {
   auxiliares: { title: 'Auxiliares', sub: '', showMonth: true, needsBiz: true },
   comparativo: { title: 'Comparativo entre negocios', sub: '', showMonth: true, needsBiz: false },
   recargos: { title: 'Recargos y Actualización', sub: '', showMonth: false, needsBiz: false },
+  fuentesfiscales: { title: 'Fuentes Fiscales', sub: 'Mapeo entre contabilidad y conceptos de los Papeles de Trabajo', showMonth: false, needsBiz: true },
   diasinhabiles: { title: 'Días inhábiles fiscales', sub: '', showMonth: false, needsBiz: false },
   pagosimpuestos: { title: 'Pagos de Impuestos', sub: '', showMonth: false, needsBiz: true },
   isrprovisional: { title: 'Pago Provisional de ISR', sub: '', showMonth: true, needsBiz: true },
@@ -885,6 +886,7 @@ async function renderCurrentSection() {
   if (s === 'auxiliares') return renderAuxiliares();
   if (s === 'comparativo') return renderComparativo();
   if (s === 'recargos') return renderRecargos();
+  if (s === 'fuentesfiscales') return renderFuentesFiscales();
   if (s === 'diasinhabiles') return renderDiasInhabiles();
   if (s === 'pagosimpuestos') return renderPagosImpuestos();
   if (s === 'isrprovisional') return renderIsrProvisional();
@@ -2939,6 +2941,36 @@ async function obtenerPropuestaContable(businessId, tipoPapel, claveConcepto, pe
   });
   return { hayPropuesta: fuentes.length > 0, total, fuentes };
 }
+
+// ============================================================
+// CAPA DE FUENTES FISCALES — configuración del mapeo dato contable ↔ concepto fiscal. Genérica y
+// reutilizable por cualquier tipo de papel (isr_pm, iva, retenciones_isr, retenciones_iva, los que
+// se agreguen después). Nunca hardcodea un negocio ni una cuenta específica — cada negocio
+// configura su propio mapeo sobre su propio catálogo de subcuentas.
+// ============================================================
+
+// SOLO LECTURA — el mapeo vigente de un concepto fiscal, con el nombre de cada subcuenta para
+// mostrarlo en la UI de configuración.
+async function obtenerMapeoFuenteFiscal(businessId, tipoPapel, claveConcepto) {
+  const { data: mapeos } = await sb.from('fz_mapeo_cuenta_concepto_fiscal').select('id, subcuenta_id').eq('business_id', businessId).eq('tipo_papel', tipoPapel).eq('clave_concepto', claveConcepto);
+  if (!mapeos || !mapeos.length) return [];
+  const subIds = mapeos.map(m=>m.subcuenta_id);
+  const { data: subs } = await sb.from('fz_subcuentas').select('id, nombre').in('id', subIds);
+  return mapeos.map(m => ({ mapeoId: m.id, subcuentaId: m.subcuenta_id, nombre: (subs||[]).find(s=>s.id===m.subcuenta_id)?.nombre || '(subcuenta eliminada)' }));
+}
+
+// Acción EXPLÍCITA — reemplaza el conjunto completo de subcuentas mapeadas a un concepto fiscal
+// (semántica de "estas son las que aplican", como un checklist). Solo se invoca desde Guardar en
+// la pantalla de configuración — nunca desde un render.
+async function guardarMapeoFuenteFiscal(businessId, tipoPapel, claveConcepto, subcuentaIds, usuarioEmail) {
+  const { data: existentes } = await sb.from('fz_mapeo_cuenta_concepto_fiscal').select('id, subcuenta_id').eq('business_id', businessId).eq('tipo_papel', tipoPapel).eq('clave_concepto', claveConcepto);
+  const idsExistentes = new Set((existentes||[]).map(m=>m.subcuenta_id));
+  const idsDeseados = new Set(subcuentaIds);
+  for (const m of (existentes||[])) { if (!idsDeseados.has(m.subcuenta_id)) await sb.from('fz_mapeo_cuenta_concepto_fiscal').delete().eq('id', m.id); }
+  for (const subId of subcuentaIds) { if (!idsExistentes.has(subId)) await sb.from('fz_mapeo_cuenta_concepto_fiscal').insert({ business_id: businessId, tipo_papel: tipoPapel, clave_concepto: claveConcepto, subcuenta_id: subId }); }
+  return { estado: 'ok' };
+}
+
 
 // Importe exigible REAL de una obligación, a una fecha de pago — fuente única que usan tanto el
 // preview del modal de pago como (indirectamente) la aplicación definitiva, para que nunca se
@@ -5098,8 +5130,16 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
   const { data: conceptosReales } = papel ? await sb.from('fz_papel_conceptos').select('*').eq('papel_id', papel.id).order('orden', { ascending: true }) : { data: [] };
   const conceptos = conceptosDefault.map((def, i) => {
     const real = (conceptosReales||[]).find(c => c.clave_concepto === def.clave);
-    return real || { id: null, papel_id: null, clave_concepto: def.clave, concepto: def.nombre, orden: i, origen: 'manual', valor_original: null, valor_aplicado: 0, motivo_ajuste: null, requiere_accesorios: !!opciones.accesorios };
+    return real || { id: null, papel_id: null, clave_concepto: def.clave, concepto: def.nombre, orden: i, origen: 'manual', valor_original: null, valor_aplicado: null, motivo_ajuste: null, requiere_accesorios: !!opciones.accesorios };
   });
+  // Capa de fuentes fiscales — genérica, reutilizable para cualquier concepto de cualquier papel.
+  // Solo propone si existe un mapeo configurado (fz_mapeo_cuenta_concepto_fiscal); si no existe,
+  // el concepto permanece en captura manual sin inventar ningún valor.
+  for (const c of conceptos) {
+    if (c.id || c.valor_original !== null) continue;
+    const prop = await obtenerPropuestaContable(b.id, tipoPapel, c.clave_concepto, periodo);
+    if (prop.hayPropuesta) { c.valor_original = redondearMoneda(prop.total); c.valor_aplicado = redondearMoneda(prop.total); c.origen = 'contabilidad'; }
+  }
   conceptos.push(...(conceptosReales||[]).filter(c => !conceptosDefault.some(d=>d.clave===c.clave_concepto) && !['ret_isr_total_periodo','ret_iva_total_periodo','iva_resultado_periodo'].includes(c.clave_concepto)));
   const papelVirtual = papel || { estado: 'sin_iniciar', created_at: null, updated_at: null, notas: '', created_by: null };
   const conceptoIds = conceptos.filter(c=>c.id).map(c=>c.id);
@@ -5368,7 +5408,7 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
     // virtuales que el contador no llegó a editar individualmente.
     const papelReal = await obtenerOCrearPapelTrabajo(b.id, tipoPapel, ejercicio, 'mensual', periodo);
     for (const c of conceptos) {
-      if (!c.id) await agregarConceptoPapel(papelReal.id, { concepto: c.concepto, claveConcepto: c.clave_concepto, orden: c.orden||0, origen: c.origen||'manual', valorAplicado: Number(c.valor_aplicado)||0, requiereAccesorios: !!opciones.accesorios });
+      if (!c.id && c.valor_aplicado !== null) await agregarConceptoPapel(papelReal.id, { concepto: c.concepto, claveConcepto: c.clave_concepto, orden: c.orden||0, origen: c.origen||'manual', valorAplicado: Number(c.valor_aplicado), requiereAccesorios: !!opciones.accesorios });
     }
     await sb.from('fz_papeles_trabajo').update({ estado: 'guardado', notas, updated_at: new Date().toISOString() }).eq('id', papelReal.id);
     registrarAuditoria(b.id, 'editar', 'Papeles de Trabajo', `Papel ${tipoPapel} ${periodo} guardado`);
@@ -5394,7 +5434,7 @@ async function renderPapelISRPM(b) {
   // nunca escribe nada en BD, es puramente para facilitar la captura.
   const conceptos = CONCEPTOS_DEFAULT_ISR_PM.map((def, i) => {
     const real = (conceptosReales||[]).find(c => c.clave_concepto === def.clave);
-    return real || { id: null, papel_id: null, clave_concepto: def.clave, concepto: def.nombre, orden: i, origen: 'manual', valor_original: null, valor_aplicado: 0, motivo_ajuste: null };
+    return real || { id: null, papel_id: null, clave_concepto: def.clave, concepto: def.nombre, orden: i, origen: 'manual', valor_original: null, valor_aplicado: null, motivo_ajuste: null };
   });
   conceptos.push(...(conceptosReales||[]).filter(c => !CONCEPTOS_DEFAULT_ISR_PM.some(d=>d.clave===c.clave_concepto)));
   const papelVirtual = papel || { estado: 'sin_iniciar', created_at: null, updated_at: null, notas: '', created_by: null };
@@ -5458,7 +5498,7 @@ async function renderPapelISRPM(b) {
     const c = conceptos.find(x=>x.clave_concepto===clave);
     if (!c) return;
     const valorCalc = clave==='ingresos_nominales_acum' ? cadena.ingresosAcum : clave==='utilidad_fiscal' ? cadena.utilidadFiscal : clave==='base' ? cadena.base : cadena.isrDeterminado;
-    if (!c.id) { c.valor_aplicado = valorCalc !== null ? valorCalc : 0; c.origen = 'sistema'; }
+    if (!c.id) { c.valor_aplicado = valorCalc; c.origen = 'sistema'; }
   });
 
   // Encabezado — negocio, RFC, régimen vigente.
@@ -5700,7 +5740,7 @@ async function renderPapelISRPM(b) {
     // virtuales que el contador no llegó a editar individualmente, con su valor visual actual.
     const papelReal = await obtenerOCrearPapelTrabajo(b.id, 'isr_pm', ejercicio, 'mensual', periodo);
     for (const c of conceptos) {
-      if (!c.id) await agregarConceptoPapel(papelReal.id, { concepto: c.concepto, claveConcepto: c.clave_concepto, orden: c.orden||0, origen: c.origen||'manual', valorAplicado: Number(c.valor_aplicado)||0 });
+      if (!c.id && c.valor_aplicado !== null) await agregarConceptoPapel(papelReal.id, { concepto: c.concepto, claveConcepto: c.clave_concepto, orden: c.orden||0, origen: c.origen||'manual', valorAplicado: Number(c.valor_aplicado) });
     }
     await sb.from('fz_papeles_trabajo').update({ estado: 'guardado', notas, updated_at: new Date().toISOString() }).eq('id', papelReal.id);
     registrarAuditoria(b.id, 'editar', 'Papeles de Trabajo', `Papel ISR PM ${periodo} guardado`);
@@ -7618,6 +7658,102 @@ document.getElementById('piEliminarBtn').addEventListener('click', async () => {
   renderPagosImpuestos();
 });
 
+// ============================================================
+// FUENTES FISCALES — configuración transversal, reutilizable por cualquier papel de trabajo.
+// Nunca hardcodea un negocio ni una cuenta: cada negocio configura su propio mapeo sobre su
+// propio catálogo. SOLO LECTURA al abrir/cambiar de tab — el mapeo solo cambia al Guardar
+// explícitamente desde el modal.
+// ============================================================
+let STATE_fuentesFiscalesTab = 'isr_pm';
+
+function conceptosDePapel(tipoPapel) {
+  if (tipoPapel === 'isr_pm') return CONCEPTOS_DEFAULT_ISR_PM.filter(c => !CONCEPTOS_CALCULADOS_ISR_PM.includes(c.clave));
+  if (tipoPapel === 'iva') return CONCEPTOS_DEFAULT_IVA;
+  if (tipoPapel === 'retenciones_isr') return CONCEPTOS_DEFAULT_RETENCIONES_ISR;
+  if (tipoPapel === 'retenciones_iva') return CONCEPTOS_DEFAULT_RETENCIONES_IVA;
+  return [];
+}
+
+async function renderFuentesFiscales() {
+  const el = document.getElementById('sec-fuentesfiscales');
+  const b = biz();
+  if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
+  el.innerHTML = `<div class="empty">Cargando…</div>`;
+
+  const tabs = [
+    { id: 'isr_pm', label: 'ISR Personas Morales' },
+    { id: 'iva', label: 'IVA' },
+    { id: 'retenciones_isr', label: 'Retenciones ISR' },
+    { id: 'retenciones_iva', label: 'Retenciones IVA' },
+  ];
+  const conceptos = conceptosDePapel(STATE_fuentesFiscalesTab);
+
+  // SOLO LECTURA — el mapeo vigente de cada concepto del tipo de papel seleccionado.
+  const mapeosPorConcepto = {};
+  for (const c of conceptos) mapeosPorConcepto[c.clave] = await obtenerMapeoFuenteFiscal(b.id, STATE_fuentesFiscalesTab, c.clave);
+
+  el.innerHTML = `
+    <div class="pt-card">
+      <div class="pt-titulo-cedula">Fuentes Fiscales</div>
+      <p class="pt-subtitulo">${b.name} — qué subcuentas contables proponen automáticamente cada concepto de los Papeles de Trabajo.</p>
+      <div class="tag-row" style="margin:10px 0 0;">
+        ${tabs.map(t => `<div class="tag ${STATE_fuentesFiscalesTab===t.id?'active':''}" data-tab="${t.id}">${t.label}</div>`).join('')}
+      </div>
+    </div>
+    <div class="pt-card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Concepto</th><th>Fuente configurada</th><th></th></tr></thead>
+          <tbody>
+            ${conceptos.map(c => {
+              const mapeo = mapeosPorConcepto[c.clave];
+              return `<tr>
+                <td>${c.nombre}</td>
+                <td>${mapeo.length ? mapeo.map(m=>`<span class="pt-origen contabilidad">${m.nombre}</span>`).join(' ') : `<span class="pt-origen">Sin mapeo — captura manual</span>`}</td>
+                <td><a href="#" class="pt-editar-link ff-configurar" data-clave="${c.clave}">Configurar</a></td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+      <p style="font-size:10.5px;color:var(--muted);margin-top:8px;">La captura manual sigue disponible en todo momento, aunque exista una fuente configurada — el contador siempre puede ajustar el valor fiscal aplicado.</p>
+    </div>
+  `;
+
+  el.querySelectorAll('.tag[data-tab]').forEach(t => t.addEventListener('click', () => { STATE_fuentesFiscalesTab = t.dataset.tab; renderFuentesFiscales(); }));
+  el.querySelectorAll('.ff-configurar').forEach(a => a.addEventListener('click', (e) => {
+    e.preventDefault();
+    const concepto = conceptos.find(c=>c.clave===a.dataset.clave);
+    abrirModalFuenteFiscal(b, STATE_fuentesFiscalesTab, concepto, mapeosPorConcepto[concepto.clave]);
+  }));
+}
+
+async function abrirModalFuenteFiscal(b, tipoPapel, concepto, mapeoActual) {
+  document.getElementById('ffConceptoNombre').textContent = concepto.nombre;
+  const cuentas = await loadCuentasMayor(b.id);
+  const subcuentas = await loadSubcuentas(b.id);
+  const idsMapeados = new Set(mapeoActual.map(m=>m.subcuentaId));
+  const lista = document.getElementById('ffListaSubcuentas');
+  lista.innerHTML = cuentas.map(cm => {
+    const subs = subcuentas.filter(s=>s.cuenta_mayor_id===cm.id && !s.subcuenta_padre_id);
+    if (!subs.length) return '';
+    return `<div style="margin-bottom:8px;">
+      <div style="font-weight:600;color:var(--navy-1);font-size:11.5px;margin-bottom:3px;">${cm.nombre}</div>
+      ${subs.map(s=>`<label style="display:flex;align-items:center;gap:6px;padding:2px 0;"><input type="checkbox" class="ff-check" value="${s.id}" ${idsMapeados.has(s.id)?'checked':''}> ${s.nombre}</label>`).join('')}
+    </div>`;
+  }).join('') || '<p style="font-size:11.5px;color:var(--muted);">Este negocio todavía no tiene subcuentas configuradas en su Catálogo de Cuentas.</p>';
+
+  document.getElementById('modalFuenteFiscal').classList.add('show');
+  document.getElementById('ffGuardarBtn').onclick = async () => {
+    const seleccionadas = Array.from(document.querySelectorAll('.ff-check:checked')).map(chk=>chk.value);
+    await guardarMapeoFuenteFiscal(b.id, tipoPapel, concepto.clave, seleccionadas, STATE.user?.email);
+    document.getElementById('modalFuenteFiscal').classList.remove('show');
+    toast('Fuente fiscal actualizada.');
+    await renderFuentesFiscales();
+  };
+}
+document.getElementById('ffCancelarBtn').addEventListener('click', () => document.getElementById('modalFuenteFiscal').classList.remove('show'));
+
 async function renderRecargos() {
   const el = document.getElementById('sec-recargos');
   el.innerHTML = '';
@@ -8654,6 +8790,7 @@ async function renderConfiguracion() {
     <p style="font-size:13px;font-weight:700;color:var(--navy-1);margin-bottom:10px;">Fiscal</p>
     ${grid(`
       ${tarjetaConfigHtml('cfgRecargos', 'Recargos y Actualización', 'Calculadora de INPC y recargos para impuestos pagados fuera de tiempo — aplica a cualquier negocio.')}
+      ${tarjetaConfigHtml('cfgFuentesFiscales', 'Fuentes Fiscales', b ? `Qué subcuentas contables proponen automáticamente cada concepto de los Papeles de Trabajo en ${b.name}.` : 'Selecciona un negocio para configurar sus fuentes fiscales.')}
       ${tarjetaConfigHtml('cfgDiasInhabiles', 'Días inhábiles', 'Calendario oficial de días inhábiles fiscales para el cálculo de vencimientos — global, aplica a todos los negocios.')}
     `)}
     <p style="font-size:13px;font-weight:700;color:var(--navy-1);margin-bottom:10px;">Administración</p>
@@ -8677,6 +8814,7 @@ async function renderConfiguracion() {
   ir('cfgActivosFijos', 'activosfijos');
   ir('cfgComparativo', 'comparativo');
   ir('cfgRecargos', 'recargos');
+  ir('cfgFuentesFiscales', 'fuentesfiscales');
   ir('cfgDiasInhabiles', 'diasinhabiles');
   const usuariosBtn = document.getElementById('cfgUsuarios');
   if (usuariosBtn) usuariosBtn.addEventListener('click', openUsuariosModal);
