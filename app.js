@@ -877,6 +877,7 @@ async function renderCurrentSection() {
   if (s === 'activosfijos') return renderActivosFijos();
   if (s === 'ivafiscal') return renderIvaFiscal();
   if (s === 'impuestos') return renderImpuestos();
+  if (s === 'papelestrabajo') return renderPapelesTrabajo();
   if (s === 'balanza') return renderBalanza();
   if (s === 'librodiario') return renderLibroDiario();
   if (s === 'diariospolizas') return renderDiariosPolizasWrapper();
@@ -2370,6 +2371,157 @@ async function anularDeclaracionFiscal(declaracionId, motivo, usuarioEmail) {
   return { estado: 'anulada' };
 }
 
+// ============================================================
+// PAPELES DE TRABAJO FISCALES — capa nueva e independiente. Ninguna de estas funciones crea,
+// modifica ni elimina fz_pagos_impuestos, fz_declaraciones_fiscales, pólizas ni movimientos
+// reales. Reutilizan el motor fiscal ya validado (calcularVencimientoEfectivo, calcularMoraFiscal,
+// ajustarRedondeoSAT) — nunca una fórmula nueva en paralelo.
+// ============================================================
+
+async function obtenerOCrearPapelTrabajo(businessId, tipoPapel, ejercicio, periodicidad, periodo) {
+  let query = sb.from('fz_papeles_trabajo').select('*').eq('business_id', businessId).eq('tipo_papel', tipoPapel).eq('ejercicio', ejercicio);
+  query = periodo ? query.eq('periodo', periodo) : query.is('periodo', null);
+  const { data: existentes } = await query.order('created_at', { ascending: true });
+  if (existentes && existentes.length) return existentes[0];
+  const { data: nuevo, error } = await sb.from('fz_papeles_trabajo').insert({
+    business_id: businessId, tipo_papel: tipoPapel, ejercicio, periodicidad, periodo: periodo || null,
+    estado: 'pendiente', created_by: STATE.user?.email || null,
+  }).select().single();
+  if (error) throw error;
+  return nuevo;
+}
+
+async function registrarHistorialPapel(papelId, conceptoId, campo, valorAnterior, valorNuevo, motivo, usuarioEmail) {
+  await sb.from('fz_papel_historial').insert({
+    papel_id: papelId, concepto_id: conceptoId || null, campo,
+    valor_anterior: valorAnterior === undefined || valorAnterior === null ? null : String(valorAnterior),
+    valor_nuevo: valorNuevo === undefined || valorNuevo === null ? null : String(valorNuevo),
+    motivo: motivo || null, usuario: usuarioEmail || null,
+  });
+}
+
+async function agregarConceptoPapel(papelId, datos) {
+  const valorAplicadoInicial = datos.valorAplicado ?? datos.valorOriginal ?? 0;
+  const { data: nuevo, error } = await sb.from('fz_papel_conceptos').insert({
+    papel_id: papelId, concepto: datos.concepto, clave_concepto: datos.claveConcepto || null,
+    orden: datos.orden || 0, origen: datos.origen || 'manual',
+    valor_original: datos.valorOriginal ?? null, valor_aplicado: valorAplicadoInicial,
+    requiere_accesorios: !!datos.requiereAccesorios, created_by: STATE.user?.email || null,
+  }).select().single();
+  if (error) throw error;
+  await registrarHistorialPapel(papelId, nuevo.id, 'creación', null, `${datos.concepto}: ${valorAplicadoInicial}`, 'Concepto agregado', STATE.user?.email);
+  return nuevo;
+}
+
+async function actualizarValorConceptoPapel(conceptoId, nuevoValorAplicado, motivo, usuarioEmail) {
+  const { data: concepto } = await sb.from('fz_papel_conceptos').select('*').eq('id', conceptoId).maybeSingle();
+  if (!concepto) return { estado: 'no_encontrada' };
+  const huboPropuesta = concepto.valor_original !== null && concepto.valor_original !== undefined;
+  const cambioRealDeValor = Math.abs(Number(concepto.valor_aplicado) - Number(nuevoValorAplicado)) > 0.004;
+  if (huboPropuesta && cambioRealDeValor && (!motivo || !motivo.trim())) return { estado: 'falta_motivo' };
+  const valorAnterior = concepto.valor_aplicado;
+  const { error } = await sb.from('fz_papel_conceptos').update({
+    valor_aplicado: nuevoValorAplicado, motivo_ajuste: cambioRealDeValor ? (motivo || null) : concepto.motivo_ajuste, updated_at: new Date().toISOString(),
+  }).eq('id', conceptoId);
+  if (error) return { estado: 'error', error: error.message };
+  if (cambioRealDeValor) await registrarHistorialPapel(concepto.papel_id, conceptoId, 'valor_aplicado', valorAnterior, nuevoValorAplicado, motivo, usuarioEmail);
+  return { estado: 'actualizado' };
+}
+
+async function agregarFuenteConcepto(conceptoId, datos) {
+  const { data, error } = await sb.from('fz_papel_concepto_fuentes').insert({
+    concepto_id: conceptoId, tipo_fuente: datos.tipoFuente, subcuenta_id: datos.subcuentaId || null,
+    referencia_tabla: datos.referenciaTabla || null, referencia_id: datos.referenciaId || null,
+    importe: datos.importe, fecha: datos.fecha || null, metadata: datos.metadata || null,
+  }).select().single();
+  if (error) throw error;
+  return data;
+}
+
+async function calcularYGuardarAccesoriosConcepto(conceptoId, businessId, periodoObligacion, tipoImpuestoParaVencimiento, saldoPrincipal, calcularAl) {
+  const venc = await calcularVencimientoEfectivo(businessId, periodoObligacion, tipoImpuestoParaVencimiento);
+  let actualizacionCalculada = 0, recargosCalculados = 0, mesesFraccion = 0, factorActualizacion = 1;
+  let inpcPeriodosUsados = [], tasasUsadas = [];
+  if (venc.fecha_vencimiento_efectiva && calcularAl > venc.fecha_vencimiento_efectiva && saldoPrincipal > 0.004) {
+    const mora = await calcularMoraFiscal(saldoPrincipal, venc.fecha_vencimiento_efectiva, calcularAl);
+    if (!mora.error) {
+      actualizacionCalculada = Math.max(0, mora.montoActualizado - saldoPrincipal);
+      recargosCalculados = mora.recargos;
+      mesesFraccion = mora.mesesOFraccion ?? null;
+      factorActualizacion = mora.factorActualizacion;
+      const { data: inpcRows } = await sb.from('fz_inpc_valores').select('*').in('periodo', [mora.mesAnteriorVenc, mora.mesAnteriorPago]);
+      inpcPeriodosUsados = (inpcRows||[]).map(r => ({ periodo: r.periodo, valor: r.valor }));
+      const { data: tasasRows } = await sb.from('fz_recargos_tasas').select('*');
+      const tasasMap = Object.fromEntries((tasasRows||[]).map(r=>[r.periodo, r.tasa]));
+      const mesVenc = venc.fecha_vencimiento_efectiva.slice(0,7), mesPago = calcularAl.slice(0,7);
+      if (mesPago > mesVenc) {
+        let [y,m] = mesVenc.split('-').map(Number); m++;
+        while (`${y}-${String(m).padStart(2,'0')}` <= mesPago) {
+          const ym = `${y}-${String(m).padStart(2,'0')}`;
+          if (tasasMap[ym] !== undefined) tasasUsadas.push({ periodo: ym, tasa: tasasMap[ym] });
+          m++; if (m>12) { m=1; y++; }
+        }
+      } else if (tasasMap[mesVenc] !== undefined) {
+        tasasUsadas.push({ periodo: mesVenc, tasa: tasasMap[mesVenc] });
+      }
+    }
+  }
+  const subtotal = saldoPrincipal + actualizacionCalculada + recargosCalculados;
+  const montoRedondeado = ajustarRedondeoSAT(subtotal);
+  const ajusteRedondeo = Math.round((montoRedondeado - subtotal)*100)/100;
+
+  const payload = {
+    concepto_id: conceptoId, fecha_vencimiento_base: venc.fecha_vencimiento_base,
+    facilidad_aplicable: venc.facilidad_rfc_aplicable, fecha_vencimiento_efectiva: venc.fecha_vencimiento_efectiva,
+    calcular_al: calcularAl, inpc_periodos_usados: inpcPeriodosUsados, factor_actualizacion: factorActualizacion,
+    meses_fraccion: mesesFraccion, tasas_recargos_usadas: tasasUsadas,
+    importe_actualizacion_calculado: actualizacionCalculada, importe_recargos_calculado: recargosCalculados,
+    importe_actualizacion_aplicado: actualizacionCalculada, importe_recargos_aplicado: recargosCalculados,
+    ajuste_manual: false, monto_redondeo: ajusteRedondeo, importe_final: montoRedondeado,
+    created_by: STATE.user?.email || null,
+  };
+  const { data: existente } = await sb.from('fz_papel_concepto_accesorios').select('id').eq('concepto_id', conceptoId).maybeSingle();
+  if (existente) {
+    const { error } = await sb.from('fz_papel_concepto_accesorios').update(payload).eq('id', existente.id);
+    if (error) throw error;
+  } else {
+    const { error } = await sb.from('fz_papel_concepto_accesorios').insert(payload);
+    if (error) throw error;
+  }
+  return payload;
+}
+
+async function ajustarAccesoriosConceptoPapel(conceptoId, actualizacionAplicada, recargosAplicados, motivo, usuarioEmail) {
+  if (!STATE.esAdministrador) return { estado: 'sin_permiso' };
+  if (!motivo || !motivo.trim()) return { estado: 'falta_motivo' };
+  const { data: acc } = await sb.from('fz_papel_concepto_accesorios').select('*').eq('concepto_id', conceptoId).maybeSingle();
+  if (!acc) return { estado: 'no_encontrado' };
+  const nuevoSubtotal = Number(acc.importe_final) - Number(acc.importe_actualizacion_aplicado) - Number(acc.importe_recargos_aplicado) + Number(actualizacionAplicada) + Number(recargosAplicados);
+  const { error } = await sb.from('fz_papel_concepto_accesorios').update({
+    importe_actualizacion_aplicado: actualizacionAplicada, importe_recargos_aplicado: recargosAplicados,
+    importe_final: nuevoSubtotal, ajuste_manual: true, motivo_ajuste: motivo.trim(),
+    ajuste_usuario: usuarioEmail || null, ajuste_fecha: new Date().toISOString(),
+  }).eq('id', acc.id);
+  if (error) return { estado: 'error', error: error.message };
+  return { estado: 'ajustado' };
+}
+
+async function obtenerPropuestaContable(businessId, tipoPapel, claveConcepto, periodo) {
+  const { data: mapeos } = await sb.from('fz_mapeo_cuenta_concepto_fiscal').select('subcuenta_id').eq('business_id', businessId).eq('tipo_papel', tipoPapel).eq('clave_concepto', claveConcepto);
+  if (!mapeos || !mapeos.length) return { hayPropuesta: false };
+  const { start, end } = monthBounds(periodo);
+  const { filas } = await getLibroPartidaDobleConOrigen(businessId, end, start);
+  const subIds = new Set(mapeos.map(m=>m.subcuenta_id));
+  let total = 0;
+  const fuentes = [];
+  filas.filter(f => f.clave.startsWith('sub:') && subIds.has(f.clave.slice(4))).forEach(f => {
+    const monto = f.abono - f.cargo;
+    total += Math.abs(monto);
+    fuentes.push({ tipoFuente: 'subcuenta', subcuentaId: f.clave.slice(4), importe: Math.abs(monto), fecha: f.fecha, referenciaTabla: f.origenTabla||null, referenciaId: f.origenId||null });
+  });
+  return { hayPropuesta: fuentes.length > 0, total, fuentes };
+}
+
 // Importe exigible REAL de una obligación, a una fecha de pago — fuente única que usan tanto el
 // preview del modal de pago como (indirectamente) la aplicación definitiva, para que nunca se
 // muestre un número distinto al que termina contabilizándose. Parte del importe DECLARADO (no
@@ -3552,6 +3704,189 @@ async function estadosDeImpuesto(p) {
 }
 
 let STATE_impuestosUltimoMes = null;
+// ============================================================
+// PAPELES DE TRABAJO FISCALES — UI. Guardar aquí NUNCA genera pólizas ni toca
+// fz_pagos_impuestos/fz_declaraciones_fiscales — es una capa de trabajo independiente.
+// ============================================================
+let STATE_papelesTab = 'resumen';
+let STATE_papelesAnio = todayStr().slice(0,4);
+
+const CONCEPTOS_DEFAULT_ISR_PM = [
+  { clave: 'ingresos_nominales_mes', nombre: 'Ingresos nominales del mes' },
+  { clave: 'ingresos_nominales_acum', nombre: 'Ingresos nominales acumulados' },
+  { clave: 'coeficiente_utilidad', nombre: 'Coeficiente de utilidad' },
+  { clave: 'utilidad_fiscal', nombre: 'Utilidad fiscal' },
+  { clave: 'ptu_aplicable', nombre: 'PTU aplicable' },
+  { clave: 'perdidas_aplicables', nombre: 'Pérdidas fiscales aplicables' },
+  { clave: 'base', nombre: 'Base' },
+  { clave: 'isr_determinado', nombre: 'ISR determinado' },
+  { clave: 'pagos_provisionales_anteriores', nombre: 'Pagos provisionales anteriores' },
+  { clave: 'retenciones', nombre: 'Retenciones' },
+  { clave: 'resultado_determinado', nombre: 'Resultado determinado' },
+];
+
+async function renderPapelesTrabajo() {
+  const tabBarEl = document.getElementById('papelesTabBar');
+  const tabs = [
+    { id: 'resumen', label: 'Resumen Federal' },
+    { id: 'isrpm', label: 'ISR Personas Morales' },
+  ];
+  tabBarEl.innerHTML = tabs.map(t => `<div class="tag ${STATE_papelesTab===t.id?'active':''}" data-tab="${t.id}">${t.label}</div>`).join('');
+  tabBarEl.querySelectorAll('.tag').forEach(tag => tag.addEventListener('click', () => { STATE_papelesTab = tag.dataset.tab; renderPapelesTrabajo(); }));
+
+  const mapaVistas = { resumen: 'sec-resumenfederal', isrpm: 'sec-papelisrpm' };
+  Object.entries(mapaVistas).forEach(([tab, id]) => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = (STATE_papelesTab === tab) ? '' : 'none';
+  });
+
+  const b = biz();
+  if (!b) { document.getElementById(mapaVistas[STATE_papelesTab]).innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
+
+  if (STATE_papelesTab === 'resumen') await renderResumenFederal(b);
+  else if (STATE_papelesTab === 'isrpm') await renderPapelISRPM(b);
+}
+
+// Resumen Federal — vista anual. Determinado (del papel), Presentado (fz_declaraciones_fiscales)
+// y Pagado (fz_aplicaciones_pago_fiscal) se muestran SEPARADOS — nunca se infiere uno del otro.
+// Pérdidas/PTU son cédulas auxiliares, nunca se suman aquí como impuesto.
+async function renderResumenFederal(b) {
+  const el = document.getElementById('sec-resumenfederal');
+  el.innerHTML = `<div class="empty">Calculando…</div>`;
+  const anios = Array.from({length:6}, (_,i) => Number(todayStr().slice(0,4)) - 4 + i);
+  const meses = Array.from({length:12}, (_,i) => `${STATE_papelesAnio}-${String(i+1).padStart(2,'0')}`);
+
+  const tiposFederales = ['isr_pm','iva','retenciones_isr','retenciones_iva'];
+  const { data: papeles } = await sb.from('fz_papeles_trabajo').select('*').eq('business_id', b.id).eq('ejercicio', STATE_papelesAnio).in('tipo_papel', tiposFederales);
+  const papelesIds = (papeles||[]).map(p=>p.id);
+  const { data: conceptos } = papelesIds.length ? await sb.from('fz_papel_conceptos').select('papel_id,valor_aplicado').in('papel_id', papelesIds) : { data: [] };
+  const determinadoPorPapel = {};
+  (conceptos||[]).forEach(c => { determinadoPorPapel[c.papel_id] = (determinadoPorPapel[c.papel_id]||0) + Number(c.valor_aplicado||0); });
+
+  const filas = meses.map(mes => {
+    const porTipo = {};
+    tiposFederales.forEach(t => {
+      const papel = (papeles||[]).find(p=>p.tipo_papel===t && p.periodo===mes);
+      porTipo[t] = papel ? { estado: papel.estado, determinado: determinadoPorPapel[papel.id]||0, papelId: papel.id } : null;
+    });
+    return { mes, porTipo };
+  });
+
+  el.innerHTML = `
+    <div class="card-head" style="margin-bottom:6px;">
+      <h3>Resumen Federal</h3>
+      <select id="rfAnioSel" style="padding:5px 8px;border:1px solid var(--line);border-radius:6px;">
+        ${anios.map(a=>`<option value="${a}" ${String(a)===STATE_papelesAnio?'selected':''}>${a}</option>`).join('')}
+      </select>
+    </div>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:12px;max-width:760px;">
+      "Determinado" es el resultado del papel de trabajo. "Presentado" y "Pagado" reflejan la declaración y aplicaciones reales — nunca se infieren por guardar un papel. Pérdidas Fiscales y PTU son cédulas auxiliares y no se suman aquí.
+    </p>
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Periodo</th><th>ISR PM — Determinado</th><th>IVA — Determinado</th><th>Ret. ISR — Determinado</th><th>Ret. IVA — Determinado</th></tr></thead>
+          <tbody>
+            ${filas.map(f => `<tr>
+              <td>${f.mes}</td>
+              ${tiposFederales.map(t => `<td class="num">${f.porTipo[t] ? fmt(f.porTipo[t].determinado) + ' <span style="font-size:10px;color:var(--muted);">('+f.porTipo[t].estado+')</span>' : '<span style="color:var(--muted);">— sin papel —</span>'}</td>`).join('')}
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  document.getElementById('rfAnioSel').addEventListener('change', (e) => { STATE_papelesAnio = e.target.value; renderResumenFederal(b); });
+}
+
+async function renderPapelISRPM(b) {
+  const el = document.getElementById('sec-papelisrpm');
+  el.innerHTML = `<div class="empty">Cargando…</div>`;
+  const anios = Array.from({length:6}, (_,i) => Number(todayStr().slice(0,4)) - 4 + i);
+  if (!STATE_papelesMesISRPM) STATE_papelesMesISRPM = todayStr().slice(0,7);
+  const periodo = STATE_papelesMesISRPM;
+  const ejercicio = periodo.slice(0,4);
+
+  const papel = await obtenerOCrearPapelTrabajo(b.id, 'isr_pm', ejercicio, 'mensual', periodo);
+  let { data: conceptos } = await sb.from('fz_papel_conceptos').select('*').eq('papel_id', papel.id).order('orden', { ascending: true });
+  if (!conceptos || !conceptos.length) {
+    for (let i = 0; i < CONCEPTOS_DEFAULT_ISR_PM.length; i++) {
+      const c = CONCEPTOS_DEFAULT_ISR_PM[i];
+      await agregarConceptoPapel(papel.id, { concepto: c.nombre, claveConcepto: c.clave, orden: i, origen: 'manual', valorAplicado: 0 });
+    }
+    ({ data: conceptos } = await sb.from('fz_papel_conceptos').select('*').eq('papel_id', papel.id).order('orden', { ascending: true }));
+  }
+
+  const meses = Array.from({length:12}, (_,i) => `${ejercicio}-${String(i+1).padStart(2,'0')}`);
+
+  el.innerHTML = `
+    <div class="card-head" style="margin-bottom:6px;">
+      <h3>ISR Personas Morales — Papel de trabajo</h3>
+      <div style="display:flex;gap:8px;">
+        <select id="pIsrAnioSel" style="padding:5px 8px;border:1px solid var(--line);border-radius:6px;">
+          ${anios.map(a=>`<option value="${a}" ${String(a)===ejercicio?'selected':''}>${a}</option>`).join('')}
+        </select>
+        <select id="pIsrMesSel" style="padding:5px 8px;border:1px solid var(--line);border-radius:6px;">
+          ${meses.map(m=>`<option value="${m}" ${m===periodo?'selected':''}>${MESES_LARGO[Number(m.slice(5,7))-1]}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:4px;">Estado del papel: <strong>${papel.estado}</strong> · Este papel es de trabajo — guardarlo no genera pólizas, declaraciones ni pagos.</p>
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Concepto</th><th>Origen</th><th>Valor propuesto</th><th>Valor aplicado</th><th>Diferencia</th><th>Motivo</th></tr></thead>
+          <tbody>
+            ${conceptos.map(c => {
+              const diferencia = (c.valor_original!==null && c.valor_original!==undefined) ? Number(c.valor_aplicado) - Number(c.valor_original) : null;
+              return `<tr>
+                <td>${c.concepto}</td>
+                <td style="font-size:11px;color:var(--muted);">${c.origen}</td>
+                <td class="num">${c.valor_original!==null && c.valor_original!==undefined ? fmt(c.valor_original) : '—'}</td>
+                <td><input type="text" class="pisr-valor" data-id="${c.id}" inputmode="decimal" value="${fmtInputVal(Number(c.valor_aplicado)||0)}" style="width:110px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;text-align:right;"></td>
+                <td class="num" style="color:${diferencia&&Math.abs(diferencia)>0.004?'var(--gold)':'var(--muted)'};">${diferencia!==null?fmt(diferencia):''}</td>
+                <td style="font-size:11px;color:var(--muted);">${c.motivo_ajuste||''}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+      <button class="btn btn-ghost btn-sm" id="pIsrAgregarConceptoBtn" style="margin-top:10px;">+ Agregar concepto</button>
+      <button class="btn btn-gold btn-sm" id="pIsrGuardarBtn" style="margin-top:10px;margin-left:8px;">Guardar papel</button>
+    </div>
+  `;
+  document.getElementById('pIsrAnioSel').addEventListener('change', (e) => { STATE_papelesMesISRPM = `${e.target.value}-${periodo.slice(5,7)}`; renderPapelISRPM(b); });
+  document.getElementById('pIsrMesSel').addEventListener('change', (e) => { STATE_papelesMesISRPM = e.target.value; renderPapelISRPM(b); });
+
+  document.getElementById('pIsrAgregarConceptoBtn').addEventListener('click', async () => {
+    const nombre = prompt('Nombre del concepto a agregar:');
+    if (!nombre || !nombre.trim()) return;
+    await agregarConceptoPapel(papel.id, { concepto: nombre.trim(), orden: conceptos.length, origen: 'manual', valorAplicado: 0 });
+    await renderPapelISRPM(b);
+  });
+
+  document.getElementById('pIsrGuardarBtn').addEventListener('click', async () => {
+    for (const c of conceptos) {
+      const input = document.querySelector(`.pisr-valor[data-id="${c.id}"]`);
+      const nuevoValor = leerMonto(input.value) || 0;
+      if (Math.abs(nuevoValor - Number(c.valor_aplicado)) > 0.004) {
+        const huboPropuesta = c.valor_original !== null && c.valor_original !== undefined;
+        let motivo = c.motivo_ajuste;
+        if (huboPropuesta) {
+          motivo = prompt(`"${c.concepto}" tenía una propuesta contable de ${fmt(c.valor_original)} — indica el motivo del ajuste a ${fmt(nuevoValor)}:`);
+          if (motivo === null) continue; // se canceló este renglón, no se guarda su cambio
+        }
+        const r = await actualizarValorConceptoPapel(c.id, nuevoValor, motivo, STATE.user?.email);
+        if (r.estado === 'falta_motivo') { toast(`Falta motivo para "${c.concepto}".`, 'error'); return; }
+      }
+    }
+    await sb.from('fz_papeles_trabajo').update({ estado: 'guardado', updated_at: new Date().toISOString() }).eq('id', papel.id);
+    registrarAuditoria(b.id, 'editar', 'Papeles de Trabajo', `Papel ISR PM ${periodo} guardado`);
+    toast('Papel guardado. No se generó ninguna póliza ni declaración.');
+    await renderPapelISRPM(b);
+  });
+}
+
 async function renderImpuestos() {
   const b = biz();
   // Si el mes de arriba cambió, sincroniza el año de Pagos/Retenciones para que "el periodo" se
