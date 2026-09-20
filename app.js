@@ -2979,11 +2979,17 @@ async function resolverValorFiscalEfectivo(businessId, tipoPapel, claveConcepto,
 async function obtenerPropuestasAnualesPorConcepto(businessId, tipoPapel, claveConcepto, ejercicio) {
   const { data: mapeos } = await sb.from('fz_mapeo_cuenta_concepto_fiscal').select('subcuenta_id').eq('business_id', businessId).eq('tipo_papel', tipoPapel).eq('clave_concepto', claveConcepto);
   const porMes = {}; for (let m=1;m<=12;m++) porMes[String(m).padStart(2,'0')] = null;
-  if (!mapeos || !mapeos.length) return porMes; // ausencia ABSOLUTA de fuente/serie — los 12 meses quedan en null (—)
-  // El mapeo SÍ existe: la serie está "iniciada" — cada mes defaultea a 0 (se consultó la fuente y
-  // el resultado real de ese mes específico es "ningún movimiento", un hecho determinado, nunca —).
+  let subIds = new Set((mapeos||[]).map(m=>m.subcuenta_id));
+  if (!subIds.size) {
+    // Sin mapeo manual — usar automáticamente la fuente especializada REAL ya existente en el
+    // catálogo, sin obligar al contador a configurarla una por una.
+    const especializadas = await identificarSubcuentasEspecializadas(businessId, claveConcepto);
+    if (!especializadas.length) return porMes; // ausencia ABSOLUTA de fuente/serie — los 12 meses quedan en null (—)
+    subIds = new Set(especializadas.map(s=>s.id));
+  }
+  // El mapeo/fuente SÍ existe: la serie está "iniciada" — cada mes defaultea a 0 (se consultó la
+  // fuente y el resultado real de ese mes específico es "ningún movimiento", nunca —).
   for (let m=1;m<=12;m++) porMes[String(m).padStart(2,'0')] = 0;
-  const subIds = new Set(mapeos.map(m=>m.subcuenta_id));
 
   const { data: conceptosVenta } = await sb.from('fz_conceptos_venta').select('id, subcuenta_vinculada_id, tipo').eq('business_id', businessId);
   const subIdsConVentaVinculada = new Set((conceptosVenta||[]).filter(cv=>cv.subcuenta_vinculada_id).map(cv=>cv.subcuenta_vinculada_id));
@@ -3018,11 +3024,19 @@ async function obtenerPropuestasAnualesPorConcepto(businessId, tipoPapel, claveC
 
 async function obtenerPropuestaContable(businessId, tipoPapel, claveConcepto, periodo) {
   const { data: mapeos } = await sb.from('fz_mapeo_cuenta_concepto_fiscal').select('subcuenta_id').eq('business_id', businessId).eq('tipo_papel', tipoPapel).eq('clave_concepto', claveConcepto);
-  if (!mapeos || !mapeos.length) return { hayPropuesta: false };
+  let subIds = new Set((mapeos||[]).map(m=>m.subcuenta_id));
+  if (!subIds.size) {
+    // Sin mapeo manual configurado — usar automáticamente la fuente especializada REAL que el
+    // motor de realización ya haya creado en el catálogo (si existe), sin obligar al contador a
+    // configurarla una por una. Nunca inventa una subcuenta; solo la usa si ya existe.
+    const especializadas = await identificarSubcuentasEspecializadas(businessId, claveConcepto);
+    if (!especializadas.length) return { hayPropuesta: false };
+    subIds = new Set(especializadas.map(s=>s.id));
+  }
   const { start, end } = monthBounds(periodo);
-  const subIds = new Set(mapeos.map(m=>m.subcuenta_id));
   let total = 0;
   const fuentes = [];
+
 
   // Fuente 1 — motor de partida doble (pólizas, facturas, bancos, etc.). Se suma el NETO
   // (abono − cargo), respetando la naturaleza contable — nunca el valor absoluto por línea, que
@@ -3061,11 +3075,18 @@ async function obtenerPropuestaContable(businessId, tipoPapel, claveConcepto, pe
 // Nunca escribe nada. Reporta exactamente lo que encuentra en cada eslabón, incluyendo lo que NO
 // pudo relacionarse (ventas sin subcuenta vinculada) — nunca lo convierte en $0.00 ni lo oculta.
 async function diagnosticarFuenteFiscal(businessId, tipoPapel, claveConcepto, periodo) {
-  const diag = { mapeo: [], ventasEncontradas: [], ventasSinVinculo: [], movimientosContables: [], ajustesDetectados: false, duplicidadPosible: false, propuestaFinal: null, razonSinPropuesta: null };
+  const diag = { mapeo: [], mapeoAutomatico: false, ventasEncontradas: [], ventasSinVinculo: [], movimientosContables: [], ajustesDetectados: false, duplicidadPosible: false, propuestaFinal: null, razonSinPropuesta: null };
 
   const { data: mapeos } = await sb.from('fz_mapeo_cuenta_concepto_fiscal').select('id, subcuenta_id').eq('business_id', businessId).eq('tipo_papel', tipoPapel).eq('clave_concepto', claveConcepto);
-  if (!mapeos || !mapeos.length) { diag.razonSinPropuesta = 'No existe ningún mapeo configurado para este concepto — verifica en Fuentes Fiscales que se haya guardado correctamente.'; return diag; }
-  const subIds = mapeos.map(m=>m.subcuenta_id);
+  let subIds = (mapeos||[]).map(m=>m.subcuenta_id);
+  if (!subIds.length) {
+    // Sin mapeo manual — el mismo fallback automático que usa obtenerPropuestaContable: si el
+    // catálogo ya tiene la subcuenta especializada real, se usa sin exigir configuración previa.
+    const especializadas = await identificarSubcuentasEspecializadas(businessId, claveConcepto);
+    if (!especializadas.length) { diag.razonSinPropuesta = 'No existe ningún mapeo configurado para este concepto, y el catálogo tampoco tiene todavía la subcuenta especializada real que el motor de realización crearía — verifica en Fuentes Fiscales, o si corresponde, que ya exista al menos un cobro/pago realizado.'; return diag; }
+    subIds = especializadas.map(s=>s.id);
+    diag.mapeoAutomatico = true;
+  }
   const { data: subsInfo } = await sb.from('fz_subcuentas').select('id, nombre').in('id', subIds);
   diag.mapeo = subIds.map(id => ({ subcuentaId: id, nombre: (subsInfo||[]).find(s=>s.id===id)?.nombre || '(subcuenta eliminada — el mapeo apunta a un id que ya no existe en el catálogo)' }));
 
@@ -3119,6 +3140,36 @@ async function diagnosticarFuenteFiscal(businessId, tipoPapel, claveConcepto, pe
 // existente (sincronizarRealizacionFactura) ya crea bajo demanda, por el patrón EXACTO de nombre
 // que ese motor usa (obtenerOCrearSubcuentaPorNombre) — nunca inventa un nombre ni un id. Si el
 // motor todavía no ha creado esa subcuenta para este negocio, la lista viene vacía.
+// ============================================================
+// PARÁMETRO FISCAL COMÚN DEL NEGOCIO — coeficiente de utilidad. SOLO LECTURA. Reutiliza
+// fz_isr_datos_anuales, la ÚNICA fuente de verdad ya usada por el módulo Impuestos (con su
+// historial de vigencias). Papeles de Trabajo consume esta misma fuente — nunca la duplica, nunca
+// depende del módulo Impuestos, nunca vuelve a pedir captura dentro de Papeles. Regla de vigencia
+// IDÉNTICA a la que ya usa Impuestos: el registro más reciente cuyo vigente_desde sea <= el mes
+// consultado.
+// ============================================================
+async function obtenerCoeficienteVigente(businessId, periodo) {
+  const { data } = await sb.from('fz_isr_datos_anuales').select('coeficiente_utilidad, vigente_desde').eq('business_id', businessId).lte('vigente_desde', periodo).order('vigente_desde', { ascending: false }).limit(1);
+  const fila = (data||[])[0];
+  return fila ? { valor: Number(fila.coeficiente_utilidad), vigenteDesde: fila.vigente_desde } : null;
+}
+
+// Versión por lotes — una sola consulta trae TODAS las vigencias del negocio (no filtradas por
+// ejercicio, porque una vigencia de un año anterior puede seguir aplicando a meses de este
+// ejercicio); resuelve los 12 meses en memoria, nunca una consulta por mes/celda.
+async function obtenerCoeficientesVigentesAnual(businessId, ejercicio) {
+  const { data } = await sb.from('fz_isr_datos_anuales').select('coeficiente_utilidad, vigente_desde').eq('business_id', businessId).order('vigente_desde', { ascending: true });
+  const vigencias = (data||[]).map(v => ({ valor: Number(v.coeficiente_utilidad), vigenteDesde: v.vigente_desde })).sort((a,b)=>a.vigenteDesde.localeCompare(b.vigenteDesde));
+  const porMes = {};
+  for (let m = 1; m <= 12; m++) {
+    const mm = String(m).padStart(2,'0');
+    const periodo = `${ejercicio}-${mm}`;
+    const aplicable = vigencias.filter(v => v.vigenteDesde <= periodo).pop(); // la más reciente <= este mes
+    porMes[mm] = aplicable ? aplicable.valor : null;
+  }
+  return porMes;
+}
+
 async function identificarSubcuentasEspecializadas(businessId, claveConcepto) {
   const { data: subs } = await sb.from('fz_subcuentas').select('id, nombre').eq('business_id', businessId);
   const lista = subs || [];
@@ -4499,16 +4550,25 @@ async function construirMatrizAnual(businessId, tipoPapel, ejercicio, conceptosD
       perdidas.forEach(p => { const c = p.control ? p.control.porMes[mm] : null; if (c && c.aplicadoAcumulado !== null) suma += c.aplicadoAcumulado; });
       perdidasAplicadasPorMes[mm] = redondearMoneda(suma);
     }
-    const setSiVacio = (clave, mm, valor) => { const f = filaPorClave[clave]; if (f && f.porMes[mm].valor === null && valor !== null) { f.porMes[mm].valor = valor; f.porMes[mm].origen = 'contabilidad'; } };
+    const setSiVacio = (clave, mm, valor, origen) => { const f = filaPorClave[clave]; if (f && f.porMes[mm].valor === null && valor !== null) { f.porMes[mm].valor = valor; f.porMes[mm].origen = origen || 'contabilidad'; } };
+
+    // Coeficiente de utilidad — parámetro fiscal común del negocio (fz_isr_datos_anuales), la
+    // MISMA fuente y regla de vigencia que ya usa el módulo Impuestos. Una sola consulta para el
+    // año completo, resuelta en memoria mes a mes — nunca una consulta por celda.
+    const coeficientesComunPorMes = await obtenerCoeficientesVigentesAnual(businessId, ejercicio);
 
     let ingresosAcum = 0, pagosAnterioresAcum = 0, ultimoCoeficienteConocido = null;
     for (let m = 1; m <= 12; m++) {
       const mm = String(m).padStart(2,'0');
       const ingresosMes = valorMes('ingresos_nominales_mes', mm);
+      // Prioridad: 1) override real capturado dentro de Papeles; 2) parámetro fiscal común
+      // (misma fuente que Impuestos); 3) arrastre del último conocido dentro de Papeles (legado).
       let coeficiente = valorMes('coeficiente_utilidad', mm);
-      if (coeficiente === null) coeficiente = ultimoCoeficienteConocido; // arrastra el último capturado — variable acumulativa, no se reinicia cada mes
-      else ultimoCoeficienteConocido = coeficiente;
-      setSiVacio('coeficiente_utilidad', mm, coeficiente);
+      let origenCoeficiente = 'manual';
+      if (coeficiente === null) { coeficiente = coeficientesComunPorMes[mm]; origenCoeficiente = 'parametro_fiscal'; }
+      if (coeficiente === null) coeficiente = ultimoCoeficienteConocido;
+      if (coeficiente !== null) ultimoCoeficienteConocido = coeficiente;
+      setSiVacio('coeficiente_utilidad', mm, coeficiente, origenCoeficiente);
       const ptuAplicable = valorMes('ptu_aplicable', mm) ?? 0;
       const retenciones = valorMes('retenciones', mm) ?? 0;
       const perdidasAplicadas = perdidasAplicadasPorMes[mm] || 0;
@@ -5774,6 +5834,20 @@ async function renderPapelISRPM(b) {
       conceptoIngresosMes.valor_aplicado = resuelto.valor;
       conceptoIngresosMes.origen = resuelto.origen;
       if (conceptoIngresosMes.id) conceptoIngresosMes._sincronizarOrigenAlGuardar = true; // ya persistido con el cero viejo — la corrección se escribe solo al Guardar/Editar explícito, nunca por abrir
+    }
+  }
+
+  // Coeficiente de utilidad — parámetro fiscal común del negocio (fz_isr_datos_anuales), la MISMA
+  // fuente y regla de vigencia que ya usa el módulo Impuestos. Nunca se vuelve a pedir captura
+  // dentro de Papeles si el parámetro común ya lo resuelve para este mes.
+  const conceptoCoeficiente = conceptos.find(c=>c.clave_concepto==='coeficiente_utilidad');
+  if (conceptoCoeficiente && conceptoSinIntencionExplicita(conceptoCoeficiente)) {
+    const comun = await obtenerCoeficienteVigente(b.id, periodo);
+    if (comun) {
+      conceptoCoeficiente.valor_original = comun.valor;
+      conceptoCoeficiente.valor_aplicado = comun.valor;
+      conceptoCoeficiente.origen = 'parametro_fiscal';
+      if (conceptoCoeficiente.id) conceptoCoeficiente._sincronizarOrigenAlGuardar = true;
     }
   }
 
