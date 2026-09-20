@@ -2541,13 +2541,23 @@ function calcularCadenaISRPM(insumos) {
 // ya usa el resto de la cédula para conceptos no capturados).
 async function obtenerIngresosAcumuladosPrevios(businessId, ejercicio, periodoActual) {
   const mesActual = Number(periodoActual.slice(5, 7));
+  if (mesActual === 1) return 0; // enero no tiene meses previos — hecho conocido, no ausencia
+  // MISMA fuente y resolución que usa la cédula anual — nunca una segunda fórmula. Por cada mes
+  // previo: si hay un override real persistido, se respeta; si no, se usa la propuesta ya resuelta
+  // por lotes (una sola consulta para el año completo, no una por mes).
+  const propuestasPorMes = await obtenerPropuestasAnualesPorConcepto(businessId, 'isr_pm', 'ingresos_nominales_mes', ejercicio);
   let suma = 0;
   for (let m = 1; m < mesActual; m++) {
-    const periodo = `${ejercicio}-${String(m).padStart(2, '0')}`;
+    const mm = String(m).padStart(2, '0');
+    const periodo = `${ejercicio}-${mm}`;
     const papel = await obtenerPapelTrabajoSiExiste(businessId, 'isr_pm', ejercicio, 'mensual', periodo);
-    if (!papel) continue;
-    const { data: c } = await sb.from('fz_papel_conceptos').select('valor_aplicado').eq('papel_id', papel.id).eq('clave_concepto', 'ingresos_nominales_mes').maybeSingle();
-    if (c) suma += Number(c.valor_aplicado);
+    let valorMes = null;
+    if (papel) {
+      const { data: c } = await sb.from('fz_papel_conceptos').select('*').eq('papel_id', papel.id).eq('clave_concepto', 'ingresos_nominales_mes').maybeSingle();
+      if (c && !conceptoSinIntencionExplicita(c)) valorMes = Number(c.valor_aplicado); // override real — se respeta
+    }
+    if (valorMes === null) valorMes = propuestasPorMes[mm]; // propuesta ya resuelta (0 si la serie está iniciada sin movimiento; null si no hay fuente en absoluto)
+    if (valorMes !== null) suma += valorMes;
   }
   return redondearMoneda(suma);
 }
@@ -2557,13 +2567,19 @@ async function obtenerIngresosAcumuladosPrevios(businessId, ejercicio, periodoAc
 // contador sigue pudiendo revisar/ajustar.
 async function obtenerPagosProvisionalesAnterioresPropuesta(businessId, ejercicio, periodoActual) {
   const mesActual = Number(periodoActual.slice(5, 7));
-  let suma = 0; let hayDato = false;
+  if (mesActual === 1) return 0; // enero no tiene meses previos — hecho conocido
+  // MISMA cadena/resolvedor que usa la cédula anual — nunca una segunda fórmula. Fuente elegida:
+  // ISR DETERMINADO (Art. 14 LISR — el importe fiscal calculado de cada pago provisional previo).
+  // Nunca se mezcla con "declarado" (lo presentado al SAT) ni "pagado" (lo efectivamente
+  // liquidado) — ambos son datos distintos que este papel no debe confundir con el determinado.
+  const matrizAnio = await construirMatrizAnual(businessId, 'isr_pm', ejercicio, CONCEPTOS_DEFAULT_ISR_PM);
+  const filaIsrDeterminado = matrizAnio.filas.find(f => f.clave === 'isr_determinado');
+  if (!filaIsrDeterminado) return null;
+  let suma = 0, hayDato = false;
   for (let m = 1; m < mesActual; m++) {
-    const periodo = `${ejercicio}-${String(m).padStart(2, '0')}`;
-    const papel = await obtenerPapelTrabajoSiExiste(businessId, 'isr_pm', ejercicio, 'mensual', periodo);
-    if (!papel) continue;
-    const { data: c } = await sb.from('fz_papel_conceptos').select('valor_aplicado').eq('papel_id', papel.id).eq('clave_concepto', 'isr_determinado').maybeSingle();
-    if (c) { suma += Number(c.valor_aplicado); hayDato = true; }
+    const mm = String(m).padStart(2, '0');
+    const valor = filaIsrDeterminado.porMes[mm] ? filaIsrDeterminado.porMes[mm].valor : null;
+    if (valor !== null) { suma += valor; hayDato = true; }
   }
   return hayDato ? redondearMoneda(suma) : null;
 }
@@ -2977,15 +2993,16 @@ async function resolverValorFiscalEfectivo(businessId, tipoPapel, claveConcepto,
 // regla de precedencia (Ventas especializada vs. libro contable) que obtenerPropuestaContable, para
 // que ambas nunca puedan divergir.
 async function obtenerPropuestasAnualesPorConcepto(businessId, tipoPapel, claveConcepto, ejercicio) {
-  const { data: mapeos } = await sb.from('fz_mapeo_cuenta_concepto_fiscal').select('subcuenta_id').eq('business_id', businessId).eq('tipo_papel', tipoPapel).eq('clave_concepto', claveConcepto);
   const porMes = {}; for (let m=1;m<=12;m++) porMes[String(m).padStart(2,'0')] = null;
-  let subIds = new Set((mapeos||[]).map(m=>m.subcuenta_id));
-  if (!subIds.size) {
-    // Sin mapeo manual — usar automáticamente la fuente especializada REAL ya existente en el
-    // catálogo, sin obligar al contador a configurarla una por una.
-    const especializadas = await identificarSubcuentasEspecializadas(businessId, claveConcepto);
-    if (!especializadas.length) return porMes; // ausencia ABSOLUTA de fuente/serie — los 12 meses quedan en null (—)
+  // Prioridad 2: fuente fiscal especializada primero — igual que en la versión mensual.
+  const especializadas = await identificarSubcuentasEspecializadas(businessId, claveConcepto);
+  let subIds;
+  if (especializadas.length) {
     subIds = new Set(especializadas.map(s=>s.id));
+  } else {
+    const { data: mapeos } = await sb.from('fz_mapeo_cuenta_concepto_fiscal').select('subcuenta_id').eq('business_id', businessId).eq('tipo_papel', tipoPapel).eq('clave_concepto', claveConcepto);
+    subIds = new Set((mapeos||[]).map(m=>m.subcuenta_id));
+    if (!subIds.size) return porMes; // ausencia ABSOLUTA de fuente/serie — los 12 meses quedan en null (—)
   }
   // El mapeo/fuente SÍ existe: la serie está "iniciada" — cada mes defaultea a 0 (se consultó la
   // fuente y el resultado real de ese mes específico es "ningún movimiento", nunca —).
@@ -3023,15 +3040,19 @@ async function obtenerPropuestasAnualesPorConcepto(businessId, tipoPapel, claveC
 
 
 async function obtenerPropuestaContable(businessId, tipoPapel, claveConcepto, periodo) {
-  const { data: mapeos } = await sb.from('fz_mapeo_cuenta_concepto_fiscal').select('subcuenta_id').eq('business_id', businessId).eq('tipo_papel', tipoPapel).eq('clave_concepto', claveConcepto);
-  let subIds = new Set((mapeos||[]).map(m=>m.subcuenta_id));
-  if (!subIds.size) {
-    // Sin mapeo manual configurado — usar automáticamente la fuente especializada REAL que el
-    // motor de realización ya haya creado en el catálogo (si existe), sin obligar al contador a
-    // configurarla una por una. Nunca inventa una subcuenta; solo la usa si ya existe.
-    const especializadas = await identificarSubcuentasEspecializadas(businessId, claveConcepto);
-    if (!especializadas.length) return { hayPropuesta: false };
+  // Prioridad 2: fuente fiscal especializada — SIEMPRE se consulta primero para los conceptos que
+  // tienen un patrón especializado conocido (realización de IVA/Retenciones). Esto evita que un
+  // mapeo manual mal configurado (p.ej. apuntando a "Pendiente" en vez de "Cobrado/Pagado/
+  // Retenida") tome precedencia sobre el evento fiscal realmente realizado.
+  const especializadas = await identificarSubcuentasEspecializadas(businessId, claveConcepto);
+  let subIds;
+  if (especializadas.length) {
     subIds = new Set(especializadas.map(s=>s.id));
+  } else {
+    // Prioridad 3: sin fuente especializada conocida/disponible — usar el mapeo manual configurado.
+    const { data: mapeos } = await sb.from('fz_mapeo_cuenta_concepto_fiscal').select('subcuenta_id').eq('business_id', businessId).eq('tipo_papel', tipoPapel).eq('clave_concepto', claveConcepto);
+    subIds = new Set((mapeos||[]).map(m=>m.subcuenta_id));
+    if (!subIds.size) return { hayPropuesta: false };
   }
   const { start, end } = monthBounds(periodo);
   let total = 0;
@@ -3077,15 +3098,16 @@ async function obtenerPropuestaContable(businessId, tipoPapel, claveConcepto, pe
 async function diagnosticarFuenteFiscal(businessId, tipoPapel, claveConcepto, periodo) {
   const diag = { mapeo: [], mapeoAutomatico: false, ventasEncontradas: [], ventasSinVinculo: [], movimientosContables: [], ajustesDetectados: false, duplicidadPosible: false, propuestaFinal: null, razonSinPropuesta: null };
 
-  const { data: mapeos } = await sb.from('fz_mapeo_cuenta_concepto_fiscal').select('id, subcuenta_id').eq('business_id', businessId).eq('tipo_papel', tipoPapel).eq('clave_concepto', claveConcepto);
-  let subIds = (mapeos||[]).map(m=>m.subcuenta_id);
-  if (!subIds.length) {
-    // Sin mapeo manual — el mismo fallback automático que usa obtenerPropuestaContable: si el
-    // catálogo ya tiene la subcuenta especializada real, se usa sin exigir configuración previa.
-    const especializadas = await identificarSubcuentasEspecializadas(businessId, claveConcepto);
-    if (!especializadas.length) { diag.razonSinPropuesta = 'No existe ningún mapeo configurado para este concepto, y el catálogo tampoco tiene todavía la subcuenta especializada real que el motor de realización crearía — verifica en Fuentes Fiscales, o si corresponde, que ya exista al menos un cobro/pago realizado.'; return diag; }
+  // Prioridad 2: fuente fiscal especializada primero — igual que obtenerPropuestaContable.
+  const especializadas = await identificarSubcuentasEspecializadas(businessId, claveConcepto);
+  let subIds;
+  if (especializadas.length) {
     subIds = especializadas.map(s=>s.id);
     diag.mapeoAutomatico = true;
+  } else {
+    const { data: mapeos } = await sb.from('fz_mapeo_cuenta_concepto_fiscal').select('id, subcuenta_id').eq('business_id', businessId).eq('tipo_papel', tipoPapel).eq('clave_concepto', claveConcepto);
+    subIds = (mapeos||[]).map(m=>m.subcuenta_id);
+    if (!subIds.length) { diag.razonSinPropuesta = 'No existe ningún mapeo configurado para este concepto, y el catálogo tampoco tiene todavía la subcuenta especializada real que el motor de realización crearía — verifica en Fuentes Fiscales, o si corresponde, que ya exista al menos un cobro/pago realizado.'; return diag; }
   }
   const { data: subsInfo } = await sb.from('fz_subcuentas').select('id, nombre').in('id', subIds);
   diag.mapeo = subIds.map(id => ({ subcuentaId: id, nombre: (subsInfo||[]).find(s=>s.id===id)?.nombre || '(subcuenta eliminada — el mapeo apunta a un id que ya no existe en el catálogo)' }));
@@ -3170,13 +3192,42 @@ async function obtenerCoeficientesVigentesAnual(businessId, ejercicio) {
   return porMes;
 }
 
+// Mapeo concepto fiscal → categoría(s) documental(es) reales (CATEGORIAS_RETENCION, ya
+// existente/validado en la captura de facturas de proveedor). Un evento de retención pertenece a
+// UNA categoría real; cada concepto de la cédula solo puede recibir la(s) categoría(s) que le
+// corresponden — nunca la misma subcuenta compartida entre conceptos hermanos.
+const CATEGORIAS_POR_CONCEPTO_RET_ISR = {
+  ret_isr_honorarios: ['Honorarios (Régimen General)'],
+  ret_isr_arrendamiento: ['Arrendamiento'],
+  ret_isr_resico: ['RESICO — Honorarios / Arrendamiento / Comisión', 'RESICO — Autotransporte / Fletes'],
+  ret_isr_otras: ['Comisionistas', 'Autotransporte / Fletes (Régimen General)', 'Otro (definir % manualmente)', 'Sin categoría'],
+  // ret_isr_salarios / ret_isr_asimilados: retención de nómina — mecanismo distinto a facturas de
+  // proveedor (CATEGORIAS_RETENCION), sin fuente especializada equivalente todavía — sin entrada aquí.
+};
+const CATEGORIAS_POR_CONCEPTO_RET_IVA = {
+  ret_iva_honorarios: ['Honorarios (Régimen General)'],
+  ret_iva_arrendamiento: ['Arrendamiento'],
+  ret_iva_fletes: ['Autotransporte / Fletes (Régimen General)'],
+  // Retención de IVA no tiene concepto RESICO propio en la cédula — ambos RESICO y Comisionistas
+  // van a "otras" para no inventar una clasificación que la cédula no contempla.
+  ret_iva_otras: ['Comisionistas', 'RESICO — Honorarios / Arrendamiento / Comisión', 'RESICO — Autotransporte / Fletes', 'Otro (definir % manualmente)', 'Sin categoría'],
+};
+
 async function identificarSubcuentasEspecializadas(businessId, claveConcepto) {
   const { data: subs } = await sb.from('fz_subcuentas').select('id, nombre').eq('business_id', businessId);
   const lista = subs || [];
   if (claveConcepto === 'iva_trasladado_16') return lista.filter(s => s.nombre === 'IVA Trasladado — Cobrado');
   if (claveConcepto === 'iva_acreditable_compras' || claveConcepto === 'iva_acreditable_servicios') return lista.filter(s => s.nombre === 'IVA Acreditable — Pagado');
-  if (claveConcepto.startsWith('ret_isr_')) return lista.filter(s => /^Retención ISR — .+ — Retenida$/.test(s.nombre));
-  if (claveConcepto.startsWith('ret_iva_')) return lista.filter(s => /^Retención IVA — .+ — Retenida$/.test(s.nombre));
+  if (claveConcepto.startsWith('ret_isr_')) {
+    const categorias = CATEGORIAS_POR_CONCEPTO_RET_ISR[claveConcepto];
+    if (!categorias) return []; // salarios/asimilados: sin fuente especializada conocida — captura manual
+    return lista.filter(s => categorias.some(cat => s.nombre === `Retención ISR — ${cat} — Retenida`));
+  }
+  if (claveConcepto.startsWith('ret_iva_')) {
+    const categorias = CATEGORIAS_POR_CONCEPTO_RET_IVA[claveConcepto];
+    if (!categorias) return [];
+    return lista.filter(s => categorias.some(cat => s.nombre === `Retención IVA — ${cat} — Retenida`));
+  }
   return [];
 }
 
@@ -8096,8 +8147,11 @@ const FUENTES_ESPECIALIZADAS = {
 // muestra el catálogo completo directamente, sin inventar una regla dudosa.
 const TIPOS_SUGERIDOS_POR_CONCEPTO = {
   ingresos_nominales_mes: ['ingreso'],
-  iva_trasladado_16: ['ingreso'], iva_trasladado_0: ['ingreso'], iva_trasladado_exento: ['ingreso'], iva_trasladado_no_objeto: ['ingreso'],
-  iva_acreditable_compras: ['gasto', 'costo'], iva_acreditable_servicios: ['gasto', 'costo'], iva_acreditable_inversiones: ['activo'],
+  // 'pasivo' se agrega porque las subcuentas reales de realización (IVA Trasladado — Cobrado)
+  // se crean con esa naturaleza — sin esto, el contador nunca las veía como sugeridas y terminaba
+  // buscando en "otras cuentas", donde es fácil confundir "Cobrado" con "Pendiente de cobro".
+  iva_trasladado_16: ['ingreso', 'pasivo'], iva_trasladado_0: ['ingreso', 'pasivo'], iva_trasladado_exento: ['ingreso', 'pasivo'], iva_trasladado_no_objeto: ['ingreso', 'pasivo'],
+  iva_acreditable_compras: ['gasto', 'costo', 'activo'], iva_acreditable_servicios: ['gasto', 'costo', 'activo'], iva_acreditable_inversiones: ['activo'],
 };
 
 async function renderFuentesFiscales() {
