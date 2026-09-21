@@ -227,6 +227,18 @@ function habilitarDragDropAdjunto(container, onFiles) {
    dispara un click() sobre el botón original, que ejecuta el handler/jsPDF que ya existía.
    Arquitectura: PrintControl → handler existente → jsPDF existente → PDF existente.
    ============================================================ */
+// Iconografía funcional compartida — SVG inline, monocromático (currentColor hereda el color
+// del texto del botón/celda que lo contiene), sin librerías nuevas. Sustituye emojis usados como
+// controles de interfaz (🖨 Imprimir, ↗ abrir detalle) por iconos profesionales consistentes.
+function iconoImprimir() {
+  return `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;flex-shrink:0;"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>`;
+}
+function iconoAbrir() {
+  return `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:1px;margin-left:3px;flex-shrink:0;"><path d="M7 17L17 7"></path><path d="M7 7h10v10"></path></svg>`;
+}
+function iconoConfigurar() {
+  return `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;flex-shrink:0;"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>`;
+}
 function printControlHtml(opts) {
   // opts: { selectId, buttonId, label, orientacionInicial: 'landscape'|'portrait', permitirVertical, permitirHorizontal }
   const label = opts.label || 'Imprimir / Exportar';
@@ -237,7 +249,7 @@ function printControlHtml(opts) {
       ${permitirH ? `<option value="landscape">Horizontal</option>` : ''}
       ${permitirV ? `<option value="portrait">Vertical</option>` : ''}
     </select>
-    <button type="button" class="btn btn-ghost btn-sm print-control-abrir">${label}</button>
+    <button type="button" class="btn btn-ghost btn-sm print-control-abrir">${iconoImprimir()}${label}</button>
     <div class="print-control-popover" style="display:none;">
       ${(permitirV && permitirH) ? `<div class="print-control-label">Orientación</div>
       <div class="print-control-segmented">
@@ -1424,7 +1436,7 @@ async function renderVentas() {
       <div class="card">
         <div class="card-head"><h3>Aún no configuras qué vende este negocio</h3></div>
         <div class="empty">Este negocio no tiene categorías de venta configuradas (Alimentos, Bebidas, Daypass, etc.). Usa el botón para agregar las que apliquen.</div>
-        <div style="text-align:center;margin-top:10px;"><button class="btn btn-gold" id="openVentaConceptosBtn">⚙ Configurar categorías de venta</button></div>
+        <div style="text-align:center;margin-top:10px;"><button class="btn btn-gold" id="openVentaConceptosBtn">${iconoConfigurar()}Configurar categorías de venta</button></div>
       </div>`;
     document.getElementById('openVentaConceptosBtn').addEventListener('click', () => openVentaConceptosModal(b.id));
     return;
@@ -1442,9 +1454,9 @@ async function renderVentas() {
       <div class="card-head">
         <h3>Ventas y conciliación — ${STATE.currentMonth}</h3>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button class="btn btn-ghost btn-sm" id="openVentaConceptosBtn">⚙ Categorías de venta</button>
-          <button class="btn btn-ghost btn-sm" id="openSistemaConceptosBtn">⚙ Categorías de sistema</button>
-          <button class="btn btn-ghost btn-sm" id="openConceptosBtn">⚙ Conceptos de recibido</button>
+          <button class="btn btn-ghost btn-sm" id="openVentaConceptosBtn">${iconoConfigurar()}Categorías de venta</button>
+          <button class="btn btn-ghost btn-sm" id="openSistemaConceptosBtn">${iconoConfigurar()}Categorías de sistema</button>
+          <button class="btn btn-ghost btn-sm" id="openConceptosBtn">${iconoConfigurar()}Conceptos de recibido</button>
           <button class="btn btn-ghost btn-sm" id="descargarPlantillaBtn">Descargar plantilla</button>
           <button class="btn btn-ghost btn-sm" id="importVentasBtn">Importar ventas (Excel)</button>
           <button class="btn btn-gold btn-sm" id="addVentaRow">+ Agregar día</button>
@@ -12054,7 +12066,7 @@ async function renderBancos() {
           <button class="btn btn-gold btn-sm" id="addCuentaBtn">+ Agregar cuenta</button>
         </div>
       </div>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">Las terminales/tarjetas conciliadas en Ventas que estén vinculadas a una cuenta (en "⚙ Conceptos de recibido") entran aquí automáticamente como "Corte de caja". Dentro de cada cuenta puedes importar su estado de cuenta desde Excel.</p>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">Las terminales/tarjetas conciliadas en Ventas que estén vinculadas a una cuenta (en "Conceptos de recibido") entran aquí automáticamente como "Corte de caja". Dentro de cada cuenta puedes importar su estado de cuenta desde Excel.</p>
       <div class="tag-row">
         ${cuentasConSaldo.map(c => `<div class="tag banco-tab ${c.id===STATE_bancoCuentaAbierta?'active':''}" data-id="${c.id}">${c.nombre} · ${fmt(c.saldo)}</div>`).join('') || '<span class="hint">Aún no hay cuentas.</span>'}
       </div>
@@ -12324,8 +12336,8 @@ async function renderProveedores() {
       <div class="card-head">
         <h3>Cuentas por pagar</h3>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button class="btn btn-ghost btn-sm" id="openProveedoresCatBtn">⚙ Catálogo de proveedores</button>
-          <button class="btn btn-ghost btn-sm" id="openCuentasBtnProv">⚙ Catálogo de cuentas</button>
+          <button class="btn btn-ghost btn-sm" id="openProveedoresCatBtn">${iconoConfigurar()}Catálogo de proveedores</button>
+          <button class="btn btn-ghost btn-sm" id="openCuentasBtnProv">${iconoConfigurar()}Catálogo de cuentas</button>
           <button class="btn btn-ghost btn-sm" id="importFacturasBtn">Importar facturas (Excel)</button>
           <button class="btn btn-ghost btn-sm" id="provisionarPropinasBtn">Poner al día propinas</button>
           <button class="btn btn-gold btn-sm" id="addProvBtn">+ Agregar factura</button>
@@ -12447,7 +12459,7 @@ async function verDesglosePago(origenTabla, origenId, businessId) {
   document.getElementById('pagosFacturaTitulo').textContent = `Pago desde ${nombreTabla}`;
   const info = document.getElementById('pagosFacturaInfo');
   const list = document.getElementById('pagosFacturaList');
-  info.innerHTML = `${fechaCorta(mov.fecha)} · ${mov.descripcion || mov.concepto || mov.proveedor || ''} · Importe total <strong>${fmt(mov.cargos)}</strong> <button class="btn btn-ghost btn-sm" id="pagosFacturaAbrirMov" style="font-size:11px;padding:3px 8px;margin-left:6px;">Abrir movimiento ↗</button>`;
+  info.innerHTML = `${fechaCorta(mov.fecha)} · ${mov.descripcion || mov.concepto || mov.proveedor || ''} · Importe total <strong>${fmt(mov.cargos)}</strong> <button class="btn btn-ghost btn-sm" id="pagosFacturaAbrirMov" style="font-size:11px;padding:3px 8px;margin-left:6px;">Abrir movimiento${iconoAbrir()}</button>`;
   document.getElementById('pagosFacturaAbrirMov').onclick = () => {
     document.getElementById('modalPagosFactura').classList.remove('show');
     abrirOrigenDesdeDetalle({ tipo: origenTabla==='fz_bancos_mov'?'bancos':'efectivo', id: mov.id, cuentaId: mov.cuenta_id, monedaId: mov.moneda_id, fecha: mov.fecha }, businessId);
@@ -12954,7 +12966,7 @@ async function renderDirectorioClientes(el, b) {
               <button class="nt-pago" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Registrar un pago</button>
             </div>
           </div>
-          <button class="btn btn-ghost btn-sm" id="openProductosBtn">⚙ Productos y Servicios</button>
+          <button class="btn btn-ghost btn-sm" id="openProductosBtn">${iconoConfigurar()}Productos y Servicios</button>
           <button class="btn btn-ghost btn-sm" id="addClienteBtn">+ Agregar cliente</button>
         </div>
       </div>
@@ -15729,7 +15741,7 @@ async function renderBalanceGeneral() {
 
   const filaCuentaBalance = (c) => `
     <tr class="balance-cuenta-row" data-clave="${c.clave}" style="cursor:pointer;">
-      <td style="padding-left:22px;color:var(--muted);font-size:12.5px;">${c.nombre} ↗</td>
+      <td style="padding-left:22px;color:var(--muted);font-size:12.5px;">${c.nombre}${iconoAbrir()}</td>
       <td class="num">${fmtNeg(c.saldoNeto)}</td>
     </tr>`;
 
@@ -15756,15 +15768,15 @@ async function renderBalanceGeneral() {
         <tbody>
           <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">ACTIVO</td></tr>
           <tr><td style="padding-left:22px;font-weight:600;">Efectivo y equivalentes</td><td class="num" style="font-weight:600;">${fmtNeg(totalEfectivo)}</td></tr>
-          ${detalleEfectivo.map(d => `<tr class="balance-cuenta-row" data-clave="${d.clave}" style="cursor:pointer;"><td style="padding-left:40px;color:var(--muted);font-size:12.5px;">${d.nombre} ↗</td><td class="num">${fmtNeg(d.monto)}</td></tr>`).join('')}
+          ${detalleEfectivo.map(d => `<tr class="balance-cuenta-row" data-clave="${d.clave}" style="cursor:pointer;"><td style="padding-left:40px;color:var(--muted);font-size:12.5px;">${d.nombre}${iconoAbrir()}</td><td class="num">${fmtNeg(d.monto)}</td></tr>`).join('')}
           <tr><td style="padding-left:22px;font-weight:600;">Bancos</td><td class="num" style="font-weight:600;">${fmtNeg(totalBancos)}</td></tr>
-          ${detalleBancos.map(d => `<tr class="balance-cuenta-row" data-clave="${d.clave}" style="cursor:pointer;"><td style="padding-left:40px;color:var(--muted);font-size:12.5px;">${d.nombre} ↗</td><td class="num">${fmtNeg(d.monto)}</td></tr>`).join('')}
-          <tr class="balance-cuenta-row" data-clave="clientes" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">Cuentas por cobrar (Clientes) ↗</td><td class="num" style="font-weight:600;">${fmtNeg(cuentasPorCobrar)}</td></tr>
+          ${detalleBancos.map(d => `<tr class="balance-cuenta-row" data-clave="${d.clave}" style="cursor:pointer;"><td style="padding-left:40px;color:var(--muted);font-size:12.5px;">${d.nombre}${iconoAbrir()}</td><td class="num">${fmtNeg(d.monto)}</td></tr>`).join('')}
+          <tr class="balance-cuenta-row" data-clave="clientes" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">Cuentas por cobrar (Clientes)${iconoAbrir()}</td><td class="num" style="font-weight:600;">${fmtNeg(cuentasPorCobrar)}</td></tr>
           ${otrosActivos.map(filaCuentaBalance).join('')}
           <tr class="total-row"><td>Total Activo</td><td class="num">${fmtNeg(totalActivo)}</td></tr>
 
           <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">PASIVO</td></tr>
-          <tr class="balance-cuenta-row" data-clave="proveedores" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">Proveedores por pagar ↗</td><td class="num" style="font-weight:600;">${fmtNeg(proveedoresPendiente)}</td></tr>
+          <tr class="balance-cuenta-row" data-clave="proveedores" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">Proveedores por pagar${iconoAbrir()}</td><td class="num" style="font-weight:600;">${fmtNeg(proveedoresPendiente)}</td></tr>
           ${otrosPasivos.map(filaCuentaBalance).join('')}
           <tr class="total-row"><td>Total Pasivo</td><td class="num">${fmtNeg(totalPasivo)}</td></tr>
 
@@ -15777,7 +15789,7 @@ async function renderBalanceGeneral() {
         </tbody>
       </table>
       </div>
-      <p style="font-size:11.5px;color:var(--muted);margin-top:12px;">Todas las cuentas provienen del mismo motor contable consolidado que usan Libro Diario, Auxiliares y Balanza — da clic en cualquier renglón (↗) para ver su Auxiliar completo. La Utilidad acumulada viene del Estado de Resultados.</p>
+      <p style="font-size:11.5px;color:var(--muted);margin-top:12px;">Todas las cuentas provienen del mismo motor contable consolidado que usan Libro Diario, Auxiliares y Balanza — da clic en cualquier renglón con ícono de apertura para ver su Auxiliar completo. La Utilidad acumulada viene del Estado de Resultados.</p>
     </div>
   `;
   document.getElementById('balanceHastaMes').addEventListener('change', (e) => { STATE_balanceHastaYm = e.target.value; renderBalanceGeneral(); });
@@ -16099,7 +16111,7 @@ function detalleSubcuentaHtml(filas, colspan) {
         <td style="white-space:normal;word-break:break-word;">${f.concepto}</td>
         <td class="num" style="white-space:nowrap;">${fmt(f.importe)}</td>
         <td style="white-space:normal;">${f.pago}</td>
-        <td style="white-space:nowrap;">${f.origen && f.origen.tipo !== 'ajuste' ? `<button class="btn btn-ghost btn-sm abrir-origen-btn" data-origen='${JSON.stringify(f.origen).replace(/'/g,'&apos;')}' style="font-size:11px;padding:3px 8px;">Abrir ↗</button>` : ''}</td>
+        <td style="white-space:nowrap;">${f.origen && f.origen.tipo !== 'ajuste' ? `<button class="btn btn-ghost btn-sm abrir-origen-btn" data-origen='${JSON.stringify(f.origen).replace(/'/g,'&apos;')}' style="font-size:11px;padding:3px 8px;">Abrir${iconoAbrir()}</button>` : ''}</td>
       </tr>`).join('')}</tbody>
     </table>
     </div>
@@ -16749,8 +16761,8 @@ async function renderFlujo() {
       <div class="table-wrap tabla-contable-wrap">
       <table>
         <tbody>
-          ${efectivoDetalle.map(m => `<tr class="flujo-link-efectivo" data-id="${m.clave.replace('efectivo:','')}" style="cursor:pointer;"><td>Caja — ${m.nombre} ↗</td><td class="num">${fmt(m.monto)}</td></tr>`).join('')}
-          ${bancosDetalle.map(d => `<tr class="flujo-link-banco" data-id="${d.clave.replace('banco:','')}" style="cursor:pointer;"><td>Banco — ${d.nombre} ↗</td><td class="num">${fmt(d.monto)}</td></tr>`).join('')}
+          ${efectivoDetalle.map(m => `<tr class="flujo-link-efectivo" data-id="${m.clave.replace('efectivo:','')}" style="cursor:pointer;"><td>Caja — ${m.nombre}${iconoAbrir()}</td><td class="num">${fmt(m.monto)}</td></tr>`).join('')}
+          ${bancosDetalle.map(d => `<tr class="flujo-link-banco" data-id="${d.clave.replace('banco:','')}" style="cursor:pointer;"><td>Banco — ${d.nombre}${iconoAbrir()}</td><td class="num">${fmt(d.monto)}</td></tr>`).join('')}
           <tr class="total-row"><td>Total disponible (caja + bancos)</td><td class="num">${fmt(efectivoTotal + bancosTotal)}</td></tr>
           <tr><td>Menos: proveedores pendientes de pago</td><td class="num" style="color:var(--red);">-${fmt(proveedoresPendientes)}</td></tr>
           ${otrosPasivosDetalle.map(p => `<tr><td>Menos: ${p.nombre}</td><td class="num" style="color:var(--red);">-${fmt(p.monto)}</td></tr>`).join('')}
@@ -16845,7 +16857,7 @@ async function renderPolizas() {
       <div class="card-head">
         <h3>Pólizas de Diario</h3>
         <div style="display:flex;gap:8px;">
-          <button class="btn btn-ghost btn-sm" id="openCuentasBtnPolizas">⚙ Catálogo de cuentas</button>
+          <button class="btn btn-ghost btn-sm" id="openCuentasBtnPolizas">${iconoConfigurar()}Catálogo de cuentas</button>
           <button class="btn btn-ghost btn-sm" id="importPolizasBtn">Importar pólizas (Excel)</button>
           <button class="btn btn-gold btn-sm" id="addPolizaBtn">+ Nueva póliza</button>
         </div>
