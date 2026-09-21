@@ -9390,7 +9390,8 @@ async function renderBalanza() {
         </div>
       </div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;">Partida doble completa: Cargos y Abonos reconstruidos de Pólizas, Facturas de Proveedores/Clientes, y movimientos de Bancos/Efectivo. Trabaja con los nombres y tipos ya existentes en tu catálogo — sin códigos de cuenta todavía.</p>
-      <div class="table-wrap scroll-sticky tabla-contable-wrap">
+      <div class="balanza-viewport-exterior">
+      <div class="balanza-scroller-interior">
         <table class="tabla-contable">
           <thead><tr><th>Cuenta</th><th style="width:80px;">Tipo</th><th style="width:110px;">Saldo inicial Deudor</th><th style="width:110px;">Saldo inicial Acreedor</th><th style="width:100px;">Cargos</th><th style="width:100px;">Abonos</th><th style="width:110px;">Saldo actual Deudor</th><th style="width:110px;">Saldo actual Acreedor</th></tr></thead>
           <tbody>
@@ -9427,6 +9428,7 @@ async function renderBalanza() {
             </tr>
           </tfoot>
         </table>
+      </div>
       </div>
 
       <div style="margin-top:14px;padding:12px 14px;background:#f7f9fc;border-radius:8px;">

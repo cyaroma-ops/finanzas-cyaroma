@@ -485,6 +485,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   .kpi .value{font-size:17px !important;}
 
   .table-wrap, .table-wrap.scroll-sticky{overflow:visible !important;max-height:none !important;}
+  .balanza-viewport-exterior,.balanza-scroller-interior{overflow:visible !important;max-height:none !important;}
   table{break-inside:auto;font-size:11px;width:100%;table-layout:auto;border-collapse:collapse;}
   /* Tablas de reporte de 2 columnas (Ingresos/Gastos del Estado de Resultados, Balance General):
      cada una ajustaba su columna de números por su cuenta, así que no alineaban entre sí.
@@ -676,19 +677,29 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
      data-sticky-header="1"       en el <table>  → encabezado fijo al hacer scroll vertical interno
    No se aplica indiscriminadamente — cada pantalla decide si lo necesita. ---------- */
 .tabla-contable-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%;min-width:0;border-radius:8px;}
-/* Balanza — aislamiento táctil específico para WebKit/iOS (Safari Y Chrome iOS, ambos usan el
-   motor WebKit). overscroll-behavior-x:contain (ya aplicado globalmente a .tabla-contable-wrap)
-   solo tiene efecto en iOS 16+; en versiones anteriores WebKit lo ignora por completo, y el
-   gesto de scroll interno puede "arrastrar" visualmente la página completa. La solución clásica,
-   compatible con iOS antiguo y nuevo, es forzar que este contenedor tenga su propia capa de
-   composición (compositing layer) — así WebKit aísla su gesto de scroll del resto de la vista.
-   Aplicado ÚNICAMENTE a Balanza, no a la clase compartida .tabla-contable-wrap. */
-#sec-balanza .tabla-contable-wrap{
-  transform:translateZ(0);
-  -webkit-transform:translateZ(0);
-  will-change:scroll-position;
-  isolation:isolate;
+/* Balanza — MODELO B: viewport exterior (límite visual, NUNCA hace scroll) + scroller interior
+   (único propietario del desplazamiento horizontal). Reemplaza el intento anterior de forzar una
+   capa de composición sobre el wrapper único (translateZ/isolation/will-change) — esa técnica se
+   retiró porque la nueva arquitectura separa las responsabilidades en dos elementos distintos en
+   vez de pedirle a un solo elemento que sea, a la vez, límite de layout y superficie de scroll
+   nativo. Escoceado EXCLUSIVAMENTE a Balanza (#sec-balanza) — no toca .tabla-contable-wrap ni
+   ninguna otra pantalla. */
+#sec-balanza .balanza-viewport-exterior{
+  width:100%;max-width:100%;min-width:0;
+  overflow:hidden;
+  border-radius:8px;
 }
+#sec-balanza .balanza-scroller-interior{
+  width:100%;max-width:100%;min-width:0;
+  overflow-x:auto;
+  overflow-y:auto;
+  max-height:65vh;
+  -webkit-overflow-scrolling:touch;
+  touch-action:pan-x pan-y;
+  overscroll-behavior-x:contain;
+}
+#sec-balanza .balanza-scroller-interior table thead th{position:sticky;top:0;background:#f7f9fc;z-index:4;}
+#sec-balanza .balanza-scroller-interior table tfoot td,#sec-balanza .balanza-scroller-interior table tfoot th{position:sticky;bottom:0;z-index:4;}
 .tabla-contable{width:100%;border-collapse:collapse;min-width:640px;}
 .tabla-contable td,.tabla-contable th{white-space:nowrap;}
 .tabla-contable td.num,.tabla-contable th.num{text-align:right;font-variant-numeric:tabular-nums;}
@@ -700,6 +711,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 .tabla-contable[data-sticky-header="1"][data-sticky-primera-col="1"] thead th:first-child{z-index:3;background:var(--navy-1);}
 @media (max-width:640px){
   .tabla-contable-wrap{max-height:70vh;}
+  #sec-balanza .balanza-scroller-interior{max-height:70vh;}
   /* Compactación de filtros/controles superiores — SOLO en los 6 reportes contables
      (Libro Diario, Auxiliares, Balanza, Balance, Estado de Resultados, Flujo). No afecta
      .field en el resto de la app (Bancos, Proveedores, workspaces ya aprobados). */
