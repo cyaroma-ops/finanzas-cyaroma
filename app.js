@@ -8981,8 +8981,8 @@ async function renderAuxiliares() {
     </div>
     <div class="card">
       <div class="card-head"><h3>${cuenta?.nombre||''}</h3><span class="hint">${MESES_LARGO[Number(STATE.currentMonth.slice(5,7))-1]} ${STATE.currentMonth.slice(0,4)} · Saldo inicial: ${fmt(Math.abs(saldoInicialNeto))} ${saldoInicialNeto>=0?(esDeudora?'Deudor':'Acreedor'):(esDeudora?'Acreedor':'Deudor')}</span></div>
-      <div class="table-wrap scroll-sticky">
-        <table>
+      <div class="table-wrap scroll-sticky tabla-contable-wrap">
+        <table class="tabla-contable">
           <thead><tr><th>Fecha</th><th>Documento</th><th>Concepto/Origen</th><th>Debe</th><th>Haber</th><th>Saldo</th></tr></thead>
           <tbody>
             ${filasConSaldo.length ? filasConSaldo.map((f,idx) => `<tr>
@@ -9168,8 +9168,8 @@ async function renderLibroDiario() {
         </div>
       </div>
       <div id="ldResumen" style="background:#f7f9fc;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px;"></div>
-      <div class="table-wrap scroll-sticky">
-        <table>
+      <div class="table-wrap scroll-sticky tabla-contable-wrap">
+        <table class="tabla-contable">
           <thead><tr><th>Fecha</th><th>Referencia</th><th>Cuenta</th><th>Concepto</th><th>Cargo</th><th>Abono</th><th></th></tr></thead>
           <tbody id="ldLista"><tr><td colspan="7" class="empty">Elige un rango y dale "Buscar".</td></tr></tbody>
         </table>
@@ -11977,16 +11977,6 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
     openMovimientoModal({ tipo: 'efectivo', refId: moneda.id, businessId, onDone: () => renderMonedaLedger({ ...moneda }, businessId, conceptosEfectivo) });
   });
   wireInputsMoneda(box);
-  box.querySelectorAll('.mov-cell').forEach(inp => {
-    inp.addEventListener('change', async () => {
-      const rowActual = ledger.find(r => r.id === inp.dataset.id);
-      if (rowActual && await bloqueadoPorCierre(businessId, rowActual.fecha)) { renderMonedaLedger(moneda, businessId, conceptosEfectivo); return; }
-      const field = inp.dataset.field;
-      const val = (field === 'fecha' || field === 'proveedor' || field === 'descripcion' || field === 'factura') ? inp.value : leerMonto(inp.value);
-      await sb.from('fz_efectivo_mov').update({ [field]: val }).eq('id', inp.dataset.id);
-      renderMonedaLedger(moneda, businessId, conceptosEfectivo);
-    });
-  });
   box.querySelectorAll('.mov-menu-btn').forEach(btn => btn.addEventListener('click', (e) => {
     e.stopPropagation();
     const dropdown = box.querySelector(`.mov-menu-dropdown[data-menu="${btn.dataset.id}"]`);
@@ -12200,16 +12190,6 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     abrirModalConciliacion(cuentaId, businessId, () => renderBancoLedger(cuentaId, businessId, conceptosTarjetas));
   });
   wireInputsMoneda(box);
-  box.querySelectorAll('.mov-cell').forEach(inp => {
-    inp.addEventListener('change', async () => {
-      const rowActual = ledger.find(r => r.id === inp.dataset.id);
-      if (rowActual && await bloqueadoPorCierre(businessId, rowActual.fecha)) { renderBancoLedger(cuentaId, businessId, conceptosTarjetas); return; }
-      const field = inp.dataset.field;
-      const val = (field === 'fecha' || field === 'descripcion' || field === 'concepto' || field === 'referencia' || field === 'proveedor') ? inp.value : leerMonto(inp.value);
-      await sb.from('fz_bancos_mov').update({ [field]: val }).eq('id', inp.dataset.id);
-      renderBancoLedger(cuentaId, businessId, conceptosTarjetas);
-    });
-  });
   box.querySelectorAll('.mov-menu-btn').forEach(btn => btn.addEventListener('click', (e) => {
     e.stopPropagation();
     const dropdown = box.querySelector(`.mov-menu-dropdown[data-menu="${btn.dataset.id}"]`);
@@ -15771,7 +15751,7 @@ async function renderBalanceGeneral() {
     </div>
     <div class="card">
       <div class="card-head"><h3>Balance General — ${b.name}</h3><span class="hint">${esHoy ? 'Al día de hoy · ' + todayStr() : 'Al cierre de ' + MESES_LARGO[Number(hastaYm.slice(5,7))-1] + ' ' + hastaYm.slice(0,4)}</span></div>
-      <div class="table-wrap scroll-sticky">
+      <div class="table-wrap scroll-sticky tabla-contable-wrap">
       <table class="report-table">
         <tbody>
           <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">ACTIVO</td></tr>
@@ -16264,22 +16244,7 @@ function plTagsHtml() {
     </div>
     <p style="font-size:11.5px;color:var(--muted);margin:-2px 0 12px;">Puedes elegir un rango que abarque varios meses (ej. junio a julio) — no tiene que quedarse dentro de un solo mes.</p>
     </div>` : ''}
-  ${STATE_plVista==='acumulado' ? `
-    <div class="pl-controles-rango" style="visibility:hidden;" aria-hidden="true">
-    <div class="grid-3" style="margin:10px 0 4px;max-width:560px;">
-      <div class="field" style="margin-bottom:0;">
-        <label>Del día</label>
-        <input type="date" tabindex="-1">
-      </div>
-      <div class="field" style="margin-bottom:0;">
-        <label>Al día</label>
-        <input type="date" tabindex="-1">
-      </div>
-      <div class="field" style="margin-bottom:0;display:flex;align-items:flex-end;">
-      </div>
-    </div>
-    <p style="font-size:11.5px;color:var(--muted);margin:-2px 0 12px;">Puedes elegir un rango que abarque varios meses (ej. junio a julio) — no tiene que quedarse dentro de un solo mes.</p>
-    </div>` : ''}
+  ${STATE_plVista==='acumulado' ? `` : ''}
   ${STATE_plVista==='anual' ? `
     <div class="pl-controles-rango">
     <div class="grid-3" style="margin:10px 0 4px;max-width:560px;">
@@ -16463,8 +16428,8 @@ async function renderPLAnual(el, b) {
     </div>
     <div class="card">
       <div class="card-head"><h3>${esEjecutivo ? 'Resumen ejecutivo mes por mes' : 'Detalle mes por mes'}</h3></div>
-      <div class="table-wrap scroll-sticky">
-        <table>
+      <div class="table-wrap scroll-sticky tabla-contable-wrap">
+        <table class="tabla-contable">
           <thead><tr><th>Concepto</th>${mesesLabel.map(m=>`<th>${m}</th>`).join('')}<th>Acumulado</th></tr></thead>
           <tbody>
             ${esEjecutivo ? `
@@ -16772,6 +16737,7 @@ async function renderFlujo() {
   el.innerHTML = `
     <div class="card">
       <div class="card-head"><h3>Cash Position — ${b.name}</h3><span class="hint">Al día de hoy</span></div>
+      <div class="table-wrap tabla-contable-wrap">
       <table>
         <tbody>
           ${efectivoDetalle.map(m => `<tr class="flujo-link-efectivo" data-id="${m.clave.replace('efectivo:','')}" style="cursor:pointer;"><td>Caja — ${m.nombre} ↗</td><td class="num">${fmt(m.monto)}</td></tr>`).join('')}
@@ -16782,6 +16748,7 @@ async function renderFlujo() {
           <tr class="total-row"><td>Posición neta de efectivo</td><td class="num" style="color:${posicionNeta>=0?'var(--green)':'var(--red)'};font-size:16px;">${fmt(posicionNeta)}</td></tr>
         </tbody>
       </table>
+      </div>
       <p style="font-size:11px;color:var(--muted);margin-top:10px;">Posición neta = Efectivo + Bancos − Proveedores por pagar − obligaciones fiscales ya <strong>exigibles</strong> hoy (Retenciones ya retenidas, IVA por pagar, ISR provisional por pagar). Lo que todavía está "Pendiente de cobro/pago" no se resta aquí, porque todavía no es una obligación exigible — se restaría dos veces si se contara en ambos estados.</p>
     </div>
     <div class="card">
