@@ -12118,26 +12118,26 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     saldo += (Number(m.depositos)||0) - (Number(m.cargos)||0);
     if (m.auto) {
       return `<tr style="background:#f7f9fc;">
-        <td>${fechaCorta(m.fecha)}</td>
-        <td><em>${m.proveedor||''}</em> <span style="color:var(--muted);font-size:11px;">· auto</span></td>
-        <td>${m.descripcion}</td>
-        <td class="num">${fmtNum(m.depositos)}</td>
-        <td class="num">${fmtNum(m.cargos)}</td>
-        <td class="num" style="font-weight:700;">${fmt(saldo)}</td>
+        <td data-rol="principal">${fechaCorta(m.fecha)}</td>
+        <td data-rol="secundario"><em>${m.proveedor||''}</em> <span style="color:var(--muted);font-size:11px;">· auto</span></td>
+        <td data-rol="meta">${m.descripcion}</td>
+        <td class="num" data-rol="importe">${fmtNum(m.depositos)}</td>
+        <td class="num" data-rol="importe">${fmtNum(m.cargos)}</td>
+        <td class="num" data-rol="importe" style="font-weight:700;">${fmt(saldo)}</td>
         <td></td>
         <td></td>
       </tr>`;
     }
     const sinClasificarFila = (m.tipo_salida || 'otro') === 'otro' && (Number(m.cargos)||0) > 0;
     return `<tr${sinClasificarFila ? ' style="background:#fff8ec;"' : ''}>
-      <td><input class="cell mov-cell" type="date" value="${m.fecha}" data-id="${m.id}" data-field="fecha"></td>
-      <td><input class="cell mov-cell" type="text" value="${m.proveedor||''}" data-id="${m.id}" data-field="proveedor"></td>
-      <td><input class="cell mov-cell" type="text" value="${m.descripcion||''}" data-id="${m.id}" data-field="descripcion"></td>
-      <td><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(m.depositos)}" data-id="${m.id}" data-field="depositos"></td>
-      <td><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(m.cargos)}" data-id="${m.id}" data-field="cargos"></td>
-      <td class="num" style="font-weight:700;">${fmt(saldo)}</td>
-      <td style="text-align:center;color:var(--green);" title="${m.conciliado ? 'Conciliado el ' + fechaCorta(m.fecha_conciliacion) : 'Pendiente de conciliar'}">${m.conciliado ? '✓' : ''}</td>
-      <td style="position:relative;">
+      <td data-rol="principal"><input class="cell mov-cell" type="date" value="${m.fecha}" data-id="${m.id}" data-field="fecha"></td>
+      <td data-rol="secundario"><input class="cell mov-cell" type="text" value="${m.proveedor||''}" data-id="${m.id}" data-field="proveedor"></td>
+      <td data-rol="meta"><input class="cell mov-cell" type="text" value="${m.descripcion||''}" data-id="${m.id}" data-field="descripcion"></td>
+      <td data-rol="importe"><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(m.depositos)}" data-id="${m.id}" data-field="depositos"></td>
+      <td data-rol="importe"><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(m.cargos)}" data-id="${m.id}" data-field="cargos"></td>
+      <td class="num" data-rol="importe" style="font-weight:700;">${fmt(saldo)}</td>
+      <td data-rol="estado" style="text-align:center;color:var(--green);" title="${m.conciliado ? 'Conciliado el ' + fechaCorta(m.fecha_conciliacion) : 'Pendiente de conciliar'}">${m.conciliado ? '✓' : ''}</td>
+      <td data-rol="acciones" style="position:relative;">
         <button class="btn btn-ghost btn-sm mov-menu-btn" data-id="${m.id}" style="padding:5px 12px;">${sinClasificarFila?'⚠ ⋯':'⋯'}</button>
         <div class="mov-menu-dropdown" data-menu="${m.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:120px;overflow:hidden;">
           <button class="mov-editar" data-id="${m.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Editar</button>
@@ -12165,7 +12165,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
       </div>
     </div>
     <div class="table-wrap scroll-sticky">
-      <table>
+      <table class="tabla-operativa">
         <thead><tr><th>Fecha</th><th>Tercero</th><th>Descripción</th><th>Depósitos</th><th>Cargos</th><th>Saldo</th><th title="Conciliado">✓</th><th></th></tr></thead>
         <tbody>${rowsHtml || `<tr><td colspan="11" class="empty">Sin movimientos.</td></tr>`}</tbody>
         <tfoot><tr class="total-row"><td colspan="4">Total ${STATE.currentMonth}</td><td class="num">${fmtNum(totalDepositosMes)}</td><td class="num">${fmtNum(totalCargosMes)}</td><td colspan="5"></td></tr></tfoot>
@@ -12337,7 +12337,7 @@ async function renderProveedores() {
         ${['Pendiente','Todos','Pagado'].map(f => `<div class="tag prov-tab ${STATE_provFiltro===f?'active':''}" data-f="${f}">${f}</div>`).join('')}
       </div>
       <div class="table-wrap scroll-sticky">
-        <table>
+        <table class="tabla-operativa">
           <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Importe</th><th>Desglose</th><th>Estatus</th><th>Fecha pago</th><th>Pagado desde</th><th>Adjunto</th><th></th></tr></thead>
           <tbody>
             ${rows.map(p => provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntosProv[p.id], all)).join('') || `<tr><td colspan="9" class="empty">Sin registros.</td></tr>`}
@@ -12541,15 +12541,15 @@ async function renderDirectorioProveedores(el, b) {
     <div class="card">
       <div class="card-head"><h3>Directorio de proveedores</h3><span class="hint">Clic en un proveedor para ver todo su historial</span></div>
       <div class="table-wrap scroll-sticky">
-        <table>
+        <table class="tabla-operativa">
           <thead><tr><th>Proveedor</th><th>No. facturas</th><th>Total facturado</th><th>Total pagado</th><th>Saldo pendiente</th></tr></thead>
           <tbody>
             ${lista.length ? lista.map(g => `<tr class="prov-dir-row" data-key="${g.key}" style="cursor:pointer;">
-              <td>${g.nombre}</td>
-              <td>${g.cantidad}</td>
-              <td class="num">${fmt(g.facturado)}</td>
-              <td class="num">${fmt(g.pagado)}</td>
-              <td class="num" style="font-weight:700;">${fmtSigno(-g.pendiente)}</td>
+              <td data-rol="principal">${g.nombre}</td>
+              <td data-rol="meta">${g.cantidad} factura(s)</td>
+              <td class="num" data-rol="meta">${fmt(g.facturado)}</td>
+              <td class="num" data-rol="meta">${fmt(g.pagado)}</td>
+              <td class="num" data-rol="importe" style="font-weight:700;">${fmtSigno(-g.pendiente)}</td>
             </tr>`).join('') : `<tr><td colspan="5" class="empty">Aún no hay proveedores registrados.</td></tr>`}
           </tbody>
         </table>
@@ -12964,16 +12964,16 @@ async function renderDirectorioClientes(el, b) {
         <div class="tag ${STATE_clienteOrden==='saldo'?'active':''}" id="clienteOrdenSaldo">Ordenar por saldo (Open Balance)</div>
       </div>
       <div class="table-wrap scroll-sticky">
-        <table>
+        <table class="tabla-operativa">
           <thead><tr><th>Razón social</th><th>Nombre comercial</th><th>Teléfono</th><th>Moneda / TC</th><th>Open Balance</th><th></th></tr></thead>
           <tbody>
             ${ordenados.length ? ordenados.map(c => `<tr class="cliente-fila" data-id="${c.id}" style="cursor:pointer;">
-              <td>${c.razon_social || '<span style="color:var(--muted);">—</span>'}</td>
-              <td><strong>${c.nombre_comercial}</strong></td>
-              <td>${c.telefono || '<span style="color:var(--muted);">—</span>'}</td>
-              <td>${c.moneda}${c.moneda==='USD' ? ' · ' + fmtNum(c.tipo_cambio) : ''}</td>
-              <td class="num" style="font-weight:700;">${fmt(c.saldo)}</td>
-              <td style="position:relative;">
+              <td data-rol="meta">${c.razon_social || '<span style="color:var(--muted);">—</span>'}</td>
+              <td data-rol="principal"><strong>${c.nombre_comercial}</strong></td>
+              <td data-rol="meta">${c.telefono || '<span style="color:var(--muted);">—</span>'}</td>
+              <td data-rol="meta">${c.moneda}${c.moneda==='USD' ? ' · ' + fmtNum(c.tipo_cambio) : ''}</td>
+              <td class="num" data-rol="importe" style="font-weight:700;">${fmt(c.saldo)}</td>
+              <td data-rol="acciones" style="position:relative;">
                 <button class="btn btn-ghost btn-sm cliente-menu-btn" data-id="${c.id}" style="padding:5px 12px;">⋯</button>
                 <div class="cliente-menu-dropdown" data-menu="${c.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:130px;overflow:hidden;">
                   <button class="cliente-editar" data-id="${c.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Editar</button>
@@ -13362,7 +13362,7 @@ document.getElementById('closeElegirFacturaCobro').addEventListener('click', () 
 
 /* ---------- Facturas de clientes ---------- */
 function facturaMenuHtml(facturaId) {
-  return `<td style="position:relative;">
+  return `<td data-rol="acciones" style="position:relative;">
     <button class="btn btn-ghost btn-sm factura-menu-btn" data-id="${facturaId}" style="padding:5px 12px;">⋯</button>
     <div class="factura-menu-dropdown" data-menu="${facturaId}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:160px;overflow:hidden;">
       <button class="factura-modificar" data-id="${facturaId}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Modificar</button>
@@ -13699,17 +13699,17 @@ async function renderFacturasClientes(el, b) {
         <button class="btn btn-gold btn-sm" id="addFacturaBtn">+ Nueva factura</button>
       </div>
       <div class="table-wrap scroll-sticky">
-        <table>
+        <table class="tabla-operativa">
           <thead><tr><th>Folio</th><th>Fecha</th><th>Cliente</th><th>Total</th><th>Pagado</th><th>Estatus</th><th>¿Se factura?</th><th></th></tr></thead>
           <tbody>
             ${facturas.length ? facturas.map(f => `<tr>
-              <td>#${f.folio}</td>
-              <td>${fechaCorta(f.fecha)}</td>
-              <td>${nombreCliente(f.cliente_id)}</td>
-              <td class="num" style="font-weight:700;">${f.moneda==='USD'?'US':''}${fmt(f.total)}</td>
-              <td class="num">${fmt(f.importe_pagado||0)}</td>
-              <td><span class="badge ${f.estatus==='Pagado'?'pag':'pend'}">${f.estatus}</span></td>
-              <td>${ESTATUS_FISCAL_BADGE[f.estatus_fiscal] || ESTATUS_FISCAL_BADGE.no_aplica}</td>
+              <td data-rol="secundario">#${f.folio}</td>
+              <td data-rol="principal">${fechaCorta(f.fecha)}</td>
+              <td data-rol="secundario">${nombreCliente(f.cliente_id)}</td>
+              <td class="num" data-rol="importe" style="font-weight:700;">${f.moneda==='USD'?'US':''}${fmt(f.total)}</td>
+              <td class="num" data-rol="meta">${fmt(f.importe_pagado||0)}</td>
+              <td data-rol="estado"><span class="badge ${f.estatus==='Pagado'?'pag':'pend'}">${f.estatus}</span></td>
+              <td data-rol="meta">${ESTATUS_FISCAL_BADGE[f.estatus_fiscal] || ESTATUS_FISCAL_BADGE.no_aplica}</td>
               ${facturaMenuHtml(f.id)}
             </tr>`).join('') : `<tr><td colspan="8" class="empty">Aún no hay facturas. Usa "+ Nueva factura".</td></tr>`}
           </tbody>
@@ -14700,26 +14700,26 @@ function provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntos, todasFactur
     ? (catMatch.razon_social ? `${catMatch.razon_social}${catMatch.nombre_comercial ? ' — ' + catMatch.nombre_comercial : ''}` : (catMatch.nombre_comercial || catMatch.nombre))
     : (p.proveedor || '(sin proveedor)');
   return `<tr style="${esCredito?'background:#f2fbf5;':''}">
-    <td><input class="cell prov-cell" type="date" value="${p.fecha}" data-id="${p.id}" data-field="fecha"></td>
-    <td>${nombreMostrado}</td>
-    <td><input class="cell prov-cell" type="text" value="${p.factura||''}" data-id="${p.id}" data-field="factura"></td>
-    <td>
+    <td data-rol="principal"><input class="cell prov-cell" type="date" value="${p.fecha}" data-id="${p.id}" data-field="fecha"></td>
+    <td data-rol="secundario">${nombreMostrado}</td>
+    <td data-rol="secundario"><input class="cell prov-cell" type="text" value="${p.factura||''}" data-id="${p.id}" data-field="factura"></td>
+    <td data-rol="importe">
       <input class="cell prov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(p.importe)}" data-id="${p.id}" data-field="importe">
       ${esCredito ? `<div style="font-size:10.5px;color:var(--green);margin-top:2px;">crédito a favor</div>` : (Number(p.importe_pagado)>0 && p.estatus!=='Pagado' ? `<div style="font-size:10.5px;color:var(--muted);margin-top:2px;white-space:nowrap;">pagado ${fmt(p.importe_pagado)} · pendiente ${fmt(saldoPendiente)}</div>` : '')}
     </td>
-    <td><button class="btn btn-ghost btn-sm prov-desglosar" data-id="${p.id}" style="color:${desgloseOk?'var(--green)':(desgloseTotal>0?'var(--red)':'var(--muted)')};" title="${p.aplica_iva?'No incluye IVA — el IVA ('+fmt(p.iva_monto)+') va aparte, a IVA Acreditable':''}">${desgloseTotal<=0?'Desglosar':(desgloseOk?'✓ Completo':`Falta ${fmt(Math.abs(desgloseTotal-metaDesglose))}`)}</button></td>
-    <td><select class="cell prov-cell" data-id="${p.id}" data-field="estatus">
+    <td data-rol="meta"><button class="btn btn-ghost btn-sm prov-desglosar" data-id="${p.id}" style="color:${desgloseOk?'var(--green)':(desgloseTotal>0?'var(--red)':'var(--muted)')};" title="${p.aplica_iva?'No incluye IVA — el IVA ('+fmt(p.iva_monto)+') va aparte, a IVA Acreditable':''}">${desgloseTotal<=0?'Desglosar':(desgloseOk?'✓ Completo':`Falta ${fmt(Math.abs(desgloseTotal-metaDesglose))}`)}</button></td>
+    <td data-rol="estado"><select class="cell prov-cell" data-id="${p.id}" data-field="estatus">
       <option ${p.estatus==='Pendiente'?'selected':''}>Pendiente</option>
       <option ${p.estatus==='Parcial'?'selected':''}>Parcial</option>
       <option ${p.estatus==='Pagado'?'selected':''}>Pagado</option>
     </select></td>
-    <td><input class="cell prov-cell" type="date" value="${p.fecha_pago||''}" data-id="${p.id}" data-field="fecha_pago"></td>
-    <td><select class="cell prov-pagodesde" data-id="${p.id}" style="min-width:150px;">
+    <td data-rol="meta"><input class="cell prov-cell" type="date" value="${p.fecha_pago||''}" data-id="${p.id}" data-field="fecha_pago"></td>
+    <td data-rol="meta"><select class="cell prov-pagodesde" data-id="${p.id}" style="min-width:150px;">
       <option value="">— sin especificar —</option>
       ${opcionesPagoDesde.map(o => `<option value="${o.value}" ${(p.pagado_desde_tipo && (p.pagado_desde_tipo+':'+p.pagado_desde_cuenta_id)===o.value)?'selected':''}>${o.label}</option>`).join('')}
     </select></td>
-    <td>${adjuntosCellHtml(conteoAdjuntos, p.id)}</td>
-    <td style="position:relative;">
+    <td data-rol="meta">${adjuntosCellHtml(conteoAdjuntos, p.id)}</td>
+    <td data-rol="acciones" style="position:relative;">
       <button class="btn btn-ghost btn-sm prov-menu-btn" data-id="${p.id}" style="padding:5px 12px;">⋯</button>
       <div class="prov-menu-dropdown" data-menu="${p.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:130px;overflow:hidden;">
         <button class="prov-editar" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Editar factura</button>
@@ -16873,7 +16873,7 @@ async function renderPolizas() {
       ${(STATE_polizaFiltroTexto||STATE_polizaFiltroDesde||STATE_polizaFiltroHasta) ? `<button class="btn btn-ghost btn-sm" id="polizaLimpiarFiltro" style="margin-bottom:12px;">✕ Limpiar filtros</button>` : ''}
       ${subcuentas.length === 0 ? `<div class="empty">Aún no tienes cuentas en el catálogo. Crea al menos una (de cualquier tipo) para poder registrar pólizas.</div>` : ''}
       <div class="table-wrap scroll-sticky">
-        <table>
+        <table class="tabla-operativa">
           <thead><tr><th>No. Póliza</th><th>Fecha</th><th>Concepto</th><th>Adjunto</th><th>Importe</th><th>Estado</th><th></th></tr></thead>
           <tbody id="polizasList">
             ${polizas.length === 0 ? `<tr><td colspan="7" class="empty">${todasPolizas.length ? 'Ninguna póliza coincide con la búsqueda.' : 'Sin pólizas todavía.'}</td></tr>` : polizas.map(p => {
@@ -16881,13 +16881,13 @@ async function renderPolizas() {
               const cuadrada = Math.abs(t.cargo-t.abono)<0.01 && t.count>0;
               const nAdj = conteoAdjuntosPolizas[p.id] || 0;
               return `<tr class="poliza-resumen-row" data-poliza="${p.id}" style="cursor:pointer;">
-                <td>#${p.numero ?? '—'}</td>
-                <td>${fechaCorta(p.fecha)}</td>
-                <td>${p.concepto || '<span style="color:var(--muted);">(sin concepto)</span>'}</td>
-                <td>${nAdj ? nAdj + (nAdj===1?' archivo':' archivos') : '—'}</td>
-                <td class="num" style="font-weight:700;">${fmt(t.cargo)}</td>
-                <td><span class="badge ${cuadrada?'pag':'pend'}">${cuadrada ? 'Cuadrada' : 'Diferencia ' + fmt(t.cargo-t.abono)}</span></td>
-                <td><button class="btn btn-ghost btn-sm poliza-duplicar-btn" data-id="${p.id}" title="Duplicar esta póliza" style="font-size:12px;padding:4px 10px;">Duplicar</button></td>
+                <td data-rol="secundario">#${p.numero ?? '—'}</td>
+                <td data-rol="principal">${fechaCorta(p.fecha)}</td>
+                <td data-rol="secundario">${p.concepto || '<span style="color:var(--muted);">(sin concepto)</span>'}</td>
+                <td data-rol="meta">${nAdj ? '📎 ' + nAdj + (nAdj===1?' archivo':' archivos') : ''}</td>
+                <td class="num" data-rol="importe" style="font-weight:700;">${fmt(t.cargo)}</td>
+                <td data-rol="estado"><span class="badge ${cuadrada?'pag':'pend'}">${cuadrada ? 'Cuadrada' : 'Diferencia ' + fmt(t.cargo-t.abono)}</span></td>
+                <td data-rol="acciones"><button class="btn btn-ghost btn-sm poliza-duplicar-btn" data-id="${p.id}" title="Duplicar esta póliza" style="font-size:12px;padding:4px 10px;">Duplicar</button></td>
               </tr>`;
             }).join('')}
           </tbody>
