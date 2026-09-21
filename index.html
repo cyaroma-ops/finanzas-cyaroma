@@ -676,6 +676,19 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
      data-sticky-header="1"       en el <table>  → encabezado fijo al hacer scroll vertical interno
    No se aplica indiscriminadamente — cada pantalla decide si lo necesita. ---------- */
 .tabla-contable-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%;min-width:0;border-radius:8px;}
+/* Balanza — aislamiento táctil específico para WebKit/iOS (Safari Y Chrome iOS, ambos usan el
+   motor WebKit). overscroll-behavior-x:contain (ya aplicado globalmente a .tabla-contable-wrap)
+   solo tiene efecto en iOS 16+; en versiones anteriores WebKit lo ignora por completo, y el
+   gesto de scroll interno puede "arrastrar" visualmente la página completa. La solución clásica,
+   compatible con iOS antiguo y nuevo, es forzar que este contenedor tenga su propia capa de
+   composición (compositing layer) — así WebKit aísla su gesto de scroll del resto de la vista.
+   Aplicado ÚNICAMENTE a Balanza, no a la clase compartida .tabla-contable-wrap. */
+#sec-balanza .tabla-contable-wrap{
+  transform:translateZ(0);
+  -webkit-transform:translateZ(0);
+  will-change:scroll-position;
+  isolation:isolate;
+}
 .tabla-contable{width:100%;border-collapse:collapse;min-width:640px;}
 .tabla-contable td,.tabla-contable th{white-space:nowrap;}
 .tabla-contable td.num,.tabla-contable th.num{text-align:right;font-variant-numeric:tabular-nums;}
