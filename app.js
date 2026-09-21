@@ -217,6 +217,73 @@ function habilitarDragDropAdjunto(container, onFiles) {
   });
 }
 
+/* ============================================================
+   PrintControl — componente visual compartido de impresión/exportación.
+   PRESENTACIONAL PURO: nunca genera el PDF, nunca conoce datos ni cálculos. Cada reporte
+   existente ya tiene un <select id="..."> (orientación) leído por su propio generador al hacer
+   clic en su <button id="...">. PrintControl sustituye visualmente ese par por un control
+   profesional, pero internamente mantiene un <select> oculto con EL MISMO id — así el generador
+   existente sigue leyendo exactamente de donde siempre leyó — y al pulsar "Imprimir" simplemente
+   dispara un click() sobre el botón original, que ejecuta el handler/jsPDF que ya existía.
+   Arquitectura: PrintControl → handler existente → jsPDF existente → PDF existente.
+   ============================================================ */
+function printControlHtml(opts) {
+  // opts: { selectId, buttonId, label, orientacionInicial: 'landscape'|'portrait', permitirVertical, permitirHorizontal }
+  const label = opts.label || 'Imprimir / Exportar';
+  const permitirV = opts.permitirVertical !== false;
+  const permitirH = opts.permitirHorizontal !== false;
+  return `<div class="print-control" data-select-id="${opts.selectId}" data-button-id="${opts.buttonId}" data-orientacion="${opts.orientacionInicial || (permitirH ? 'landscape' : 'portrait')}">
+    <select id="${opts.selectId}" style="display:none;">
+      ${permitirH ? `<option value="landscape">Horizontal</option>` : ''}
+      ${permitirV ? `<option value="portrait">Vertical</option>` : ''}
+    </select>
+    <button type="button" class="btn btn-ghost btn-sm print-control-abrir">${label}</button>
+    <div class="print-control-popover" style="display:none;">
+      ${(permitirV && permitirH) ? `<div class="print-control-label">Orientación</div>
+      <div class="print-control-segmented">
+        <button type="button" class="print-control-opcion" data-val="portrait">Vertical</button>
+        <button type="button" class="print-control-opcion" data-val="landscape">Horizontal</button>
+      </div>` : ''}
+      <button type="button" class="btn btn-gold btn-sm print-control-ejecutar" style="width:100%;margin-top:10px;">Imprimir</button>
+    </div>
+  </div>`;
+}
+function wirePrintControl(container) {
+  container.querySelectorAll('.print-control').forEach(pc => {
+    if (pc.dataset.wired) return;
+    pc.dataset.wired = '1';
+    const selectId = pc.dataset.selectId, buttonId = pc.dataset.buttonId;
+    const nativeSelect = document.getElementById(selectId);
+    const popover = pc.querySelector('.print-control-popover');
+    const actualizarSeleccion = () => {
+      pc.querySelectorAll('.print-control-opcion').forEach(b => b.classList.toggle('activa', b.dataset.val === pc.dataset.orientacion));
+      if (nativeSelect) nativeSelect.value = pc.dataset.orientacion;
+    };
+    actualizarSeleccion();
+    pc.querySelector('.print-control-abrir').addEventListener('click', (e) => {
+      e.stopPropagation();
+      const abierto = popover.style.display !== 'none';
+      document.querySelectorAll('.print-control-popover').forEach(p => p.style.display = 'none');
+      popover.style.display = abierto ? 'none' : 'block';
+    });
+    pc.querySelectorAll('.print-control-opcion').forEach(btn => btn.addEventListener('click', () => {
+      pc.dataset.orientacion = btn.dataset.val;
+      actualizarSeleccion();
+    }));
+    pc.querySelector('.print-control-ejecutar').addEventListener('click', () => {
+      // Nunca genera el PDF aquí — solo asegura que el <select> original tenga el valor elegido
+      // y dispara el botón/handler que YA existía, sin modificarlo.
+      if (nativeSelect) nativeSelect.value = pc.dataset.orientacion;
+      popover.style.display = 'none';
+      const btnOriginal = document.getElementById(buttonId);
+      if (btnOriginal) btnOriginal.click();
+    });
+  });
+}
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.print-control')) document.querySelectorAll('.print-control-popover').forEach(p => p.style.display = 'none');
+});
+
 async function cargarAdjuntos(tabla, registroId) {
   const { data } = await sb.from('fz_adjuntos').select('*').eq('tabla', tabla).eq('registro_id', registroId).order('created_at');
   return data || [];
@@ -9296,16 +9363,12 @@ async function renderBalanza() {
         <div style="display:flex;align-items:center;gap:10px;">
           <span class="hint">${MESES_LARGO[Number(STATE.currentMonth.slice(5,7))-1]} ${STATE.currentMonth.slice(0,4)}</span>
           <button class="btn btn-ghost btn-sm" id="balanzaExcelBtn">Excel</button>
-          <select id="balanzaPdfOrientacion" style="font-size:12.5px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;">
-            <option value="landscape" selected>Horizontal</option>
-            <option value="portrait">Vertical</option>
-          </select>
-          <button class="btn btn-ghost btn-sm" id="balanzaPdfBtn">PDF</button>
+          ${printControlHtml({ selectId: 'balanzaPdfOrientacion', buttonId: 'balanzaPdfBtn', label: 'Imprimir / Exportar', orientacionInicial: 'landscape' })}
         </div>
       </div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;">Partida doble completa: Cargos y Abonos reconstruidos de Pólizas, Facturas de Proveedores/Clientes, y movimientos de Bancos/Efectivo. Trabaja con los nombres y tipos ya existentes en tu catálogo — sin códigos de cuenta todavía.</p>
-      <div class="table-wrap scroll-sticky">
-        <table>
+      <div class="table-wrap scroll-sticky tabla-contable-wrap">
+        <table class="tabla-contable" data-sticky-primera-col="1">
           <thead><tr><th>Cuenta</th><th style="width:80px;">Tipo</th><th style="width:110px;">Saldo inicial Deudor</th><th style="width:110px;">Saldo inicial Acreedor</th><th style="width:100px;">Cargos</th><th style="width:100px;">Abonos</th><th style="width:110px;">Saldo actual Deudor</th><th style="width:110px;">Saldo actual Acreedor</th></tr></thead>
           <tbody>
             ${seccionCompleta('ACTIVO', 'Activo', porTipo.activo)}
@@ -9386,6 +9449,8 @@ async function renderBalanza() {
   agregarSeccionExport('COSTO DE VENTAS', porTipo.costo, 'Costo de Ventas');
   agregarSeccionExport('GASTOS', porTipo.gasto, 'Gastos');
   filasExport.push({ tipo:'totalgeneral', v:['TOTALES (cuentas reales, sin el renglón de Resultado)','',totalSaldoInicialD,totalSaldoInicialA,totalCargos,totalAbonos,totalSaldoActualD,totalSaldoActualA] });
+
+  wirePrintControl(contenido);
 
   document.getElementById('balanzaExcelBtn').addEventListener('click', () => {
     const encabezados = ['Cuenta','Tipo','Saldo inicial Deudor','Saldo inicial Acreedor','Cargos','Abonos','Saldo actual Deudor','Saldo actual Acreedor'];

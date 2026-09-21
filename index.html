@@ -547,6 +547,72 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 /* Tarjeta "Documento soporte" móvil → abre visor de pantalla casi completa */
 .doc-mobile-card{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:#fafbfd;}
 .doc-mobile-card .doc-mobile-nombre{font-size:12.5px;color:var(--navy-1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+
+/* ============================================================
+   BLOQUE A — INFRAESTRUCTURA VISUAL COMPARTIDA (Etapa 2)
+   ============================================================
+   Breakpoints compartidos — 3 puntos, no 5, para no fragmentar el CSS por módulo:
+     ESCRITORIO/LAPTOP  : > 1024px  → sin media query (estilo base)
+     TABLET             : 641px – 1024px → @media (max-width:1024px)
+     MÓVIL              : ≤ 640px      → @media (max-width:640px)
+   Tablet horizontal normalmente cae en la banda ancha de "escritorio" por resolución real;
+   tablet vertical cae en la banda de 641–1024. Un mismo breakpoint de 1024px cubre ambos casos
+   sin necesitar un cuarto/quinto punto de corte.
+   ============================================================ */
+
+/* ---------- PrintControl — presentacional puro ---------- */
+.print-control{position:relative;display:inline-block;}
+.print-control-popover{position:absolute;right:0;top:calc(100% + 6px);background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.15);padding:12px;width:200px;z-index:40;}
+.print-control-label{font-size:10.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px;}
+.print-control-segmented{display:flex;border:1px solid var(--line);border-radius:7px;overflow:hidden;}
+.print-control-opcion{flex:1;border:none;background:#fff;color:var(--navy-1);font-size:12px;padding:6px 4px;cursor:pointer;}
+.print-control-opcion.activa{background:var(--navy-1);color:#fff;}
+.print-control-opcion:not(:last-child){border-right:1px solid var(--line);}
+@media (max-width:640px){
+  .print-control-popover{right:auto;left:0;width:180px;}
+}
+
+/* ---------- .tabla-operativa — base para tablas de listado (Bancos, Proveedores, Clientes,
+   Pólizas). Cada pantalla marca sus celdas con data-rol para que el patrón sepa qué mostrar en
+   la tarjeta móvil, SIN asumir posiciones de columna fijas. Roles disponibles:
+     data-rol="principal"   → línea 1 de la tarjeta (ej. fecha + importe)
+     data-rol="secundario"  → línea 2 (ej. tercero/proveedor)
+     data-rol="meta"        → línea 3, texto secundario (ej. descripción)
+     data-rol="importe"     → se alinea a la derecha, tipografía tabular
+     data-rol="estado"      → badge
+     data-rol="acciones"    → botones de fila
+   Desktop: tabla normal, sin cambios. Solo se activa en móvil (≤640px). ---------- */
+.tabla-operativa{width:100%;}
+@media (max-width:640px){
+  .tabla-operativa thead{display:none;}
+  .tabla-operativa,.tabla-operativa tbody,.tabla-operativa tr,.tabla-operativa td{display:block;width:100%;}
+  .tabla-operativa tr{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:#fff;}
+  .tabla-operativa td{border:none;padding:2px 0;}
+  .tabla-operativa td[data-rol="principal"]{display:flex;justify-content:space-between;align-items:baseline;font-weight:600;color:var(--navy-1);font-size:13.5px;}
+  .tabla-operativa td[data-rol="secundario"]{font-size:12.5px;color:var(--navy-1);}
+  .tabla-operativa td[data-rol="meta"]{font-size:11.5px;color:var(--muted);}
+  .tabla-operativa td[data-rol="importe"]{text-align:right;font-variant-numeric:tabular-nums;}
+  .tabla-operativa td[data-rol="estado"]{margin-top:4px;}
+  .tabla-operativa td[data-rol="acciones"]{margin-top:6px;display:flex;gap:8px;justify-content:flex-end;}
+  .tabla-operativa td:empty{display:none;}
+}
+
+/* ---------- .tabla-contable — base para reportes contables (Libro Diario, Auxiliares, Balanza,
+   Estado de Resultados, Balance). NUNCA se convierte en tarjetas — conserva la tabla completa,
+   con scroll horizontal contenido en su propio wrapper. El sticky es opcional por pantalla:
+     data-sticky-primera-col="1"  en el <table>  → primera columna fija al hacer scroll horizontal
+     data-sticky-header="1"       en el <table>  → encabezado fijo al hacer scroll vertical interno
+   No se aplica indiscriminadamente — cada pantalla decide si lo necesita. ---------- */
+.tabla-contable-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%;min-width:0;border-radius:8px;}
+.tabla-contable{width:100%;border-collapse:collapse;min-width:640px;}
+.tabla-contable td,.tabla-contable th{white-space:nowrap;}
+.tabla-contable td.num,.tabla-contable th.num{text-align:right;font-variant-numeric:tabular-nums;}
+.tabla-contable[data-sticky-header="1"] thead th{position:sticky;top:0;background:var(--navy-1);color:#fff;z-index:2;}
+.tabla-contable[data-sticky-primera-col="1"] td:first-child,.tabla-contable[data-sticky-primera-col="1"] th:first-child{position:sticky;left:0;background:#fff;z-index:1;box-shadow:2px 0 4px rgba(0,0,0,.04);}
+.tabla-contable[data-sticky-header="1"][data-sticky-primera-col="1"] thead th:first-child{z-index:3;background:var(--navy-1);}
+@media (max-width:640px){
+  .tabla-contable-wrap{max-height:70vh;}
+}
 </style>
 </head>
 <body>
