@@ -15743,7 +15743,7 @@ async function renderBalanceGeneral() {
         ${!esHoy ? `<button class="btn btn-ghost btn-sm" id="balanceHastaHoy">✕ Ver a hoy</button>` : ''}
       </div>
     </div>
-    <div class="kpi-grid kpi-grid-mobile-compact">
+    <div class="kpi-grid kpi-grid-compact">
       <div class="kpi"><div class="label">Total Activo</div><div class="value num">${fmt(totalActivo)}</div></div>
       <div class="kpi"><div class="label">Total Pasivo</div><div class="value num red">${fmt(totalPasivo)}</div></div>
       <div class="kpi"><div class="label">Total Capital</div><div class="value num ${totalCapital>=0?'green':'red'}">${fmt(totalCapital)}</div></div>

@@ -37,12 +37,20 @@
   --shadow:0 8px 24px rgba(10,31,61,.08);
 }
 *{box-sizing:border-box;margin:0;padding:0;}
+html{overscroll-behavior-x:none;}
 body{
   font-family:'Inter',sans-serif;
   background:var(--paper);
   color:var(--ink);
   -webkit-font-smoothing:antialiased;
+  overflow-x:hidden;
+  overscroll-behavior-x:none;
+  touch-action:pan-y;
 }
+/* Dentro de los contenedores de tabla ancha SÍ se permite el gesto horizontal — el scroll debe
+   pertenecer exclusivamente a ellos, nunca a la página. overscroll-behavior-x:contain evita que
+   al llegar al final de la tabla el "rebote" elástico se propague a la página completa. */
+.table-wrap,.tabla-contable-wrap{touch-action:pan-x pan-y;overscroll-behavior-x:contain;}
 h1,h2,h3,.serif{font-family:'Cormorant Garamond',serif;}
 .num{font-variant-numeric:tabular-nums;text-align:right;}
 ::selection{background:var(--gold);color:#fff;}
@@ -250,6 +258,15 @@ h1,h2,h3,.serif{font-family:'Cormorant Garamond',serif;}
 .kpi-grid-compact .kpi{padding:10px 14px;}
 .kpi-grid-compact .kpi .label{font-size:11px;margin-bottom:4px;}
 .kpi-grid-compact .kpi .value{font-size:18px;}
+@media (max-width:640px){
+  /* Compactación adicional medida en dispositivo real — la regla de arriba sola no bajaba lo
+     suficiente la altura renderizada (59px medidos). Objetivo: reducir materialmente sin perder
+     legibilidad. Solo aplica ≤640px; desktop/tablet conservan el tamaño ya aprobado arriba. */
+  .kpi-grid-compact{gap:7px;margin-bottom:10px;}
+  .kpi-grid-compact .kpi{padding:6px 10px;}
+  .kpi-grid-compact .kpi .label{font-size:9.5px;margin-bottom:1px;letter-spacing:.3px;}
+  .kpi-grid-compact .kpi .value{font-size:15px;line-height:1.25;}
+}
 @media (max-width:640px){
   /* KPIs de Proveedores/Clientes — mismo contenido y cifras, solo más compactos en móvil.
      Escritorio/tablet no se ven afectados (esta regla vive dentro del media query). */
@@ -677,8 +694,9 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   #sec-balance .field input,#sec-balance .field select,
   #sec-pl .field input,#sec-pl .field select,
   #sec-flujo .field input,#sec-flujo .field select{padding:8px 10px;font-size:13px;}
-  #sec-librodiario .grid-3,#sec-pl .grid-3{grid-template-columns:1fr 1fr;gap:8px;}
-  #sec-librodiario .grid-3 .field:last-child,#sec-pl .grid-3 .field:last-child{grid-column:1 / -1;}
+  #sec-librodiario .grid-3,#sec-pl .grid-3{grid-template-columns:1fr 1fr;gap:8px;margin:6px 0 2px !important;}
+  #sec-librodiario .grid-3 .field:last-child{grid-column:1 / -1;}
+  #sec-pl .pl-controles-rango p{font-size:10.5px !important;line-height:1.3;margin:0 0 6px !important;}
 }
 </style>
 </head>
