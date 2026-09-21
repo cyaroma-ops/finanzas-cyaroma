@@ -625,7 +625,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   .tabla-operativa--ledger,.tabla-operativa--ledger tbody{display:block;width:100%;}
   .tabla-operativa--ledger tr{
     display:grid;
-    grid-template-columns:1fr auto;
+    grid-template-columns:minmax(0,1fr) auto;
     grid-template-areas:"principal importe" "secundario saldo" "acciones acciones";
     column-gap:8px;row-gap:1px;
     padding:7px 2px;border:none;border-bottom:1px solid var(--line);margin-bottom:0;background:none;border-radius:0;

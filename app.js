@@ -12145,7 +12145,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
       <td class="num ledger-input-detalle">${fmtNum(m.depositos)}</td>
       <td class="num ledger-input-detalle">${fmtNum(m.cargos)}</td>
       <td class="num ledger-input-detalle" style="font-weight:700;">${fmt(saldo)}</td>
-      <td style="text-align:center;color:var(--green);" title="${m.conciliado ? 'Conciliado el ' + fechaCorta(m.fecha_conciliacion) : 'Pendiente de conciliar'}">${m.conciliado ? '✓' : ''}</td>
+      <td class="ledger-input-detalle" style="text-align:center;color:var(--green);" title="${m.conciliado ? 'Conciliado el ' + fechaCorta(m.fecha_conciliacion) : 'Pendiente de conciliar'}">${m.conciliado ? '✓' : ''}</td>
       <td data-rol="acciones" style="position:relative;">
         <button class="btn btn-ghost btn-sm mov-menu-btn" data-id="${m.id}" style="padding:5px 12px;">${sinClasificarFila?'⚠ ⋯':'⋯'}</button>
         <div class="mov-menu-dropdown" data-menu="${m.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:120px;overflow:hidden;">
@@ -16305,8 +16305,7 @@ async function renderPLAnual(el, b) {
   }
   const mesesLabel = mesesYm.map(ym => `${MESES_LARGO[Number(ym.slice(5,7))-1].slice(0,3)} ${ym.slice(2,4)}`);
 
-  const datos = [];
-  for (const ym of mesesYm) {
+  const datos = await Promise.all(mesesYm.map(async (ym) => {
     const periodo = periodoPL(ym, 'mensual');
     const { data: v } = await sb.from('fz_ventas').select('*').eq('business_id', b.id).gte('fecha', periodo.start).lte('fecha', periodo.end);
     const ventas = v || [];
@@ -16328,8 +16327,8 @@ async function renderPLAnual(el, b) {
     const utilidadBruta = totalIngresosFinal - gCostos.totalClasificado;
     const gastosTotales = gastosOperativos + gClas.totalClasificado + gClas.sinClasificar + faltanteCaja;
     const utilidad = utilidadBruta - gastosTotales;
-    datos.push({ ym, ingresosPorConcepto, sobranteCaja, iPoliza, iPolizaTotal: iPoliza.total, gananciaCambiaria, totalIngresosFinal, gastosOperativos, faltanteCaja, gClas, gCostos, utilidadBruta, gastosTotales, utilidad });
-  }
+    return { ym, ingresosPorConcepto, sobranteCaja, iPoliza, iPolizaTotal: iPoliza.total, gananciaCambiaria, totalIngresosFinal, gastosOperativos, faltanteCaja, gClas, gCostos, utilidadBruta, gastosTotales, utilidad };
+  }));
 
   const sum = arr => arr.reduce((s,x)=>s+x,0);
   const colorCelda = (v, opts) => opts.perValueColor ? `color:${Number(v)>=0?'var(--green)':'var(--red)'};` : (opts.color?`color:${opts.color};`:(Number(v)<0?'color:var(--red);':''));
