@@ -134,6 +134,89 @@ function cerrarPreviewAdjunto() {
 }
 document.getElementById('adjuntoPreviewCerrar').addEventListener('click', cerrarPreviewAdjunto);
 document.getElementById('adjuntoPreviewOverlay').addEventListener('click', cerrarPreviewAdjunto);
+
+/* ============================================================
+   DocumentAttachment / DocumentViewer — componente visual compartido.
+   Consolida en un solo lugar la UI de "documento soporte" que antes estaba duplicada en
+   Bancos/Proveedores/Pólizas (mismo patrón: arreglo de File en memoria antes de guardar).
+   NO sube archivos, NO decide asociación ni persistencia — cada módulo sigue usando su propio
+   arreglo de estado (STATE_movArchivosPendientes, STATE_provArchivosPendientes,
+   archivosPendientes de la póliza) y su propio guardado ya existente. Esto es solo presentación.
+   ============================================================ */
+function fmtTamanoArchivo(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024*1024) return (bytes/1024).toFixed(0) + ' KB';
+  return (bytes/(1024*1024)).toFixed(1) + ' MB';
+}
+function iconoTipoArchivo(nombre) {
+  const ext = (nombre.split('.').pop()||'').toLowerCase();
+  return ext === 'pdf' ? '📄' : ['jpg','jpeg','png'].includes(ext) ? '🖼️' : '📎';
+}
+// Vista previa de un archivo TODAVÍA NO subido (local, antes de Guardar) — reutiliza el mismo
+// drawer que verAdjunto() usa para archivos ya guardados, pero con un object URL local en vez de
+// una signed URL de storage. Nunca sube ni persiste nada por sí solo.
+function verArchivoPendiente(file) {
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  const esImagen = ['jpg','jpeg','png'].includes(ext);
+  const url = URL.createObjectURL(file);
+  const body = document.getElementById('adjuntoPreviewBody');
+  body.innerHTML = esImagen
+    ? `<div style="display:flex;align-items:center;justify-content:center;min-height:100%;padding:20px;"><img src="${url}" style="max-width:100%;max-height:70vh;box-shadow:0 4px 20px rgba(0,0,0,.15);border-radius:6px;"></div>`
+    : `<iframe src="${url}" style="width:100%;height:100%;border:none;min-height:70vh;"></iframe>`;
+  document.getElementById('adjuntoPreviewNombre').textContent = file.name + ' (aún no guardado)';
+  document.getElementById('adjuntoPreviewDescargar').href = url;
+  document.getElementById('adjuntoPreviewOverlay').style.display = 'block';
+  document.getElementById('adjuntoPreviewDrawer').style.display = 'flex';
+}
+// HTML del bloque "Documento soporte" — reemplaza el patrón ad-hoc duplicado. `pendientes` es EL
+// MISMO arreglo de File que cada módulo ya mantiene; `inputClass` es la clase que cada módulo ya
+// usa para conectar su propio listener de "agregar archivo" (sin cambiarla, para no romper el
+// wiring existente de cada pantalla).
+function documentoSoporteBloqueHtml(pendientes, inputClass) {
+  return `<div class="doc-adjunto-bloque">
+    <div class="doc-adjunto-label">Documento soporte</div>
+    ${pendientes.length ? `<div class="doc-adjunto-lista">
+      ${pendientes.map((f, i) => `<div class="doc-adjunto-chip">
+        <span class="doc-adjunto-icono">${iconoTipoArchivo(f.name)}</span>
+        <span class="doc-adjunto-nombre" title="${f.name}">${f.name}</span>
+        <span class="doc-adjunto-tam">${fmtTamanoArchivo(f.size)}</span>
+        <button type="button" class="doc-adjunto-ver" data-idx="${i}" title="Ver">Ver</button>
+        <button type="button" class="doc-adjunto-quitar" data-idx="${i}" title="Quitar">✕</button>
+      </div>`).join('')}
+    </div>` : ''}
+    <label class="doc-adjunto-agregar">
+      ${pendientes.length ? '+ Agregar otro archivo' : '+ Seleccionar o arrastrar archivo'}
+      <input type="file" accept=".pdf,.jpg,.jpeg,.png" multiple class="${inputClass}" style="display:none;">
+    </label>
+    <p class="doc-adjunto-hint">PDF, JPG o PNG · máx. ${ADJUNTOS_MAX_MB} MB · se sube al guardar</p>
+  </div>`;
+}
+// Conecta ver/quitar de los archivos pendientes ya renderizados por documentoSoporteBloqueHtml.
+// El input de "agregar" y el drag&drop los sigue conectando cada módulo (mismo patrón de push()
+// al arreglo que ya usaba) para no alterar su validación/estado existente.
+function wireDocumentoSoporteVerQuitar(container, pendientes, onChange) {
+  container.querySelectorAll('.doc-adjunto-ver').forEach(btn => btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    verArchivoPendiente(pendientes[Number(btn.dataset.idx)]);
+  }));
+  container.querySelectorAll('.doc-adjunto-quitar').forEach(btn => btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    pendientes.splice(Number(btn.dataset.idx), 1);
+    onChange();
+  }));
+}
+// Habilita arrastrar-y-soltar sobre el bloque completo — agrega los archivos al MISMO arreglo que
+// ya usa el módulo (misma validación de extensión/tamaño que cada uno ya aplicaba).
+function habilitarDragDropAdjunto(container, onFiles) {
+  ['dragover','dragleave','drop'].forEach(evt => container.addEventListener(evt, (e) => {
+    e.preventDefault(); e.stopPropagation();
+    container.classList.toggle('doc-adjunto-dragover', evt === 'dragover');
+  }));
+  container.addEventListener('drop', (e) => {
+    if (e.dataTransfer?.files?.length) onFiles(Array.from(e.dataTransfer.files));
+  });
+}
+
 async function cargarAdjuntos(tabla, registroId) {
   const { data } = await sb.from('fz_adjuntos').select('*').eq('tabla', tabla).eq('registro_id', registroId).order('created_at');
   return data || [];
@@ -10995,27 +11078,56 @@ function wireEntradaCellHandlers(container, table, onChange, facturasClientesPen
 }
 
 let STATE_movArchivosPendientes = [];
+// Helper compartido — muestra/oculta el panel embebido de documento en el workspace de dos
+// paneles (Bancos/Proveedores/Pólizas), usando el archivo pendiente más reciente. Solo
+// presentación: no sube ni asocia nada, reutiliza URL.createObjectURL como verArchivoPendiente.
+function actualizarPanelDocumentoEmbebido(ids, pendientes) {
+  const panel = document.getElementById(ids.panel);
+  const workspace = document.getElementById(ids.workspace);
+  if (!panel || !workspace) return;
+  if (!pendientes.length) { panel.style.display = 'none'; workspace.classList.remove('doc-workspace-split'); return; }
+  const oculto = panel.dataset.oculto === '1';
+  workspace.classList.toggle('doc-workspace-split', !oculto);
+  panel.style.display = oculto ? 'none' : 'flex';
+  if (!oculto) {
+    const file = pendientes[pendientes.length - 1];
+    const ext = (file.name.split('.').pop() || '').toLowerCase();
+    const esImagen = ['jpg','jpeg','png'].includes(ext);
+    const url = URL.createObjectURL(file);
+    document.getElementById(ids.embed).innerHTML = esImagen ? `<img src="${url}">` : `<iframe src="${url}"></iframe>`;
+    document.getElementById(ids.nombre).textContent = file.name;
+  }
+  const btn = document.getElementById(ids.toggleBtn);
+  if (btn && !btn.dataset.wired) {
+    btn.dataset.wired = '1';
+    btn.addEventListener('click', () => {
+      panel.dataset.oculto = panel.dataset.oculto === '1' ? '0' : '1';
+      btn.textContent = panel.dataset.oculto === '1' ? 'Mostrar' : 'Ocultar';
+      actualizarPanelDocumentoEmbebido(ids, pendientes);
+    });
+  }
+}
+const IDS_PANEL_DOC_MOV = { workspace: 'movWorkspace', panel: 'movPanelDoc', nombre: 'movPanelDocNombre', embed: 'movPanelDocEmbed', toggleBtn: 'movTogglePanelDoc' };
+const IDS_PANEL_DOC_POL = { workspace: 'polWorkspace', panel: 'polPanelDoc', nombre: 'polPanelDocNombre', embed: 'polPanelDocEmbed', toggleBtn: 'polTogglePanelDoc' };
+
 function renderMovAdjuntoPendiente() {
   const box = document.getElementById('movAdjuntoCell');
   const pendientes = STATE_movArchivosPendientes;
-  box.innerHTML = `<span style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;">
-    ${pendientes.map((f, i) => `<span style="font-size:12px;color:var(--navy-1);background:#f7f9fc;border-radius:5px;padding:2px 6px;">${f.name} <button class="quitar-mov-adjunto-pendiente" data-idx="${i}" style="border:none;background:none;color:var(--red);cursor:pointer;">✕</button></span>`).join('')}
-    <label style="font-size:12px;color:var(--navy-3);text-decoration:underline;cursor:pointer;">${pendientes.length?'+ Agregar más':'Adjuntar'} (se sube al guardar)<input type="file" accept=".pdf,.jpg,.jpeg,.png" multiple class="mov-adjunto-pendiente-input" style="display:none;"></label>
-  </span>`;
-  const input = box.querySelector('.mov-adjunto-pendiente-input');
-  if (input) input.addEventListener('change', () => {
-    Array.from(input.files).forEach(file => {
+  box.innerHTML = documentoSoporteBloqueHtml(pendientes, 'mov-adjunto-pendiente-input');
+  const agregarArchivos = (files) => {
+    files.forEach(file => {
       const ext = (file.name.split('.').pop() || '').toLowerCase();
       if (!ADJUNTOS_EXT_PERMITIDAS.includes(ext)) { toast(`"${file.name}": solo se permiten archivos PDF, JPG o PNG.`, 'error'); return; }
       if (file.size > ADJUNTOS_MAX_MB * 1024 * 1024) { toast(`"${file.name}" pesa más de ${ADJUNTOS_MAX_MB} MB.`, 'error'); return; }
       STATE_movArchivosPendientes.push(file);
     });
     renderMovAdjuntoPendiente();
-  });
-  box.querySelectorAll('.quitar-mov-adjunto-pendiente').forEach(btn => btn.addEventListener('click', () => {
-    STATE_movArchivosPendientes.splice(Number(btn.dataset.idx), 1);
-    renderMovAdjuntoPendiente();
-  }));
+  };
+  const input = box.querySelector('.mov-adjunto-pendiente-input');
+  if (input) input.addEventListener('change', () => agregarArchivos(Array.from(input.files)));
+  wireDocumentoSoporteVerQuitar(box, pendientes, renderMovAdjuntoPendiente);
+  habilitarDragDropAdjunto(box.querySelector('.doc-adjunto-bloque'), agregarArchivos);
+  if (window.innerWidth > 880) actualizarPanelDocumentoEmbebido(IDS_PANEL_DOC_MOV, pendientes);
 }
 async function openMovimientoModal(contexto, movimientoExistente) {
   const modal = document.getElementById('modalMovimiento');
@@ -11247,8 +11359,11 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     const conteo = await contarAdjuntosPorRegistro(tablaAdjunto, [movimientoExistente.id]);
     document.getElementById('movAdjuntoCell').innerHTML = adjuntosCellHtml(conteo[movimientoExistente.id], movimientoExistente.id);
     wireAdjuntosHandlers(document.getElementById('movAdjuntoCell'), tablaAdjunto, contexto.businessId, () => {});
+    document.getElementById('movPanelDoc').style.display = 'none';
+    document.getElementById('movWorkspace').classList.remove('doc-workspace-split');
   } else {
     STATE_movArchivosPendientes = [];
+    document.getElementById('movPanelDoc').dataset.oculto = '';
     renderMovAdjuntoPendiente();
   }
 
@@ -14158,27 +14273,25 @@ async function syncPagoProveedor(businessId, facturaId) {
 
 let STATE_provArchivosPendientes = [];
 let STATE_facturaProveedorEditandoId = null;
+const IDS_PANEL_DOC_FP = { workspace: 'fpWorkspace', panel: 'fpPanelDoc', nombre: 'fpPanelDocNombre', embed: 'fpPanelDocEmbed', toggleBtn: 'fpTogglePanelDoc' };
 function renderFpAdjuntoPendiente() {
   const box = document.getElementById('fpAdjuntoCell');
   const pendientes = STATE_provArchivosPendientes;
-  box.innerHTML = `<span style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;">
-    ${pendientes.map((f, i) => `<span style="font-size:12px;color:var(--navy-1);background:#f7f9fc;border-radius:5px;padding:2px 6px;">${f.name} <button class="quitar-fp-adjunto-pendiente" data-idx="${i}" style="border:none;background:none;color:var(--red);cursor:pointer;">✕</button></span>`).join('')}
-    <label style="font-size:12px;color:var(--navy-3);text-decoration:underline;cursor:pointer;">${pendientes.length?'+ Agregar más':'Adjuntar'} (se sube al guardar)<input type="file" accept=".pdf,.jpg,.jpeg,.png" multiple class="fp-adjunto-pendiente-input" style="display:none;"></label>
-  </span>`;
-  const input = box.querySelector('.fp-adjunto-pendiente-input');
-  if (input) input.addEventListener('change', () => {
-    Array.from(input.files).forEach(file => {
+  box.innerHTML = documentoSoporteBloqueHtml(pendientes, 'fp-adjunto-pendiente-input');
+  const agregarArchivos = (files) => {
+    files.forEach(file => {
       const ext = (file.name.split('.').pop() || '').toLowerCase();
       if (!ADJUNTOS_EXT_PERMITIDAS.includes(ext)) { toast(`"${file.name}": solo se permiten archivos PDF, JPG o PNG.`, 'error'); return; }
       if (file.size > ADJUNTOS_MAX_MB * 1024 * 1024) { toast(`"${file.name}" pesa más de ${ADJUNTOS_MAX_MB} MB.`, 'error'); return; }
       STATE_provArchivosPendientes.push(file);
     });
     renderFpAdjuntoPendiente();
-  });
-  box.querySelectorAll('.quitar-fp-adjunto-pendiente').forEach(btn => btn.addEventListener('click', () => {
-    STATE_provArchivosPendientes.splice(Number(btn.dataset.idx), 1);
-    renderFpAdjuntoPendiente();
-  }));
+  };
+  const input = box.querySelector('.fp-adjunto-pendiente-input');
+  if (input) input.addEventListener('change', () => agregarArchivos(Array.from(input.files)));
+  wireDocumentoSoporteVerQuitar(box, pendientes, renderFpAdjuntoPendiente);
+  habilitarDragDropAdjunto(box.querySelector('.doc-adjunto-bloque'), agregarArchivos);
+  if (window.innerWidth > 880) actualizarPanelDocumentoEmbebido(IDS_PANEL_DOC_FP, pendientes);
 }
 
 async function openModalFacturaProveedor(factura, businessId, catalogo, opcionesPagoDesde) {
@@ -14259,8 +14372,11 @@ async function openModalFacturaProveedor(factura, businessId, catalogo, opciones
     const conteo = await contarAdjuntosPorRegistro('fz_proveedores', [factura.id]);
     document.getElementById('fpAdjuntoCell').innerHTML = adjuntosCellHtml(conteo[factura.id], factura.id);
     wireAdjuntosHandlers(document.getElementById('fpAdjuntoCell'), 'fz_proveedores', businessId, () => {});
+    document.getElementById('fpPanelDoc').style.display = 'none';
+    document.getElementById('fpWorkspace').classList.remove('doc-workspace-split');
   } else {
     STATE_provArchivosPendientes = [];
+    document.getElementById('fpPanelDoc').dataset.oculto = '';
     renderFpAdjuntoPendiente();
   }
 
@@ -16886,13 +17002,11 @@ function polizaCardHtmlBorrador(borrador) {
     return match ? match.label : '';
   };
 
-  let adjuntoHtml;
+  let adjuntoHtml, hayPendientesNueva = false;
   if (borrador.esNueva) {
     const pendientes = borrador.poliza.archivosPendientes || [];
-    adjuntoHtml = `<span style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;">
-      ${pendientes.map((f, i) => `<span style="font-size:12px;color:var(--navy-1);background:#f7f9fc;border-radius:5px;padding:2px 6px;">${f.name} <button class="quitar-adjunto-pendiente" data-idx="${i}" style="border:none;background:none;color:var(--red);cursor:pointer;">✕</button></span>`).join('')}
-      <label style="font-size:12px;color:var(--navy-3);text-decoration:underline;cursor:pointer;">${pendientes.length?'+ Agregar más':'Adjuntar'} (se sube al guardar)<input type="file" accept=".pdf,.jpg,.jpeg,.png" multiple class="adjunto-pendiente-input" style="display:none;"></label>
-    </span>`;
+    hayPendientesNueva = pendientes.length > 0;
+    adjuntoHtml = documentoSoporteBloqueHtml(pendientes, 'adjunto-pendiente-input');
   } else {
     adjuntoHtml = adjuntosCellHtml(borrador.conteoAdjuntos, p.id);
   }
@@ -16908,7 +17022,6 @@ function polizaCardHtmlBorrador(borrador) {
           <strong style="color:var(--navy-1);">${borrador.esNueva ? 'Nueva póliza' : 'Póliza #' + (p.numero ?? '—')}</strong>
           <input class="cell poliza-cell" type="date" value="${p.fecha}" data-field="fecha" style="width:auto;">
           <input class="cell poliza-cell" type="text" placeholder="Concepto de la póliza" value="${p.concepto || ''}" data-field="concepto" style="min-width:220px;">
-          ${adjuntoHtml}
         </div>
         <div style="display:flex;align-items:center;gap:10px;">
           <span class="badge ${cuadrada ? 'pag' : 'pend'}">${cuadrada ? 'Cuadrada' : 'Diferencia ' + fmt(diff)}</span>
@@ -16916,6 +17029,9 @@ function polizaCardHtmlBorrador(borrador) {
           ${!borrador.esNueva ? `<button class="btn btn-ghost btn-sm poliza-del" data-id="${p.id}" style="color:var(--red);">Eliminar póliza</button>` : ''}
         </div>
       </div>
+      <div class="doc-workspace" id="polWorkspace">
+      <div class="doc-workspace-panel-captura">
+      <div style="max-width:340px;margin-bottom:10px;">${adjuntoHtml}</div>
       <div class="table-wrap scroll-sticky">
         <table>
           <thead><tr><th>Cuenta</th><th>Proveedor</th><th>Referencia/Factura</th><th>Descripción</th><th>Cargo</th><th>Abono</th><th></th></tr></thead>
@@ -16939,6 +17055,15 @@ function polizaCardHtmlBorrador(borrador) {
         </table>
       </div>
       <button class="btn btn-ghost btn-sm addLineaBtn" style="margin-top:10px;">+ Agregar línea</button>
+      </div>
+      <div class="doc-workspace-panel-doc" id="polPanelDoc" style="display:none;">
+        <div class="doc-viewer-toolbar">
+          <strong id="polPanelDocNombre">Documento</strong>
+          <button type="button" class="doc-toggle-viewer" id="polTogglePanelDoc">Ocultar</button>
+        </div>
+        <div class="doc-viewer-embed" id="polPanelDocEmbed"></div>
+      </div>
+      </div>
     </div>`;
 }
 
@@ -17055,23 +17180,29 @@ function wireBorradorPolizaHandlers(wrap) {
     renderPolizas();
   });
   if (STATE_polizaBorrador.esNueva) {
-    const pendienteInput = wrap.querySelector('.adjunto-pendiente-input');
-    if (pendienteInput) pendienteInput.addEventListener('change', () => {
-      if (!STATE_polizaBorrador.poliza.archivosPendientes) STATE_polizaBorrador.poliza.archivosPendientes = [];
-      Array.from(pendienteInput.files).forEach(file => {
+    if (!STATE_polizaBorrador.poliza.archivosPendientes) STATE_polizaBorrador.poliza.archivosPendientes = [];
+    const pendientes = STATE_polizaBorrador.poliza.archivosPendientes;
+    const agregarArchivosPoliza = (files) => {
+      files.forEach(file => {
         const ext = (file.name.split('.').pop() || '').toLowerCase();
         if (!ADJUNTOS_EXT_PERMITIDAS.includes(ext)) { toast(`"${file.name}": solo se permiten archivos PDF, JPG o PNG.`, 'error'); return; }
         if (file.size > ADJUNTOS_MAX_MB * 1024 * 1024) { toast(`"${file.name}" pesa más de ${ADJUNTOS_MAX_MB} MB.`, 'error'); return; }
-        STATE_polizaBorrador.poliza.archivosPendientes.push(file);
+        pendientes.push(file);
       });
       renderizarBorradorPoliza();
-    });
-    wrap.querySelectorAll('.quitar-adjunto-pendiente').forEach(btn => btn.addEventListener('click', () => {
-      STATE_polizaBorrador.poliza.archivosPendientes.splice(Number(btn.dataset.idx), 1);
-      renderizarBorradorPoliza();
-    }));
+    };
+    const pendienteInput = wrap.querySelector('.adjunto-pendiente-input');
+    if (pendienteInput) pendienteInput.addEventListener('change', () => agregarArchivosPoliza(Array.from(pendienteInput.files)));
+    wireDocumentoSoporteVerQuitar(wrap, pendientes, renderizarBorradorPoliza);
+    const bloqueDoc = wrap.querySelector('.doc-adjunto-bloque');
+    if (bloqueDoc) habilitarDragDropAdjunto(bloqueDoc, agregarArchivosPoliza);
+    if (window.innerWidth > 880) actualizarPanelDocumentoEmbebido(IDS_PANEL_DOC_POL, pendientes);
   } else {
     wireAdjuntosHandlers(wrap, 'fz_polizas', STATE_polizaBorrador.businessId, () => refrescarAdjuntoBorrador());
+    const panelDoc = document.getElementById('polPanelDoc');
+    const workspacePol = document.getElementById('polWorkspace');
+    if (panelDoc) panelDoc.style.display = 'none';
+    if (workspacePol) workspacePol.classList.remove('doc-workspace-split');
   }
   wireInputsMoneda(wrap);
 }
