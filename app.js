@@ -986,11 +986,22 @@ function updateTopbar() {
 
   const printBtn = document.getElementById('printBtn');
   const printOrientacion = document.getElementById('printOrientacion');
+  const printOrientacionToggle = document.getElementById('printOrientacionToggle');
   if (SECCIONES_IMPRIMIBLES.includes(STATE.currentSection)) {
     printBtn.style.display = 'inline-flex';
-    printOrientacion.style.display = 'inline-flex';
+    printOrientacionToggle.style.display = 'inline-flex';
     if (STATE.currentSection === 'pl') {
       printOrientacion.value = (STATE_plVista === 'anual') ? 'landscape' : 'portrait';
+    }
+    printOrientacionToggle.querySelectorAll('.print-control-opcion').forEach(btn => {
+      btn.classList.toggle('activa', btn.dataset.val === printOrientacion.value);
+    });
+    if (!printOrientacionToggle.dataset.wired) {
+      printOrientacionToggle.dataset.wired = '1';
+      printOrientacionToggle.querySelectorAll('.print-control-opcion').forEach(btn => btn.addEventListener('click', () => {
+        printOrientacion.value = btn.dataset.val;
+        printOrientacionToggle.querySelectorAll('.print-control-opcion').forEach(b => b.classList.toggle('activa', b === btn));
+      }));
     }
     printBtn.onclick = () => {
       document.body.dataset.printSection = STATE.currentSection;
@@ -1011,7 +1022,7 @@ function updateTopbar() {
     };
   } else {
     printBtn.style.display = 'none';
-    printOrientacion.style.display = 'none';
+    printOrientacionToggle.style.display = 'none';
   }
   actualizarAlturaTopbar();
 }
@@ -15746,14 +15757,10 @@ async function renderBalanceGeneral() {
     </tr>`;
 
   el.innerHTML = `
-    <div class="grid-3" style="margin-bottom:12px;max-width:340px;">
-      <div class="field" style="margin-bottom:0;">
-        <label>Ver balance al cierre de</label>
-        <input type="month" id="balanceHastaMes" value="${hastaYm}">
-      </div>
-      <div class="field" style="margin-bottom:0;display:flex;align-items:flex-end;">
-        ${!esHoy ? `<button class="btn btn-ghost btn-sm" id="balanceHastaHoy">✕ Ver a hoy</button>` : ''}
-      </div>
+    <div style="display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px;">
+      <label style="font-size:12px;color:var(--muted);font-weight:600;letter-spacing:.3px;margin:0;white-space:nowrap;">Ver balance al cierre de</label>
+      <input type="month" id="balanceHastaMes" value="${hastaYm}" style="width:auto;min-width:150px;max-width:190px;flex:0 1 auto;">
+      ${!esHoy ? `<button class="btn btn-ghost btn-sm" id="balanceHastaHoy">✕ Ver a hoy</button>` : ''}
     </div>
     <div class="kpi-grid kpi-grid-compact">
       <div class="kpi"><div class="label">Total Activo</div><div class="value num">${fmt(totalActivo)}</div></div>
