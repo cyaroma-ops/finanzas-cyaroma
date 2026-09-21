@@ -16087,7 +16087,8 @@ async function getDetalleIngresoSubcuenta(businessId, periodo, subcuentaId) {
 function detalleSubcuentaHtml(filas, colspan) {
   if (!filas.length) return `<tr><td colspan="${colspan}" style="padding-left:34px;color:var(--muted);font-size:12px;">Sin movimientos detallados para este período.</td></tr>`;
   return `<tr><td colspan="${colspan}" style="padding:0 0 8px 34px;">
-    <table style="width:100%;table-layout:fixed;">
+    <div class="table-wrap tabla-contable-wrap">
+    <table style="width:100%;table-layout:fixed;min-width:510px;">
       <colgroup>
         <col style="width:80px;"><col style="width:150px;"><col><col style="width:100px;"><col style="width:110px;"><col style="width:70px;">
       </colgroup>
@@ -16101,6 +16102,7 @@ function detalleSubcuentaHtml(filas, colspan) {
         <td style="white-space:nowrap;">${f.origen && f.origen.tipo !== 'ajuste' ? `<button class="btn btn-ghost btn-sm abrir-origen-btn" data-origen='${JSON.stringify(f.origen).replace(/'/g,'&apos;')}' style="font-size:11px;padding:3px 8px;">Abrir ↗</button>` : ''}</td>
       </tr>`).join('')}</tbody>
     </table>
+    </div>
   </td></tr>`;
 }
 
@@ -16555,6 +16557,7 @@ async function renderPL() {
 
     <div class="card">
       <div class="card-head"><h3>Ingresos — ${periodoLabel}</h3><span class="hint">Calculado de Ventas</span></div>
+      <div class="table-wrap tabla-contable-wrap">
       <table class="report-table">
         <tbody>
           ${(() => {
@@ -16587,11 +16590,13 @@ async function renderPL() {
           <tr class="total-row"><td>Total ingresos</td><td class="num">${fmtNeg(totalIngresosFinal)}</td></tr>
         </tbody>
       </table>
+      </div>
     </div>
 
     ${mayores.some(m => m.tipo === 'costo') ? `
     <div class="card">
       <div class="card-head"><h3>Costo de Ventas — ${periodoLabel}</h3></div>
+      <div class="table-wrap tabla-contable-wrap">
       <table class="report-table">
         <tbody>
           ${gCostos.porMayor.length ? gCostos.porMayor.map(m => {
@@ -16607,6 +16612,7 @@ async function renderPL() {
           <tr class="total-row" style="border-top:2px solid var(--navy-1);"><td>Utilidad Bruta</td><td class="num" style="color:${utilidadBruta>=0?'var(--green)':'var(--red)'};">${fmt(utilidadBruta)}</td></tr>
         </tbody>
       </table>
+      </div>
     </div>` : ''}
 
     <div class="card">
@@ -16616,6 +16622,7 @@ async function renderPL() {
           <button class="btn btn-gold btn-sm" id="addGastoBtn">+ Ajuste manual</button>
         </div>
       </div>
+      <div class="table-wrap tabla-contable-wrap">
       <table class="report-table">
         <tbody>
           <tr><td>Gastos operativos del día (desde Ventas, sin clasificar)</td><td class="num">${fmtNeg(gastosOperativos)}</td><td class="td-vacia-reporte"></td></tr>
@@ -16629,6 +16636,7 @@ async function renderPL() {
           <tr class="total-row"><td>Total gastos</td><td class="num">${fmtNeg(gastosTotales)}</td><td class="td-vacia-reporte"></td></tr>
         </tbody>
       </table>
+      </div>
       <p style="font-size:12px;color:var(--muted);margin-top:10px;">Los gastos se toman de las facturas de Proveedores (por su desglose), de las salidas de Bancos/Efectivo marcadas como "Gasto", y de los ajustes manuales de abajo.</p>
       ${gClas.gastosManuales.length ? `
       <div class="table-wrap" style="margin-top:14px;">
@@ -16652,6 +16660,7 @@ async function renderPL() {
 
     <div class="card">
       <div class="card-head"><h3>Resultado</h3></div>
+      <div class="table-wrap tabla-contable-wrap">
       <table class="report-table">
         <tbody>
           <tr><td>Total ingresos</td><td class="num">${fmtNeg(totalIngresosFinal)}</td></tr>
@@ -16662,6 +16671,7 @@ async function renderPL() {
           <tr class="total-row"><td>Utilidad / Pérdida neta</td><td class="num ${utilidad>=0?'':'red'}" style="color:${utilidad>=0?'var(--green)':'var(--red)'};">${fmt(utilidad)}</td></tr>
         </tbody>
       </table>
+      </div>
     </div>
   `;
 
@@ -16752,7 +16762,7 @@ async function renderFlujo() {
     </div>
     <div class="card">
       <div class="card-head"><h3>Resumen del mes — ${STATE.currentMonth}</h3></div>
-      <div class="kpi-grid">
+      <div class="kpi-grid kpi-grid-compact">
         <div class="kpi"><div class="label">Ventas del mes</div><div class="value num">${fmt(resumenMes.totalIngresos)}</div></div>
         <div class="kpi"><div class="label">Total gastos y costos del mes</div><div class="value num red">${fmt(resumenMes.totalGastos)}</div></div>
         <div class="kpi"><div class="label">Utilidad del mes</div><div class="value num ${resumenMes.utilidad>=0?'green':'red'}">${fmt(resumenMes.utilidad)}</div></div>
