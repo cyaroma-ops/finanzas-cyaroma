@@ -250,6 +250,14 @@ h1,h2,h3,.serif{font-family:'Cormorant Garamond',serif;}
 .kpi-grid-compact .kpi{padding:10px 14px;}
 .kpi-grid-compact .kpi .label{font-size:11px;margin-bottom:4px;}
 .kpi-grid-compact .kpi .value{font-size:18px;}
+@media (max-width:640px){
+  /* KPIs de Proveedores/Clientes — mismo contenido y cifras, solo más compactos en móvil.
+     Escritorio/tablet no se ven afectados (esta regla vive dentro del media query). */
+  .kpi-grid-mobile-compact{grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:14px;}
+  .kpi-grid-mobile-compact .kpi{padding:8px 10px;}
+  .kpi-grid-mobile-compact .kpi .label{font-size:10px;margin-bottom:2px;line-height:1.2;}
+  .kpi-grid-mobile-compact .kpi .value{font-size:15px;}
+}
 .kpi{background:var(--card);border-radius:var(--radius);padding:18px 20px;box-shadow:var(--shadow);border:1px solid var(--line);}
 .kpi .label{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;font-weight:700;margin-bottom:8px;}
 .kpi .value{font-size:26px;font-weight:800;color:var(--navy-1);}
@@ -572,29 +580,75 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   .print-control-popover{right:auto;left:0;width:180px;}
 }
 
-/* ---------- .tabla-operativa — base para tablas de listado (Bancos, Proveedores, Clientes,
-   Pólizas). Cada pantalla marca sus celdas con data-rol para que el patrón sepa qué mostrar en
-   la tarjeta móvil, SIN asumir posiciones de columna fijas. Roles disponibles:
-     data-rol="principal"   → línea 1 de la tarjeta (ej. fecha + importe)
-     data-rol="secundario"  → línea 2 (ej. tercero/proveedor)
-     data-rol="meta"        → línea 3, texto secundario (ej. descripción)
-     data-rol="importe"     → se alinea a la derecha, tipografía tabular
-     data-rol="estado"      → badge
-     data-rol="acciones"    → botones de fila
-   Desktop: tabla normal, sin cambios. Solo se activa en móvil (≤640px). ---------- */
+/* ---------- .tabla-operativa — base para tablas de listado. Cada pantalla marca sus celdas con
+   data-rol para que el patrón sepa qué mostrar en móvil, SIN asumir posiciones de columna fijas.
+   Roles disponibles: principal, secundario, meta, importe, estado, acciones.
+   Desktop: tabla normal, sin cambios en ningún caso. Móvil (≤640px) tiene TRES comportamientos
+   distintos según la naturaleza de la información — nunca uno solo para todo:
+     (sin modificador)      → TARJETA — ya aprobado para Pólizas de Diario. NO TOCAR.
+     .tabla-operativa--scroll  → TABLA REAL con scroll horizontal interno — Proveedores, Clientes.
+     .tabla-operativa--ledger  → LISTA COMPACTA tipo estado de cuenta — Bancos, Efectivo.
+   ---------- */
 .tabla-operativa{width:100%;}
 @media (max-width:640px){
-  .tabla-operativa thead{display:none;}
-  .tabla-operativa,.tabla-operativa tbody,.tabla-operativa tr,.tabla-operativa td{display:block;width:100%;}
-  .tabla-operativa tr{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:#fff;}
-  .tabla-operativa td{border:none;padding:2px 0;}
-  .tabla-operativa td[data-rol="principal"]{display:flex;justify-content:space-between;align-items:baseline;font-weight:600;color:var(--navy-1);font-size:13.5px;}
-  .tabla-operativa td[data-rol="secundario"]{font-size:12.5px;color:var(--navy-1);}
-  .tabla-operativa td[data-rol="meta"]{font-size:11.5px;color:var(--muted);}
-  .tabla-operativa td[data-rol="importe"]{text-align:right;font-variant-numeric:tabular-nums;}
-  .tabla-operativa td[data-rol="estado"]{margin-top:4px;}
-  .tabla-operativa td[data-rol="acciones"]{margin-top:6px;display:flex;gap:8px;justify-content:flex-end;}
-  .tabla-operativa td:empty{display:none;}
+  /* Base = tarjeta (comportamiento ya aprobado — Pólizas de Diario, sin cambios) */
+  .tabla-operativa:not(.tabla-operativa--scroll):not(.tabla-operativa--ledger) thead{display:none;}
+  .tabla-operativa:not(.tabla-operativa--scroll):not(.tabla-operativa--ledger),
+  .tabla-operativa:not(.tabla-operativa--scroll):not(.tabla-operativa--ledger) tbody,
+  .tabla-operativa:not(.tabla-operativa--scroll):not(.tabla-operativa--ledger) tr,
+  .tabla-operativa:not(.tabla-operativa--scroll):not(.tabla-operativa--ledger) td{display:block;width:100%;}
+  .tabla-operativa:not(.tabla-operativa--scroll):not(.tabla-operativa--ledger) tr{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:#fff;}
+  .tabla-operativa:not(.tabla-operativa--scroll):not(.tabla-operativa--ledger) td{border:none;padding:2px 0;}
+  .tabla-operativa:not(.tabla-operativa--scroll):not(.tabla-operativa--ledger) td[data-rol="principal"]{display:flex;justify-content:space-between;align-items:baseline;font-weight:600;color:var(--navy-1);font-size:13.5px;}
+  .tabla-operativa:not(.tabla-operativa--scroll):not(.tabla-operativa--ledger) td[data-rol="secundario"]{font-size:12.5px;color:var(--navy-1);}
+  .tabla-operativa:not(.tabla-operativa--scroll):not(.tabla-operativa--ledger) td[data-rol="meta"]{font-size:11.5px;color:var(--muted);}
+  .tabla-operativa:not(.tabla-operativa--scroll):not(.tabla-operativa--ledger) td[data-rol="importe"]{text-align:right;font-variant-numeric:tabular-nums;}
+  .tabla-operativa:not(.tabla-operativa--scroll):not(.tabla-operativa--ledger) td[data-rol="estado"]{margin-top:4px;}
+  .tabla-operativa:not(.tabla-operativa--scroll):not(.tabla-operativa--ledger) td[data-rol="acciones"]{margin-top:6px;display:flex;gap:8px;justify-content:flex-end;}
+  .tabla-operativa:not(.tabla-operativa--scroll):not(.tabla-operativa--ledger) td:empty{display:none;}
+
+  /* --scroll = sigue siendo TABLA (Proveedores, Clientes) — nunca se convierte en tarjeta.
+     El contenedor .table-wrap ya provee overflow-x:auto; aquí solo se asegura un ancho mínimo
+     legible por columna y que la primera columna pueda anclarse (sticky) sin romper el layout. */
+  .tabla-operativa--scroll{width:auto;min-width:100%;}
+  .tabla-operativa--scroll td,.tabla-operativa--scroll th{white-space:nowrap;padding:8px 10px;}
+  .tabla-operativa--scroll td[data-rol="principal"],.tabla-operativa--scroll th:first-child{
+    position:sticky;left:0;background:#fff;z-index:1;box-shadow:2px 0 4px rgba(0,0,0,.05);
+  }
+  .tabla-operativa--scroll thead th{background:var(--paper);}
+
+  /* --ledger = lista compacta tipo estado de cuenta (Bancos, Efectivo). 2-3 líneas por
+     movimiento, sin tarjeta grande, separador fino, saldo siempre visible. Usa CSS Grid sobre
+     <tr> con areas nombradas — los <td> se ubican por su data-rol, no por posición de columna.
+     Las celdas de edición en línea (descripción/cargos/depósitos, clase .ledger-input-detalle)
+     se ocultan SOLO en esta vista compacta — siguen intactas y editables en escritorio/tablet;
+     "Editar" en el menú de acciones sigue disponible para modificar el movimiento completo. */
+  .tabla-operativa--ledger thead{display:none;}
+  .tabla-operativa--ledger,.tabla-operativa--ledger tbody{display:block;width:100%;}
+  .tabla-operativa--ledger tr{
+    display:grid;
+    grid-template-columns:1fr auto;
+    grid-template-areas:"principal importe" "secundario saldo" "acciones acciones";
+    column-gap:8px;row-gap:1px;
+    padding:7px 2px;border:none;border-bottom:1px solid var(--line);margin-bottom:0;background:none;border-radius:0;
+  }
+  .tabla-operativa--ledger tr:last-child{border-bottom:none;}
+  .tabla-operativa--ledger td{display:block;border:none;padding:0;width:auto;}
+  .tabla-operativa--ledger td[data-rol="principal"]{grid-area:principal;font-size:12px;color:var(--muted);}
+  .tabla-operativa--ledger td[data-rol="secundario"]{grid-area:secundario;font-size:13px;font-weight:600;color:var(--navy-1);align-self:start;}
+  .tabla-operativa--ledger td[data-rol="importe"]{grid-area:importe;text-align:right;font-variant-numeric:tabular-nums;font-size:13.5px;font-weight:700;align-self:start;}
+  .tabla-operativa--ledger td[data-rol="estado"]{grid-area:saldo;font-size:11px;color:var(--muted);text-align:right;align-self:end;}
+  .tabla-operativa--ledger td[data-rol="acciones"]{grid-area:acciones;justify-self:end;align-self:center;}
+  .tabla-operativa--ledger .ledger-input-detalle{display:none;}
+  .tabla-operativa--ledger td:empty{display:none;}
+  .tabla-operativa--ledger .ledger-saldo-label{color:var(--muted);font-weight:400;font-size:10.5px;margin-right:3px;}
+  .ledger-conciliado-movil{color:var(--green);font-weight:700;font-size:11px;}
+}
+@media (min-width:641px){
+  /* En escritorio/tablet, el resumen de movimiento consolidado y el saldo compacto (móvil)
+     permanecen ocultos — las columnas reales de siempre (Depósitos/Cargos/Saldo) son las que se
+     muestran, sin cambios. */
+  .ledger-movimiento-resumen,.ledger-saldo-movil,.ledger-conciliado-movil{display:none;}
 }
 
 /* ---------- .tabla-contable — base para reportes contables (Libro Diario, Auxiliares, Balanza,
