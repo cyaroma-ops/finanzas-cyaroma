@@ -9368,7 +9368,7 @@ async function renderBalanza() {
       </div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;">Partida doble completa: Cargos y Abonos reconstruidos de Pólizas, Facturas de Proveedores/Clientes, y movimientos de Bancos/Efectivo. Trabaja con los nombres y tipos ya existentes en tu catálogo — sin códigos de cuenta todavía.</p>
       <div class="table-wrap scroll-sticky tabla-contable-wrap">
-        <table class="tabla-contable" data-sticky-primera-col="1">
+        <table class="tabla-contable">
           <thead><tr><th>Cuenta</th><th style="width:80px;">Tipo</th><th style="width:110px;">Saldo inicial Deudor</th><th style="width:110px;">Saldo inicial Acreedor</th><th style="width:100px;">Cargos</th><th style="width:100px;">Abonos</th><th style="width:110px;">Saldo actual Deudor</th><th style="width:110px;">Saldo actual Acreedor</th></tr></thead>
           <tbody>
             ${seccionCompleta('ACTIVO', 'Activo', porTipo.activo)}
@@ -15743,7 +15743,7 @@ async function renderBalanceGeneral() {
         ${!esHoy ? `<button class="btn btn-ghost btn-sm" id="balanceHastaHoy">✕ Ver a hoy</button>` : ''}
       </div>
     </div>
-    <div class="kpi-grid">
+    <div class="kpi-grid kpi-grid-mobile-compact">
       <div class="kpi"><div class="label">Total Activo</div><div class="value num">${fmt(totalActivo)}</div></div>
       <div class="kpi"><div class="label">Total Pasivo</div><div class="value num red">${fmt(totalPasivo)}</div></div>
       <div class="kpi"><div class="label">Total Capital</div><div class="value num ${totalCapital>=0?'green':'red'}">${fmt(totalCapital)}</div></div>

@@ -664,6 +664,21 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 .tabla-contable[data-sticky-header="1"][data-sticky-primera-col="1"] thead th:first-child{z-index:3;background:var(--navy-1);}
 @media (max-width:640px){
   .tabla-contable-wrap{max-height:70vh;}
+  /* Compactación de filtros/controles superiores — SOLO en los 6 reportes contables
+     (Libro Diario, Auxiliares, Balanza, Balance, Estado de Resultados, Flujo). No afecta
+     .field en el resto de la app (Bancos, Proveedores, workspaces ya aprobados). */
+  #sec-librodiario .field,#sec-auxiliares .field,#sec-balanza .field,
+  #sec-balance .field,#sec-pl .field,#sec-flujo .field{margin-bottom:8px;}
+  #sec-librodiario .field label,#sec-auxiliares .field label,#sec-balanza .field label,
+  #sec-balance .field label,#sec-pl .field label,#sec-flujo .field label{font-size:10.5px;margin-bottom:3px;}
+  #sec-librodiario .field input,#sec-librodiario .field select,
+  #sec-auxiliares .field input,#sec-auxiliares .field select,
+  #sec-balanza .field input,#sec-balanza .field select,
+  #sec-balance .field input,#sec-balance .field select,
+  #sec-pl .field input,#sec-pl .field select,
+  #sec-flujo .field input,#sec-flujo .field select{padding:8px 10px;font-size:13px;}
+  #sec-librodiario .grid-3,#sec-pl .grid-3{grid-template-columns:1fr 1fr;gap:8px;}
+  #sec-librodiario .grid-3 .field:last-child,#sec-pl .grid-3 .field:last-child{grid-column:1 / -1;}
 }
 </style>
 </head>
