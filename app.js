@@ -1247,7 +1247,7 @@ async function renderDashboard() {
   const totNeta = totEfectivo + totBancos - totProv;
 
   el.innerHTML = `
-    <div class="kpi-grid">
+    <div class="kpi-grid kpi-grid-compact">
       <div class="kpi"><div class="label">Ventas del mes (todos)</div><div class="value num">${fmt(totVentas)}</div></div>
       <div class="kpi"><div class="label">Efectivo en caja (todos)</div><div class="value num">${fmt(totEfectivo)}</div></div>
       <div class="kpi"><div class="label">Saldo en bancos (todos)</div><div class="value num">${fmt(totBancos)}</div></div>
@@ -1255,13 +1255,13 @@ async function renderDashboard() {
       <div class="kpi"><div class="label">Posición neta consolidada</div><div class="value num ${totNeta >= 0 ? 'green' : 'red'}">${fmt(totNeta)}</div></div>
     </div>
 
-    <div class="grid-2" style="align-items:stretch;">
+    <div class="grid-2 dash-charts-grid" style="align-items:stretch;">
       <div class="card">
         <div class="card-head">
           <h3>Ventas del mes por negocio</h3>
           <span class="hint">${STATE.currentMonth}</span>
         </div>
-        <div style="height:240px;"><canvas id="chartVentasNegocio"></canvas></div>
+        <div style="height:240px;max-width:100%;"><canvas id="chartVentasNegocio"></canvas></div>
       </div>
 
       <div class="card">
@@ -1275,7 +1275,7 @@ async function renderDashboard() {
 
     <div class="card">
       <div class="card-head"><h3>Detalle por negocio</h3></div>
-      <div class="table-wrap">
+      <div class="table-wrap tabla-contable-wrap">
         <table>
           <thead><tr>
             <th>Negocio</th><th>Ventas mes</th><th>Efectivo</th><th>Bancos</th><th>Prov. pendientes</th><th>Posición neta</th>
