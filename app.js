@@ -11921,20 +11921,22 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
         <td data-rol="meta" class="ledger-input-detalle">${r.descripcion}</td>
         <td class="num ledger-input-detalle">${fmtNum(r.cargos)}</td>
         <td class="num ledger-input-detalle">${fmtNum(r.depositos)}</td>
-        <td class="num">${fmtNum(saldo)}</td>
+        <td class="num ledger-input-detalle">${fmtNum(saldo)}</td>
         <td></td>
       </tr>`;
     }
     const sinClasificarFila = (r.tipo_salida || 'otro') === 'otro' && (Number(r.cargos)||0) > 0;
+    // Las filas de Bancos/Efectivo son SOLO DE CONSULTA — la edición se hace exclusivamente vía
+    // "… → Editar" (abre el mismo modal existente, sin cambios). Ya no hay <input> inline aquí.
     return `<tr${sinClasificarFila ? ' style="background:#fff8ec;"' : ''}>
-      <td data-rol="principal"><input class="cell mov-cell" type="date" value="${r.fecha}" data-id="${r.id}" data-field="fecha"></td>
+      <td data-rol="principal">${fechaCorta(r.fecha)}</td>
       <td data-rol="importe" class="ledger-movimiento-resumen" style="font-weight:600;">${resumenMovil}</td>
-      <td data-rol="secundario"><input class="cell mov-cell" type="text" value="${r.proveedor||''}" data-id="${r.id}" data-field="proveedor"></td>
+      <td data-rol="secundario">${r.proveedor || '<span style="color:var(--muted);">—</span>'}</td>
       <td data-rol="estado" class="ledger-saldo-movil"><span class="ledger-saldo-label">Saldo</span> ${fmtNum(saldo)}</td>
-      <td data-rol="meta" class="ledger-input-detalle"><input class="cell mov-cell" type="text" value="${r.descripcion||''}" data-id="${r.id}" data-field="descripcion"></td>
-      <td class="ledger-input-detalle"><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(r.cargos)}" data-id="${r.id}" data-field="cargos"></td>
-      <td class="ledger-input-detalle"><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(r.depositos)}" data-id="${r.id}" data-field="depositos"></td>
-      <td class="num" style="font-weight:700;">${fmtNum(saldo)}</td>
+      <td data-rol="meta" class="ledger-input-detalle">${r.descripcion || ''}</td>
+      <td class="ledger-input-detalle">${fmtNum(r.cargos)}</td>
+      <td class="ledger-input-detalle">${fmtNum(r.depositos)}</td>
+      <td class="num ledger-input-detalle" style="font-weight:700;">${fmtNum(saldo)}</td>
       <td data-rol="acciones" style="position:relative;">
         <button class="btn btn-ghost btn-sm mov-menu-btn" data-id="${r.id}" style="padding:5px 12px;">${sinClasificarFila?'⚠ ⋯':'⋯'}</button>
         <div class="mov-menu-dropdown" data-menu="${r.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:120px;overflow:hidden;">
@@ -12136,21 +12138,23 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
         <td class="ledger-input-detalle">${m.descripcion}</td>
         <td class="num ledger-input-detalle">${fmtNum(m.depositos)}</td>
         <td class="num ledger-input-detalle">${fmtNum(m.cargos)}</td>
-        <td class="num" style="font-weight:700;">${fmt(saldo)}</td>
+        <td class="num ledger-input-detalle" style="font-weight:700;">${fmt(saldo)}</td>
         <td></td>
         <td></td>
       </tr>`;
     }
     const sinClasificarFila = (m.tipo_salida || 'otro') === 'otro' && (Number(m.cargos)||0) > 0;
+    // Las filas de Bancos/Efectivo son SOLO DE CONSULTA — la edición se hace exclusivamente vía
+    // "… → Editar" (abre el mismo modal existente, sin cambios). Ya no hay <input> inline aquí.
     return `<tr${sinClasificarFila ? ' style="background:#fff8ec;"' : ''}>
-      <td data-rol="principal"><input class="cell mov-cell" type="date" value="${m.fecha}" data-id="${m.id}" data-field="fecha">${conciliadoIcono}</td>
+      <td data-rol="principal">${fechaCorta(m.fecha)}${conciliadoIcono}</td>
       <td data-rol="importe" class="ledger-movimiento-resumen" style="font-weight:600;">${resumenMovil}</td>
-      <td data-rol="secundario"><input class="cell mov-cell" type="text" value="${m.proveedor||''}" data-id="${m.id}" data-field="proveedor"></td>
+      <td data-rol="secundario">${m.proveedor || '<span style="color:var(--muted);">—</span>'}</td>
       <td data-rol="estado" class="ledger-saldo-movil"><span class="ledger-saldo-label">Saldo</span> ${fmt(saldo)}</td>
-      <td class="ledger-input-detalle"><input class="cell mov-cell" type="text" value="${m.descripcion||''}" data-id="${m.id}" data-field="descripcion"></td>
-      <td class="ledger-input-detalle"><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(m.depositos)}" data-id="${m.id}" data-field="depositos"></td>
-      <td class="ledger-input-detalle"><input class="cell mov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(m.cargos)}" data-id="${m.id}" data-field="cargos"></td>
-      <td class="num" style="font-weight:700;">${fmt(saldo)}</td>
+      <td class="ledger-input-detalle">${m.descripcion || ''}</td>
+      <td class="num ledger-input-detalle">${fmtNum(m.depositos)}</td>
+      <td class="num ledger-input-detalle">${fmtNum(m.cargos)}</td>
+      <td class="num ledger-input-detalle" style="font-weight:700;">${fmt(saldo)}</td>
       <td style="text-align:center;color:var(--green);" title="${m.conciliado ? 'Conciliado el ' + fechaCorta(m.fecha_conciliacion) : 'Pendiente de conciliar'}">${m.conciliado ? '✓' : ''}</td>
       <td data-rol="acciones" style="position:relative;">
         <button class="btn btn-ghost btn-sm mov-menu-btn" data-id="${m.id}" style="padding:5px 12px;">${sinClasificarFila?'⚠ ⋯':'⋯'}</button>
