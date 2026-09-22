@@ -403,6 +403,15 @@ function biz() {
   return STATE.businesses.find(b => b.id === STATE.currentBusinessId) || null;
 }
 
+// En modo Fiscal Contable, fz_ventas queda exclusivamente como auditoría de caja — no debe
+// alimentar ISR/IVA/retenciones, Estado de Resultados, Balance, Bancos, Caja, Flujo ni provisiones
+// automáticas (propinas). En modo Financiero (o si el negocio no está en caché) el comportamiento
+// no cambia. Usa STATE.businesses (ya cargado en memoria) — sin consulta nueva a la base de datos.
+function ventasAfectaFueraDeSuRegistro(businessId) {
+  const b = STATE.businesses && STATE.businesses.find(x => x.id === businessId);
+  return !b || b.modo !== 'fiscal_contable';
+}
+
 /* ---------- Enter avanza a la siguiente celda (como en una hoja de cálculo) ---------- */
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Enter') return;
@@ -1107,7 +1116,8 @@ async function computeMonedaSaldo(businessId, moneda, conceptosEfectivo, hastaFe
     getPolizaLineasParaCuenta(businessId, 'efectivo', moneda.id, hastaFecha),
   ]);
   let autoDepositos = 0;
-  (ventasQ.data || []).filter(v => !hastaFecha || v.fecha <= hastaFecha).forEach(v => {
+  const ventasCuentanAqui = ventasAfectaFueraDeSuRegistro(businessId);
+  (ventasCuentanAqui ? (ventasQ.data || []) : []).filter(v => !hastaFecha || v.fecha <= hastaFecha).forEach(v => {
     concepts.forEach(concepto => {
       const entry = (v.recon_data || {})[concepto.id];
       if (entry) autoDepositos += Number(entry.monto) || 0; // valor en la moneda tal cual, sin convertir
@@ -1130,7 +1140,7 @@ async function computeBancoSaldo(businessId, cuenta, conceptosTarjetas, hastaFec
     getPolizaLineasParaCuenta(businessId, 'banco', cuenta.id, hastaFecha),
   ]);
   let autoDepositos = 0;
-  (ventasQ.data || []).filter(v => !hastaFecha || v.fecha <= hastaFecha).forEach(v => {
+  (ventasAfectaFueraDeSuRegistro(businessId) ? (ventasQ.data || []) : []).filter(v => !hastaFecha || v.fecha <= hastaFecha).forEach(v => {
     concepts.forEach(concepto => {
       const entry = (v.recon_data || {})[concepto.id];
       if (entry) autoDepositos += Number(entry.monto) || 0;
@@ -1143,7 +1153,7 @@ async function computeBancoSaldo(businessId, cuenta, conceptosTarjetas, hastaFec
 async function getBancoLedgerRows(businessId, cuenta, conceptosTarjetas, mesFiltro) {
   const concepts = conceptosParaBanco(cuenta, conceptosTarjetas);
   const autoRows = [];
-  if (concepts.length) {
+  if (concepts.length && ventasAfectaFueraDeSuRegistro(businessId)) {
     const { data: ventas } = await sb.from('fz_ventas').select('id,fecha,recon_data').eq('business_id', businessId).order('fecha');
     (ventas || []).forEach(v => {
       concepts.forEach(concepto => {
@@ -1183,7 +1193,7 @@ async function computeBusinessSummary(businessId, ym) {
     sb.from('fz_proveedores').select('*').eq('business_id', businessId),
   ]);
 
-  const ventasMesRows = ventasMesQ.data || [];
+  const ventasMesRows = ventasAfectaFueraDeSuRegistro(businessId) ? (ventasMesQ.data || []) : [];
   const conceptosVenta = conceptosVentaQ.data || [];
   const conceptos = conceptosQ.data || [];
   const conceptosEfectivo = conceptos.filter(c => c.categoria === 'efectivo');
@@ -1600,6 +1610,7 @@ async function renderVentas() {
 /* ---------- Provisión automática de propinas como cuenta por pagar ---------- */
 async function provisionarPropina(businessId, ventaId, concepto, monto, fecha) {
   if (!monto) return;
+  if (!ventasAfectaFueraDeSuRegistro(businessId)) return; // Fiscal Contable: Ventas no genera cuentas por pagar
   let cat = (await sb.from('fz_proveedores_catalogo').select('*').eq('business_id', businessId).eq('nombre', 'Propinas por repartir').limit(1)).data?.[0];
   if (!cat) {
     const ins = await sb.from('fz_proveedores_catalogo').insert({ business_id: businessId, nombre: 'Propinas por repartir' }).select().single();
@@ -3202,7 +3213,7 @@ async function obtenerPropuestasAnualesPorConcepto(businessId, tipoPapel, claveC
       acumular(f.fecha.slice(5,7), netoNaturaleza(f));
     });
   }
-  if (subIdsParaVentas.size) {
+  if (subIdsParaVentas.size && ventasAfectaFueraDeSuRegistro(businessId)) {
     const conceptosVentaMapeados = (conceptosVenta||[]).filter(cv => cv.subcuenta_vinculada_id && subIdsParaVentas.has(cv.subcuenta_vinculada_id));
     const { data: ventas } = await sb.from('fz_ventas').select('id, fecha, venta_data').eq('business_id', businessId).gte('fecha', desde).lte('fecha', hasta);
     (ventas||[]).forEach(v => {
@@ -3256,7 +3267,7 @@ async function obtenerPropuestaContable(businessId, tipoPapel, claveConcepto, pe
   // conciliación de caja/bancos, no para el ingreso fiscal del periodo).
   const { data: conceptosVenta } = await sb.from('fz_conceptos_venta').select('id, subcuenta_vinculada_id, tipo').eq('business_id', businessId);
   const conceptosVentaMapeados = (conceptosVenta||[]).filter(cv => cv.subcuenta_vinculada_id && subIds.has(cv.subcuenta_vinculada_id));
-  if (conceptosVentaMapeados.length) {
+  if (conceptosVentaMapeados.length && ventasAfectaFueraDeSuRegistro(businessId)) {
     const { data: ventas } = await sb.from('fz_ventas').select('id, fecha, venta_data').eq('business_id', businessId).gte('fecha', start).lte('fecha', end);
     (ventas||[]).forEach(v => {
       conceptosVentaMapeados.forEach(cv => {
@@ -7505,7 +7516,7 @@ async function autoGenerarPagosImpuestos(b, anio) {
     sb.from('fz_cobros_aplicados').select('monto,tipo_cambio,factura_id,fecha').eq('business_id', b.id).gte('fecha', anioStart).lte('fecha', anioEnd).not('tipo_cambio','is',null),
   ]);
   const datosAnio = {
-    ventasAnio: ventasAnioQ.data || [], conceptosVenta, conceptos, subcuentas, mayores, conceptosSistema,
+    ventasAnio: ventasAfectaFueraDeSuRegistro(b.id) ? (ventasAnioQ.data || []) : [], conceptosVenta, conceptos, subcuentas, mayores, conceptosSistema,
     filasMotorAnio: motorAnio.filas,
     datosGCAnio: { plGastosQ: plGastosAnioQ, filasMotor: motorAnio.filas },
     cobrosAnio: cobrosAnioQ.data || [],
@@ -11815,7 +11826,7 @@ let STATE_monedaAbierta = null;
 async function getMonedaLedgerRows(businessId, moneda, conceptosEfectivo, mesFiltro) {
   const concepts = conceptosParaMoneda(moneda, conceptosEfectivo);
   const autoRows = [];
-  if (concepts.length) {
+  if (concepts.length && ventasAfectaFueraDeSuRegistro(businessId)) {
     const { data: ventas } = await sb.from('fz_ventas').select('id,fecha,recon_data').eq('business_id', businessId).order('fecha');
     (ventas || []).forEach(v => {
       concepts.forEach(concepto => {
@@ -14887,7 +14898,7 @@ async function computeUtilidadAcumulada(businessId, hastaYm) {
     loadConceptosVenta(businessId), loadConceptos(businessId), loadSubcuentas(businessId), loadCuentasMayor(businessId), loadConceptosSistema(businessId),
     sb.from('fz_ventas').select('*').eq('business_id', businessId).gte('fecha', periodo.start).lte('fecha', periodo.end),
   ]);
-  const v = ventasQ.data || [];
+  const v = ventasAfectaFueraDeSuRegistro(businessId) ? (ventasQ.data || []) : [];
   const totalIngresosVentas = conceptosVenta.reduce((s,c) => {
     const monto = v.reduce((ss,r)=>ss+(Number((r.venta_data||{})[c.id])||0),0);
     return s + (c.tipo==='resta'?-monto:monto);
@@ -16026,7 +16037,7 @@ async function computeResumenNegocio(businessId, periodo, datosAnio = null) {
       sb.from('fz_ventas').select('*').eq('business_id', businessId).gte('fecha', periodo.start).lte('fecha', periodo.end),
       loadConceptosVenta(businessId), loadConceptos(businessId), loadSubcuentas(businessId), loadCuentasMayor(businessId), loadConceptosSistema(businessId),
     ]);
-    v = ventasQ.data || []; conceptosVenta = cv; conceptos = c; subcuentas = s; mayores = m; conceptosSistema = cs;
+    v = ventasAfectaFueraDeSuRegistro(businessId) ? (ventasQ.data || []) : []; conceptosVenta = cv; conceptos = c; subcuentas = s; mayores = m; conceptosSistema = cs;
   }
   const ingresosPorConcepto = conceptosVenta.map(c => ({ id: c.id, tipo: c.tipo, monto: v.reduce((s, r) => s + (Number((r.venta_data || {})[c.id]) || 0), 0) }));
   const totalIngresosVentas = ingresosPorConcepto.reduce((s, i) => s + (i.tipo === 'resta' ? -i.monto : i.monto), 0);
@@ -16412,7 +16423,7 @@ async function renderPLAnual(el, b) {
   const datos = await Promise.all(mesesYm.map(async (ym) => {
     const periodo = periodoPL(ym, 'mensual');
     const { data: v } = await sb.from('fz_ventas').select('*').eq('business_id', b.id).gte('fecha', periodo.start).lte('fecha', periodo.end);
-    const ventas = v || [];
+    const ventas = ventasAfectaFueraDeSuRegistro(b.id) ? (v || []) : [];
     const ingresosPorConcepto = conceptosVenta.map(c => ventas.reduce((s,r)=>s+(Number((r.venta_data||{})[c.id])||0),0));
     const totalIngresosVentas = conceptosVenta.reduce((s,c,idx)=>s+(c.tipo==='resta'?-ingresosPorConcepto[idx]:ingresosPorConcepto[idx]),0);
     const gastosOperativos = ventas.reduce((s,r)=>s+(Number(r.gastos)||0),0);
@@ -16603,7 +16614,7 @@ async function renderPL() {
     loadCuentasMayor(b.id),
     loadConceptosSistema(b.id),
   ]);
-  const v = ventasQ.data || [];
+  const v = ventasAfectaFueraDeSuRegistro(b.id) ? (ventasQ.data || []) : [];
   const ingresosPorConcepto = conceptosVenta.map(c => ({
     id: c.id, nombre: c.nombre, tipo: c.tipo,
     monto: v.reduce((s, r) => s + (Number((r.venta_data || {})[c.id]) || 0), 0),
