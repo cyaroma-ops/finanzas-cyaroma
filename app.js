@@ -2871,8 +2871,41 @@ async function editarPerdidaFiscal(perdidaId, datos, usuarioEmail) {
   if (error) return { estado: 'error', error: error.message };
   if (actual && Number(actual.monto_original) !== Number(datos.montoOriginal)) {
     await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: 'monto_original', valor_anterior: String(actual.monto_original), valor_nuevo: String(datos.montoOriginal), usuario: usuarioEmail || null });
+    // El monto original es la fuente de la que parte toda la cadena de actualizaciones INPC. Si
+    // cambia, cualquier actualización ya persistida que dependía (directa o transitivamente) de
+    // ese monto queda desactualizada — la misma fórmula (registrarActualizacionPerdida) se vuelve
+    // a ejecutar en cadena, en vez de dejar un snapshot viejo como autoridad.
+    await recalcularActualizacionesPerdida(perdidaId, usuarioEmail);
   }
   return { estado: 'editada' };
+}
+
+// Recalcula en cadena cronológica las actualizaciones de una pérdida después de que su fuente
+// (monto_original) cambió. Reutiliza EXACTAMENTE registrarActualizacionPerdida — mismos periodos
+// INPC ya persistidos (no se redeterminan), mismo cálculo saldoAnterior×factor. NO toca:
+// - filas con es_captura_inicial=true (son fuente independiente, un saldo que el contador trajo
+//   de su papel de trabajo externo — nunca fueron un cálculo derivado de monto_original);
+// - el propio importe_actualizado de una fila con ajuste_manual=true (es un override deliberado
+//   del contador — se preserva tal cual, nunca se pisa en silencio).
+// En ambos casos, ese valor (sin tocar) sigue siendo el saldo_anterior de la SIGUIENTE fila de la
+// cadena, para que el resto sí se recalcule correctamente a partir de ahí.
+async function recalcularActualizacionesPerdida(perdidaId, usuarioEmail) {
+  const { data: perdida } = await sb.from('fz_perdidas_fiscales').select('*').eq('id', perdidaId).single();
+  if (!perdida) return;
+  const { data: actualizaciones } = await sb.from('fz_perdidas_fiscales_actualizaciones').select('*').eq('perdida_id', perdidaId).order('ejercicio_actualizacion', { ascending: true });
+  let saldoAnterior = Number(perdida.monto_original);
+  for (const fila of (actualizaciones || [])) {
+    if (fila.es_captura_inicial || fila.ajuste_manual) {
+      saldoAnterior = Number(fila.importe_actualizado); // fuente independiente u override — se respeta, pasa igual a la siguiente
+      continue;
+    }
+    const r = await registrarActualizacionPerdida(perdidaId, fila.ejercicio_actualizacion, {
+      ejercicioOrigen: perdida.ejercicio_origen, saldoAnterior,
+      periodoInpcAntiguoOverride: fila.periodo_inpc_antiguo, periodoInpcRecienteOverride: fila.periodo_inpc_reciente,
+      observaciones: fila.observaciones,
+    }, usuarioEmail);
+    saldoAnterior = r.estado === 'ok' ? r.importeAplicado : Number(fila.importe_actualizado);
+  }
 }
 
 // datos: { ejercicioOrigen, saldoAnterior, periodoInpcAntiguoOverride/periodoInpcRecienteOverride
