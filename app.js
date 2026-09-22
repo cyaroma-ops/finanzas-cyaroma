@@ -249,6 +249,11 @@ function printControlHtml(opts) {
       ${permitirH ? `<option value="landscape">Horizontal</option>` : ''}
       ${permitirV ? `<option value="portrait">Vertical</option>` : ''}
     </select>
+    <!-- Disparador nativo oculto: el handler real (jsPDF/autoTable) se conecta a ESTE id con
+         addEventListener, exactamente igual que antes de tener PrintControl. El botón visible
+         de abajo (print-control-ejecutar) solo hace click() sobre este — nunca genera el PDF
+         por sí mismo. Sin este elemento, document.getElementById(buttonId) siempre era null. -->
+    <button type="button" id="${opts.buttonId}" style="display:none;"></button>
     <button type="button" class="btn btn-ghost btn-sm print-control-abrir">${iconoImprimir()}${label}</button>
     <div class="print-control-popover" style="display:none;">
       ${(permitirV && permitirH) ? `<div class="print-control-label">Orientación</div>
