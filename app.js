@@ -2985,7 +2985,7 @@ async function registrarSaldoInicialPerdida(perdidaId, mesAnioUltimaActualizacio
 async function registrarAplicacionProvisionalPerdida(perdidaId, ejercicioControl, periodo, montoAcumulado, usuarioEmail, meta = {}) {
   const montoNormalizado = redondearMoneda(montoAcumulado);
   const { data: existente } = await sb.from('fz_perdidas_fiscales_aplicaciones').select('*').eq('perdida_id', perdidaId).eq('periodo', periodo).maybeSingle();
-  const extra = { origen: meta.origen || 'manual', utilidad_fiscal_tope: meta.utilidadFiscalTope ?? null, maximo_aplicable_tope: meta.maximoAplicableTope ?? null };
+  const extra = { origen: meta.origen || 'manual', utilidad_fiscal_tope: meta.utilidadFiscalTope ?? null };
   if (existente) {
     const valorAnteriorReal = existente.aplicado_acumulado;
     const { error } = await sb.from('fz_perdidas_fiscales_aplicaciones').update({ aplicado_acumulado: montoNormalizado, updated_at: new Date().toISOString(), ...extra }).eq('id', existente.id);
