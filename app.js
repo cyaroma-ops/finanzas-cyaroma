@@ -6158,12 +6158,26 @@ async function renderPapelISRPM(b) {
   // Sincronizar los conceptos CALCULADOS en la plantilla visual con el resultado de la cadena —
   // para que se muestren consistentes con lo que se persistirá al Guardar (nunca un número
   // distinto al que se guarda).
-  ['ingresos_nominales_acum','utilidad_fiscal','base','isr_determinado','resultado_determinado'].forEach(clave => {
+  ['ingresos_nominales_acum','utilidad_fiscal','base','isr_determinado'].forEach(clave => {
     const c = conceptos.find(x=>x.clave_concepto===clave);
     if (!c) return;
     const valorCalc = clave==='ingresos_nominales_acum' ? cadena.ingresosAcum : clave==='utilidad_fiscal' ? cadena.utilidadFiscal : clave==='base' ? cadena.base : cadena.isrDeterminado;
-    if (!c.id) { c.valor_aplicado = valorCalc; c.origen = 'sistema'; }
+    // DERIVADO del motor: el cálculo actual es siempre la autoridad para la propuesta que se
+    // muestra, exista o no un id persistido de una determinación anterior. Esto solo corrige el
+    // objeto en memoria para esta vista — no escribe nada a Supabase por sí mismo (abrir ≠
+    // guardar). Si el concepto ya tenía id, se marca para que el clic explícito en "Guardar"
+    // actualice el snapshot persistido con el valor recién calculado, en vez de dejarlo obsoleto.
+    c.valor_original = valorCalc;
+    c.valor_aplicado = valorCalc;
+    c.origen = 'sistema';
+    if (c.id) c._sincronizarOrigenAlGuardar = true;
   });
+  // resultado_determinado: SIN CAMBIOS — conserva su comportamiento anterior exacto. Su relación
+  // con fz_papel_concepto_accesorios requiere tratamiento histórico especial, fuera de este bloque.
+  {
+    const c = conceptos.find(x=>x.clave_concepto==='resultado_determinado');
+    if (c && !c.id) { c.valor_aplicado = cadena.isrDeterminado; c.origen = 'sistema'; }
+  }
 
   // Encabezado — negocio, RFC, régimen vigente.
   const { data: regimenes } = await sb.from('fz_regimenes_fiscales_negocio').select('*').eq('business_id', b.id).is('vigente_hasta', null).order('vigente_desde', { ascending: false }).limit(1);
