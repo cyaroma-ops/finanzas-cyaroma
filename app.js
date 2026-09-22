@@ -6279,7 +6279,12 @@ async function renderPapelISRPM(b) {
   // meses posteriores usan la suma real de ISR determinado ya persistido, si existe.
   const pagosProvisionalesAnterioresPropuesto = mesNum === 1 ? 0 : await obtenerPagosProvisionalesAnterioresPropuesta(b.id, ejercicio, periodo);
   const conceptoPagosAnteriores = conceptos.find(c=>c.clave_concepto==='pagos_provisionales_anteriores');
-  if (conceptoPagosAnteriores && conceptoSinIntencionExplicita(conceptoPagosAnteriores) && pagosProvisionalesAnterioresPropuesto!==null) {
+  // Refrescar si nunca tuvo intención real (nunca capturado) O si lo último que tiene es una
+  // propuesta del propio sistema (origen='sistema') — nunca si el contador lo capturó/ajustó a
+  // mano (origen='manual'). Sin esto, una propuesta automática vieja quedaba protegida para
+  // siempre en cuanto se guardaba una vez, indistinguible de un override real del contador.
+  const puedeRefrescarsePagosAnteriores = conceptoPagosAnteriores && (conceptoSinIntencionExplicita(conceptoPagosAnteriores) || conceptoPagosAnteriores.origen === 'sistema');
+  if (puedeRefrescarsePagosAnteriores && pagosProvisionalesAnterioresPropuesto!==null) {
     conceptoPagosAnteriores.valor_original = pagosProvisionalesAnterioresPropuesto; conceptoPagosAnteriores.valor_aplicado = pagosProvisionalesAnterioresPropuesto; conceptoPagosAnteriores.origen = 'sistema';
     if (conceptoPagosAnteriores.id) conceptoPagosAnteriores._sincronizarOrigenAlGuardar = true; // ya persistido sin intención explícita (ej. 0 de arrastre) — la corrección se escribe solo al Guardar, nunca por abrir
   }
