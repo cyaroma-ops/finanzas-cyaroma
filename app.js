@@ -991,8 +991,12 @@ function updateTopbar() {
     return;
   }
   const b = biz();
-  const titulo = meta.title + (meta.needsBiz && b ? ' — ' + b.name : '');
+  const esVentasFiscal = STATE.currentSection === 'ventas' && b?.modo === 'fiscal_contable';
+  const tituloBase = esVentasFiscal ? 'Auditoría de Ventas' : meta.title;
+  const titulo = tituloBase + (meta.needsBiz && b ? ' — ' + b.name : '');
   document.getElementById('pageTitle').textContent = titulo;
+  const navVentasLabel = document.getElementById('navVentasLabel');
+  if (navVentasLabel) navVentasLabel.textContent = b?.modo === 'fiscal_contable' ? 'Auditoría de Ventas' : 'Ventas';
   document.getElementById('pageSub').textContent = STATE.currentSection === 'dashboard'
     ? (STATE.esAdministrador ? 'Vista consolidada de todos los negocios' : (STATE.businesses.length > 1 ? 'Vista consolidada de tus negocios' : 'Tu negocio'))
     : meta.sub;
@@ -1478,7 +1482,7 @@ async function renderVentas() {
 
     <div class="card">
       <div class="card-head">
-        <h3>Ventas y conciliación — ${STATE.currentMonth}</h3>
+        <h3>${b.modo === 'fiscal_contable' ? 'Auditoría y conciliación de ventas' : 'Ventas y conciliación'} — ${STATE.currentMonth}</h3>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           <button class="btn btn-ghost btn-sm" id="openVentaConceptosBtn">${iconoConfigurar()}Categorías de venta</button>
           <button class="btn btn-ghost btn-sm" id="openSistemaConceptosBtn">${iconoConfigurar()}Categorías de sistema</button>
@@ -1712,8 +1716,9 @@ async function openConceptosModal(businessId) {
     const categoria = document.getElementById('newConceptoCategoria').value;
     const es_moneda = categoria === 'efectivo' && document.getElementById('newConceptoMoneda').checked;
     const medio = categoria === 'propinas' ? document.getElementById('newConceptoMedio').value : null;
-    const moneda_id = categoria === 'efectivo' ? (document.getElementById('newConceptoMonedaId').value || null) : null;
-    const banco_cuenta_id = (categoria === 'tarjetas' || categoria === 'bancos') ? (document.getElementById('newConceptoBancoId').value || null) : null;
+    const permiteVinculoGuardar = ventasAfectaFueraDeSuRegistro(businessId);
+    const moneda_id = (permiteVinculoGuardar && categoria === 'efectivo') ? (document.getElementById('newConceptoMonedaId').value || null) : null;
+    const banco_cuenta_id = (permiteVinculoGuardar && (categoria === 'tarjetas' || categoria === 'bancos')) ? (document.getElementById('newConceptoBancoId').value || null) : null;
     if (!nombre) { toast('Escribe un nombre para el concepto.', 'error'); return; }
     const { error } = await sb.from('fz_conceptos').insert({ business_id: businessId, nombre, categoria, es_moneda, medio, moneda_id, banco_cuenta_id, orden: 99 });
     if (error) { toast('Error: ' + error.message, 'error'); return; }
@@ -1724,10 +1729,11 @@ async function openConceptosModal(businessId) {
 }
 function updateConceptoFieldsVisibility() {
   const cat = document.getElementById('newConceptoCategoria').value;
+  const permiteVinculo = ventasAfectaFueraDeSuRegistro(biz()?.id);
   document.getElementById('esMonedaLabel').style.display = cat === 'efectivo' ? 'flex' : 'none';
   document.getElementById('medioWrap').style.display = cat === 'propinas' ? 'block' : 'none';
-  document.getElementById('monedaVinculoWrap').style.display = cat === 'efectivo' ? 'block' : 'none';
-  document.getElementById('bancoVinculoWrap').style.display = (cat === 'tarjetas' || cat === 'bancos') ? 'block' : 'none';
+  document.getElementById('monedaVinculoWrap').style.display = (permiteVinculo && cat === 'efectivo') ? 'block' : 'none';
+  document.getElementById('bancoVinculoWrap').style.display = (permiteVinculo && (cat === 'tarjetas' || cat === 'bancos')) ? 'block' : 'none';
 }
 async function renderConceptosList(businessId) {
   const [conceptos, monedasQ, cuentasQ] = await Promise.all([
@@ -1739,16 +1745,17 @@ async function renderConceptosList(businessId) {
   const cuentasBanco = cuentasQ.data || [];
   const box = document.getElementById('conceptosList');
   if (!conceptos.length) { box.innerHTML = `<div class="empty" style="padding:16px;">Aún no hay conceptos. Agrega el primero abajo.</div>`; return; }
+  const permiteVinculo = ventasAfectaFueraDeSuRegistro(businessId);
   box.innerHTML = conceptos.map(c => `
     <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 4px;border-bottom:1px solid var(--line);gap:10px;">
       <div style="min-width:0;">
         <strong>${c.nombre}</strong> <span style="color:var(--muted);font-size:12px;">— ${CAT_LABEL[c.categoria]}${c.es_moneda ? ' · con TC' : ''}${c.categoria==='propinas' ? ' · '+(c.medio==='tarjetas'?'Tarjetas':'Efectivo') : ''}</span>
       </div>
-      ${c.categoria === 'efectivo' ? `<select class="cell concepto-moneda-vinculo" data-id="${c.id}" style="max-width:170px;flex-shrink:0;">
+      ${(permiteVinculo && c.categoria === 'efectivo') ? `<select class="cell concepto-moneda-vinculo" data-id="${c.id}" style="max-width:170px;flex-shrink:0;">
         <option value="">— no vincular —</option>
         ${monedas.map(m => `<option value="${m.id}" ${c.moneda_id===m.id?'selected':''}>${m.nombre}</option>`).join('')}
       </select>` : ''}
-      ${(c.categoria === 'tarjetas' || c.categoria === 'bancos') ? `<select class="cell concepto-banco-vinculo" data-id="${c.id}" style="max-width:170px;flex-shrink:0;">
+      ${(permiteVinculo && (c.categoria === 'tarjetas' || c.categoria === 'bancos')) ? `<select class="cell concepto-banco-vinculo" data-id="${c.id}" style="max-width:170px;flex-shrink:0;">
         <option value="">— no vincular —</option>
         ${cuentasBanco.map(cb => `<option value="${cb.id}" ${c.banco_cuenta_id===cb.id?'selected':''}>${cb.nombre}</option>`).join('')}
       </select>` : ''}
@@ -1825,7 +1832,7 @@ async function renderVentaConceptosList(businessId) {
   const [conceptos, subcuentas, mayores] = await Promise.all([loadConceptosVenta(businessId), loadSubcuentas(businessId), loadCuentasMayor(businessId)]);
   const box = document.getElementById('conceptosVentaList');
   if (!conceptos.length) { box.innerHTML = `<div class="empty" style="padding:16px;">Aún no hay categorías. Agrega la primera abajo (ej. Alimentos, Bebidas, Daypass...).</div>`; return; }
-  const hayCatalogoIngreso = mayores.some(m => m.tipo === 'ingreso');
+  const hayCatalogoIngreso = mayores.some(m => m.tipo === 'ingreso') && ventasAfectaFueraDeSuRegistro(businessId);
   box.innerHTML = conceptos.map((c, idx) => `
     <div style="padding:8px 4px;border-bottom:1px solid var(--line);">
       <div style="display:flex;align-items:center;justify-content:space-between;">
