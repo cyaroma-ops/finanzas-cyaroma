@@ -9248,6 +9248,7 @@ async function renderLibroDiario() {
   await buscar();
 }
 
+let STATE_renderTokenBalanza = 0;
 async function renderBalanza() {
   const el = document.getElementById('sec-balanza');
   const b = biz();
@@ -9258,15 +9259,23 @@ async function renderBalanza() {
     return;
   }
 
+  // Token de render: si mientras esta llamada espera la reconstrucción el usuario dispara otro
+  // render de Balanza (cambio de negocio/mes u otro disparo), esta llamada queda obsoleta y debe
+  // terminar en silencio sin tocar el DOM del render nuevo — nunca conectar handlers sobre
+  // elementos que ya no pertenecen a la vista vigente.
+  const miTokenBalanza = ++STATE_renderTokenBalanza;
+
   const contenido = document.createElement('div');
   contenido.innerHTML = `<div class="empty">Calculando…</div>`;
   el.appendChild(contenido);
 
-  const { start, end } = monthBounds(STATE.currentMonth);
-  const inicioAnio = `${STATE.currentMonth.slice(0,4)}-01-01`;
+  try {
+    const { start, end } = monthBounds(STATE.currentMonth);
+    const inicioAnio = `${STATE.currentMonth.slice(0,4)}-01-01`;
 
-  const { filas, mayores, subcuentas } = await getLibroPartidaDoble(b.id, end);
-  const mayorDeSub = (subId) => { const s = subcuentas.find(x=>x.id===subId); return s ? mayores.find(m=>m.id===s.cuenta_mayor_id) : null; };
+    const { filas, mayores, subcuentas } = await getLibroPartidaDoble(b.id, end);
+    if (miTokenBalanza !== STATE_renderTokenBalanza) return; // render obsoleto — otro ya tomó el lugar
+    const mayorDeSub = (subId) => { const s = subcuentas.find(x=>x.id===subId); return s ? mayores.find(m=>m.id===s.cuenta_mayor_id) : null; };
 
   // Acumular, por cada cuenta (clave estable), su saldo inicial (antes de "start") y sus
   // cargos/abonos DENTRO del periodo. Las cuentas temporales (ingreso/costo/gasto) reinician
@@ -9329,6 +9338,7 @@ async function renderBalanza() {
 
   // Verificación cruzada contra el Estado de Resultados (misma fórmula, mismo periodo acumulado)
   const resumenPLCheck = await computeResumenNegocio(b.id, { start: inicioAnio, end });
+  if (miTokenBalanza !== STATE_renderTokenBalanza) return; // render obsoleto — otro ya tomó el lugar
   const diferenciaVsPL = utilidadEjercicio - resumenPLCheck.utilidad;
 
   // Cuadre: se valida SOLO sobre cuentas reales (activo+pasivo+capital+ingreso+costo+gasto) — el
@@ -9540,6 +9550,12 @@ async function renderBalanza() {
     ].forEach(([ok,texto]) => { doc.text(`${ok?'✓':'✗'} ${texto}`, margin, y); y += 12; });
     doc.save(`Balanza de Comprobación - ${b.name} - ${STATE.currentMonth}.pdf`);
   });
+  } catch (err) {
+    console.error('renderBalanza: error al cargar la Balanza de Comprobación', err);
+    if (miTokenBalanza === STATE_renderTokenBalanza) {
+      contenido.innerHTML = `<div class="empty">No fue posible cargar la información. Intenta nuevamente.</div>`;
+    }
+  }
 }
 
 async function renderConfiguracion() {
@@ -16344,7 +16360,7 @@ async function renderPLAnual(el, b) {
       computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'gasto', false, datosGC2),
       computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'costo', false, datosGC2),
     ]);
-    const iPoliza = await computeIngresosPoliza(b.id, periodo, subcuentas, mayores);
+    const iPoliza = await computeIngresosPoliza(b.id, periodo, subcuentas, mayores, false, datosGC2.filasMotor);
     const gananciaCambiaria = await computeGananciaCambiaria(b.id, periodo);
     const totalIngresosFinal = totalIngresosVentas + sobranteCaja + iPoliza.total + gananciaCambiaria;
     const utilidadBruta = totalIngresosFinal - gCostos.totalClasificado;
