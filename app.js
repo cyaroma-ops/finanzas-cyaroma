@@ -6253,7 +6253,7 @@ async function renderPapelISRPM(b) {
   // por un número aislado. Sigue siendo de solo lectura; nunca impone el importe.
   const refPerdidas = await obtenerReferenciaPerdidasParaISRPM(b.id, ejercicio, periodo, utilidadFiscalActual);
   const perdidasConSaldo = refPerdidas.perdidasConSaldo;
-  const perdidasAplicadas = refPerdidas.aplicadoActual !== null ? refPerdidas.aplicadoActual : 0; // sin aplicación registrada = 0 real, no ausencia
+  const perdidasAplicadas = refPerdidas.aplicadoActual !== null ? refPerdidas.aplicadoActual : (refPerdidas.tope.ok ? refPerdidas.tope.maximo : 0); // sin captura explícita → propuesta automática (nunca una segunda fórmula: reutiliza calcularMaximoAplicablePerdidas)
 
   // Propuesta de pagos provisionales anteriores — enero no tiene meses previos (0 real conocido);
   // meses posteriores usan la suma real de ISR determinado ya persistido, si existe.
@@ -6548,6 +6548,12 @@ async function renderPapelISRPM(b) {
     for (const c of conceptos) {
       if (!c.id && c.valor_aplicado !== null) await agregarConceptoPapel(papelReal.id, { concepto: c.concepto, claveConcepto: c.clave_concepto, orden: c.orden||0, origen: c.origen||'manual', valorAplicado: Number(c.valor_aplicado) });
       else if (c.id && c._sincronizarOrigenAlGuardar) await sb.from('fz_papel_conceptos').update({ valor_original: c.valor_original, valor_aplicado: c.valor_aplicado, origen: c.origen }).eq('id', c.id);
+    }
+    // Aplicación automática de pérdidas — se persiste al Guardar (nunca al abrir). Idempotente:
+    // si ya coincide con lo registrado, no cambia nada; si el contador ajustó manualmente vía el
+    // editor de pérdidas, perdidasAplicadas ya refleja ese ajuste y se conserva tal cual.
+    if (perdidasAplicadas > 0.004) {
+      await guardarPerdidasAplicadasDesdeISRPM(b.id, ejercicio, periodo, perdidasAplicadas, utilidadFiscalActual, STATE.user?.email);
     }
     await sb.from('fz_papeles_trabajo').update({ estado: 'guardado', notas, updated_at: new Date().toISOString() }).eq('id', papelReal.id);
     registrarAuditoria(b.id, 'editar', 'Papeles de Trabajo', `Papel ISR PM ${periodo} guardado`);
