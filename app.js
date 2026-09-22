@@ -2857,6 +2857,24 @@ async function registrarPerdidaFiscal(businessId, datos, usuarioEmail) {
   return { estado: 'creada', perdida: nueva };
 }
 
+// Edición de los datos CAPTURABLES de una pérdida ya registrada — monto original y notas.
+// NO toca ejercicio_origen (cambiar el año de origen afecta relaciones/antecedentes de otros
+// ejercicios — no es un dato "capturable" simple). Los derivados (actualización, saldo
+// disponible, saldo provisional, estado agotada) NUNCA se editan aquí — se siguen recalculando
+// siempre a partir de este monto_original vía obtenerPerdidasFiscalesSiExisten, sin tocar esa
+// función. Misma trazabilidad que el resto del módulo (fz_perdidas_fiscales_historial).
+async function editarPerdidaFiscal(perdidaId, datos, usuarioEmail) {
+  const { data: actual } = await sb.from('fz_perdidas_fiscales').select('monto_original, notas').eq('id', perdidaId).single();
+  const { error } = await sb.from('fz_perdidas_fiscales').update({
+    monto_original: datos.montoOriginal, notas: datos.notas || null,
+  }).eq('id', perdidaId);
+  if (error) return { estado: 'error', error: error.message };
+  if (actual && Number(actual.monto_original) !== Number(datos.montoOriginal)) {
+    await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: 'monto_original', valor_anterior: String(actual.monto_original), valor_nuevo: String(datos.montoOriginal), usuario: usuarioEmail || null });
+  }
+  return { estado: 'editada' };
+}
+
 // datos: { ejercicioOrigen, saldoAnterior, periodoInpcAntiguoOverride/periodoInpcRecienteOverride
 // (opcionales — solo para forzar un periodo distinto al determinado automáticamente, caso raro),
 // importeAplicado (opcional — ajuste manual sobre el calculado), motivoAjuste, observaciones }.
@@ -2926,13 +2944,30 @@ async function registrarAplicacionProvisionalPerdida(perdidaId, ejercicioControl
   const extra = { origen: meta.origen || 'manual', utilidad_fiscal_tope: meta.utilidadFiscalTope ?? null, maximo_aplicable_tope: meta.maximoAplicableTope ?? null };
   if (existente) {
     const valorAnteriorReal = existente.aplicado_acumulado;
-    await sb.from('fz_perdidas_fiscales_aplicaciones').update({ aplicado_acumulado: montoNormalizado, updated_at: new Date().toISOString(), ...extra }).eq('id', existente.id);
+    const { error } = await sb.from('fz_perdidas_fiscales_aplicaciones').update({ aplicado_acumulado: montoNormalizado, updated_at: new Date().toISOString(), ...extra }).eq('id', existente.id);
+    if (error) return { estado: 'error', error: error.message };
     await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: `aplicación ${periodo}`, valor_anterior: String(valorAnteriorReal), valor_nuevo: String(montoNormalizado), motivo: meta.origen==='isr_pm'?'Capturado desde ISR PM':null, usuario: usuarioEmail || null });
   } else {
-    await sb.from('fz_perdidas_fiscales_aplicaciones').insert({ perdida_id: perdidaId, ejercicio_control: ejercicioControl, periodo, aplicado_acumulado: montoNormalizado, created_by: usuarioEmail || null, ...extra });
+    const { error } = await sb.from('fz_perdidas_fiscales_aplicaciones').insert({ perdida_id: perdidaId, ejercicio_control: ejercicioControl, periodo, aplicado_acumulado: montoNormalizado, created_by: usuarioEmail || null, ...extra });
+    if (error) return { estado: 'error', error: error.message };
     await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: `aplicación ${periodo}`, valor_nuevo: String(montoNormalizado), motivo: meta.origen==='isr_pm'?'Capturado desde ISR PM':null, usuario: usuarioEmail || null });
   }
   return { estado: 'ok', montoNormalizado };
+}
+
+// Acción explícita de ELIMINAR una aplicación registrada — distinta de "aplicar $0". $0 significa
+// "se determinó y se aplicó nada este mes, deliberadamente" (sigue existiendo el registro, con
+// trazabilidad). Eliminar significa "este mes nunca debió tener una aplicación capturada aquí" —
+// el registro desaparece por completo. El recálculo de acumulados/saldo/estado posteriores ocurre
+// automáticamente al releer (obtenerPerdidasFiscalesSiExisten ya recalcula todo desde las
+// aplicaciones existentes cada vez) — no requiere ningún ajuste adicional en otras funciones.
+async function eliminarAplicacionProvisionalPerdida(perdidaId, periodo, usuarioEmail) {
+  const { data: existente } = await sb.from('fz_perdidas_fiscales_aplicaciones').select('*').eq('perdida_id', perdidaId).eq('periodo', periodo).maybeSingle();
+  if (!existente) return { estado: 'ok' }; // nada que eliminar — no es un error
+  const { error } = await sb.from('fz_perdidas_fiscales_aplicaciones').delete().eq('id', existente.id);
+  if (error) return { estado: 'error', error: error.message };
+  await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: `aplicación ${periodo}`, valor_anterior: String(existente.aplicado_acumulado), valor_nuevo: '(eliminada)', usuario: usuarioEmail || null });
+  return { estado: 'ok' };
 }
 
 async function registrarCierreAnualPerdida(perdidaId, ejercicioControl, datos, usuarioEmail) {
@@ -5226,7 +5261,7 @@ async function renderPerdidasFiscales(b) {
                 <td class="num">${aplicado!==null?fmt(aplicado):'—'}</td>
                 <td class="num" style="font-weight:600;">${saldoProv!==null?fmt(saldoProv):'—'}</td>
                 <td><span class="pt-origen ${p.control&&p.control.mesAgotamiento?'':'sistema'}">${estado}</span></td>
-                <td><a href="#" class="pt-editar-link pf-ver-detalle" data-id="${p.id}">${STATE_perdidaExpandida===p.id?'Ocultar':'Ver detalle'}</a></td>
+                <td><a href="#" class="pt-editar-link pf-editar-perdida" data-id="${p.id}" style="margin-right:10px;">Editar</a><a href="#" class="pt-editar-link pf-ver-detalle" data-id="${p.id}">${STATE_perdidaExpandida===p.id?'Ocultar':'Ver detalle'}</a></td>
               </tr>${STATE_perdidaExpandida===p.id ? renderDetallePerdida(p, ejercicio) : ''}`;
             }).join('')}
           </tbody>
@@ -5237,6 +5272,10 @@ async function renderPerdidasFiscales(b) {
 
   el.querySelector('.pf-anio-sel').addEventListener('change', (e) => { STATE_perdidasEjercicio = e.target.value; renderPerdidasFiscales(b); });
   el.querySelector('.pf-registrar-btn').addEventListener('click', () => abrirModalPerdidaNueva(b));
+  el.querySelectorAll('.pf-editar-perdida').forEach(a => a.addEventListener('click', (e) => {
+    e.preventDefault();
+    abrirModalPerdidaNueva(b, perdidas.find(p=>p.id===a.dataset.id));
+  }));
   el.querySelectorAll('.pf-ver-detalle').forEach(a => a.addEventListener('click', (e) => {
     e.preventDefault();
     STATE_perdidaExpandida = STATE_perdidaExpandida === a.dataset.id ? null : a.dataset.id;
@@ -5378,15 +5417,20 @@ async function renderResumenFederal(b) {
 // Modal genérico "Agregar concepto" — reutilizable por cualquier cédula de Papeles de Trabajo.
 // ---- Modales de Pérdidas Fiscales ----
 
-function abrirModalPerdidaNueva(b) {
-  document.getElementById('pfEjercicioOrigen').value = '';
-  document.getElementById('pfMontoOriginal').value = '';
-  document.getElementById('pfNotasNueva').value = '';
+function abrirModalPerdidaNueva(b, perdidaExistente = null) {
+  const esEdicion = !!perdidaExistente;
+  document.querySelector('#modalPerdidaNueva h3').textContent = esEdicion ? 'Editar pérdida fiscal' : 'Registrar pérdida fiscal';
+  document.getElementById('pfEjercicioOrigen').value = esEdicion ? perdidaExistente.ejercicio_origen : '';
+  document.getElementById('pfEjercicioOrigen').disabled = esEdicion;
+  document.getElementById('pfMontoOriginal').value = esEdicion ? fmtInputVal(perdidaExistente.monto_original) : '';
+  document.getElementById('pfNotasNueva').value = esEdicion ? (perdidaExistente.notas || '') : '';
   document.getElementById('pfSaldoInicialZona').style.display = 'none';
+  document.getElementById('pfMostrarSaldoInicialBtn').style.display = esEdicion ? 'none' : '';
   document.getElementById('pfSaldoInicialImporte').value = '';
   document.getElementById('pfSaldoInicialPeriodo').value = '';
   document.getElementById('pfErrorNueva').style.display = 'none';
   document.getElementById('modalPerdidaNueva').classList.add('show');
+  document.getElementById('pfNuevaGuardarBtn').textContent = esEdicion ? 'Guardar cambios' : 'Registrar';
   document.getElementById('pfMostrarSaldoInicialBtn').onclick = (e) => {
     e.preventDefault();
     const z = document.getElementById('pfSaldoInicialZona');
@@ -5399,6 +5443,17 @@ function abrirModalPerdidaNueva(b) {
     const err = document.getElementById('pfErrorNueva');
     if (!/^\d{4}$/.test(ejercicioOrigen)) { err.textContent = 'Indica el ejercicio de origen (4 dígitos).'; err.style.display = 'block'; return; }
     if (!monto || monto <= 0) { err.textContent = 'La pérdida original debe ser mayor a cero.'; err.style.display = 'block'; return; }
+    if (esEdicion) {
+      // Derivados (actualización, saldo disponible, saldo provisional, estado) NUNCA se editan
+      // aquí — se recalculan solos a partir del nuevo monto_original la próxima vez que se lea
+      // esta pérdida (obtenerPerdidasFiscalesSiExisten), sin tocar esa función.
+      const r = await editarPerdidaFiscal(perdidaExistente.id, { montoOriginal: monto, notas: notas || null }, STATE.user?.email);
+      if (r.estado === 'error') { err.textContent = 'Error: '+r.error; err.style.display = 'block'; return; }
+      document.getElementById('modalPerdidaNueva').classList.remove('show');
+      toast('Pérdida fiscal actualizada.');
+      await renderPerdidasFiscales(b);
+      return;
+    }
     const saldoInicialImporte = leerMonto(document.getElementById('pfSaldoInicialImporte').value);
     const saldoInicialPeriodo = document.getElementById('pfSaldoInicialPeriodo').value;
     if (document.getElementById('pfSaldoInicialZona').style.display !== 'none' && (saldoInicialImporte !== null || saldoInicialPeriodo)) {
@@ -5482,9 +5537,20 @@ function abrirModalPerdidaAplicacion(b, p, ejercicio, mes) {
   const periodo = `${ejercicio}-${mes}`;
   document.getElementById('pfApConceptoNombre').textContent = `Pérdida ${p.ejercicio_origen} — ${MESES_LARGO[Number(mes)-1]} ${ejercicio}`;
   const actual = p.control ? p.control.porMes[mes] : null;
-  document.getElementById('pfApImporte').value = actual && actual.aplicadoAcumulado !== null ? fmtInputVal(actual.aplicadoAcumulado) : '';
+  const hayAplicacionExistente = actual && actual.aplicadoAcumulado !== null;
+  document.getElementById('pfApImporte').value = hayAplicacionExistente ? fmtInputVal(actual.aplicadoAcumulado) : '';
   document.getElementById('pfApAdvertencia').style.display = 'none';
   document.getElementById('modalPerdidaAplicacion').classList.add('show');
+  const btnEliminar = document.getElementById('pfApEliminarBtn');
+  btnEliminar.style.display = hayAplicacionExistente ? '' : 'none';
+  btnEliminar.onclick = async () => {
+    if (!confirm(`¿Eliminar la aplicación registrada de ${MESES_LARGO[Number(mes)-1]} ${ejercicio}? Los meses posteriores recalcularán su acumulado/saldo/estado automáticamente.`)) return;
+    const resultado = await eliminarAplicacionProvisionalPerdida(p.id, periodo, STATE.user?.email);
+    if (resultado.estado === 'error') { toast('No se pudo eliminar: ' + resultado.error, 'error'); return; }
+    document.getElementById('modalPerdidaAplicacion').classList.remove('show');
+    toast('Aplicación eliminada.');
+    await renderPerdidasFiscales(b);
+  };
 
   document.querySelectorAll('.pf-ap-referencia-isr').forEach(el => el.remove());
   let totalIsrPmDelMes = null; // suma real de ISR PM para este mes, entre TODAS las pérdidas — usado para coordinar, no solo mostrar
@@ -5525,7 +5591,8 @@ function abrirModalPerdidaAplicacion(b, p, ejercicio, mes) {
       confirmadoDivergencia = true;
       return;
     }
-    await registrarAplicacionProvisionalPerdida(p.id, ejercicio, periodo, importeNormalizado, STATE.user?.email, { origen: 'manual' });
+    const resultado = await registrarAplicacionProvisionalPerdida(p.id, ejercicio, periodo, importeNormalizado, STATE.user?.email, { origen: 'manual' });
+    if (resultado.estado === 'error') { toast('No se pudo guardar la aplicación: ' + resultado.error, 'error'); return; }
     document.getElementById('modalPerdidaAplicacion').classList.remove('show');
     toast('Aplicación registrada.');
     await renderPerdidasFiscales(b);
