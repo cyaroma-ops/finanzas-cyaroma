@@ -3099,7 +3099,8 @@ async function guardarPerdidasAplicadasDesdeISRPM(businessId, ejercicio, periodo
   if (sinDistribuir > 0.004) return { estado: 'sin_saldo_suficiente', sinDistribuir };
 
   for (const d of distribucion) {
-    await registrarAplicacionProvisionalPerdida(d.perdidaId, ejercicio, periodo, d.monto, usuarioEmail, { origen: 'isr_pm', utilidadFiscalTope: ref.tope.utilidad, maximoAplicableTope: ref.tope.maximo });
+    const r = await registrarAplicacionProvisionalPerdida(d.perdidaId, ejercicio, periodo, d.monto, usuarioEmail, { origen: 'isr_pm', utilidadFiscalTope: ref.tope.utilidad, maximoAplicableTope: ref.tope.maximo });
+    if (r.estado === 'error') return { estado: 'error', error: r.error };
   }
   return { estado: 'ok', distribucion, maximo: ref.tope.maximo, baseResultante: redondearMoneda(Math.max(0, utilidadFiscalAntesPerdidas - montoNormalizado)) };
 }
@@ -6254,6 +6255,16 @@ async function renderPapelISRPM(b) {
   const refPerdidas = await obtenerReferenciaPerdidasParaISRPM(b.id, ejercicio, periodo, utilidadFiscalActual);
   const perdidasConSaldo = refPerdidas.perdidasConSaldo;
   const perdidasAplicadas = refPerdidas.aplicadoActual !== null ? refPerdidas.aplicadoActual : (refPerdidas.tope.ok ? refPerdidas.tope.maximo : 0); // sin captura explícita → propuesta automática (nunca una segunda fórmula: reutiliza calcularMaximoAplicablePerdidas)
+  const conceptoPerdidasAplicables = conceptos.find(c=>c.clave_concepto==='perdidas_aplicables');
+  if (conceptoPerdidasAplicables && conceptoSinIntencionExplicita(conceptoPerdidasAplicables) && refPerdidas.aplicadoActual === null && refPerdidas.tope.ok) {
+    // No hay aplicación explícita registrada en la Cédula — la fila visible refleja la propuesta
+    // automática, igual que el resto de insumos resolubles. Nunca se propone si ya existe una
+    // aplicación real (aplicadoActual !== null), para no pisar lo que la Cédula ya tiene.
+    conceptoPerdidasAplicables.valor_original = refPerdidas.tope.maximo;
+    conceptoPerdidasAplicables.valor_aplicado = refPerdidas.tope.maximo;
+    conceptoPerdidasAplicables.origen = 'sistema';
+    if (conceptoPerdidasAplicables.id) conceptoPerdidasAplicables._sincronizarOrigenAlGuardar = true;
+  }
 
   // Propuesta de pagos provisionales anteriores — enero no tiene meses previos (0 real conocido);
   // meses posteriores usan la suma real de ISR determinado ya persistido, si existe.
@@ -6553,7 +6564,8 @@ async function renderPapelISRPM(b) {
     // si ya coincide con lo registrado, no cambia nada; si el contador ajustó manualmente vía el
     // editor de pérdidas, perdidasAplicadas ya refleja ese ajuste y se conserva tal cual.
     if (perdidasAplicadas > 0.004) {
-      await guardarPerdidasAplicadasDesdeISRPM(b.id, ejercicio, periodo, perdidasAplicadas, utilidadFiscalActual, STATE.user?.email);
+      const rPerd = await guardarPerdidasAplicadasDesdeISRPM(b.id, ejercicio, periodo, perdidasAplicadas, utilidadFiscalActual, STATE.user?.email);
+      if (rPerd.estado !== 'ok') { toast('No se pudo aplicar la pérdida fiscal: ' + (rPerd.error || rPerd.razon || rPerd.estado), 'error'); return; }
     }
     await sb.from('fz_papeles_trabajo').update({ estado: 'guardado', notas, updated_at: new Date().toISOString() }).eq('id', papelReal.id);
     registrarAuditoria(b.id, 'editar', 'Papeles de Trabajo', `Papel ISR PM ${periodo} guardado`);
