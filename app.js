@@ -2767,16 +2767,17 @@ async function obtenerPagosProvisionalesAnterioresPropuesta(businessId, ejercici
   const mesActual = Number(periodoActual.slice(5, 7));
   if (mesActual === 1) return 0; // enero no tiene meses previos — hecho conocido
   // MISMA cadena/resolvedor que usa la cédula anual — nunca una segunda fórmula. Fuente elegida:
-  // ISR DETERMINADO (Art. 14 LISR — el importe fiscal calculado de cada pago provisional previo).
-  // Nunca se mezcla con "declarado" (lo presentado al SAT) ni "pagado" (lo efectivamente
-  // liquidado) — ambos son datos distintos que este papel no debe confundir con el determinado.
+  // RESULTADO DETERMINADO de cada mes previo (Art. 14 LISR — el neto que ese mes reconoció como
+  // impuesto del periodo, ya después de restar sus propios provisionales/retenciones). isr_determinado
+  // representa el ISR causado ACUMULADO bruto (Base×tasa) desde el Bloque 2 — sumarlo aquí
+  // duplicaría el acumulado en vez de sumar únicamente lo ya reconocido mes por mes.
   const matrizAnio = await construirMatrizAnual(businessId, 'isr_pm', ejercicio, CONCEPTOS_DEFAULT_ISR_PM);
-  const filaIsrDeterminado = matrizAnio.filas.find(f => f.clave === 'isr_determinado');
-  if (!filaIsrDeterminado) return null;
+  const filaResultadoDeterminado = matrizAnio.filas.find(f => f.clave === 'resultado_determinado');
+  if (!filaResultadoDeterminado) return null;
   let suma = 0, hayDato = false;
   for (let m = 1; m < mesActual; m++) {
     const mm = String(m).padStart(2, '0');
-    const valor = filaIsrDeterminado.porMes[mm] ? filaIsrDeterminado.porMes[mm].valor : null;
+    const valor = filaResultadoDeterminado.porMes[mm] ? filaResultadoDeterminado.porMes[mm].valor : null;
     if (valor !== null) { suma += valor; hayDato = true; }
   }
   return hayDato ? redondearMoneda(suma) : null;
@@ -4947,6 +4948,15 @@ async function renderCedulaAnual(b, elId, tipoPapel, titulo, conceptosDefault, t
 
   const { filas, estadosPorMes } = await construirMatrizAnual(b.id, tipoPapel, ejercicio, conceptosDefault);
   const mesesCols = Array.from({length:12}, (_,i) => String(i+1).padStart(2,'0'));
+
+  if (tipoPapel === 'isr_pm') {
+    const idxBase = filas.findIndex(f => f.clave === 'base');
+    if (idxBase !== -1) {
+      const porMesTasa = {};
+      mesesCols.forEach(mm => { porMesTasa[mm] = { valor: TASA_ISR_PERSONAS_MORALES, conceptoId: null, origen: 'sistema', accesorios: null }; });
+      filas.splice(idxBase + 1, 0, { clave: 'tasa_isr_aplicable', nombre: 'Tasa ISR aplicable', agregacion: 'no_aplica', formato: 'porcentaje', porMes: porMesTasa, total: null });
+    }
+  }
 
   // Bloque de accesorios consolidado — ISR PM usa "resultado_determinado" (ya en filas, viene del
   // default). IVA/Retenciones usan su concepto sintético "total del periodo", que NO está en
