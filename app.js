@@ -4844,7 +4844,8 @@ async function construirMatrizAnual(businessId, tipoPapel, ejercicio, conceptosD
       setSiVacio('ingresos_nominales_acum', mm, cadena.ingresosAcum);
       setSiVacio('utilidad_fiscal', mm, cadena.utilidadFiscal);
       setSiVacio('base', mm, cadena.base);
-      setSiVacio('isr_determinado', mm, cadena.isrDeterminado);
+      setSiVacio('isr_determinado', mm, cadena.isrCausado);
+      setSiVacio('pagos_provisionales_anteriores', mm, pagosProvisionalesAnteriores);
       setSiVacio('resultado_determinado', mm, cadena.isrDeterminado);
 
       if (cadena.isrDeterminado !== null) pagosAnterioresAcum = redondearMoneda(pagosAnterioresAcum + cadena.isrDeterminado);
@@ -4897,7 +4898,7 @@ async function construirMatrizAnual(businessId, tipoPapel, ejercicio, conceptosD
   // Recalcular el total de cada fila CALCULADA de ISR PM afectada por el post-procesamiento
   // (incluye coeficiente_utilidad, cuyo porMes se rellenó con el arrastre entre meses).
   if (tipoPapel === 'isr_pm') {
-    ['coeficiente_utilidad','ingresos_nominales_acum','utilidad_fiscal','base','isr_determinado','resultado_determinado'].forEach(clave => {
+    ['coeficiente_utilidad','ingresos_nominales_acum','utilidad_fiscal','base','isr_determinado','pagos_provisionales_anteriores','resultado_determinado'].forEach(clave => {
       const f = filaPorClave[clave]; if (!f) return;
       const valoresNoNulos = Object.values(f.porMes).map(x=>x.valor).filter(v=>v!==null);
       if (f.agregacion === 'suma') f.total = valoresNoNulos.reduce((s,v)=>s+v, 0);
@@ -6137,8 +6138,9 @@ async function renderPapelISRPM(b) {
   // meses posteriores usan la suma real de ISR determinado ya persistido, si existe.
   const pagosProvisionalesAnterioresPropuesto = mesNum === 1 ? 0 : await obtenerPagosProvisionalesAnterioresPropuesta(b.id, ejercicio, periodo);
   const conceptoPagosAnteriores = conceptos.find(c=>c.clave_concepto==='pagos_provisionales_anteriores');
-  if (conceptoPagosAnteriores && !conceptoPagosAnteriores.id && conceptoPagosAnteriores.valor_original===null && pagosProvisionalesAnterioresPropuesto!==null) {
+  if (conceptoPagosAnteriores && conceptoSinIntencionExplicita(conceptoPagosAnteriores) && pagosProvisionalesAnterioresPropuesto!==null) {
     conceptoPagosAnteriores.valor_original = pagosProvisionalesAnterioresPropuesto; conceptoPagosAnteriores.valor_aplicado = pagosProvisionalesAnterioresPropuesto; conceptoPagosAnteriores.origen = 'sistema';
+    if (conceptoPagosAnteriores.id) conceptoPagosAnteriores._sincronizarOrigenAlGuardar = true; // ya persistido sin intención explícita (ej. 0 de arrastre) — la corrección se escribe solo al Guardar, nunca por abrir
   }
   const pagosProvisionalesAnteriores = insumoDe('pagos_provisionales_anteriores') ?? (mesNum===1 ? 0 : null);
 
@@ -6161,7 +6163,7 @@ async function renderPapelISRPM(b) {
   ['ingresos_nominales_acum','utilidad_fiscal','base','isr_determinado'].forEach(clave => {
     const c = conceptos.find(x=>x.clave_concepto===clave);
     if (!c) return;
-    const valorCalc = clave==='ingresos_nominales_acum' ? cadena.ingresosAcum : clave==='utilidad_fiscal' ? cadena.utilidadFiscal : clave==='base' ? cadena.base : cadena.isrDeterminado;
+    const valorCalc = clave==='ingresos_nominales_acum' ? cadena.ingresosAcum : clave==='utilidad_fiscal' ? cadena.utilidadFiscal : clave==='base' ? cadena.base : cadena.isrCausado;
     // DERIVADO del motor: el cálculo actual es siempre la autoridad para la propuesta que se
     // muestra, exista o no un id persistido de una determinación anterior. Esto solo corrige el
     // objeto en memoria para esta vista — no escribe nada a Supabase por sí mismo (abrir ≠
@@ -6232,6 +6234,7 @@ async function renderPapelISRPM(b) {
               const fmto = (CONCEPTOS_DEFAULT_ISR_PM.find(d=>d.clave===c.clave_concepto)||{}).formato || 'moneda';
               const esCierre = c.clave_concepto==='resultado_determinado';
               const esPerdidas = c.clave_concepto==='perdidas_aplicables';
+              const esBase = c.clave_concepto==='base';
               const esCalculado = CONCEPTOS_CALCULADOS_ISR_PM.includes(c.clave_concepto);
               return `<tr${esCierre?' class="pt-fila-cierre"':''}>
                 <td>${c.concepto}${!esCalculado && c.valor_original!==null&&c.valor_original!==undefined?` <span class="pt-origen ${c.origen}">${etiquetaOrigen(c.origen)}: ${formatearValorConcepto(c.valor_original,fmto)}${Math.abs(Number(c.valor_aplicado)-Number(c.valor_original))>0.004?' → '+formatearValorConcepto(c.valor_aplicado,fmto)+' (dif. '+formatearValorConcepto(Number(c.valor_aplicado)-Number(c.valor_original),fmto)+')':''}</span>`:''}</td>
@@ -6239,7 +6242,7 @@ async function renderPapelISRPM(b) {
                 <td class="num">${acumuladoPar!==null?formatearValorConcepto(acumuladoPar,fmto):''}</td>
                 <td>${esCalculado ? '<span class="pt-origen sistema">Calculado</span>' : (!c.valor_original && !esCierre ? `<span class="pt-origen ${c.origen}">${etiquetaOrigen(c.origen)}</span>` : '')}</td>
                 <td>${esCalculado ? `<a href="#" class="pisr-ver-calculo-concepto pt-editar-link" data-idx="${idx}">Ver cálculo</a>` : `<a href="#" class="${esPerdidas?'pisr-editar-perdidas':'pisr-editar'} pt-editar-link" data-idx="${idx}">Editar</a>`}</td>
-              </tr>${esPerdidas ? `<tr><td colspan="5" style="padding:10px 0 12px;background:#f7f9fc;">
+              </tr>${esBase ? `<tr><td>Tasa ISR aplicable</td><td class="num" style="font-weight:600;">${(TASA_ISR_PERSONAS_MORALES*100).toFixed(2)}%</td><td></td><td><span class="pt-origen sistema">Calculado</span></td><td></td></tr>` : ''}${esPerdidas ? `<tr><td colspan="5" style="padding:10px 0 12px;background:#f7f9fc;">
                 <div class="pt-grid" style="padding:0 12px;">
                   <div><span class="pt-label">Utilidad fiscal antes de pérdidas</span><span class="pt-value">${utilidadFiscalActual!==null?fmt(utilidadFiscalActual):'—'}</span></div>
                   <div><span class="pt-label">Pérdida fiscal disponible</span><span class="pt-value">${refPerdidas.perdidas.length?fmt(refPerdidas.saldoTotalDisponible):'—'}</span></div>
