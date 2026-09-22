@@ -4914,8 +4914,7 @@ async function construirMatrizAnual(businessId, tipoPapel, ejercicio, conceptosD
       const ptuAplicable = valorMes('ptu_aplicable', mm) ?? 0;
       const retenciones = valorMes('retenciones', mm) ?? 0;
       const perdidasAplicadas = perdidasAplicadasPorMes[mm] || 0;
-      let pagosProvisionalesAnteriores = valorMes('pagos_provisionales_anteriores', mm);
-      if (pagosProvisionalesAnteriores === null) pagosProvisionalesAnteriores = (m === 1) ? 0 : pagosAnterioresAcum;
+      const pagosProvisionalesAnteriores = m === 1 ? 0 : pagosAnterioresAcum;
 
       const ingresosAcumPrevio = ingresosAcum;
       if (ingresosMes !== null) ingresosAcum = redondearMoneda(ingresosAcum + ingresosMes);
@@ -4927,8 +4926,18 @@ async function construirMatrizAnual(businessId, tipoPapel, ejercicio, conceptosD
       setSiVacio('utilidad_fiscal', mm, cadena.utilidadFiscal);
       setSiVacio('base', mm, cadena.base);
       setSiVacio('isr_determinado', mm, cadena.isrCausado);
-      setSiVacio('pagos_provisionales_anteriores', mm, pagosProvisionalesAnteriores);
-      setSiVacio('resultado_determinado', mm, cadena.isrDeterminado);
+      if (filaPorClave['pagos_provisionales_anteriores'] && pagosProvisionalesAnteriores !== null) {
+        filaPorClave['pagos_provisionales_anteriores'].porMes[mm].valor = pagosProvisionalesAnteriores;
+        filaPorClave['pagos_provisionales_anteriores'].porMes[mm].origen = 'contabilidad';
+      }
+      // resultado_determinado (y "Principal", que lee directamente esta misma fila) debe
+      // reflejar siempre la determinación actual — no una fila anterior congelada. A diferencia
+      // de Actualización/Recargos/Total fiscal (que sí son snapshots legítimos, ligados a
+      // fz_papel_concepto_accesorios vía un campo separado .accesorios, sin tocar aquí).
+      if (filaPorClave['resultado_determinado'] && cadena.isrDeterminado !== null) {
+        filaPorClave['resultado_determinado'].porMes[mm].valor = cadena.isrDeterminado;
+        filaPorClave['resultado_determinado'].porMes[mm].origen = 'contabilidad';
+      }
 
       if (cadena.isrDeterminado !== null) pagosAnterioresAcum = redondearMoneda(pagosAnterioresAcum + cadena.isrDeterminado);
     }
