@@ -2882,21 +2882,30 @@ async function editarPerdidaFiscal(perdidaId, datos, usuarioEmail) {
 
 // Recalcula en cadena cronológica las actualizaciones de una pérdida después de que su fuente
 // (monto_original) cambió. Reutiliza EXACTAMENTE registrarActualizacionPerdida — mismos periodos
-// INPC ya persistidos (no se redeterminan), mismo cálculo saldoAnterior×factor. NO toca:
-// - filas con es_captura_inicial=true (son fuente independiente, un saldo que el contador trajo
-//   de su papel de trabajo externo — nunca fueron un cálculo derivado de monto_original);
-// - el propio importe_actualizado de una fila con ajuste_manual=true (es un override deliberado
-//   del contador — se preserva tal cual, nunca se pisa en silencio).
-// En ambos casos, ese valor (sin tocar) sigue siendo el saldo_anterior de la SIGUIENTE fila de la
-// cadena, para que el resto sí se recalcule correctamente a partir de ahí.
+// INPC ya persistidos (no se redeterminan), mismo cálculo saldoAnterior×factor.
+//
+// PROTECCIÓN DE OVERRIDES — la sola bandera ajuste_manual/es_captura_inicial NO basta: una fila
+// pudo haber quedado con esa bandera sin que exista una intención documentada real (por ejemplo,
+// datos sembrados fuera del flujo normal de la app). Se exige evidencia trazable consistente con
+// el propio modelo ya existente:
+//   - ajuste_manual: solo protege si además tiene ajuste_motivo (texto no vacío). El propio
+//     registrarActualizacionPerdida NUNCA permite persistir ajuste_manual=true sin motivo — si una
+//     fila lo tiene así, no nació de ese camino validado y no hay intención real que proteger.
+//   - es_captura_inicial: solo protege si además tiene la firma estructural real de ese camino —
+//     registrarSaldoInicialPerdida NUNCA guarda saldo_anterior ni factor. Si una fila dice
+//     es_captura_inicial pero SÍ tiene saldo_anterior/factor persistidos, es aritméticamente un
+//     cálculo derivado (saldo_anterior × factor), no una captura externa genuina — no protege.
+// Sin esta evidencia, la fila se trata como snapshot derivado de la cadena y se recalcula.
 async function recalcularActualizacionesPerdida(perdidaId, usuarioEmail) {
   const { data: perdida } = await sb.from('fz_perdidas_fiscales').select('*').eq('id', perdidaId).single();
   if (!perdida) return;
   const { data: actualizaciones } = await sb.from('fz_perdidas_fiscales_actualizaciones').select('*').eq('perdida_id', perdidaId).order('ejercicio_actualizacion', { ascending: true });
   let saldoAnterior = Number(perdida.monto_original);
   for (const fila of (actualizaciones || [])) {
-    if (fila.es_captura_inicial || fila.ajuste_manual) {
-      saldoAnterior = Number(fila.importe_actualizado); // fuente independiente u override — se respeta, pasa igual a la siguiente
+    const esOverrideGenuino = fila.ajuste_manual === true && !!(fila.ajuste_motivo && String(fila.ajuste_motivo).trim());
+    const esCapturaInicialGenuina = fila.es_captura_inicial === true && (fila.saldo_anterior === null || fila.saldo_anterior === undefined) && (fila.factor === null || fila.factor === undefined);
+    if (esOverrideGenuino || esCapturaInicialGenuina) {
+      saldoAnterior = Number(fila.importe_actualizado); // fuente independiente u override real y documentado — se respeta, pasa igual a la siguiente
       continue;
     }
     const r = await registrarActualizacionPerdida(perdidaId, fila.ejercicio_actualizacion, {
