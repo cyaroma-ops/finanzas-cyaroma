@@ -2985,14 +2985,13 @@ async function registrarSaldoInicialPerdida(perdidaId, mesAnioUltimaActualizacio
 async function registrarAplicacionProvisionalPerdida(perdidaId, ejercicioControl, periodo, montoAcumulado, usuarioEmail, meta = {}) {
   const montoNormalizado = redondearMoneda(montoAcumulado);
   const { data: existente } = await sb.from('fz_perdidas_fiscales_aplicaciones').select('*').eq('perdida_id', perdidaId).eq('periodo', periodo).maybeSingle();
-  const extra = { origen: meta.origen || 'manual', utilidad_fiscal_tope: meta.utilidadFiscalTope ?? null };
   if (existente) {
     const valorAnteriorReal = existente.aplicado_acumulado;
-    const { error } = await sb.from('fz_perdidas_fiscales_aplicaciones').update({ aplicado_acumulado: montoNormalizado, updated_at: new Date().toISOString(), ...extra }).eq('id', existente.id);
+    const { error } = await sb.from('fz_perdidas_fiscales_aplicaciones').update({ aplicado_acumulado: montoNormalizado, updated_at: new Date().toISOString() }).eq('id', existente.id);
     if (error) return { estado: 'error', error: error.message };
     await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: `aplicación ${periodo}`, valor_anterior: String(valorAnteriorReal), valor_nuevo: String(montoNormalizado), motivo: meta.origen==='isr_pm'?'Capturado desde ISR PM':null, usuario: usuarioEmail || null });
   } else {
-    const { error } = await sb.from('fz_perdidas_fiscales_aplicaciones').insert({ perdida_id: perdidaId, ejercicio_control: ejercicioControl, periodo, aplicado_acumulado: montoNormalizado, created_by: usuarioEmail || null, ...extra });
+    const { error } = await sb.from('fz_perdidas_fiscales_aplicaciones').insert({ perdida_id: perdidaId, ejercicio_control: ejercicioControl, periodo, aplicado_acumulado: montoNormalizado, created_by: usuarioEmail || null });
     if (error) return { estado: 'error', error: error.message };
     await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: `aplicación ${periodo}`, valor_nuevo: String(montoNormalizado), motivo: meta.origen==='isr_pm'?'Capturado desde ISR PM':null, usuario: usuarioEmail || null });
   }
