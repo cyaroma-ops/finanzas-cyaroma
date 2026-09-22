@@ -3542,6 +3542,18 @@ async function obtenerOCrearSubcuentaPorNombre(businessId, nombre, tipo) {
   return sub.id;
 }
 
+// Variante para cuando la cuenta mayor YA se conoce (resuelta por lectura del catálogo en
+// memoria) y solo falta crear/resolver la subcuenta — evita el upsert redundante de la mayor.
+// Mismo onConflict, misma protección de idempotencia/concurrencia que obtenerOCrearSubcuentaPorNombre;
+// única diferencia: no toca fz_cuentas_mayor porque mayorId ya es válido.
+async function obtenerOCrearSubcuentaBajoMayorConocida(businessId, mayorId, nombre) {
+  const { data: sub, error: errSub } = await sb.from('fz_subcuentas')
+    .upsert({ business_id: businessId, cuenta_mayor_id: mayorId, nombre }, { onConflict: 'business_id,cuenta_mayor_id,padre_id_normalizado,nombre_normalizado' })
+    .select('id').single();
+  if (errSub) throw errSub;
+  return sub.id;
+}
+
 // Sincroniza la provisión contable de UN registro de ISR Provisional ya determinado.
 // Idempotente: compara lo ya provisionado (suma de fz_provisiones_fiscales) contra el
 // monto actual — si coincide, no hace nada; si cambió, ajusta SOLO la diferencia.
@@ -15032,7 +15044,19 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   const cacheSubRealizacion = {};
   // Instrumentación temporal — solo para medir el efecto de esta corrección, se descarta al
   // terminar la reconstrucción, no se comparte ni persiste entre llamadas.
-  const _statsSubRealizacion = { llamadas: 0, hits: 0, misses: 0 };
+  const _statsSubRealizacion = { llamadas: 0, hits: 0, resueltasPorLectura: 0, faltantesReales: 0, upsertMayor: 0, upsertSub: 0 };
+
+  // READ-FIRST: mayores/subcuentas ya se cargaron arriba (loadCuentasMayor/loadSubcuentas, para
+  // mayorDeSub/nombreSub) — se reutilizan aquí para resolver cuentas de realización SIN ninguna
+  // consulta adicional. Normalización idéntica a la de la base de datos: nombre_normalizado =
+  // lower(trim(nombre)) (ver schema.sql). Solo se indexan subcuentas SIN padre, porque
+  // obtenerOCrearSubcuentaPorNombre nunca crea subcuentas con padre — no hay ambigüedad posible.
+  const normalizarNombreCuenta = (s) => String(s).trim().toLowerCase();
+  const mapaMayorPorTipoNombre = new Map();
+  mayores.forEach(m => mapaMayorPorTipoNombre.set(m.tipo + '::' + normalizarNombreCuenta(m.nombre), m.id));
+  const mapaSubPorMayorNombre = new Map();
+  subcuentas.filter(s => !s.subcuenta_padre_id).forEach(s => mapaSubPorMayorNombre.set(s.cuenta_mayor_id + '::' + normalizarNombreCuenta(s.nombre), s.id));
+
   const subRealizacion = async (nombre, tipo) => {
     // Clave: tipo + nombre. businessId no hace falta incluirlo porque es el mismo parámetro fijo
     // en toda esta reconstrucción (getLibroPartidaDobleConOrigen no mezcla negocios). tipo SÍ debe
@@ -15042,16 +15066,41 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
     // padre no aplica: esta función nunca crea subcuentas con padre (siempre nivel superior).
     _statsSubRealizacion.llamadas++;
     const key = tipo + '::' + nombre;
-    if (!(key in cacheSubRealizacion)) {
-      _statsSubRealizacion.misses++;
-      cacheSubRealizacion[key] = await obtenerOCrearSubcuentaPorNombre(businessId, nombre, tipo);
-      // Nunca se cachea un error como si fuera un id válido: si obtenerOCrearSubcuentaPorNombre
-      // lanza, la línea anterior interrumpe la ejecución antes de escribir en la caché, así que
-      // una resolución fallida jamás queda registrada como si hubiera tenido éxito.
-    } else {
-      _statsSubRealizacion.hits++;
+    if (key in cacheSubRealizacion) { _statsSubRealizacion.hits++; return cacheSubRealizacion[key]; }
+
+    const nn = normalizarNombreCuenta(nombre);
+    const mayorId = mapaMayorPorTipoNombre.get(tipo + '::' + nn);
+    if (mayorId) {
+      const subId = mapaSubPorMayorNombre.get(mayorId + '::' + nn);
+      if (subId) {
+        // RESOLVER ≠ CREAR — la cuenta y la subcuenta ya existían en el catálogo cargado al
+        // inicio de esta reconstrucción: se resuelve desde memoria, cero requests remotos.
+        _statsSubRealizacion.resueltasPorLectura++;
+        cacheSubRealizacion[key] = subId;
+        return subId;
+      }
+      // Caso 12: la cuenta mayor ya se conoce, solo falta la subcuenta — crear/resolver
+      // ÚNICAMENTE la subcuenta, sin volver a tocar fz_cuentas_mayor (ya existe).
+      _statsSubRealizacion.faltantesReales++;
+      _statsSubRealizacion.upsertSub++;
+      const id = await obtenerOCrearSubcuentaBajoMayorConocida(businessId, mayorId, nombre);
+      mapaSubPorMayorNombre.set(mayorId + '::' + nn, id); // disponible para el resto de esta reconstrucción
+      cacheSubRealizacion[key] = id;
+      return id;
     }
-    return cacheSubRealizacion[key];
+
+    // Ni la mayor ni la subcuenta están en el catálogo cargado — autocreación legítima completa,
+    // mediante el mecanismo seguro existente (onConflict protege contra duplicados si dos
+    // reconstrucciones concurrentes detectan la misma ausencia al mismo tiempo).
+    _statsSubRealizacion.faltantesReales++;
+    _statsSubRealizacion.upsertMayor++;
+    _statsSubRealizacion.upsertSub++;
+    const id = await obtenerOCrearSubcuentaPorNombre(businessId, nombre, tipo);
+    // Nunca se cachea un error como si fuera un id válido: si obtenerOCrearSubcuentaPorNombre o
+    // obtenerOCrearSubcuentaBajoMayorConocida lanzan, la línea nunca llega a completarse, así que
+    // una resolución fallida jamás queda registrada como si hubiera tenido éxito.
+    cacheSubRealizacion[key] = id;
+    return id;
   };
   const { data: facturasProv } = await conDesde(sb.from('fz_proveedores').select('*').eq('business_id', businessId).lte('fecha', hastaFecha));
   for (const f of (facturasProv||[])) {
@@ -15239,7 +15288,7 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   traspasos.forEach(m => { (traspasoGrupos[m.traspaso_id] = traspasoGrupos[m.traspaso_id] || []).push(m); });
 
   if (_statsSubRealizacion.llamadas > 0) {
-    console.log(`[getLibroPartidaDobleConOrigen] resolución de cuentas de realización — llamadas lógicas: ${_statsSubRealizacion.llamadas}, cache HIT: ${_statsSubRealizacion.hits}, cache MISS (resolución remota real): ${_statsSubRealizacion.misses}`);
+    console.log(`[getLibroPartidaDobleConOrigen] resolución de cuentas de realización — llamadas lógicas: ${_statsSubRealizacion.llamadas}, cache HIT (misma reconstrucción): ${_statsSubRealizacion.hits}, resueltas por lectura del catálogo (0 requests): ${_statsSubRealizacion.resueltasPorLectura}, faltantes reales: ${_statsSubRealizacion.faltantesReales} (UPSERT mayor: ${_statsSubRealizacion.upsertMayor}, UPSERT subcuenta: ${_statsSubRealizacion.upsertSub})`);
   }
   return { filas, traspasoGrupos, polizas: polizaMap, mayores, subcuentas };
 }
