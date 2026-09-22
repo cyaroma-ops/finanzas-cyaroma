@@ -15030,9 +15030,28 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   // porque la póliza de reclasificación automática también las referencia por su id real — si no
   // coinciden, Balanza las ve como dos cuentas distintas aunque tengan el mismo nombre.
   const cacheSubRealizacion = {};
+  // Instrumentación temporal — solo para medir el efecto de esta corrección, se descarta al
+  // terminar la reconstrucción, no se comparte ni persiste entre llamadas.
+  const _statsSubRealizacion = { llamadas: 0, hits: 0, misses: 0 };
   const subRealizacion = async (nombre, tipo) => {
-    if (!cacheSubRealizacion[nombre]) cacheSubRealizacion[nombre] = await obtenerOCrearSubcuentaPorNombre(businessId, nombre, tipo);
-    return cacheSubRealizacion[nombre];
+    // Clave: tipo + nombre. businessId no hace falta incluirlo porque es el mismo parámetro fijo
+    // en toda esta reconstrucción (getLibroPartidaDobleConOrigen no mezcla negocios). tipo SÍ debe
+    // ir en la clave porque fz_cuentas_mayor es único por (business_id, tipo, nombre_normalizado)
+    // — dos tipos distintos con el mismo nombre visible son cuentas mayores distintas en la base
+    // de datos, así que cachear solo por nombre podría, en teoría, devolver el id equivocado.
+    // padre no aplica: esta función nunca crea subcuentas con padre (siempre nivel superior).
+    _statsSubRealizacion.llamadas++;
+    const key = tipo + '::' + nombre;
+    if (!(key in cacheSubRealizacion)) {
+      _statsSubRealizacion.misses++;
+      cacheSubRealizacion[key] = await obtenerOCrearSubcuentaPorNombre(businessId, nombre, tipo);
+      // Nunca se cachea un error como si fuera un id válido: si obtenerOCrearSubcuentaPorNombre
+      // lanza, la línea anterior interrumpe la ejecución antes de escribir en la caché, así que
+      // una resolución fallida jamás queda registrada como si hubiera tenido éxito.
+    } else {
+      _statsSubRealizacion.hits++;
+    }
+    return cacheSubRealizacion[key];
   };
   const { data: facturasProv } = await conDesde(sb.from('fz_proveedores').select('*').eq('business_id', businessId).lte('fecha', hastaFecha));
   for (const f of (facturasProv||[])) {
@@ -15219,6 +15238,9 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   const traspasoGrupos = {};
   traspasos.forEach(m => { (traspasoGrupos[m.traspaso_id] = traspasoGrupos[m.traspaso_id] || []).push(m); });
 
+  if (_statsSubRealizacion.llamadas > 0) {
+    console.log(`[getLibroPartidaDobleConOrigen] resolución de cuentas de realización — llamadas lógicas: ${_statsSubRealizacion.llamadas}, cache HIT: ${_statsSubRealizacion.hits}, cache MISS (resolución remota real): ${_statsSubRealizacion.misses}`);
+  }
   return { filas, traspasoGrupos, polizas: polizaMap, mayores, subcuentas };
 }
 
