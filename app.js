@@ -4922,6 +4922,7 @@ async function construirMatrizAnual(businessId, tipoPapel, ejercicio, conceptosD
 
       const cadena = calcularCadenaISRPM({ ingresosAcumPrevio, ingresosMes, coeficiente, ptuAplicable, perdidasAplicadas, pagosProvisionalesAnteriores, retenciones });
 
+      setSiVacio('perdidas_aplicables', mm, perdidasAplicadas, 'sistema');
       setSiVacio('ingresos_nominales_acum', mm, cadena.ingresosAcum);
       setSiVacio('utilidad_fiscal', mm, cadena.utilidadFiscal);
       setSiVacio('base', mm, cadena.base);
@@ -4979,7 +4980,7 @@ async function construirMatrizAnual(businessId, tipoPapel, ejercicio, conceptosD
   // Recalcular el total de cada fila CALCULADA de ISR PM afectada por el post-procesamiento
   // (incluye coeficiente_utilidad, cuyo porMes se rellenó con el arrastre entre meses).
   if (tipoPapel === 'isr_pm') {
-    ['coeficiente_utilidad','ingresos_nominales_acum','utilidad_fiscal','base','isr_determinado','pagos_provisionales_anteriores','resultado_determinado'].forEach(clave => {
+    ['coeficiente_utilidad','ingresos_nominales_acum','utilidad_fiscal','base','isr_determinado','perdidas_aplicables','pagos_provisionales_anteriores','resultado_determinado'].forEach(clave => {
       const f = filaPorClave[clave]; if (!f) return;
       const valoresNoNulos = Object.values(f.porMes).map(x=>x.valor).filter(v=>v!==null);
       if (f.agregacion === 'suma') f.total = valoresNoNulos.reduce((s,v)=>s+v, 0);
