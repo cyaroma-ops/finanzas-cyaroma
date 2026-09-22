@@ -2871,12 +2871,14 @@ async function editarPerdidaFiscal(perdidaId, datos, usuarioEmail) {
   if (error) return { estado: 'error', error: error.message };
   if (actual && Number(actual.monto_original) !== Number(datos.montoOriginal)) {
     await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: 'monto_original', valor_anterior: String(actual.monto_original), valor_nuevo: String(datos.montoOriginal), usuario: usuarioEmail || null });
-    // El monto original es la fuente de la que parte toda la cadena de actualizaciones INPC. Si
-    // cambia, cualquier actualización ya persistida que dependía (directa o transitivamente) de
-    // ese monto queda desactualizada — la misma fórmula (registrarActualizacionPerdida) se vuelve
-    // a ejecutar en cadena, en vez de dejar un snapshot viejo como autoridad.
-    await recalcularActualizacionesPerdida(perdidaId, usuarioEmail);
   }
+  // Recalcular SIEMPRE al guardar — no solo cuando el número cambió respecto al valor anterior.
+  // Es idempotente: si la cadena ya refleja correctamente el monto_original vigente, recalcular
+  // de nuevo reproduce los mismos valores sin efecto. Esto es necesario para el caso donde
+  // monto_original ya quedó correcto (por una edición previa), pero la cadena de actualizaciones
+  // INPC sigue arrastrando un snapshot viejo que nunca se recalculó — guardar de nuevo, aunque el
+  // número no cambie, es la acción explícita del contador para forzar la reconstrucción vigente.
+  await recalcularActualizacionesPerdida(perdidaId, usuarioEmail);
   return { estado: 'editada' };
 }
 
