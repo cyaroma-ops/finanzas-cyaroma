@@ -6435,7 +6435,7 @@ async function renderPapelISRPM(b) {
     <div class="pt-card">
       <h3>3. Actualización y recargos</h3>
       <div class="pt-accesorios-linea">
-        <div><span class="pt-label">Calcular al</span><span class="pt-value">${snapshot?fechaCorta(snapshot.calcular_al):'—'}</span></div>
+        <div><span class="pt-label">Calcular al</span><input type="date" id="pIsrCalcularAlInput" value="${snapshot?snapshot.calcular_al:todayStr()}" style="font-size:12px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;"></div>
         <div><span class="pt-label">Principal</span><span class="pt-value">${fmt(Number(conceptoResultado.valor_aplicado)||0)}</span></div>
         <div><span class="pt-label">Actualización</span><span class="pt-value">${formatAccesorioCampo(snapshot,'importe_actualizacion_aplicado')}</span></div>
         <div><span class="pt-label">Recargos</span><span class="pt-value">${formatAccesorioCampo(snapshot,'importe_recargos_aplicado')}</span></div>
@@ -6495,7 +6495,8 @@ async function renderPapelISRPM(b) {
   if (btnCalcularAcc) btnCalcularAcc.addEventListener('click', async (e) => {
     e.preventDefault();
     const { concepto: conceptoReal } = await asegurarConceptoPersistido(b.id, 'isr_pm', ejercicio, 'mensual', periodo, conceptoResultado);
-    await calcularYGuardarAccesoriosConcepto(conceptoReal.id, b.id, periodo, 'isr_provisional', Number(conceptoReal.valor_aplicado)||0, todayStr());
+    const calcularAlElegido = document.getElementById('pIsrCalcularAlInput')?.value || todayStr();
+    await calcularYGuardarAccesoriosConcepto(conceptoReal.id, b.id, periodo, 'isr_provisional', Number(conceptoReal.valor_aplicado)||0, calcularAlElegido);
     toast('Accesorios calculados.');
     await renderPapelISRPM(b);
   });
