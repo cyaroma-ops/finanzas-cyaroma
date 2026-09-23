@@ -6329,11 +6329,16 @@ async function renderPapelISRPM(b) {
     c.origen = 'sistema';
     if (c.id) c._sincronizarOrigenAlGuardar = true;
   });
-  // resultado_determinado: SIN CAMBIOS — conserva su comportamiento anterior exacto. Su relación
-  // con fz_papel_concepto_accesorios requiere tratamiento histórico especial, fuera de este bloque.
+  // resultado_determinado: siempre refleja el cálculo vigente — un id persistido de un guardado
+  // anterior (de antes de correcciones a la cadena) ya no puede congelar el "Principal" que
+  // alimenta un cálculo NUEVO de accesorios. Los accesorios YA calculados y guardados en
+  // fz_papel_concepto_accesorios no se tocan aquí — solo esta cifra base para el próximo cálculo.
   {
     const c = conceptos.find(x=>x.clave_concepto==='resultado_determinado');
-    if (c && !c.id) { c.valor_aplicado = cadena.isrDeterminado; c.origen = 'sistema'; }
+    if (c && cadena.isrDeterminado !== null) {
+      c.valor_original = cadena.isrDeterminado; c.valor_aplicado = cadena.isrDeterminado; c.origen = 'sistema';
+      if (c.id) c._sincronizarOrigenAlGuardar = true;
+    }
   }
 
   // Encabezado — negocio, RFC, régimen vigente.
