@@ -5594,6 +5594,7 @@ function abrirModalPerdidaActualizacion(b, p, ejercicio) {
 
   const resultadoDiv = document.getElementById('pfActResultadoCatalogo');
   let periodosDeterminados = null; // { periodoAntiguo, periodoReciente } — calculados, nunca elegidos por el contador
+  let saldoBaseParaGuardar = null; // monto_original (primera actualización) o remanente pendiente (posteriores) — nunca elegido por el contador
   let bloqueadoPorFaltaDeAntecedente = false;
 
   (async () => {
@@ -5606,13 +5607,25 @@ function abrirModalPerdidaActualizacion(b, p, ejercicio) {
       resultadoDiv.innerHTML = `<span style="color:var(--red);">INPC pendiente en catálogo para ${r.faltantes.join(' y ')}. Complétalo en Configuración → Recargos y Actualización antes de continuar.</span>`;
       return;
     }
-    if (p.saldoDisponible === null) {
+    // Saldo base de ESTA actualización: monto_original si es la primera (nunca el saldo actual
+    // resuelto, que puede arrastrar un cálculo de una cadena distinta); remanente pendiente (el
+    // importe de la actualización anterior menos lo último aplicado) si ya hay una previa.
+    let saldoBaseUsado;
+    if (!ultimaPrevia) {
+      saldoBaseUsado = Number(p.monto_original);
+    } else {
+      const { data: aplicaciones } = await sb.from('fz_perdidas_fiscales_aplicaciones').select('aplicado_acumulado').eq('perdida_id', p.id).order('periodo', { ascending: false }).limit(1);
+      const aplicadoUltimo = aplicaciones && aplicaciones.length ? Number(aplicaciones[0].aplicado_acumulado) : 0;
+      saldoBaseUsado = Math.max(0, Number(ultimaPrevia.importe_actualizado) - aplicadoUltimo);
+    }
+    saldoBaseParaGuardar = saldoBaseUsado;
+    if (saldoBaseUsado === null || saldoBaseUsado === undefined) {
       resultadoDiv.innerHTML = `<span style="color:var(--red);">No se pudo determinar el saldo base para esta actualización — falta un antecedente fiscal (actualización o cierre) de un ejercicio anterior. Revisa el control de esta pérdida antes de continuar.</span>`;
       bloqueadoPorFaltaDeAntecedente = true;
       return;
     }
-    const calculado = redondearMoneda(redondearMoneda(p.saldoDisponible) * r.factor);
-    resultadoDiv.innerHTML = `Periodo INPC: ${periodosDeterminados.periodoAntiguo} → ${periodosDeterminados.periodoReciente} (determinado automáticamente)<br>INPC ${periodosDeterminados.periodoAntiguo}: <strong>${r.valorAntiguo}</strong> · INPC ${periodosDeterminados.periodoReciente}: <strong>${r.valorReciente}</strong> · Factor: <strong>${r.factor.toFixed(4)}</strong><br>Saldo actualizado calculado: <strong style="color:var(--navy-1);">${fmt(calculado)}</strong>`;
+    const calculado = redondearMoneda(redondearMoneda(saldoBaseUsado) * r.factor);
+    resultadoDiv.innerHTML = `Periodo INPC: ${periodosDeterminados.periodoAntiguo} → ${periodosDeterminados.periodoReciente} (determinado automáticamente)<br>INPC ${periodosDeterminados.periodoAntiguo}: <strong>${r.valorAntiguo}</strong> · INPC ${periodosDeterminados.periodoReciente}: <strong>${r.valorReciente}</strong> · Factor: <strong>${r.factor.toFixed(4)}</strong><br>Saldo base: <strong>${fmt(saldoBaseUsado)}</strong> → Saldo actualizado calculado: <strong style="color:var(--navy-1);">${fmt(calculado)}</strong>`;
   })();
 
   document.getElementById('pfActMostrarAjusteBtn').onclick = (e) => {
@@ -5630,7 +5643,7 @@ function abrirModalPerdidaActualizacion(b, p, ejercicio) {
     const importeAjustado = ajusteVisible ? leerMonto(document.getElementById('pfActImporteAjustado').value) : null;
     const motivoAjuste = document.getElementById('pfActMotivoAjuste').value.trim();
     const r = await registrarActualizacionPerdida(p.id, ejercicio, {
-      ejercicioOrigen: p.ejercicio_origen, saldoAnterior: p.saldoDisponible,
+      ejercicioOrigen: p.ejercicio_origen, saldoAnterior: saldoBaseParaGuardar,
       importeAplicado: importeAjustado, motivoAjuste: motivoAjuste || null,
       observaciones: document.getElementById('pfActObs').value.trim() || null,
     }, STATE.user?.email);
