@@ -3086,6 +3086,40 @@ async function eliminarActualizacionPerdida(actualizacionId, usuarioEmail) {
   return { estado: 'ok' };
 }
 
+// Reconcilia las aplicaciones YA REGISTRADAS de una pérdida contra su saldo actualizado VIGENTE
+// actual (nunca un valor fijo — se lee siempre de obtenerPerdidasFiscalesSiExisten, la misma
+// autoridad que ya usa toda la Cédula). Se dispara explícitamente después de corregir/eliminar
+// una actualización — nunca automáticamente al simplemente abrir/renderizar.
+//
+// Lógica: para cada mes con aplicación ya registrada, en orden cronológico, el nuevo acumulado es
+// min(lo que ya estaba registrado, el techo actual). Esto reproduce exactamente la regla pedida
+// sin tener que re-derivar la utilidad fiscal de cada mes: como el valor original de cada mes ya
+// representaba "el acumulado aplicable hasta ese mes" (topado por el saldo de ENTONCES), volver a
+// toparlo con el saldo de AHORA da automáticamente: los meses cuyo acumulado original ya estaba
+// por debajo del nuevo techo quedan intactos; los que lo superaban quedan fijos en el nuevo techo
+// — que es justamente "una vez agotada, los meses posteriores conservan el máximo aplicado".
+// No toca fz_papel_conceptos/ISR/accesorios/redondeo — solo fz_perdidas_fiscales_aplicaciones.
+async function reconciliarAplicacionesContraSaldoVigente(businessId, perdidaId, ejercicioControl, usuarioEmail) {
+  const perdidas = await obtenerPerdidasFiscalesSiExisten(businessId, ejercicioControl);
+  const p = perdidas.find(x => x.id === perdidaId);
+  if (!p) return { estado: 'error', error: 'Pérdida no encontrada.' };
+  // Techo actual = saldo actualizado vigente ANTES de aplicaciones (el mismo que ya usa el resto
+  // de la Cédula como límite superior — p.actualizacionVigente.importe_actualizado, o el monto
+  // original si nunca se ha actualizado).
+  const techoActual = redondearMoneda(p.actualizacionVigente ? Number(p.actualizacionVigente.importe_actualizado) : Number(p.monto_original));
+  const { data: aplicaciones } = await sb.from('fz_perdidas_fiscales_aplicaciones').select('*').eq('perdida_id', perdidaId).order('periodo', { ascending: true });
+  const cambios = [];
+  for (const fila of (aplicaciones || [])) {
+    const nuevoValor = redondearMoneda(Math.min(Number(fila.aplicado_acumulado), techoActual));
+    if (Math.abs(nuevoValor - Number(fila.aplicado_acumulado)) < 0.005) continue; // sin cambio real
+    const { error } = await sb.from('fz_perdidas_fiscales_aplicaciones').update({ aplicado_acumulado: nuevoValor, updated_at: new Date().toISOString() }).eq('id', fila.id);
+    if (error) return { estado: 'error', error: error.message };
+    await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: `aplicación ${fila.periodo}`, valor_anterior: String(fila.aplicado_acumulado), valor_nuevo: String(nuevoValor), motivo: 'Reconciliada contra el saldo actualizado vigente.', usuario: usuarioEmail || null });
+    cambios.push({ periodo: fila.periodo, anterior: Number(fila.aplicado_acumulado), nuevo: nuevoValor });
+  }
+  return { estado: 'ok', techoActual, cambios };
+}
+
 async function registrarCierreAnualPerdida(perdidaId, ejercicioControl, datos, usuarioEmail) {
   const provisional = redondearMoneda(datos.aplicacionProvisionalAcumulada);
   const definitiva = redondearMoneda(datos.aplicacionDefinitivaAnual);
@@ -5650,6 +5684,7 @@ function abrirModalPerdidaActualizacion(b, p, ejercicio) {
         if (!confirm(`¿Eliminar la actualización de ${filaAEliminar.ejercicio_actualizacion} (${fmt(filaAEliminar.importe_actualizado)})? Esto no afecta la pérdida original ni otras actualizaciones/aplicaciones.`)) return;
         const resultado = await eliminarActualizacionPerdida(filaAEliminar.id, STATE.user?.email);
         if (resultado.estado === 'error') { toast('No se pudo eliminar: ' + resultado.error, 'error'); return; }
+        await reconciliarAplicacionesContraSaldoVigente(b.id, p.id, ejercicio, STATE.user?.email);
         document.getElementById('modalPerdidaActualizacion').classList.remove('show');
         toast('Actualización eliminada.');
         await renderPerdidasFiscales(b);
@@ -5707,6 +5742,7 @@ function abrirModalPerdidaActualizacion(b, p, ejercicio) {
     }, STATE.user?.email);
     if (r.estado === 'inpc_pendiente') { err.textContent = `INPC pendiente en catálogo: ${r.faltantes.join(', ')}. Complétalo en Configuración → Recargos y Actualización antes de continuar.`; err.style.display = 'block'; return; }
     if (r.estado === 'falta_motivo') { err.textContent = 'El ajuste manual requiere motivo.'; err.style.display = 'block'; return; }
+    await reconciliarAplicacionesContraSaldoVigente(b.id, p.id, ejercicio, STATE.user?.email);
     document.getElementById('modalPerdidaActualizacion').classList.remove('show');
     toast('Actualización registrada.');
     await renderPerdidasFiscales(b);
