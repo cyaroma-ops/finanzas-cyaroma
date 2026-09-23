@@ -5670,6 +5670,15 @@ function abrirModalPerdidaActualizacion(b, p, ejercicio) {
     // Determinación automática: encadena desde la última actualización registrada, o desde
     // diciembre del ejercicio de origen si es la primera.
     const ultimaPrevia = await obtenerUltimaActualizacionPerdida(p.id, ejercicio);
+    // Reconciliar PRIMERO, antes de calcular el remanente de este nuevo paso — si las
+    // aplicaciones ya registradas todavía reflejan un techo anterior (por ejemplo, porque la
+    // actualización de la que dependían se acaba de corregir), el remanente de este paso nuevo
+    // debe calcularse contra datos ya corregidos, nunca contra los viejos. Sin este orden, un
+    // paso nuevo podía guardarse con un resultado erróneo (incluso $0) basado en aplicaciones
+    // todavía sin reconciliar.
+    if (ultimaPrevia) {
+      await reconciliarAplicacionesContraSaldoVigente(b.id, p.id, ejercicio, STATE.user?.email);
+    }
     const btnEliminarAct = document.getElementById('pfActEliminarBtn');
     // "Eliminar" debe apuntar a la fila REALMENTE vigente para el ejercicio que se está viendo
     // (p.actualizacionVigente — la que gobierna "Saldo anterior" arriba), no a ultimaPrevia (que
