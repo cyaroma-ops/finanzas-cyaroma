@@ -931,6 +931,8 @@ const SECTION_META = {
   balance: { title: 'Balance General', sub: 'Al día de hoy', showMonth: false, needsBiz: true },
   impuestos: { title: 'Impuestos', sub: '', showMonth: true, needsBiz: true },
   papelestrabajo: { title: 'Papeles de Trabajo Fiscales', sub: '', showMonth: false, needsBiz: true },
+  cedulasmaestras: { title: 'Cédulas Maestras Fiscales', sub: 'Pérdidas fiscales, PTU y demás cédulas propias del contribuyente — fuente única, consumida por Papeles de Trabajo, Papeles 2.1 e Impuestos', showMonth: false, needsBiz: true },
+  parametrosfiscales: { title: 'Parámetros Fiscales', sub: 'INPC, recargos, calendario fiscal y demás parámetros generales — comunes a todos los negocios', showMonth: false, needsBiz: false },
   catalogo: { title: 'Catálogo de Cuentas', sub: 'Estructura contable: cuenta mayor › subcuenta › sub-subcuenta', showMonth: false, needsBiz: true },
   auditoria: { title: 'Auditoría', sub: 'Quién creó, editó o eliminó cada registro', showMonth: false, needsBiz: true },
   negocios: { title: 'Negocios', sub: 'Alta y perfil de cada negocio del grupo', showMonth: false, needsBiz: false },
@@ -938,7 +940,7 @@ const SECTION_META = {
 };
 // Estas viven "dentro" de Configuración: ya no tienen su propio ítem en el menú principal,
 // pero conservan su sección y su función de render tal cual, solo cambia cómo se llega ahí.
-const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos', 'comparativo', 'recargos', 'diasinhabiles'];
+const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos', 'comparativo'];
 function marcarNavActivo(seccion) {
   document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
   const seccionNav = SECCIONES_EN_CONFIGURACION.includes(seccion) ? 'configuracion' : seccion;
@@ -1071,6 +1073,8 @@ async function renderCurrentSection() {
   if (s === 'ivafiscal') return renderIvaFiscal();
   if (s === 'impuestos') return renderImpuestos();
   if (s === 'papelestrabajo') return renderPapelesTrabajo();
+  if (s === 'cedulasmaestras') return renderCedulasMaestras();
+  if (s === 'parametrosfiscales') return renderParametrosFiscales();
   if (s === 'balanza') return renderBalanza();
   if (s === 'librodiario') return renderLibroDiario();
   if (s === 'diariospolizas') return renderDiariosPolizasWrapper();
@@ -5297,6 +5301,7 @@ async function renderCedulaAnual(b, elId, tipoPapel, titulo, conceptosDefault, t
 }
 
 async function renderPapelesTrabajo() {
+  if (STATE_papelesTab === 'perdidas') STATE_papelesTab = 'resumen'; // pestaña removida — ahora vive en Cédulas Maestras Fiscales
   const tabBarEl = document.getElementById('papelesTabBar');
   const tabs = [
     { id: 'resumen', label: 'Resumen Federal' },
@@ -5304,12 +5309,11 @@ async function renderPapelesTrabajo() {
     { id: 'iva', label: 'IVA' },
     { id: 'retisr', label: 'Retenciones ISR' },
     { id: 'retiva', label: 'Retenciones IVA' },
-    { id: 'perdidas', label: 'Pérdidas Fiscales' },
   ];
   tabBarEl.innerHTML = tabs.map(t => `<div class="tag ${STATE_papelesTab===t.id?'active':''}" data-tab="${t.id}">${t.label}</div>`).join('');
   tabBarEl.querySelectorAll('.tag').forEach(tag => tag.addEventListener('click', () => { STATE_papelesTab = tag.dataset.tab; renderPapelesTrabajo(); }));
 
-  const mapaVistas = { resumen: 'sec-resumenfederal', isrpm: 'sec-papelisrpm', iva: 'sec-papeliva', retisr: 'sec-papelretisr', retiva: 'sec-papelretiva', perdidas: 'sec-perdidasfiscales' };
+  const mapaVistas = { resumen: 'sec-resumenfederal', isrpm: 'sec-papelisrpm', iva: 'sec-papeliva', retisr: 'sec-papelretisr', retiva: 'sec-papelretiva' };
   Object.entries(mapaVistas).forEach(([tab, id]) => {
     const el = document.getElementById(id);
     if (el) el.style.display = (STATE_papelesTab === tab) ? '' : 'none';
@@ -5336,7 +5340,6 @@ async function renderPapelesTrabajo() {
       if (STATE_papelesVista.retiva === 'anual') await renderCedulaAnual(b, 'sec-papelretiva', 'retenciones_iva', 'Retenciones IVA', CONCEPTOS_DEFAULT_RETENCIONES_IVA, 'retiva', { accesoriosGlobal: true, accesorios: true });
       else { STATE_papelesMesGenerica['retIvaMes'] = STATE_papelesUltimoMes.retiva || STATE_papelesMesGenerica['retIvaMes'] || todayStr().slice(0,7); await renderCedulaGenerica(b, 'sec-papelretiva', 'retenciones_iva', 'Retenciones de IVA — Papel de trabajo', CONCEPTOS_DEFAULT_RETENCIONES_IVA, 'retIvaMes', { resumenIVA: false, accesorios: true }); }
     }
-    else if (STATE_papelesTab === 'perdidas') await renderPerdidasFiscales(b);
   } catch (err) {
     console.error('[Papeles de Trabajo] error al renderizar', STATE_papelesTab, err);
     const contenedor = document.getElementById(mapaVistas[STATE_papelesTab]);
@@ -5346,6 +5349,78 @@ async function renderPapelesTrabajo() {
       <span style="font-size:11px;color:var(--muted);">Revisa la consola del navegador (F12) para más detalle. Ningún dato se modificó.</span>
     </div>`;
   }
+}
+
+// ============================================================
+// CÉDULAS MAESTRAS FISCALES — hogar único de las cédulas propias del contribuyente que no
+// pertenecen a un impuesto/obligación en particular (Pérdidas Fiscales, PTU, y las que
+// correspondan más adelante). Papeles de Trabajo, Papeles 2.1 e Impuestos son CONSUMIDORES de
+// esta fuente — nunca la duplican ni tienen su propia copia. Reutiliza exactamente
+// renderPerdidasFiscales y las tablas fz_perdidas_fiscales* ya existentes, sin ningún cambio.
+// ============================================================
+let STATE_cedulasMaestrasTab = 'perdidas';
+async function renderCedulasMaestras() {
+  const tabBarEl = document.getElementById('cedulasMaestrasTabBar');
+  const tabs = [
+    { id: 'perdidas', label: 'Pérdidas Fiscales' },
+    { id: 'ptu', label: 'PTU' },
+  ];
+  tabBarEl.innerHTML = tabs.map(t => `<div class="tag ${STATE_cedulasMaestrasTab===t.id?'active':''}" data-tab="${t.id}">${t.label}</div>`).join('');
+  tabBarEl.querySelectorAll('.tag').forEach(tag => tag.addEventListener('click', () => { STATE_cedulasMaestrasTab = tag.dataset.tab; renderCedulasMaestras(); }));
+
+  const mapaVistas = { perdidas: 'sec-perdidasfiscales', ptu: 'sec-ptu' };
+  Object.entries(mapaVistas).forEach(([tab, id]) => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = (STATE_cedulasMaestrasTab === tab) ? '' : 'none';
+  });
+
+  const b = biz();
+  if (!b) { document.getElementById(mapaVistas[STATE_cedulasMaestrasTab]).innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
+
+  if (STATE_cedulasMaestrasTab === 'perdidas') await renderPerdidasFiscales(b);
+  else if (STATE_cedulasMaestrasTab === 'ptu') {
+    document.getElementById('sec-ptu').innerHTML = `<div class="empty">PTU todavía no está implementada como Cédula Maestra — pendiente de una fase posterior del Plan Maestro.</div>`;
+  }
+}
+// Navega directamente a la Cédula de Pérdidas Fiscales desde cualquier consumidor (ISR PM,
+// Resumen Federal) — el enlace visible sigue diciendo lo mismo, pero ahora apunta a la fuente
+// única en su hogar definitivo, no a una pestaña propia de Papeles de Trabajo.
+function irACedulaPerdidasFiscales() {
+  STATE.currentSection = 'cedulasmaestras';
+  STATE_cedulasMaestrasTab = 'perdidas';
+  localStorage.setItem('finanzas_ultima_seccion', 'cedulasmaestras');
+  marcarNavActivo('cedulasmaestras');
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.getElementById('sec-cedulasmaestras').classList.add('active');
+  updateTopbar();
+  renderCurrentSection();
+}
+
+// ============================================================
+// PARÁMETROS FISCALES — hogar único de los parámetros generales/globales: INPC, recargos,
+// calendario de días inhábiles, y (pendientes de implementar) UMA, UDI y tarifas ISR. Reutiliza
+// exactamente renderRecargos/pintarRecargos y renderDiasInhabiles ya existentes, sin duplicar
+// tablas ni motores — antes vivían dispersos dentro de Configuración.
+// ============================================================
+let STATE_parametrosFiscalesTab = 'recargos';
+async function renderParametrosFiscales() {
+  const el = document.getElementById('sec-parametrosfiscales');
+  const tabs = [
+    { id: 'recargos', label: 'INPC y Recargos' },
+    { id: 'diasinhabiles', label: 'Calendario / Días inhábiles' },
+  ];
+  el.innerHTML = `
+    <div class="tag-row" id="parametrosFiscalesTabBar"></div>
+    <div id="pf-contenido"></div>
+    <p style="font-size:11px;color:var(--muted);margin-top:16px;">Pendientes de implementar en este mismo lugar: UMA, UDI y tarifas de ISR. Por ahora solo INPC/recargos y el calendario fiscal viven aquí.</p>
+  `;
+  const tabBarEl = document.getElementById('parametrosFiscalesTabBar');
+  tabBarEl.innerHTML = tabs.map(t => `<div class="tag ${STATE_parametrosFiscalesTab===t.id?'active':''}" data-tab="${t.id}">${t.label}</div>`).join('');
+  tabBarEl.querySelectorAll('.tag').forEach(tag => tag.addEventListener('click', () => { STATE_parametrosFiscalesTab = tag.dataset.tab; renderParametrosFiscales(); }));
+
+  const contenido = document.getElementById('pf-contenido');
+  if (STATE_parametrosFiscalesTab === 'recargos') await pintarRecargos(contenido);
+  else await pintarDiasInhabiles(contenido);
 }
 
 // Resumen Federal — vista anual. Determinado (del papel), Presentado (fz_declaraciones_fiscales)
@@ -5581,7 +5656,7 @@ async function renderResumenFederal(b) {
   `;
   document.getElementById('rfAnioSel').addEventListener('change', (e) => { STATE_papelesAnio = e.target.value; renderResumenFederal(b); });
   const btnVerPerdidas = document.getElementById('rfVerPerdidasBtn');
-  if (btnVerPerdidas) btnVerPerdidas.addEventListener('click', (e) => { e.preventDefault(); STATE_papelesTab = 'perdidas'; STATE_perdidasEjercicio = STATE_papelesAnio; renderPapelesTrabajo(); });
+  if (btnVerPerdidas) btnVerPerdidas.addEventListener('click', (e) => { e.preventDefault(); STATE_perdidasEjercicio = STATE_papelesAnio; irACedulaPerdidasFiscales(); });
 }
 
 // Modal genérico "Agregar concepto" — reutilizable por cualquier cédula de Papeles de Trabajo.
@@ -6725,8 +6800,8 @@ async function renderPapelISRPM(b) {
   }));
   document.querySelectorAll('.pisr-ver-cedula-perdidas').forEach(a => a.addEventListener('click', (e) => {
     e.preventDefault();
-    STATE_papelesTab = 'perdidas'; STATE_perdidasEjercicio = ejercicio;
-    renderPapelesTrabajo();
+    STATE_perdidasEjercicio = ejercicio;
+    irACedulaPerdidasFiscales();
   }));
 
   document.querySelectorAll('.pisr-ver-calculo-concepto').forEach(a => a.addEventListener('click', (e) => {
@@ -9955,10 +10030,9 @@ async function renderConfiguracion() {
       ${tarjetaConfigHtml('cfgActivosFijos', 'Activos Fijos', b ? `Equipo, mobiliario y su depreciación mensual automática en ${b.name}.` : 'Selecciona un negocio para gestionar sus activos.')}
     `)}
     <p style="font-size:13px;font-weight:700;color:var(--navy-1);margin-bottom:10px;">Fiscal</p>
+    <p style="font-size:11.5px;color:var(--muted);margin:-4px 0 10px;">INPC, recargos y el calendario de días inhábiles se movieron a <a href="#" id="cfgIrParametrosFiscales" class="pt-editar-link" style="display:inline;">Parámetros Fiscales</a>, en el menú principal.</p>
     ${grid(`
-      ${tarjetaConfigHtml('cfgRecargos', 'Recargos y Actualización', 'Calculadora de INPC y recargos para impuestos pagados fuera de tiempo — aplica a cualquier negocio.')}
       ${tarjetaConfigHtml('cfgFuentesFiscales', 'Fuentes Fiscales', b ? `Qué subcuentas contables proponen automáticamente cada concepto de los Papeles de Trabajo en ${b.name}.` : 'Selecciona un negocio para configurar sus fuentes fiscales.')}
-      ${tarjetaConfigHtml('cfgDiasInhabiles', 'Días inhábiles', 'Calendario oficial de días inhábiles fiscales para el cálculo de vencimientos — global, aplica a todos los negocios.')}
     `)}
     <p style="font-size:13px;font-weight:700;color:var(--navy-1);margin-bottom:10px;">Administración</p>
     ${grid(`
@@ -9980,9 +10054,9 @@ async function renderConfiguracion() {
   if (cierreBtn) cierreBtn.addEventListener('click', () => { if (b) abrirModalCierrePeriodo(b.id); else toast('Selecciona un negocio primero.', 'error'); });
   ir('cfgActivosFijos', 'activosfijos');
   ir('cfgComparativo', 'comparativo');
-  ir('cfgRecargos', 'recargos');
   ir('cfgFuentesFiscales', 'fuentesfiscales');
-  ir('cfgDiasInhabiles', 'diasinhabiles');
+  const irParamFiscales = document.getElementById('cfgIrParametrosFiscales');
+  if (irParamFiscales) irParamFiscales.addEventListener('click', (e) => { e.preventDefault(); irASeccion('parametrosfiscales'); });
   const usuariosBtn = document.getElementById('cfgUsuarios');
   if (usuariosBtn) usuariosBtn.addEventListener('click', openUsuariosModal);
   const mfaBtn = document.getElementById('cfgMfa');
