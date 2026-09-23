@@ -2670,12 +2670,15 @@ async function obtenerINPCsParaActualizacionPerdida(periodoAntiguo, periodoRecie
 // que el contador tenga que elegirlos — regla estándar (Art. 57 LISR): el periodo "reciente" es
 // siempre el último mes de la primera mitad del ejercicio de control (mes 06); el periodo
 // "antiguo" es aquel en que se actualizó por última vez (el "reciente" de la actualización previa
-// más cercana), o — si es la primera actualización de la pérdida — el último mes del ejercicio de
-// origen (diciembre).
+// más cercana). Si es la primera actualización de la pérdida, el periodo es un paso FIJO del
+// propio ejercicio de origen: de julio (primer mes de la segunda mitad) a diciembre (último mes)
+// del MISMO ejercicio — nunca un salto directo al ejercicio de control, sin importar qué tan
+// lejano sea. Art. 57 LISR.
 function determinarPeriodosINPCPerdida(ejercicioOrigen, ejercicioControl, ultimaActualizacionPrevia) {
-  const periodoReciente = `${ejercicioControl}-06`;
-  const periodoAntiguo = ultimaActualizacionPrevia ? ultimaActualizacionPrevia.periodo_inpc_reciente : `${ejercicioOrigen}-12`;
-  return { periodoAntiguo, periodoReciente };
+  if (!ultimaActualizacionPrevia) {
+    return { periodoAntiguo: `${ejercicioOrigen}-07`, periodoReciente: `${ejercicioOrigen}-12` };
+  }
+  return { periodoAntiguo: ultimaActualizacionPrevia.periodo_inpc_reciente, periodoReciente: `${ejercicioControl}-06` };
 }
 
 // SOLO LECTURA — la actualización registrada más reciente de una pérdida, estrictamente ANTERIOR
@@ -2926,8 +2929,37 @@ async function recalcularActualizacionesPerdida(perdidaId, usuarioEmail) {
 // el flujo normal. El INPC en sí se obtiene SIEMPRE del catálogo existente.
 async function registrarActualizacionPerdida(perdidaId, ejercicioActualizacion, datos, usuarioEmail) {
   let periodoAntiguo = datos.periodoInpcAntiguoOverride, periodoReciente = datos.periodoInpcRecienteOverride;
+  let ultimaPrevia = null;
   if (!periodoAntiguo || !periodoReciente) {
-    const ultimaPrevia = await obtenerUltimaActualizacionPerdida(perdidaId, ejercicioActualizacion);
+    ultimaPrevia = await obtenerUltimaActualizacionPerdida(perdidaId, ejercicioActualizacion);
+    // PRIMERA ACTUALIZACIÓN OBLIGATORIA — si esta pérdida nunca se ha actualizado y se solicita
+    // una para un ejercicio posterior al de origen, la ley exige primero el paso fijo de mitad de
+    // año del propio ejercicio de origen (jul→dic). Se registra como SU PROPIO renglón histórico
+    // (ejercicio_actualizacion = ejercicio de origen), con saldo_anterior = monto_original — nunca
+    // se salta directo al ejercicio de control solicitado.
+    if (!ultimaPrevia && Number(datos.ejercicioOrigen) < Number(ejercicioActualizacion)) {
+      const { data: perdidaOrigen } = await sb.from('fz_perdidas_fiscales').select('monto_original').eq('id', perdidaId).single();
+      if (perdidaOrigen) {
+        const periodoAntiguoInicial = `${datos.ejercicioOrigen}-07`, periodoRecienteInicial = `${datos.ejercicioOrigen}-12`;
+        const inpcsIniciales = await obtenerINPCsParaActualizacionPerdida(periodoAntiguoInicial, periodoRecienteInicial);
+        if (!inpcsIniciales.ok) return { estado: 'inpc_pendiente', faltantes: inpcsIniciales.faltantes, periodoAntiguo: periodoAntiguoInicial, periodoReciente: periodoRecienteInicial };
+        const saldoAnteriorInicial = redondearMoneda(Number(perdidaOrigen.monto_original));
+        const importeCalculadoInicial = redondearMoneda(saldoAnteriorInicial * inpcsIniciales.factor);
+        const { data: nuevaInicial, error: errInicial } = await sb.from('fz_perdidas_fiscales_actualizaciones').insert({
+          perdida_id: perdidaId, ejercicio_actualizacion: datos.ejercicioOrigen,
+          saldo_anterior: saldoAnteriorInicial,
+          periodo_inpc_antiguo: periodoAntiguoInicial, periodo_inpc_reciente: periodoRecienteInicial,
+          inpc_inicial: inpcsIniciales.valorAntiguo, inpc_final: inpcsIniciales.valorReciente, factor: inpcsIniciales.factor,
+          importe_calculado: importeCalculadoInicial, importe_actualizado: importeCalculadoInicial, es_captura_inicial: false,
+          ajuste_manual: false, ajuste_motivo: null, ajuste_usuario: null, ajuste_fecha: null,
+          observaciones: 'Primera actualización obligatoria (jul→dic del ejercicio de origen, Art. 57 LISR).',
+          created_by: usuarioEmail || null,
+        }).select().single();
+        if (errInicial) return { estado: 'error', error: errInicial.message };
+        await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: 'primera actualización', valor_nuevo: String(importeCalculadoInicial), usuario: usuarioEmail || null });
+        ultimaPrevia = nuevaInicial;
+      }
+    }
     const determinado = determinarPeriodosINPCPerdida(datos.ejercicioOrigen, ejercicioActualizacion, ultimaPrevia);
     periodoAntiguo = periodoAntiguo || determinado.periodoAntiguo;
     periodoReciente = periodoReciente || determinado.periodoReciente;
@@ -2935,7 +2967,22 @@ async function registrarActualizacionPerdida(perdidaId, ejercicioActualizacion, 
   const inpcs = await obtenerINPCsParaActualizacionPerdida(periodoAntiguo, periodoReciente);
   if (!inpcs.ok) return { estado: 'inpc_pendiente', faltantes: inpcs.faltantes, periodoAntiguo, periodoReciente };
 
-  const saldoAnteriorNormalizado = redondearMoneda(datos.saldoAnterior);
+  // REMANENTE PENDIENTE — una actualización posterior a la primera opera únicamente sobre lo que
+  // sigue pendiente de aplicar (el importe actualizado anterior MENOS lo que ya se haya aplicado
+  // en pagos provisionales hasta este punto), nunca sobre el importe bruto de la actualización
+  // anterior. Si el llamador ya resolvió explícitamente el saldo (p. ej. al recalcular una cadena
+  // completa tras editar la pérdida original), se respeta tal cual — aquí solo se completa cuando
+  // no se proporcionó.
+  let saldoAnteriorNormalizado;
+  if (datos.saldoAnterior !== undefined && datos.saldoAnterior !== null) {
+    saldoAnteriorNormalizado = redondearMoneda(datos.saldoAnterior);
+  } else if (ultimaPrevia) {
+    const { data: aplicaciones } = await sb.from('fz_perdidas_fiscales_aplicaciones').select('aplicado_acumulado').eq('perdida_id', perdidaId).order('periodo', { ascending: false }).limit(1);
+    const aplicadoAcumuladoUltimo = aplicaciones && aplicaciones.length ? Number(aplicaciones[0].aplicado_acumulado) : 0;
+    saldoAnteriorNormalizado = redondearMoneda(Math.max(0, Number(ultimaPrevia.importe_actualizado) - aplicadoAcumuladoUltimo));
+  } else {
+    saldoAnteriorNormalizado = redondearMoneda(datos.saldoAnterior || 0);
+  }
   const importeCalculado = redondearMoneda(saldoAnteriorNormalizado * inpcs.factor);
   const huboAjuste = datos.importeAplicado !== undefined && datos.importeAplicado !== null && redondearMoneda(datos.importeAplicado) !== importeCalculado;
   if (huboAjuste && (!datos.motivoAjuste || !datos.motivoAjuste.trim())) return { estado: 'falta_motivo' };
