@@ -3197,12 +3197,10 @@ function calcularPTUDisponibleAcumulada(ptuPagada, fechaPago, periodo) {
   const ejercicioPeriodo = periodo.slice(0, 4);
   const mesPeriodo = Number(periodo.slice(5, 7));
   if (ejercicioPeriodo !== ejercicioPago) return 0;
-  const mesInicio = Math.max(mesPago, 5);
-  if (mesInicio > 12) return 0; // pagada después de diciembre — caso raro, no se resuelve aquí
-  if (mesPeriodo < mesInicio) return 0;
-  const divisor = 12 - mesInicio + 1;
-  const mesesTranscurridos = mesPeriodo - mesInicio + 1;
-  return redondearMoneda(Math.min(ptuPagada, (ptuPagada / divisor) * mesesTranscurridos));
+  if (mesPago !== 5) return 0; // pagada fuera de mayo — no disminuible vía provisionales bajo esta mecánica (criterio SAT)
+  if (mesPeriodo < 5) return 0;
+  const mesesTranscurridos = mesPeriodo - 5 + 1; // mayo=1 ... diciembre=8
+  return redondearMoneda(Math.min(ptuPagada, (ptuPagada / 8) * mesesTranscurridos));
 }
 
 // SOLO LECTURA — arma toda la referencia que ISR PM necesita para un periodo. Nunca escribe nada.
