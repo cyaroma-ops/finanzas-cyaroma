@@ -4797,7 +4797,7 @@ const CONCEPTOS_DEFAULT_ISR_PM = [
   { clave: 'coeficiente_utilidad', nombre: 'Coeficiente de utilidad', agregacion: 'ultimo', formato: 'coeficiente' },
   { clave: 'utilidad_fiscal', nombre: 'Utilidad fiscal', agregacion: 'ultimo', formato: 'moneda' },
   { clave: 'ptu_aplicable', nombre: 'PTU aplicable', agregacion: 'suma', formato: 'moneda' },
-  { clave: 'perdidas_aplicables', nombre: 'Pérdidas fiscales aplicadas', agregacion: 'suma', formato: 'moneda' },
+  { clave: 'perdidas_aplicables', nombre: 'Pérdidas fiscales aplicadas', agregacion: 'ultimo', formato: 'moneda' },
   { clave: 'base', nombre: 'Base', agregacion: 'ultimo', formato: 'moneda' },
   { clave: 'isr_determinado', nombre: 'ISR determinado', agregacion: 'ultimo', formato: 'moneda' },
   { clave: 'pagos_provisionales_anteriores', nombre: 'Pagos provisionales anteriores', agregacion: 'ultimo', formato: 'moneda' },
