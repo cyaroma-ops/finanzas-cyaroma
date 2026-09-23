@@ -5637,11 +5637,18 @@ function abrirModalPerdidaActualizacion(b, p, ejercicio) {
     // diciembre del ejercicio de origen si es la primera.
     const ultimaPrevia = await obtenerUltimaActualizacionPerdida(p.id, ejercicio);
     const btnEliminarAct = document.getElementById('pfActEliminarBtn');
-    if (ultimaPrevia) {
+    // "Eliminar" debe apuntar a la fila REALMENTE vigente para el ejercicio que se está viendo
+    // (p.actualizacionVigente — la que gobierna "Saldo anterior" arriba), no a ultimaPrevia (que
+    // es el paso ANTERIOR en la cadena, un concepto distinto — borrar esa por error deja intacta
+    // la fila realmente incorrecta).
+    const filaAEliminar = p.actualizacionVigente || ultimaPrevia;
+    if (filaAEliminar) {
+      const esVigenteExacta = !!p.actualizacionVigente;
+      btnEliminarAct.textContent = esVigenteExacta ? `Eliminar actualización vigente (${fmt(filaAEliminar.importe_actualizado)})` : `Eliminar actualización anterior (${fmt(filaAEliminar.importe_actualizado)})`;
       btnEliminarAct.style.display = '';
       btnEliminarAct.onclick = async () => {
-        if (!confirm(`¿Eliminar la actualización de ${ultimaPrevia.ejercicio_actualizacion} (${fmt(ultimaPrevia.importe_actualizado)})? Esto no afecta la pérdida original ni otras actualizaciones/aplicaciones.`)) return;
-        const resultado = await eliminarActualizacionPerdida(ultimaPrevia.id, STATE.user?.email);
+        if (!confirm(`¿Eliminar la actualización de ${filaAEliminar.ejercicio_actualizacion} (${fmt(filaAEliminar.importe_actualizado)})? Esto no afecta la pérdida original ni otras actualizaciones/aplicaciones.`)) return;
+        const resultado = await eliminarActualizacionPerdida(filaAEliminar.id, STATE.user?.email);
         if (resultado.estado === 'error') { toast('No se pudo eliminar: ' + resultado.error, 'error'); return; }
         document.getElementById('modalPerdidaActualizacion').classList.remove('show');
         toast('Actualización eliminada.');
