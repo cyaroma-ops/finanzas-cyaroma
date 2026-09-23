@@ -5618,11 +5618,13 @@ function abrirModalPerdidaActualizacion(b, p, ejercicio) {
   let periodosDeterminados = null; // { periodoAntiguo, periodoReciente } — calculados, nunca elegidos por el contador
   let saldoBaseParaGuardar = null; // monto_original (primera actualización) o remanente pendiente (posteriores) — nunca elegido por el contador
   let bloqueadoPorFaltaDeAntecedente = false;
+  let ejercicioActualizacionParaGuardar = ejercicio; // se ajusta abajo si esta resulta ser la primera actualización
 
   (async () => {
     // Determinación automática: encadena desde la última actualización registrada, o desde
     // diciembre del ejercicio de origen si es la primera.
     const ultimaPrevia = await obtenerUltimaActualizacionPerdida(p.id, ejercicio);
+    ejercicioActualizacionParaGuardar = ultimaPrevia ? ejercicio : p.ejercicio_origen;
     periodosDeterminados = determinarPeriodosINPCPerdida(p.ejercicio_origen, ejercicio, ultimaPrevia, p.mes_inicio_ejercicio || 1, p.mes_cierre_ejercicio || 12);
     const r = await obtenerINPCsParaActualizacionPerdida(periodosDeterminados.periodoAntiguo, periodosDeterminados.periodoReciente);
     if (!r.ok) {
@@ -5664,8 +5666,9 @@ function abrirModalPerdidaActualizacion(b, p, ejercicio) {
     const ajusteVisible = document.getElementById('pfActAjusteZona').style.display !== 'none';
     const importeAjustado = ajusteVisible ? leerMonto(document.getElementById('pfActImporteAjustado').value) : null;
     const motivoAjuste = document.getElementById('pfActMotivoAjuste').value.trim();
-    const r = await registrarActualizacionPerdida(p.id, ejercicio, {
+    const r = await registrarActualizacionPerdida(p.id, ejercicioActualizacionParaGuardar, {
       ejercicioOrigen: p.ejercicio_origen, saldoAnterior: saldoBaseParaGuardar,
+      periodoInpcAntiguoOverride: periodosDeterminados.periodoAntiguo, periodoInpcRecienteOverride: periodosDeterminados.periodoReciente,
       importeAplicado: importeAjustado, motivoAjuste: motivoAjuste || null,
       observaciones: document.getElementById('pfActObs').value.trim() || null,
     }, STATE.user?.email);
