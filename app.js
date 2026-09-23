@@ -2670,13 +2670,24 @@ async function obtenerINPCsParaActualizacionPerdida(periodoAntiguo, periodoRecie
 // que el contador tenga que elegirlos — regla estándar (Art. 57 LISR): el periodo "reciente" es
 // siempre el último mes de la primera mitad del ejercicio de control (mes 06); el periodo
 // "antiguo" es aquel en que se actualizó por última vez (el "reciente" de la actualización previa
-// más cercana). Si es la primera actualización de la pérdida, el periodo es un paso FIJO del
-// propio ejercicio de origen: de julio (primer mes de la segunda mitad) a diciembre (último mes)
-// del MISMO ejercicio — nunca un salto directo al ejercicio de control, sin importar qué tan
-// lejano sea. Art. 57 LISR.
-function determinarPeriodosINPCPerdida(ejercicioOrigen, ejercicioControl, ultimaActualizacionPrevia) {
+// más cercana). Si es la primera actualización de la pérdida, el periodo es un paso FIJO
+// derivado del periodo REAL del ejercicio que la originó (mesInicioEjercicio/mesCierreEjercicio,
+// capturados por el contador al registrar la pérdida — Art. 11 CFF permite un primer ejercicio
+// irregular, menor a 12 meses): del primer mes de la segunda mitad de ESE ejercicio a su último
+// mes — nunca un salto directo al ejercicio de control, sin importar qué tan lejano sea.
+// Fórmula del primer mes de la segunda mitad (Art. 57 LISR + criterio RLISR para meses impares):
+// con N = meses del ejercicio, la primera mitad tiene ceil(N/2) meses (si N es impar, el mes de
+// en medio se cuenta en la PRIMERA mitad) y la segunda mitad empieza en el mes siguiente. Para un
+// ejercicio normal enero-diciembre (N=12) esto da exactamente julio — igual que antes.
+function primerMesSegundaMitadEjercicio(mesInicioEjercicio, mesCierreEjercicio) {
+  const N = mesCierreEjercicio - mesInicioEjercicio + 1;
+  const primeraMitadMeses = Math.ceil(N / 2);
+  return mesInicioEjercicio + primeraMitadMeses; // mes calendario (1-12) del primer mes de la 2a mitad
+}
+function determinarPeriodosINPCPerdida(ejercicioOrigen, ejercicioControl, ultimaActualizacionPrevia, mesInicioEjercicio = 1, mesCierreEjercicio = 12) {
   if (!ultimaActualizacionPrevia) {
-    return { periodoAntiguo: `${ejercicioOrigen}-07`, periodoReciente: `${ejercicioOrigen}-12` };
+    const mesSegundaMitad = primerMesSegundaMitadEjercicio(mesInicioEjercicio, mesCierreEjercicio);
+    return { periodoAntiguo: `${ejercicioOrigen}-${String(mesSegundaMitad).padStart(2,'0')}`, periodoReciente: `${ejercicioOrigen}-${String(mesCierreEjercicio).padStart(2,'0')}` };
   }
   return { periodoAntiguo: ultimaActualizacionPrevia.periodo_inpc_reciente, periodoReciente: `${ejercicioControl}-06` };
 }
@@ -2853,6 +2864,7 @@ async function obtenerPerdidasFiscalesSiExisten(businessId, ejercicioControl) {
 async function registrarPerdidaFiscal(businessId, datos, usuarioEmail) {
   const { data: nueva, error } = await sb.from('fz_perdidas_fiscales').insert({
     business_id: businessId, ejercicio_origen: datos.ejercicioOrigen, monto_original: datos.montoOriginal,
+    mes_inicio_ejercicio: datos.mesInicioEjercicio || 1, mes_cierre_ejercicio: datos.mesCierreEjercicio || 12,
     notas: datos.notas || null, created_by: usuarioEmail || null,
   }).select().single();
   if (error) return { estado: 'error', error: error.message };
@@ -2938,9 +2950,11 @@ async function registrarActualizacionPerdida(perdidaId, ejercicioActualizacion, 
     // (ejercicio_actualizacion = ejercicio de origen), con saldo_anterior = monto_original — nunca
     // se salta directo al ejercicio de control solicitado.
     if (!ultimaPrevia && Number(datos.ejercicioOrigen) < Number(ejercicioActualizacion)) {
-      const { data: perdidaOrigen } = await sb.from('fz_perdidas_fiscales').select('monto_original').eq('id', perdidaId).single();
+      const { data: perdidaOrigen } = await sb.from('fz_perdidas_fiscales').select('monto_original, mes_inicio_ejercicio, mes_cierre_ejercicio').eq('id', perdidaId).single();
       if (perdidaOrigen) {
-        const periodoAntiguoInicial = `${datos.ejercicioOrigen}-07`, periodoRecienteInicial = `${datos.ejercicioOrigen}-12`;
+        const mesInicioEj = perdidaOrigen.mes_inicio_ejercicio || 1, mesCierreEj = perdidaOrigen.mes_cierre_ejercicio || 12;
+        const mesSegundaMitad = primerMesSegundaMitadEjercicio(mesInicioEj, mesCierreEj);
+        const periodoAntiguoInicial = `${datos.ejercicioOrigen}-${String(mesSegundaMitad).padStart(2,'0')}`, periodoRecienteInicial = `${datos.ejercicioOrigen}-${String(mesCierreEj).padStart(2,'0')}`;
         const inpcsIniciales = await obtenerINPCsParaActualizacionPerdida(periodoAntiguoInicial, periodoRecienteInicial);
         if (!inpcsIniciales.ok) return { estado: 'inpc_pendiente', faltantes: inpcsIniciales.faltantes, periodoAntiguo: periodoAntiguoInicial, periodoReciente: periodoRecienteInicial };
         const saldoAnteriorInicial = redondearMoneda(Number(perdidaOrigen.monto_original));
@@ -2952,7 +2966,7 @@ async function registrarActualizacionPerdida(perdidaId, ejercicioActualizacion, 
           inpc_inicial: inpcsIniciales.valorAntiguo, inpc_final: inpcsIniciales.valorReciente, factor: inpcsIniciales.factor,
           importe_calculado: importeCalculadoInicial, importe_actualizado: importeCalculadoInicial, es_captura_inicial: false,
           ajuste_manual: false, ajuste_motivo: null, ajuste_usuario: null, ajuste_fecha: null,
-          observaciones: 'Primera actualización obligatoria (jul→dic del ejercicio de origen, Art. 57 LISR).',
+          observaciones: `Primera actualización obligatoria (${periodoAntiguoInicial}→${periodoRecienteInicial} del ejercicio de origen, Art. 57 LISR).`,
           created_by: usuarioEmail || null,
         }).select().single();
         if (errInicial) return { estado: 'error', error: errInicial.message };
@@ -5532,6 +5546,11 @@ function abrirModalPerdidaNueva(b, perdidaExistente = null) {
   document.querySelector('#modalPerdidaNueva h3').textContent = esEdicion ? 'Editar pérdida fiscal' : 'Registrar pérdida fiscal';
   document.getElementById('pfEjercicioOrigen').value = esEdicion ? perdidaExistente.ejercicio_origen : '';
   document.getElementById('pfEjercicioOrigen').disabled = esEdicion;
+  document.getElementById('pfMesInicioEjercicio').value = esEdicion ? (perdidaExistente.mes_inicio_ejercicio || 1) : 1;
+  document.getElementById('pfMesCierreEjercicio').value = esEdicion ? (perdidaExistente.mes_cierre_ejercicio || 12) : 12;
+  document.getElementById('pfMesInicioEjercicio').disabled = esEdicion;
+  document.getElementById('pfMesCierreEjercicio').disabled = esEdicion;
+  document.getElementById('pfPeriodoEjercicioWrap').style.opacity = esEdicion ? '0.6' : '1';
   document.getElementById('pfMontoOriginal').value = esEdicion ? fmtInputVal(perdidaExistente.monto_original) : '';
   document.getElementById('pfNotasNueva').value = esEdicion ? (perdidaExistente.notas || '') : '';
   document.getElementById('pfSaldoInicialZona').style.display = 'none';
@@ -5569,7 +5588,10 @@ function abrirModalPerdidaNueva(b, perdidaExistente = null) {
     if (document.getElementById('pfSaldoInicialZona').style.display !== 'none' && (saldoInicialImporte !== null || saldoInicialPeriodo)) {
       if (!saldoInicialPeriodo || saldoInicialImporte === null) { err.textContent = 'Para la captura inicial indica el saldo Y el mes/año de esa actualización.'; err.style.display = 'block'; return; }
     }
-    const r = await registrarPerdidaFiscal(b.id, { ejercicioOrigen, montoOriginal: monto, notas: notas || null }, STATE.user?.email);
+    const mesInicioEjercicio = Number(document.getElementById('pfMesInicioEjercicio').value);
+    const mesCierreEjercicio = Number(document.getElementById('pfMesCierreEjercicio').value);
+    if (mesCierreEjercicio < mesInicioEjercicio) { err.textContent = 'El mes de cierre del ejercicio no puede ser anterior al mes de inicio.'; err.style.display = 'block'; return; }
+    const r = await registrarPerdidaFiscal(b.id, { ejercicioOrigen, montoOriginal: monto, mesInicioEjercicio, mesCierreEjercicio, notas: notas || null }, STATE.user?.email);
     if (r.estado === 'error') { err.textContent = r.error.includes('duplicate')?'Ya existe una pérdida registrada para ese ejercicio de origen.':('Error: '+r.error); err.style.display = 'block'; return; }
     if (saldoInicialPeriodo && saldoInicialImporte !== null) {
       await registrarSaldoInicialPerdida(r.perdida.id, saldoInicialPeriodo, saldoInicialImporte, STATE.user?.email);
@@ -5601,7 +5623,7 @@ function abrirModalPerdidaActualizacion(b, p, ejercicio) {
     // Determinación automática: encadena desde la última actualización registrada, o desde
     // diciembre del ejercicio de origen si es la primera.
     const ultimaPrevia = await obtenerUltimaActualizacionPerdida(p.id, ejercicio);
-    periodosDeterminados = determinarPeriodosINPCPerdida(p.ejercicio_origen, ejercicio, ultimaPrevia);
+    periodosDeterminados = determinarPeriodosINPCPerdida(p.ejercicio_origen, ejercicio, ultimaPrevia, p.mes_inicio_ejercicio || 1, p.mes_cierre_ejercicio || 12);
     const r = await obtenerINPCsParaActualizacionPerdida(periodosDeterminados.periodoAntiguo, periodosDeterminados.periodoReciente);
     if (!r.ok) {
       resultadoDiv.innerHTML = `<span style="color:var(--red);">INPC pendiente en catálogo para ${r.faltantes.join(' y ')}. Complétalo en Configuración → Recargos y Actualización antes de continuar.</span>`;
