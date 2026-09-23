@@ -5512,8 +5512,9 @@ function abrirModalPTU(b, eventoActual) {
         <div class="field"><label>Ejercicio de la PTU (utilidad que la generó)</label><input type="text" id="ptuEjercicio" placeholder="Ej. 2025" maxlength="4" value="${eventoActual?eventoActual.ejercicio_ptu:''}"></div>
         <div class="field"><label>PTU determinada (informativo, opcional)</label><input type="text" id="ptuDeterminada" inputmode="decimal" placeholder="0.00"></div>
         <div class="field"><label>PTU efectivamente pagada</label><input type="text" id="ptuPagada" inputmode="decimal" placeholder="0.00"></div>
-        <div class="field"><label>Fecha de pago</label><input type="date" id="ptuFechaPago" value="${todayStr()}"></div>
-        <div class="field"><label>Vigente desde (mes)</label><input type="month" id="ptuVigenteDesde"></div>
+        <div class="field"><label>Fecha efectiva de pago</label><input type="date" id="ptuFechaPago"></div>
+        <div class="field"><label>Vigente desde (mes) — el primer periodo fiscal en que este evento puede consumirse</label><input type="month" id="ptuVigenteDesde"><p style="font-size:10px;color:var(--muted);margin-top:3px;" id="ptuVigenteDesdeNota"></p></div>
+        <div class="field" id="ptuMotivoVigenciaWrap" style="display:none;"><label>Motivo de la vigencia distinta a la propuesta</label><input type="text" id="ptuMotivoVigencia" placeholder="Explica por qué difiere de lo propuesto por la fecha de pago"></div>
         <div class="field"><label>Observaciones / soporte</label><input type="text" id="ptuObs" placeholder="Opcional"></div>
         <div id="ptuError" style="font-size:11.5px;color:var(--red);margin-top:3px;display:none;"></div>
         <div class="modal-actions">
@@ -5527,9 +5528,29 @@ function abrirModalPTU(b, eventoActual) {
   cont.id = 'ptuModalContainer';
   cont.innerHTML = modalHtml;
   document.body.appendChild(cont);
-  document.getElementById('ptuFechaPago').addEventListener('change', (e) => {
-    if (!document.getElementById('ptuVigenteDesde').value) document.getElementById('ptuVigenteDesde').value = e.target.value.slice(0,7);
+
+  // La propuesta de "Vigente desde" se deriva SIEMPRE de la fecha de pago — nunca del ejercicio
+  // actualmente seleccionado en la pantalla, y nunca queda vacía por defecto. Sigue siendo
+  // editable: en cuanto el contador la toca a mano, deja de seguir automáticamente a la fecha de
+  // pago (se recuerda cuál fue la propuesta, para trazabilidad si al final difiere).
+  let vigenciaTocadaAMano = false;
+  let vigenciaPropuesta = '';
+  const inputFecha = document.getElementById('ptuFechaPago');
+  const inputVigencia = document.getElementById('ptuVigenteDesde');
+  const notaVigencia = document.getElementById('ptuVigenteDesdeNota');
+  const actualizarPropuestaVigencia = () => {
+    vigenciaPropuesta = inputFecha.value ? inputFecha.value.slice(0, 7) : '';
+    if (!vigenciaTocadaAMano) inputVigencia.value = vigenciaPropuesta;
+    notaVigencia.textContent = vigenciaPropuesta ? `Propuesto a partir de la fecha de pago: ${vigenciaPropuesta}` : '';
+  };
+  inputFecha.addEventListener('input', actualizarPropuestaVigencia);
+  inputVigencia.addEventListener('input', () => {
+    vigenciaTocadaAMano = true;
+    document.getElementById('ptuMotivoVigenciaWrap').style.display = (inputVigencia.value && inputVigencia.value !== vigenciaPropuesta) ? '' : 'none';
   });
+  inputFecha.value = todayStr();
+  actualizarPropuestaVigencia();
+
   document.getElementById('ptuCancelarBtn').addEventListener('click', () => cont.remove());
   document.getElementById('ptuGuardarBtn').addEventListener('click', async () => {
     const ejercicioPtu = document.getElementById('ptuEjercicio').value.trim();
@@ -5537,14 +5558,21 @@ function abrirModalPTU(b, eventoActual) {
     const ptuDeterminadaVal = document.getElementById('ptuDeterminada').value.trim();
     const fechaPago = document.getElementById('ptuFechaPago').value;
     const vigenteDesde = document.getElementById('ptuVigenteDesde').value;
+    const motivoVigencia = document.getElementById('ptuMotivoVigencia').value.trim();
     const err = document.getElementById('ptuError');
     if (!/^\d{4}$/.test(ejercicioPtu)) { err.textContent = 'Indica el ejercicio de la PTU (4 dígitos).'; err.style.display = 'block'; return; }
     if (!ptuPagada || ptuPagada <= 0) { err.textContent = 'La PTU pagada debe ser mayor a cero.'; err.style.display = 'block'; return; }
     if (!fechaPago) { err.textContent = 'Indica la fecha de pago.'; err.style.display = 'block'; return; }
     if (!vigenteDesde) { err.textContent = 'Indica desde qué mes es vigente este evento.'; err.style.display = 'block'; return; }
+    const difiereDeLoPropuesto = vigenteDesde !== vigenciaPropuesta;
+    if (difiereDeLoPropuesto && !motivoVigencia) { err.textContent = 'La vigencia elegida difiere de la propuesta por la fecha de pago — indica el motivo.'; err.style.display = 'block'; return; }
+    const observacionesFinal = [
+      document.getElementById('ptuObs').value.trim() || null,
+      difiereDeLoPropuesto ? `Vigencia propuesta por fecha de pago: ${vigenciaPropuesta}. Vigencia aplicada: ${vigenteDesde}. Motivo: ${motivoVigencia}` : null,
+    ].filter(Boolean).join(' — ') || null;
     const r = await registrarEventoPTU(b.id, {
       ejercicioPtu, ptuPagada, ptuDeterminada: ptuDeterminadaVal ? leerMonto(ptuDeterminadaVal) : null,
-      fechaPago, vigenteDesde, observaciones: document.getElementById('ptuObs').value.trim() || null,
+      fechaPago, vigenteDesde, observaciones: observacionesFinal,
     }, STATE.user?.email);
     if (r.estado === 'error') { err.textContent = 'Error: ' + r.error; err.style.display = 'block'; return; }
     cont.remove();
