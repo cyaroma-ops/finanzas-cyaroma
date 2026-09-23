@@ -3074,6 +3074,18 @@ async function eliminarAplicacionProvisionalPerdida(perdidaId, periodo, usuarioE
   return { estado: 'ok' };
 }
 
+// Eliminar una actualización registrada por su id — corrige una fila mal calculada (p. ej. una
+// generada por el bug de doble registro ya corregido) sin tocar la pérdida de origen ni ninguna
+// otra actualización/aplicación.
+async function eliminarActualizacionPerdida(actualizacionId, usuarioEmail) {
+  const { data: existente } = await sb.from('fz_perdidas_fiscales_actualizaciones').select('*').eq('id', actualizacionId).maybeSingle();
+  if (!existente) return { estado: 'ok' };
+  const { error } = await sb.from('fz_perdidas_fiscales_actualizaciones').delete().eq('id', actualizacionId);
+  if (error) return { estado: 'error', error: error.message };
+  await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: existente.perdida_id, campo: `actualización ${existente.ejercicio_actualizacion}`, valor_anterior: String(existente.importe_actualizado), valor_nuevo: '(eliminada)', usuario: usuarioEmail || null });
+  return { estado: 'ok' };
+}
+
 async function registrarCierreAnualPerdida(perdidaId, ejercicioControl, datos, usuarioEmail) {
   const provisional = redondearMoneda(datos.aplicacionProvisionalAcumulada);
   const definitiva = redondearMoneda(datos.aplicacionDefinitivaAnual);
@@ -5624,6 +5636,20 @@ function abrirModalPerdidaActualizacion(b, p, ejercicio) {
     // Determinación automática: encadena desde la última actualización registrada, o desde
     // diciembre del ejercicio de origen si es la primera.
     const ultimaPrevia = await obtenerUltimaActualizacionPerdida(p.id, ejercicio);
+    const btnEliminarAct = document.getElementById('pfActEliminarBtn');
+    if (ultimaPrevia) {
+      btnEliminarAct.style.display = '';
+      btnEliminarAct.onclick = async () => {
+        if (!confirm(`¿Eliminar la actualización de ${ultimaPrevia.ejercicio_actualizacion} (${fmt(ultimaPrevia.importe_actualizado)})? Esto no afecta la pérdida original ni otras actualizaciones/aplicaciones.`)) return;
+        const resultado = await eliminarActualizacionPerdida(ultimaPrevia.id, STATE.user?.email);
+        if (resultado.estado === 'error') { toast('No se pudo eliminar: ' + resultado.error, 'error'); return; }
+        document.getElementById('modalPerdidaActualizacion').classList.remove('show');
+        toast('Actualización eliminada.');
+        await renderPerdidasFiscales(b);
+      };
+    } else {
+      btnEliminarAct.style.display = 'none';
+    }
     ejercicioActualizacionParaGuardar = ultimaPrevia ? ejercicio : p.ejercicio_origen;
     periodosDeterminados = determinarPeriodosINPCPerdida(p.ejercicio_origen, ejercicio, ultimaPrevia, p.mes_inicio_ejercicio || 1, p.mes_cierre_ejercicio || 12);
     const r = await obtenerINPCsParaActualizacionPerdida(periodosDeterminados.periodoAntiguo, periodosDeterminados.periodoReciente);
