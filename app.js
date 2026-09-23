@@ -3173,6 +3173,74 @@ function distribuirAplicacionEntrePerdidas(perdidasConSaldo, montoTotal) {
   return { distribucion, distribuidoTotal: redondearMoneda(montoTotal - restante), sinDistribuir: restante };
 }
 
+// ============================================================
+// PTU — Cédula Maestra Fiscal. Separación exacta acordada: esta sección SOLO determina la
+// disponible acumulada (Art. 14 LISR); ISR PM es quien la limita a la utilidad fiscal del
+// provisional y calcula la aplicable — esa parte vive en calcularCadenaISRPM, no aquí, sin tocar
+// su fórmula.
+// ============================================================
+
+// SOLO LECTURA — el evento PTU vigente para un periodo: el más reciente cuya vigente_desde sea
+// anterior o igual al periodo consultado. Nunca escribe nada.
+async function obtenerPTUVigente(businessId, periodo) {
+  const { data } = await sb.from('fz_ptu_eventos').select('*').eq('business_id', businessId).lte('vigente_desde', periodo).order('vigente_desde', { ascending: false }).order('created_at', { ascending: false }).limit(1).maybeSingle();
+  return data || null;
+}
+
+// PTU disponible acumulada para disminuir en el pago provisional de un periodo — puro Art. 14
+// LISR, sin conocer nada de utilidad fiscal. mesInicio = max(mes de pago real, mayo): NUNCA hace
+// disponible una PTU antes de haberse pagado, aunque la ventana legal siempre termine en
+// diciembre. La disminución solo aplica dentro del mismo ejercicio calendario en que se pagó.
+function calcularPTUDisponibleAcumulada(ptuPagada, fechaPago, periodo) {
+  const mesPago = Number(fechaPago.slice(5, 7));
+  const ejercicioPago = fechaPago.slice(0, 4);
+  const ejercicioPeriodo = periodo.slice(0, 4);
+  const mesPeriodo = Number(periodo.slice(5, 7));
+  if (ejercicioPeriodo !== ejercicioPago) return 0;
+  const mesInicio = Math.max(mesPago, 5);
+  if (mesInicio > 12) return 0; // pagada después de diciembre — caso raro, no se resuelve aquí
+  if (mesPeriodo < mesInicio) return 0;
+  const divisor = 12 - mesInicio + 1;
+  const mesesTranscurridos = mesPeriodo - mesInicio + 1;
+  return redondearMoneda(Math.min(ptuPagada, (ptuPagada / divisor) * mesesTranscurridos));
+}
+
+// SOLO LECTURA — arma toda la referencia que ISR PM necesita para un periodo. Nunca escribe nada.
+async function obtenerReferenciaPTUParaISRPM(businessId, periodo, utilidadFiscalAntesPTU) {
+  const evento = await obtenerPTUVigente(businessId, periodo);
+  if (!evento) return { disponible: 0, maximoAplicable: 0, evento: null };
+  const disponible = calcularPTUDisponibleAcumulada(Number(evento.ptu_pagada), evento.fecha_pago, periodo);
+  const maximoAplicable = redondearMoneda(Math.min(disponible, Math.max(0, utilidadFiscalAntesPTU || 0)));
+  return { disponible, maximoAplicable, evento };
+}
+
+// Registra un evento PTU nuevo — NUNCA hace update sobre uno existente, cada captura o corrección
+// es su propia fila con su propia vigencia (conserva historial completo sin necesitar tipos
+// rígidos). Si ya existen papeles ISR PM GUARDADOS dentro del rango que este evento cubriría,
+// se identifican y se devuelven para que el contador los revise — nunca se recalculan solos.
+async function registrarEventoPTU(businessId, datos, usuarioEmail) {
+  const vigenteDesde = datos.vigenteDesde || datos.fechaPago.slice(0, 7);
+  const payload = {
+    business_id: businessId, ejercicio_ptu: datos.ejercicioPtu, ptu_determinada: datos.ptuDeterminada ?? null,
+    ptu_pagada: redondearMoneda(datos.ptuPagada), fecha_pago: datos.fechaPago, vigente_desde: vigenteDesde,
+    observaciones: datos.observaciones || null, created_by: usuarioEmail || null,
+  };
+  const { data: nuevo, error } = await sb.from('fz_ptu_eventos').insert(payload).select().single();
+  if (error) return { estado: 'error', error: error.message };
+  await sb.from('fz_ptu_historial').insert({ business_id: businessId, campo: 'evento PTU', valor_nuevo: `Ejercicio ${datos.ejercicioPtu}: pagada ${payload.ptu_pagada}, vigente desde ${vigenteDesde}`, motivo: datos.observaciones || null, usuario: usuarioEmail || null });
+
+  // Detectar papeles ISR PM ya guardados que caen dentro del rango de vigencia de este evento —
+  // se identifican para revisión, nunca se tocan automáticamente.
+  const { data: papelesAfectados } = await sb.from('fz_papeles_trabajo').select('periodo').eq('business_id', businessId).eq('tipo_papel', 'isr_pm').eq('estado', 'guardado').gte('periodo', vigenteDesde);
+  const periodosParaRevision = (papelesAfectados || []).map(p => p.periodo).sort();
+  return { estado: 'ok', evento: nuevo, periodosParaRevision };
+}
+
+async function obtenerHistorialPTU(businessId) {
+  const { data } = await sb.from('fz_ptu_historial').select('*').eq('business_id', businessId).order('created_at', { ascending: false }).limit(100);
+  return data || [];
+}
+
 // SOLO LECTURA — arma toda la referencia que se muestra en ISR PM. Nunca escribe nada.
 async function obtenerReferenciaPerdidasParaISRPM(businessId, ejercicio, periodo, utilidadFiscalAntesPerdidas) {
   const perdidas = await obtenerPerdidasFiscalesSiExisten(businessId, ejercicio);
@@ -4907,7 +4975,7 @@ const CONCEPTOS_DEFAULT_ISR_PM = [
   { clave: 'ingresos_nominales_acum', nombre: 'Ingresos nominales acumulados', agregacion: 'ultimo', formato: 'moneda' },
   { clave: 'coeficiente_utilidad', nombre: 'Coeficiente de utilidad', agregacion: 'ultimo', formato: 'coeficiente' },
   { clave: 'utilidad_fiscal', nombre: 'Utilidad fiscal', agregacion: 'ultimo', formato: 'moneda' },
-  { clave: 'ptu_aplicable', nombre: 'PTU aplicable', agregacion: 'suma', formato: 'moneda' },
+  { clave: 'ptu_aplicable', nombre: 'PTU aplicable', agregacion: 'no_aplica', formato: 'moneda' },
   { clave: 'perdidas_aplicables', nombre: 'Pérdidas fiscales aplicadas', agregacion: 'ultimo', formato: 'moneda' },
   { clave: 'base', nombre: 'Base', agregacion: 'ultimo', formato: 'moneda' },
   { clave: 'isr_determinado', nombre: 'ISR determinado', agregacion: 'ultimo', formato: 'moneda' },
@@ -5021,13 +5089,21 @@ async function construirMatrizAnual(businessId, tipoPapel, ejercicio, conceptosD
       if (coeficiente === null) coeficiente = ultimoCoeficienteConocido;
       if (coeficiente !== null) ultimoCoeficienteConocido = coeficiente;
       setSiVacio('coeficiente_utilidad', mm, coeficiente, origenCoeficiente);
-      const ptuAplicable = valorMes('ptu_aplicable', mm) ?? 0;
       const retenciones = valorMes('retenciones', mm) ?? 0;
       const perdidasAplicadas = perdidasAplicadasPorMes[mm] || 0;
       const pagosProvisionalesAnteriores = m === 1 ? 0 : pagosAnterioresAcum;
 
       const ingresosAcumPrevio = ingresosAcum;
       if (ingresosMes !== null) ingresosAcum = redondearMoneda(ingresosAcum + ingresosMes);
+
+      // PTU: la disponible/aplicable se resuelve contra la Cédula Maestra PTU (obtenerReferenciaPTUParaISRPM),
+      // nunca un motor propio — se propone automáticamente solo si no hay una captura real ya
+      // guardada para este mes, igual que pérdidas.
+      const ptuCapturada = valorMes('ptu_aplicable', mm);
+      const utilidadFiscalPrePTU = (coeficiente !== null && ingresosAcum !== null) ? redondearMoneda(ingresosAcum * coeficiente) : 0;
+      const refPTU = await obtenerReferenciaPTUParaISRPM(businessId, `${ejercicio}-${mm}`, utilidadFiscalPrePTU);
+      const ptuAplicable = ptuCapturada !== null ? ptuCapturada : refPTU.maximoAplicable;
+      setSiVacio('ptu_aplicable', mm, ptuAplicable, 'sistema');
 
       const cadena = calcularCadenaISRPM({ ingresosAcumPrevio, ingresosMes, coeficiente, ptuAplicable, perdidasAplicadas, pagosProvisionalesAnteriores, retenciones });
 
@@ -5275,7 +5351,7 @@ async function renderCedulaAnual(b, elId, tipoPapel, titulo, conceptosDefault, t
                 const celda = fila.porMes[mm];
                 return `<td class="num ca-celda" data-mes="${mm}" style="cursor:pointer;${celda.valor===null?'color:var(--muted);':''}">${celda.valor!==null?formatearValorConcepto(celda.valor, fila.formato):'—'}</td>`;
               }).join('')}
-              <td class="num">${fila.total!==null?formatearValorConcepto(fila.total, fila.formato):(fila.agregacion==='no_aplica'?'N/A':'—')}</td>
+              <td class="num">${fila.total!==null?formatearValorConcepto(fila.total, fila.formato):(fila.clave==='ptu_aplicable'?'—':(fila.agregacion==='no_aplica'?'N/A':'—'))}</td>
             </tr>${opciones.accesorios ? `<tr class="ca-fila-accesorios" data-clave="${fila.clave||fila.nombre}" style="display:none;background:#f7f7f7;"><td colspan="${mesesCols.length+2}" style="padding:8px 12px;font-size:11px;">
               <strong>Accesorios — ${fila.nombre}:</strong> ${mesesCols.map(mm=>{ const a=fila.porMes[mm].accesorios; return a?`${MESES_LARGO[Number(mm)-1].slice(0,3)}: Princ.${fmt(fila.porMes[mm].valor||0)}+Act.${fmt(a.importe_actualizacion_aplicado)}+Rec.${fmt(a.importe_recargos_aplicado)}+Red.${fmt(a.monto_redondeo)}=${fmt(a.importe_final)}`:'';}).filter(Boolean).join(' · ') || 'Sin accesorios calculados todavía en ningún mes.'}
             </td></tr>${opciones.accesorios?`<tr><td colspan="${mesesCols.length+2}" style="padding:0 0 6px 0;"><a href="#" class="pt-editar-link ca-toggle-accesorios" data-clave="${fila.clave||fila.nombre}" style="margin-left:4px;">Ver accesorios</a></td></tr>`:''}` : ''}`).join('')}
@@ -5378,10 +5454,111 @@ async function renderCedulasMaestras() {
   if (!b) { document.getElementById(mapaVistas[STATE_cedulasMaestrasTab]).innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
 
   if (STATE_cedulasMaestrasTab === 'perdidas') await renderPerdidasFiscales(b);
-  else if (STATE_cedulasMaestrasTab === 'ptu') {
-    document.getElementById('sec-ptu').innerHTML = `<div class="empty">PTU todavía no está implementada como Cédula Maestra — pendiente de una fase posterior del Plan Maestro.</div>`;
-  }
+  else if (STATE_cedulasMaestrasTab === 'ptu') await renderCedulaPTU(b);
 }
+
+// ============================================================
+// CÉDULA PTU — Cédula Maestra Fiscal. Muestra el evento vigente y su disponible acumulada
+// informativa (hoy), permite registrar un evento nuevo (nunca edita uno existente), y lista el
+// historial completo. La aplicación real (limitada por utilidad fiscal) vive únicamente en ISR PM.
+// ============================================================
+async function renderCedulaPTU(b) {
+  const el = document.getElementById('sec-ptu');
+  const hoy = todayStr();
+  const [evento, historial] = await Promise.all([
+    obtenerPTUVigente(b.id, hoy),
+    obtenerHistorialPTU(b.id),
+  ]);
+  const disponibleHoy = evento ? calcularPTUDisponibleAcumulada(Number(evento.ptu_pagada), evento.fecha_pago, hoy) : 0;
+  el.innerHTML = `
+    <div class="card-head" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+      <div>
+        <h3>PTU</h3>
+        <p style="font-size:12px;color:var(--muted);">Cédula de control — ${b.name} · ${b.rfc||''}</p>
+      </div>
+      <button class="btn btn-gold btn-sm" id="ptuRegistrarBtn">+ Registrar evento PTU</button>
+    </div>
+    <div class="card" style="margin-bottom:16px;">
+      ${evento ? `
+        <div class="grid-4" style="gap:14px;">
+          <div><span class="pt-label">Ejercicio PTU</span><div class="pt-value" style="font-weight:600;">${evento.ejercicio_ptu}</div></div>
+          <div><span class="pt-label">PTU determinada</span><div class="pt-value">${evento.ptu_determinada!==null?fmt(evento.ptu_determinada):'—'}</div></div>
+          <div><span class="pt-label">PTU pagada</span><div class="pt-value" style="font-weight:600;">${fmt(evento.ptu_pagada)}</div></div>
+          <div><span class="pt-label">Fecha de pago</span><div class="pt-value">${fechaCorta(evento.fecha_pago)}</div></div>
+        </div>
+        <div style="margin-top:12px;font-size:12px;color:var(--muted);">Vigente desde <strong>${evento.vigente_desde}</strong> · Disponible acumulada hoy (informativo, Art. 14 LISR): <strong style="color:var(--navy-1);">${fmt(disponibleHoy)}</strong></div>
+        ${evento.observaciones ? `<div style="margin-top:8px;font-size:12px;color:var(--muted);">Obs.: ${evento.observaciones}</div>` : ''}
+        <p style="font-size:10.5px;color:var(--muted);margin-top:10px;">La disponible acumulada aquí es solo informativa — lo que ISR PM efectivamente aplica cada mes se limita además a la utilidad fiscal de ese pago provisional, y se calcula en cada papel de ISR PM.</p>
+      ` : `<div class="empty">Sin evento PTU registrado todavía.</div>`}
+    </div>
+    <div id="ptuAvisoRevision" style="display:none;background:#fff3cd;border:1px solid #ffe08a;border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:12.5px;"></div>
+    <h3 style="font-size:13px;color:var(--muted);margin-bottom:8px;">Historial</h3>
+    <div class="table-wrap">
+      <table class="report-table">
+        <thead><tr><th>Fecha</th><th>Usuario</th><th>Detalle</th></tr></thead>
+        <tbody>
+          ${historial.length ? historial.map(h => `<tr><td>${fechaCorta(h.created_at.slice(0,10))}</td><td>${h.usuario||'—'}</td><td>${h.valor_nuevo||''}${h.motivo?` — ${h.motivo}`:''}</td></tr>`).join('') : '<tr><td colspan="3" style="text-align:center;color:var(--muted);">Sin historial todavía.</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+  `;
+  document.getElementById('ptuRegistrarBtn').addEventListener('click', () => abrirModalPTU(b, evento));
+}
+
+function abrirModalPTU(b, eventoActual) {
+  const modalHtml = `
+    <div class="modal-bg show" id="modalPTU">
+      <div class="modal" style="width:min(480px,92vw);">
+        <h3>Registrar evento PTU</h3>
+        <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Esto no modifica ningún evento anterior — se agrega como un registro nuevo, con su propia vigencia. Si ya hay papeles de ISR PM guardados dentro de ese rango, se te avisará para que los revises; no se recalculan solos.</p>
+        <div class="field"><label>Ejercicio de la PTU (utilidad que la generó)</label><input type="text" id="ptuEjercicio" placeholder="Ej. 2025" maxlength="4" value="${eventoActual?eventoActual.ejercicio_ptu:''}"></div>
+        <div class="field"><label>PTU determinada (informativo, opcional)</label><input type="text" id="ptuDeterminada" inputmode="decimal" placeholder="0.00"></div>
+        <div class="field"><label>PTU efectivamente pagada</label><input type="text" id="ptuPagada" inputmode="decimal" placeholder="0.00"></div>
+        <div class="field"><label>Fecha de pago</label><input type="date" id="ptuFechaPago" value="${todayStr()}"></div>
+        <div class="field"><label>Vigente desde (mes)</label><input type="month" id="ptuVigenteDesde"></div>
+        <div class="field"><label>Observaciones / soporte</label><input type="text" id="ptuObs" placeholder="Opcional"></div>
+        <div id="ptuError" style="font-size:11.5px;color:var(--red);margin-top:3px;display:none;"></div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" id="ptuCancelarBtn">Cancelar</button>
+          <button class="btn btn-gold" id="ptuGuardarBtn">Registrar</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById('ptuModalContainer')?.remove();
+  const cont = document.createElement('div');
+  cont.id = 'ptuModalContainer';
+  cont.innerHTML = modalHtml;
+  document.body.appendChild(cont);
+  document.getElementById('ptuFechaPago').addEventListener('change', (e) => {
+    if (!document.getElementById('ptuVigenteDesde').value) document.getElementById('ptuVigenteDesde').value = e.target.value.slice(0,7);
+  });
+  document.getElementById('ptuCancelarBtn').addEventListener('click', () => cont.remove());
+  document.getElementById('ptuGuardarBtn').addEventListener('click', async () => {
+    const ejercicioPtu = document.getElementById('ptuEjercicio').value.trim();
+    const ptuPagada = leerMonto(document.getElementById('ptuPagada').value);
+    const ptuDeterminadaVal = document.getElementById('ptuDeterminada').value.trim();
+    const fechaPago = document.getElementById('ptuFechaPago').value;
+    const vigenteDesde = document.getElementById('ptuVigenteDesde').value;
+    const err = document.getElementById('ptuError');
+    if (!/^\d{4}$/.test(ejercicioPtu)) { err.textContent = 'Indica el ejercicio de la PTU (4 dígitos).'; err.style.display = 'block'; return; }
+    if (!ptuPagada || ptuPagada <= 0) { err.textContent = 'La PTU pagada debe ser mayor a cero.'; err.style.display = 'block'; return; }
+    if (!fechaPago) { err.textContent = 'Indica la fecha de pago.'; err.style.display = 'block'; return; }
+    if (!vigenteDesde) { err.textContent = 'Indica desde qué mes es vigente este evento.'; err.style.display = 'block'; return; }
+    const r = await registrarEventoPTU(b.id, {
+      ejercicioPtu, ptuPagada, ptuDeterminada: ptuDeterminadaVal ? leerMonto(ptuDeterminadaVal) : null,
+      fechaPago, vigenteDesde, observaciones: document.getElementById('ptuObs').value.trim() || null,
+    }, STATE.user?.email);
+    if (r.estado === 'error') { err.textContent = 'Error: ' + r.error; err.style.display = 'block'; return; }
+    cont.remove();
+    if (r.periodosParaRevision && r.periodosParaRevision.length) {
+      toast(`Evento PTU registrado. ${r.periodosParaRevision.length} papel(es) de ISR PM ya guardado(s) caen dentro de este rango y requieren revisión: ${r.periodosParaRevision.join(', ')}.`, 'error');
+    } else {
+      toast('Evento PTU registrado.');
+    }
+    await renderCedulaPTU(b);
+  });
+}
+
 // Navega directamente a la Cédula de Pérdidas Fiscales desde cualquier consumidor (ISR PM,
 // Resumen Federal) — el enlace visible sigue diciendo lo mismo, pero ahora apunta a la fuente
 // única en su hogar definitivo, no a una pestaña propia de Papeles de Trabajo.
@@ -6497,9 +6674,22 @@ async function renderPapelISRPM(b) {
   const insumoDe = clave => { const c = conceptos.find(x=>x.clave_concepto===clave); if (!c) return null; if (c.id) return Number(c.valor_aplicado); if (c.valor_original!==null) return Number(c.valor_aplicado); return null; };
   const ingresosMes = insumoDe('ingresos_nominales_mes');
   const coeficiente = insumoDe('coeficiente_utilidad');
-  const ptuAplicable = insumoDe('ptu_aplicable') ?? 0; // ausencia de PTU capturado = 0 real (no aplica PTU este periodo)
   const retenciones = insumoDe('retenciones') ?? 0;
   const ingresosAcumPrevio = await obtenerIngresosAcumuladosPrevios(b.id, ejercicio, periodo);
+
+  // Utilidad fiscal PURA (sin PTU todavía) — necesaria para resolver el máximo aplicable de PTU
+  // antes de saber cuál es el ptuAplicable real de este periodo.
+  const cadenaPrePTU = calcularCadenaISRPM({ ingresosAcumPrevio, ingresosMes, coeficiente, ptuAplicable: 0, perdidasAplicadas: 0, pagosProvisionalesAnteriores: 0, retenciones: 0 });
+  const refPTU = await obtenerReferenciaPTUParaISRPM(b.id, periodo, cadenaPrePTU.utilidadFiscal);
+  const conceptoPTU = conceptos.find(c=>c.clave_concepto==='ptu_aplicable');
+  const ptuYaCapturada = conceptoPTU && (conceptoPTU.id || conceptoPTU.valor_original !== null) ? Number(conceptoPTU.valor_aplicado) : null;
+  const ptuAplicable = ptuYaCapturada !== null ? ptuYaCapturada : refPTU.maximoAplicable;
+  if (conceptoPTU && conceptoSinIntencionExplicita(conceptoPTU) && refPTU.evento) {
+    // Propuesta automática de PTU, igual que pérdidas — solo si no hay una captura real, nunca
+    // pisa un valor que el contador ya haya puesto a mano.
+    conceptoPTU.valor_original = refPTU.maximoAplicable; conceptoPTU.valor_aplicado = refPTU.maximoAplicable; conceptoPTU.origen = 'sistema';
+    if (conceptoPTU.id) conceptoPTU._sincronizarOrigenAlGuardar = true;
+  }
 
   // Cadena parcial (sin pérdidas todavía) — necesaria para alimentar el TOPE de pérdidas con la
   // utilidad fiscal REAL calculada, no con un número capturado aparte.
