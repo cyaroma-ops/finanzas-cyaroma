@@ -5467,7 +5467,21 @@ async function renderCedulaPTU(b) {
     obtenerPTUVigente(b.id, hoy),
     obtenerHistorialPTU(b.id),
   ]);
-  const disponibleHoy = evento ? calcularPTUDisponibleAcumulada(Number(evento.ptu_pagada), evento.fecha_pago, hoy) : 0;
+  // Resumen ESTABLE de la mecánica del evento vigente — no depende de "hoy", solo de sus propios
+  // datos (fecha de pago, PTU pagada). Presentación únicamente: no llama a
+  // calcularPTUDisponibleAcumulada, que sigue siendo la única autoridad para lo que ISR PM
+  // realmente consume mes a mes.
+  let resumenMecanica = null;
+  if (evento) {
+    const mesPago = Number(evento.fecha_pago.slice(5, 7));
+    const ejercicioAplicacion = evento.fecha_pago.slice(0, 4);
+    const esDisminuible = mesPago === 5;
+    resumenMecanica = {
+      ejercicioAplicacion, esDisminuible,
+      importePorProvisional: esDisminuible ? redondearMoneda(Number(evento.ptu_pagada) / 8) : null,
+      maximoAcumulable: esDisminuible ? Number(evento.ptu_pagada) : null,
+    };
+  }
   el.innerHTML = `
     <div class="card-head" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
       <div>
@@ -5484,7 +5498,19 @@ async function renderCedulaPTU(b) {
           <div><span class="pt-label">PTU pagada</span><div class="pt-value" style="font-weight:600;">${fmt(evento.ptu_pagada)}</div></div>
           <div><span class="pt-label">Fecha de pago</span><div class="pt-value">${fechaCorta(evento.fecha_pago)}</div></div>
         </div>
-        <div style="margin-top:12px;font-size:12px;color:var(--muted);">Vigente desde <strong>${evento.vigente_desde}</strong> · Disponible acumulada hoy (informativo, Art. 14 LISR): <strong style="color:var(--navy-1);">${fmt(disponibleHoy)}</strong></div>
+        <div style="margin-top:6px;font-size:12px;color:var(--muted);">Vigente desde <strong>${evento.vigente_desde}</strong></div>
+        ${resumenMecanica.esDisminuible ? `
+          <div class="grid-4" style="gap:14px;margin-top:14px;padding-top:14px;border-top:1px solid var(--line);">
+            <div><span class="pt-label">Ejercicio de aplicación</span><div class="pt-value" style="font-weight:600;">${resumenMecanica.ejercicioAplicacion}</div></div>
+            <div><span class="pt-label">Ventana de disminución</span><div class="pt-value">Mayo–Diciembre ${resumenMecanica.ejercicioAplicacion}</div></div>
+            <div><span class="pt-label">Importe por provisional</span><div class="pt-value" style="font-weight:600;">${fmt(resumenMecanica.importePorProvisional)}</div></div>
+            <div><span class="pt-label">Máximo acumulable</span><div class="pt-value" style="font-weight:600;color:var(--navy-1);">${fmt(resumenMecanica.maximoAcumulable)}</div></div>
+          </div>
+        ` : `
+          <div style="margin-top:14px;padding:10px 14px;background:#fff3cd;border:1px solid #ffe08a;border-radius:8px;font-size:12.5px;">
+            Esta PTU se pagó fuera de mayo (${fechaCorta(evento.fecha_pago)}) — conforme al criterio de la autoridad ya validado, <strong>no es disminuible en pagos provisionales bajo esta mecánica</strong>. No aplica ventana ni importe por provisional para este evento.
+          </div>
+        `}
         ${evento.observaciones ? `<div style="margin-top:8px;font-size:12px;color:var(--muted);">Obs.: ${evento.observaciones}</div>` : ''}
         <p style="font-size:10.5px;color:var(--muted);margin-top:10px;">La disponible acumulada aquí es solo informativa — lo que ISR PM efectivamente aplica cada mes se limita además a la utilidad fiscal de ese pago provisional, y se calcula en cada papel de ISR PM.</p>
       ` : `<div class="empty">Sin evento PTU registrado todavía.</div>`}
