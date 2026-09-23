@@ -4988,12 +4988,21 @@ async function construirMatrizAnual(businessId, tipoPapel, ejercicio, conceptosD
   // Recalcular el total de cada fila CALCULADA de ISR PM afectada por el post-procesamiento
   // (incluye coeficiente_utilidad, cuyo porMes se rellenó con el arrastre entre meses).
   if (tipoPapel === 'isr_pm') {
-    ['coeficiente_utilidad','ingresos_nominales_acum','utilidad_fiscal','base','isr_determinado','perdidas_aplicables','pagos_provisionales_anteriores','resultado_determinado'].forEach(clave => {
+    ['coeficiente_utilidad','ingresos_nominales_acum','utilidad_fiscal','base','isr_determinado','pagos_provisionales_anteriores','resultado_determinado'].forEach(clave => {
       const f = filaPorClave[clave]; if (!f) return;
       const valoresNoNulos = Object.values(f.porMes).map(x=>x.valor).filter(v=>v!==null);
       if (f.agregacion === 'suma') f.total = valoresNoNulos.reduce((s,v)=>s+v, 0);
       else if (f.agregacion === 'ultimo') f.total = valoresNoNulos.length ? valoresNoNulos[valoresNoNulos.length-1] : null;
     });
+    // perdidas_aplicables: máximo del año, no "último" ni "suma". Es una cifra acumulada que solo
+    // crece cuando el mes correspondiente se procesa; un mes posterior aún sin procesar mostraría
+    // $0.00 y "último" ocultaría pérdida real ya consumida en meses anteriores. En un año
+    // completamente procesado, máximo === último (la secuencia nunca decrece).
+    if (filaPorClave['perdidas_aplicables']) {
+      const f = filaPorClave['perdidas_aplicables'];
+      const valoresNoNulos = Object.values(f.porMes).map(x=>x.valor).filter(v=>v!==null);
+      f.total = valoresNoNulos.length ? Math.max(...valoresNoNulos) : null;
+    }
   }
 
   // Conceptos agregados manualmente que no están en la lista default — se muestran también,
