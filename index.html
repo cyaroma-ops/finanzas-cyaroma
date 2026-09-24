@@ -2332,29 +2332,21 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   <div class="modal" style="width:min(560px,95vw);max-height:88vh;overflow-y:auto;">
     <h3>Cierre de periodo</h3>
     <p style="font-size:12px;color:var(--muted);margin-bottom:14px;">Al cerrar un mes, ya no se pueden crear, editar ni eliminar registros con fecha dentro de ese mes (Ventas, Bancos, Efectivo, Proveedores, Clientes, Pólizas). Solo Administrador, Propietario, Socio o Gerencia pueden reabrirlo.</p>
-    <div class="grid-2" style="margin-bottom:14px;">
-      <div class="field">
-        <label>Mes a cerrar</label>
-        <input type="month" id="cierrePeriodoMes">
-      </div>
-      <div class="field" style="display:flex;align-items:flex-end;">
-        <button class="btn btn-gold" id="cerrarPeriodoBtn" style="width:100%;">Cerrar este mes</button>
-      </div>
+    <div class="field" style="margin-bottom:10px;">
+      <label>Mes a previsualizar</label>
+      <input type="month" id="cierrePeriodoMes">
     </div>
+    <div id="cierrePeriodoPreview"></div>
     <div id="cierrePeriodoLista"></div>
 
     <hr style="margin:18px 0;border-color:var(--line);">
     <h3>Cierre contable anual</h3>
     <p style="font-size:12px;color:var(--muted);margin-bottom:14px;">Cancela ingresos/costos/gastos del ejercicio mediante una póliza real y traslada el resultado a "Resultado de Ejercicios". Bloquea automáticamente los 12 meses del año. Solo cierre CONTABLE — no calcula nada fiscal.</p>
-    <div class="grid-2" style="margin-bottom:14px;">
-      <div class="field">
-        <label>Ejercicio a cerrar</label>
-        <input type="text" id="cierreAnualEjercicio" placeholder="Ej. 2023" maxlength="4">
-      </div>
-      <div class="field" style="display:flex;align-items:flex-end;">
-        <button class="btn btn-gold" id="cerrarEjercicioBtn" style="width:100%;">Cerrar ejercicio</button>
-      </div>
+    <div class="field" style="margin-bottom:10px;">
+      <label>Ejercicio a previsualizar</label>
+      <input type="text" id="cierreAnualEjercicio" placeholder="Ej. 2023" maxlength="4">
     </div>
+    <div id="cierreAnualPreview"></div>
     <div id="cierreAnualLista"></div>
 
     <div class="modal-actions">

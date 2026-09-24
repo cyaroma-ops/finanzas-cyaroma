@@ -3929,6 +3929,20 @@ async function obtenerOCrearSubcuentaBajoMayorConocida(businessId, mayorId, nomb
 // (fz_cierres_periodo / bloqueadoPorCierre). No crea un motor contable paralelo.
 // ============================================================
 
+// SOLO LECTURA — busca (nunca crea) la subcuenta histórica del ejercicio, para poder mostrar su
+// nombre en la vista previa sin escribir nada. Si no existe todavía, devuelve null junto con el
+// nombre que SE CREARÍA al confirmar (determinístico, no requiere la fila real para mostrarse).
+async function buscarSubcuentaEjercicioResultado(businessId, esUtilidad, ejercicio) {
+  const nombreMayor = 'Resultado de Ejercicios';
+  const nombrePadre = esUtilidad ? 'Resultado Utilidades' : 'Resultado Pérdidas';
+  const nombreHija = `Ejercicio ${ejercicio}`;
+  const [mayores, subcuentas] = await Promise.all([loadCuentasMayor(businessId), loadSubcuentas(businessId)]);
+  const mayor = mayores.find(m => m.nombre.trim().toLowerCase() === nombreMayor.toLowerCase());
+  const padre = mayor ? subcuentas.find(s => s.cuenta_mayor_id === mayor.id && !s.subcuenta_padre_id && s.nombre.trim().toLowerCase() === nombrePadre.toLowerCase()) : null;
+  const hija = padre ? subcuentas.find(s => s.subcuenta_padre_id === padre.id && s.nombre.trim().toLowerCase() === nombreHija.toLowerCase()) : null;
+  return { id: hija ? hija.id : null, existe: !!hija, rutaTexto: `${nombreMayor} → ${nombrePadre} → ${nombreHija}` };
+}
+
 // Idempotente: encuentra o crea Cuenta Mayor "Resultado de Ejercicios" (capital) → subcuenta
 // padre "Resultado Pérdidas"/"Resultado Utilidades" → subcuenta hija "Ejercicio YYYY". Reutiliza
 // exactamente el mismo patrón de upsert por nombre normalizado que ya usa el resto del catálogo
@@ -3950,33 +3964,65 @@ async function obtenerOCrearSubcuentaEjercicioResultado(businessId, esUtilidad, 
   return hija.id;
 }
 
-// SOLO LECTURA — calcula el resultado contable del ejercicio a partir del MISMO motor de partida
-// doble que ya usan Balanza/Estado de Resultados. Nunca una fórmula paralela. Devuelve las líneas
-// de cancelación (una por cada subcuenta de ingreso/costo/gasto con movimiento en el año) y el
-// resultado neto, sin escribir nada todavía.
-async function calcularResultadoEjercicioParaCierre(businessId, ejercicio) {
+// ÚNICA función de preparación del cierre — SOLO LECTURA, nunca escribe nada. La usan tanto la
+// vista previa (que solo la consume) como cerrarEjercicioContable (que la vuelve a llamar
+// inmediatamente antes de escribir, para no confiar en datos que pudieron cambiar desde que se
+// mostró la vista previa). Es el MISMO motor que Balanza/Estado de Resultados
+// (getLibroPartidaDobleConOrigen) — nunca una fórmula paralela.
+async function prepararCierreEjercicio(businessId, ejercicio) {
+  const errores = [];
+  if (!/^\d{4}$/.test(ejercicio)) {
+    return { ejercicio, resultado: null, tipoResultado: null, ingresos: 0, costos: 0, gastos: 0, lineasPoliza: [], totalCargos: 0, totalAbonos: 0, balanceCuadrado: false, puedeCerrar: false, errores: ['Indica un ejercicio válido (4 dígitos).'], yaExiste: false, destinoTexto: null };
+  }
+  const { data: existente } = await sb.from('fz_polizas').select('id, fecha').eq('business_id', businessId).eq('ejercicio_cierre', ejercicio).eq('es_cierre_anual', true).maybeSingle();
+  if (existente) errores.push(`El ejercicio ${ejercicio} ya fue cerrado (póliza existente).`);
+
   const desde = `${ejercicio}-01-01`, hasta = `${ejercicio}-12-31`;
-  const { filas, totalCargo, totalAbono } = await getLibroPartidaDobleConOrigen(businessId, hasta, desde);
-  const cuadra = Math.abs(totalCargo - totalAbono) < 0.01;
+  const [{ filas, totalCargo, totalAbono }, subcuentas] = await Promise.all([
+    getLibroPartidaDobleConOrigen(businessId, hasta, desde),
+    loadSubcuentas(businessId),
+  ]);
+  const nombrePorSubcuenta = Object.fromEntries(subcuentas.map(s => [s.id, s.nombre]));
+  const balanceCuadrado = Math.abs(totalCargo - totalAbono) < 0.01;
+  const diferencia = redondearMoneda(totalCargo - totalAbono);
+  if (!balanceCuadrado) errores.push(`Balanza descuadrada por ${fmt(Math.abs(diferencia))} — revisa Balanza/Auxiliares para localizar el origen antes de continuar.`);
+
   const netoPorSubcuenta = {};
   filas.filter(f => f.clave.startsWith('sub:') && ['ingreso','costo','gasto'].includes(f.tipo)).forEach(f => {
     const subId = f.clave.slice(4);
     netoPorSubcuenta[subId] = netoPorSubcuenta[subId] || { subcuentaId: subId, tipo: f.tipo, neto: 0 };
     netoPorSubcuenta[subId].neto += netoNaturaleza(f);
   });
+  const ingresos = redondearMoneda(Object.values(netoPorSubcuenta).filter(l=>l.tipo==='ingreso').reduce((s,l)=>s+l.neto,0));
+  const costos = redondearMoneda(Object.values(netoPorSubcuenta).filter(l=>l.tipo==='costo').reduce((s,l)=>s+l.neto,0));
+  const gastos = redondearMoneda(Object.values(netoPorSubcuenta).filter(l=>l.tipo==='gasto').reduce((s,l)=>s+l.neto,0));
+  const resultado = redondearMoneda(ingresos - costos - gastos);
+  const tipoResultado = resultado >= 0 ? 'utilidad' : 'perdida';
+  const esUtilidad = resultado >= 0;
+
   const lineasCancelacion = Object.values(netoPorSubcuenta)
     .filter(l => Math.abs(l.neto) > 0.004)
     .map(l => {
-      // Cancelar significa llevar el saldo a $0 — se hace el movimiento CONTRARIO a su naturaleza.
       const esDeudora = l.tipo === 'costo' || l.tipo === 'gasto';
-      return esDeudora
-        ? { subcuenta_id: l.subcuentaId, cargo: 0, abono: redondearMoneda(l.neto) }   // era deudor, se cancela con abono
-        : { subcuenta_id: l.subcuentaId, cargo: redondearMoneda(l.neto), abono: 0 };  // era acreedor (ingreso), se cancela con cargo
+      const linea = esDeudora
+        ? { subcuenta_id: l.subcuentaId, cargo: 0, abono: redondearMoneda(l.neto) }
+        : { subcuenta_id: l.subcuentaId, cargo: redondearMoneda(l.neto), abono: 0 };
+      return { ...linea, nombre: nombrePorSubcuenta[l.subcuentaId] || '(subcuenta)' };
     });
-  const resultado = redondearMoneda(
-    Object.values(netoPorSubcuenta).reduce((s,l) => s + (l.tipo === 'ingreso' ? l.neto : -l.neto), 0)
-  ); // ingresos (positivo, naturaleza acreedora) − costos/gastos (positivo, naturaleza deudora) = utilidad(+)/pérdida(−)
-  return { lineasCancelacion, resultado, esUtilidad: resultado >= 0, totalCargo, totalAbono, cuadra, diferencia: redondearMoneda(totalCargo - totalAbono) };
+
+  if (!lineasCancelacion.length) errores.push(`El ejercicio ${ejercicio} no tiene movimientos de ingresos/costos/gastos que cerrar.`);
+
+  const destino = await buscarSubcuentaEjercicioResultado(businessId, esUtilidad, ejercicio);
+  const lineaHistorica = esUtilidad
+    ? { subcuenta_id: destino.id, cargo: 0, abono: Math.abs(resultado), nombre: destino.rutaTexto }
+    : { subcuenta_id: destino.id, cargo: Math.abs(resultado), abono: 0, nombre: destino.rutaTexto };
+  const lineasPoliza = lineasCancelacion.length ? [...lineasCancelacion, lineaHistorica] : [];
+
+  const totalCargos = redondearMoneda(lineasPoliza.reduce((s,l)=>s+l.cargo,0));
+  const totalAbonos = redondearMoneda(lineasPoliza.reduce((s,l)=>s+l.abono,0));
+  const puedeCerrar = errores.length === 0 && lineasPoliza.length > 0;
+
+  return { ejercicio, resultado, tipoResultado, ingresos, costos, gastos, lineasPoliza, totalCargos, totalAbonos, balanceCuadrado, diferencia, puedeCerrar, errores, yaExiste: !!existente, destinoTexto: destino.rutaTexto };
 }
 
 // Cierra un ejercicio completo: valida cuadre, arma UNA póliza real (visible en Pólizas/
@@ -3985,19 +4031,18 @@ async function calcularResultadoEjercicioParaCierre(businessId, ejercicio) {
 // crear un segundo mecanismo de bloqueo. Idempotente por el índice único
 // (business_id, ejercicio_cierre) — no permite cerrar dos veces.
 async function cerrarEjercicioContable(businessId, ejercicio, usuarioEmail) {
-  const { data: existente } = await sb.from('fz_polizas').select('id').eq('business_id', businessId).eq('ejercicio_cierre', ejercicio).eq('es_cierre_anual', true).maybeSingle();
-  if (existente) return { estado: 'ya_cerrado', polizaId: existente.id };
+  // Se vuelve a preparar/validar AQUÍ MISMO, justo antes de escribir — nunca se confía en un
+  // cálculo de una vista previa anterior, por si algo cambió entre ambos momentos.
+  const prep = await prepararCierreEjercicio(businessId, ejercicio);
+  if (prep.yaExiste) return { estado: 'ya_cerrado' };
+  if (!prep.balanceCuadrado) return { estado: 'descuadrado', diferencia: prep.diferencia };
+  if (!prep.puedeCerrar) return { estado: 'sin_movimientos' };
 
-  const calc = await calcularResultadoEjercicioParaCierre(businessId, ejercicio);
-  if (!calc.cuadra) return { estado: 'descuadrado', diferencia: calc.diferencia };
-  if (!calc.lineasCancelacion.length) return { estado: 'sin_movimientos' };
-
-  const subcuentaHistorica = await obtenerOCrearSubcuentaEjercicioResultado(businessId, calc.esUtilidad, ejercicio);
-  // La cuenta histórica es de naturaleza capital (acreedora): utilidad se abona, pérdida se carga.
-  const lineaHistorica = calc.esUtilidad
-    ? { subcuenta_id: subcuentaHistorica, cargo: 0, abono: Math.abs(calc.resultado) }
-    : { subcuenta_id: subcuentaHistorica, cargo: Math.abs(calc.resultado), abono: 0 };
-  const todasLasLineas = [...calc.lineasCancelacion, lineaHistorica];
+  const esUtilidad = prep.tipoResultado === 'utilidad';
+  const subcuentaHistorica = await obtenerOCrearSubcuentaEjercicioResultado(businessId, esUtilidad, ejercicio);
+  // Reemplazar el subcuenta_id de la línea histórica (que en la preparación de solo lectura puede
+  // venir null si la cuenta aún no existe) por el id real ya resuelto/creado.
+  const todasLasLineas = prep.lineasPoliza.map(l => l.subcuenta_id === null ? { ...l, subcuenta_id: subcuentaHistorica } : l);
 
   const concepto = `[Auto] Cierre contable del ejercicio ${ejercicio}`;
   const { data: nuevaPoliza, error: errPoliza } = await sb.from('fz_polizas')
@@ -4005,7 +4050,7 @@ async function cerrarEjercicioContable(businessId, ejercicio, usuarioEmail) {
     .select().single();
   if (errPoliza) return { estado: 'error', error: errPoliza.message };
   const { error: errLineas } = await sb.from('fz_polizas_lineas').insert(
-    todasLasLineas.map((l, i) => ({ ...l, business_id: businessId, poliza_id: nuevaPoliza.id, cuenta_tipo: 'subcuenta', descripcion: concepto, orden: i }))
+    todasLasLineas.map((l, i) => ({ subcuenta_id: l.subcuenta_id, cargo: l.cargo, abono: l.abono, business_id: businessId, poliza_id: nuevaPoliza.id, cuenta_tipo: 'subcuenta', descripcion: concepto, orden: i }))
   );
   if (errLineas) { await sb.from('fz_polizas').delete().eq('id', nuevaPoliza.id); return { estado: 'error', error: errLineas.message }; }
 
@@ -4019,8 +4064,8 @@ async function cerrarEjercicioContable(businessId, ejercicio, usuarioEmail) {
     );
   }
   invalidarCacheCierres(businessId);
-  registrarAuditoria(businessId, 'crear', 'Configuración', `Cierre contable del ejercicio ${ejercicio} — ${calc.esUtilidad?'utilidad':'pérdida'} de ${fmt(Math.abs(calc.resultado))}`);
-  return { estado: 'ok', polizaId: nuevaPoliza.id, resultado: calc.resultado, esUtilidad: calc.esUtilidad };
+  registrarAuditoria(businessId, 'crear', 'Configuración', `Cierre contable del ejercicio ${ejercicio} — ${esUtilidad?'utilidad':'pérdida'} de ${fmt(Math.abs(prep.resultado))}`);
+  return { estado: 'ok', polizaId: nuevaPoliza.id, resultado: prep.resultado, esUtilidad };
 }
 
 // Reabre un ejercicio: encuentra la póliza automática por su marca inequívoca (nunca por texto),
@@ -7799,8 +7844,11 @@ async function renderIvaFiscalAnual(el, b) {
 
 async function abrirModalCierrePeriodo(businessId) {
   document.getElementById('cierrePeriodoMes').value = STATE.currentMonth || todayStr().slice(0,7);
+  document.getElementById('cierreAnualEjercicio').value = '';
+  document.getElementById('cierreAnualPreview').innerHTML = '';
   await renderListaCierres(businessId);
   await renderListaCierresAnuales(businessId);
+  await renderPreviewCierreMensual(businessId, document.getElementById('cierrePeriodoMes').value);
   document.getElementById('modalCierrePeriodo').classList.add('show');
 }
 async function renderListaCierresAnuales(businessId) {
@@ -7821,23 +7869,79 @@ async function renderListaCierresAnuales(businessId) {
     await renderListaCierres(businessId);
   }));
 }
-document.getElementById('cerrarEjercicioBtn').addEventListener('click', async () => {
-  const b = biz();
-  if (!b) return;
-  const ejercicio = document.getElementById('cierreAnualEjercicio').value.trim();
-  if (!/^\d{4}$/.test(ejercicio)) { toast('Indica el ejercicio a cerrar (4 dígitos).', 'error'); return; }
-  if (!confirm(`¿Cerrar contablemente el ejercicio ${ejercicio}? Se generará una póliza real que cancela ingresos/costos/gastos del año y se bloquearán sus 12 meses. Esto NO calcula nada fiscal.`)) return;
-  const r = await cerrarEjercicioContable(b.id, ejercicio, STATE.user?.email);
-  if (r.estado === 'ya_cerrado') { toast(`El ejercicio ${ejercicio} ya estaba cerrado.`, 'error'); }
-  else if (r.estado === 'descuadrado') { toast(`Este ejercicio no puede cerrarse porque la contabilidad presenta una diferencia de ${fmt(Math.abs(r.diferencia))}. Revisa Balanza/Auxiliares para localizar el origen antes de intentar de nuevo.`, 'error'); }
-  else if (r.estado === 'sin_movimientos') { toast(`El ejercicio ${ejercicio} no tiene movimientos de ingresos/costos/gastos que cerrar.`, 'error'); }
-  else if (r.estado === 'error') { toast('Error: ' + r.error, 'error'); }
-  else {
-    toast(`Ejercicio ${ejercicio} cerrado — ${r.esUtilidad?'utilidad':'pérdida'} de ${fmt(Math.abs(r.resultado))}.`);
-    document.getElementById('cierreAnualEjercicio').value = '';
-    await renderListaCierresAnuales(b.id);
-    await renderListaCierres(b.id);
+// Vista previa del cierre anual — SOLO LECTURA, nunca escribe/bloquea/crea nada. Reutiliza
+// EXACTAMENTE prepararCierreEjercicio, la misma función que cerrarEjercicioContable volverá a
+// llamar justo antes de escribir — nunca una segunda lógica de cálculo en la UI.
+async function renderPreviewCierreAnual(businessId, ejercicio) {
+  const box = document.getElementById('cierreAnualPreview');
+  if (!/^\d{4}$/.test(ejercicio)) { box.innerHTML = ''; return; }
+  box.innerHTML = `<p style="font-size:12px;color:var(--muted);padding:10px 0;">Calculando vista previa…</p>`;
+  const prep = await prepararCierreEjercicio(businessId, ejercicio);
+  const filasTabla = prep.lineasPoliza.map(l => `<tr><td>${l.nombre}</td><td class="num">${l.cargo>0.004?fmt(l.cargo):'$0.00'}</td><td class="num">${l.abono>0.004?fmt(l.abono):'$0.00'}</td></tr>`).join('');
+  box.innerHTML = `
+    <div class="card" style="margin:10px 0;padding:14px;">
+      <p style="font-size:12px;color:var(--muted);margin-bottom:4px;">EJERCICIO A CERRAR</p>
+      <p style="font-weight:700;font-size:16px;margin-bottom:12px;">${ejercicio}</p>
+
+      <p style="font-size:12px;color:var(--muted);margin-bottom:4px;">ESTADO DE VALIDACIÓN</p>
+      <p style="margin-bottom:2px;color:${prep.balanceCuadrado?'var(--green)':'var(--red)'};">${prep.balanceCuadrado?'✓ Partida doble cuadrada — ✓ Balanza cuadrada — ✓ Total cargos = Total abonos':'✕ Balanza descuadrada por '+fmt(Math.abs(prep.diferencia||0))}</p>
+      ${prep.errores.map(e=>`<p style="font-size:12.5px;color:var(--red);margin-top:2px;">✕ ${e}</p>`).join('')}
+
+      ${prep.resultado !== null ? `
+        <p style="font-size:12px;color:var(--muted);margin:14px 0 4px;">RESULTADO DEL EJERCICIO</p>
+        <table style="width:100%;font-size:13px;margin-bottom:6px;">
+          <tr><td>Ingresos</td><td class="num" style="text-align:right;">${fmt(prep.ingresos)}</td></tr>
+          <tr><td>Costos</td><td class="num" style="text-align:right;">${fmt(prep.costos)}</td></tr>
+          <tr><td>Gastos</td><td class="num" style="text-align:right;">${fmt(prep.gastos)}</td></tr>
+          <tr style="border-top:1px solid var(--line);font-weight:700;"><td>${prep.tipoResultado==='utilidad'?'Utilidad':'Pérdida'}</td><td class="num" style="text-align:right;">${fmt(Math.abs(prep.resultado))}</td></tr>
+        </table>
+        <p style="font-weight:700;color:${prep.tipoResultado==='utilidad'?'var(--green)':'var(--red)'};margin-bottom:12px;">${prep.tipoResultado==='utilidad'?'UTILIDAD DEL EJERCICIO':'PÉRDIDA DEL EJERCICIO'}</p>
+
+        <p style="font-size:12px;color:var(--muted);margin-bottom:4px;">DESTINO DEL RESULTADO</p>
+        <p style="font-size:13px;margin-bottom:12px;">${prep.destinoTexto}</p>
+
+        <p style="font-size:12px;color:var(--muted);margin-bottom:4px;">VISTA PREVIA DE LA PÓLIZA</p>
+        <div class="table-wrap"><table class="report-table" style="font-size:12.5px;">
+          <thead><tr><th>Cuenta / Subcuenta</th><th>Cargo</th><th>Abono</th></tr></thead>
+          <tbody>${filasTabla}</tbody>
+          <tfoot><tr style="font-weight:700;"><td>TOTAL</td><td class="num">${fmt(prep.totalCargos)}</td><td class="num">${fmt(prep.totalAbonos)}</td></tr></tfoot>
+        </table></div>
+      ` : ''}
+
+      <div style="display:flex;justify-content:flex-end;margin-top:14px;">
+        <button class="btn btn-gold" id="confirmarCierreEjercicioBtn" ${prep.puedeCerrar?'':'disabled'} style="${prep.puedeCerrar?'':'opacity:0.5;cursor:not-allowed;'}">Confirmar y cerrar ejercicio</button>
+      </div>
+    </div>`;
+  if (prep.puedeCerrar) {
+    document.getElementById('confirmarCierreEjercicioBtn').addEventListener('click', async () => {
+      const b = biz(); if (!b) return;
+      const r = await cerrarEjercicioContable(b.id, ejercicio, STATE.user?.email);
+      if (r.estado === 'ya_cerrado') { toast(`El ejercicio ${ejercicio} ya estaba cerrado.`, 'error'); }
+      else if (r.estado === 'descuadrado') { toast(`Este ejercicio no puede cerrarse porque la contabilidad presenta una diferencia de ${fmt(Math.abs(r.diferencia))}.`, 'error'); }
+      else if (r.estado === 'sin_movimientos') { toast(`El ejercicio ${ejercicio} no tiene movimientos que cerrar.`, 'error'); }
+      else if (r.estado === 'error') { toast('Error: ' + r.error, 'error'); }
+      else {
+        box.innerHTML = `
+          <div class="card" style="margin:10px 0;padding:14px;">
+            <p style="font-weight:700;color:var(--green);">Ejercicio ${ejercicio} cerrado correctamente</p>
+            <p style="font-size:13px;">Póliza de cierre: ${r.polizaId}</p>
+            <p style="font-size:13px;">Resultado: ${r.esUtilidad?'Utilidad':'Pérdida'} ${fmt(Math.abs(r.resultado))}</p>
+            <button class="btn btn-ghost btn-sm" id="verPolizaCierreBtn" style="margin-top:8px;">Ver póliza de cierre</button>
+          </div>`;
+        document.getElementById('verPolizaCierreBtn').addEventListener('click', () => { document.getElementById('modalCierrePeriodo').classList.remove('show'); irASeccion('polizas'); });
+        document.getElementById('cierreAnualEjercicio').value = '';
+        await renderListaCierresAnuales(b.id);
+        await renderListaCierres(b.id);
+      }
+    });
   }
+}
+let STATE_previewCierreDebounce = null;
+document.getElementById('cierreAnualEjercicio').addEventListener('input', (e) => {
+  clearTimeout(STATE_previewCierreDebounce);
+  const ejercicio = e.target.value.trim();
+  const b = biz(); if (!b) return;
+  STATE_previewCierreDebounce = setTimeout(() => renderPreviewCierreAnual(b.id, ejercicio), 350);
 });
 async function renderListaCierres(businessId) {
   const { data: cierres } = await sb.from('fz_cierres_periodo').select('*').eq('business_id', businessId).order('periodo', { ascending: false });
@@ -7859,18 +7963,46 @@ async function renderListaCierres(businessId) {
 document.getElementById('closeCierrePeriodo').addEventListener('click', () => {
   document.getElementById('modalCierrePeriodo').classList.remove('show');
 });
-document.getElementById('cerrarPeriodoBtn').addEventListener('click', async () => {
-  const b = biz();
-  if (!b) return;
-  const periodo = document.getElementById('cierrePeriodoMes').value;
-  if (!periodo) { toast('Elige un mes.', 'error'); return; }
-  if (!confirm(`¿Cerrar el periodo ${periodo}? Ya no se podrá crear, editar ni eliminar nada con fecha dentro de ese mes, hasta que alguien lo reabra.`)) return;
-  const { error } = await sb.from('fz_cierres_periodo').upsert({ business_id: b.id, periodo, fecha_cierre: todayStr(), cerrado_por: STATE.user?.email || null, reabierto: false, reabierto_por: null, fecha_reapertura: null }, { onConflict: 'business_id,periodo' });
-  if (error) { toast('Error: ' + error.message, 'error'); return; }
-  invalidarCacheCierres(b.id);
-  registrarAuditoria(b.id, 'crear', 'Configuración', `Periodo ${periodo} cerrado`);
-  toast(`Periodo ${periodo} cerrado.`);
-  renderListaCierres(b.id);
+// Vista previa del cierre MENSUAL — SOLO LECTURA, nunca escribe/bloquea nada. Reutiliza el mismo
+// motor de partida doble (getLibroPartidaDobleConOrigen) que ya usa Balanza — nunca una segunda
+// validación de cuadre.
+async function renderPreviewCierreMensual(businessId, periodo) {
+  const box = document.getElementById('cierrePeriodoPreview');
+  if (!periodo) { box.innerHTML = ''; return; }
+  box.innerHTML = `<p style="font-size:12px;color:var(--muted);padding:10px 0;">Calculando vista previa…</p>`;
+  const { start, end } = monthBounds(periodo);
+  const { totalCargo, totalAbono } = await getLibroPartidaDobleConOrigen(businessId, end, start);
+  const cuadrado = Math.abs(totalCargo - totalAbono) < 0.01;
+  const diferencia = redondearMoneda(totalCargo - totalAbono);
+  const yaCerrado = await periodoEstaCerrado(businessId, end);
+  const [anio, mes] = periodo.split('-');
+  const nombreMes = MESES_LARGO ? MESES_LARGO[Number(mes)-1] : mes;
+  box.innerHTML = `
+    <div class="card" style="margin:10px 0;padding:14px;">
+      <p style="font-size:13px;"><strong>Periodo:</strong> ${nombreMes} ${anio}</p>
+      <p style="font-size:13px;margin-bottom:10px;"><strong>Estado:</strong> ${yaCerrado?'<span style="color:var(--red);">Ya cerrado</span>':'<span style="color:var(--green);">Abierto</span>'}</p>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:4px;">VALIDACIONES</p>
+      <p style="margin-bottom:10px;color:${cuadrado?'var(--green)':'var(--red)'};">${cuadrado?'✓ Total cargos = Total abonos — ✓ Balanza cuadrada':'✕ Balanza descuadrada por '+fmt(Math.abs(diferencia))}</p>
+      ${!yaCerrado ? `<p style="font-size:12.5px;color:var(--gold);margin-bottom:12px;">Al cerrar este periodo ya no podrán crearse, modificarse ni eliminarse operaciones que lo afecten hasta que sea reabierto.</p>` : ''}
+      <div style="display:flex;justify-content:flex-end;">
+        <button class="btn btn-gold" id="confirmarCierrePeriodoBtn" ${(cuadrado && !yaCerrado)?'':'disabled'} style="${(cuadrado && !yaCerrado)?'':'opacity:0.5;cursor:not-allowed;'}">Cerrar periodo</button>
+      </div>
+    </div>`;
+  if (cuadrado && !yaCerrado) {
+    document.getElementById('confirmarCierrePeriodoBtn').addEventListener('click', async () => {
+      const { error } = await sb.from('fz_cierres_periodo').upsert({ business_id: businessId, periodo, fecha_cierre: todayStr(), cerrado_por: STATE.user?.email || null, reabierto: false, reabierto_por: null, fecha_reapertura: null }, { onConflict: 'business_id,periodo' });
+      if (error) { toast('Error: ' + error.message, 'error'); return; }
+      invalidarCacheCierres(businessId);
+      registrarAuditoria(businessId, 'crear', 'Configuración', `Periodo ${periodo} cerrado`);
+      toast(`Periodo ${periodo} cerrado.`);
+      await renderPreviewCierreMensual(businessId, periodo);
+      await renderListaCierres(businessId);
+    });
+  }
+}
+document.getElementById('cierrePeriodoMes').addEventListener('change', (e) => {
+  const b = biz(); if (!b) return;
+  renderPreviewCierreMensual(b.id, e.target.value);
 });
 
 /* ---------- Balanza de Comprobación (solo Fiscal Contable) ---------- */
