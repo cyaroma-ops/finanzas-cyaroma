@@ -3103,6 +3103,32 @@ async function eliminarActualizacionPerdida(actualizacionId, usuarioEmail) {
 // por debajo del nuevo techo quedan intactos; los que lo superaban quedan fijos en el nuevo techo
 // — que es justamente "una vez agotada, los meses posteriores conservan el máximo aplicado".
 // No toca fz_papel_conceptos/ISR/accesorios/redondeo — solo fz_perdidas_fiscales_aplicaciones.
+// DIAGNÓSTICO DE SOLO LECTURA — identifica, sin modificar nada, qué aplicaciones de pérdidas
+// tienen como ÚLTIMO evento de su historial la reconciliación automática (no una captura manual
+// ni desde ISR PM), y cuyo valor resultante fue específicamente 0 — el patrón exacto dejado por
+// una reconciliación que corrió cuando el saldo vigente estaba incorrectamente en $0. Nunca
+// escribe nada; solo reporta para que el usuario decida qué limpiar.
+async function diagnosticarAplicacionesPerdidaSospechosas(perdidaId) {
+  const { data: aplicaciones } = await sb.from('fz_perdidas_fiscales_aplicaciones').select('*').eq('perdida_id', perdidaId).order('periodo', { ascending: true });
+  const { data: historialCompleto } = await sb.from('fz_perdidas_fiscales_historial').select('*').eq('perdida_id', perdidaId).order('created_at', { ascending: true });
+  const resultado = [];
+  for (const fila of (aplicaciones || [])) {
+    const campoBuscado = `aplicación ${fila.periodo}`;
+    const eventosDeEsteRenglon = (historialCompleto || []).filter(h => h.campo === campoBuscado);
+    const ultimoEvento = eventosDeEsteRenglon.length ? eventosDeEsteRenglon[eventosDeEsteRenglon.length - 1] : null;
+    const esSospechoso = !!ultimoEvento
+      && ultimoEvento.motivo === 'Reconciliada contra el saldo actualizado vigente.'
+      && ultimoEvento.valor_nuevo === '0'
+      && Math.abs(Number(fila.aplicado_acumulado)) < 0.005; // el valor actual sigue siendo 0 — nadie lo volvió a tocar después
+    resultado.push({
+      periodo: fila.periodo, valorActual: Number(fila.aplicado_acumulado), aplicacionId: fila.id,
+      ultimoMotivo: ultimoEvento ? ultimoEvento.motivo : null, ultimoValorAnterior: ultimoEvento ? ultimoEvento.valor_anterior : null,
+      esSospechoso,
+    });
+  }
+  return resultado;
+}
+
 async function reconciliarAplicacionesContraSaldoVigente(businessId, perdidaId, ejercicioControl, usuarioEmail) {
   const perdidas = await obtenerPerdidasFiscalesSiExisten(businessId, ejercicioControl);
   const p = perdidas.find(x => x.id === perdidaId);
@@ -5738,7 +5764,7 @@ async function renderPerdidasFiscales(b) {
                 <td class="num">${aplicado!==null?fmt(aplicado):'—'}</td>
                 <td class="num" style="font-weight:600;">${saldoProv!==null?fmt(saldoProv):'—'}</td>
                 <td><span class="pt-origen ${p.control&&p.control.mesAgotamiento?'':'sistema'}">${estado}</span></td>
-                <td><a href="#" class="pt-editar-link pf-editar-perdida" data-id="${p.id}" style="margin-right:10px;">Editar</a><a href="#" class="pt-editar-link pf-ver-detalle" data-id="${p.id}">${STATE_perdidaExpandida===p.id?'Ocultar':'Ver detalle'}</a></td>
+                <td><a href="#" class="pt-editar-link pf-editar-perdida" data-id="${p.id}" style="margin-right:10px;">Editar</a><a href="#" class="pt-editar-link pf-diagnostico-aplicaciones" data-id="${p.id}" style="margin-right:10px;">Diagnóstico $0</a><a href="#" class="pt-editar-link pf-ver-detalle" data-id="${p.id}">${STATE_perdidaExpandida===p.id?'Ocultar':'Ver detalle'}</a></td>
               </tr>${STATE_perdidaExpandida===p.id ? renderDetallePerdida(p, ejercicio) : ''}`;
             }).join('')}
           </tbody>
@@ -5757,6 +5783,21 @@ async function renderPerdidasFiscales(b) {
     e.preventDefault();
     STATE_perdidaExpandida = STATE_perdidaExpandida === a.dataset.id ? null : a.dataset.id;
     renderPerdidasFiscales(b);
+  }));
+  el.querySelectorAll('.pf-diagnostico-aplicaciones').forEach(a => a.addEventListener('click', async (e) => {
+    e.preventDefault();
+    const diag = await diagnosticarAplicacionesPerdidaSospechosas(a.dataset.id);
+    const sospechosos = diag.filter(d => d.esSospechoso);
+    const filasHtml = diag.map(d => `<tr style="${d.esSospechoso?'background:#fff3cd;':''}"><td>${d.periodo}</td><td class="num">${fmt(d.valorActual)}</td><td>${d.ultimoMotivo||'—'}</td><td>${d.ultimoValorAnterior!==null?fmt(Number(d.ultimoValorAnterior)):'—'}</td><td>${d.esSospechoso?'⚠️ Sospechoso — reconciliación con valor 0':'—'}</td></tr>`).join('');
+    const html = `<div class="modal-bg show" id="modalDiagPerdidas"><div class="modal" style="width:min(680px,94vw);">
+      <h3>Diagnóstico de aplicaciones en $0 — solo lectura</h3>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">${sospechosos.length} de ${diag.length} periodo(s) muestran el patrón exacto de la reconciliación defectuosa (último evento = reconciliación, resultado = $0). Nada se modificó al ver este reporte.</p>
+      <div class="table-wrap"><table class="report-table"><thead><tr><th>Periodo</th><th>Valor actual</th><th>Último motivo</th><th>Valor antes de ese evento</th><th></th></tr></thead><tbody>${filasHtml || '<tr><td colspan="5" style="text-align:center;color:var(--muted);">Sin aplicaciones registradas.</td></tr>'}</tbody></table></div>
+      <div class="modal-actions"><button class="btn btn-gold" id="diagCerrarBtn">Cerrar</button></div>
+    </div></div>`;
+    document.getElementById('diagModalContainer')?.remove();
+    const cont = document.createElement('div'); cont.id = 'diagModalContainer'; cont.innerHTML = html; document.body.appendChild(cont);
+    document.getElementById('diagCerrarBtn').addEventListener('click', () => cont.remove());
   }));
 
   if (STATE_perdidaExpandida) wireDetallePerdida(b, perdidas.find(p=>p.id===STATE_perdidaExpandida), ejercicio);
