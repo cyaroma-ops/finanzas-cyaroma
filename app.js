@@ -3922,6 +3922,125 @@ async function obtenerOCrearSubcuentaBajoMayorConocida(businessId, mayorId, nomb
   return sub.id;
 }
 
+// ============================================================
+// CIERRE CONTABLE ANUAL — reutiliza el motor de partida doble existente
+// (getLibroPartidaDobleConOrigen), el anidamiento ya soportado por fz_subcuentas
+// (subcuenta_padre_id), y el mecanismo de bloqueo por periodo ya existente
+// (fz_cierres_periodo / bloqueadoPorCierre). No crea un motor contable paralelo.
+// ============================================================
+
+// Idempotente: encuentra o crea Cuenta Mayor "Resultado de Ejercicios" (capital) → subcuenta
+// padre "Resultado Pérdidas"/"Resultado Utilidades" → subcuenta hija "Ejercicio YYYY". Reutiliza
+// exactamente el mismo patrón de upsert por nombre normalizado que ya usa el resto del catálogo
+// — nunca duplica si ya existe, sin importar cuántas veces se cierre/reabra.
+async function obtenerOCrearSubcuentaEjercicioResultado(businessId, esUtilidad, ejercicio) {
+  const { data: mayor, error: errMayor } = await sb.from('fz_cuentas_mayor')
+    .upsert({ business_id: businessId, nombre: 'Resultado de Ejercicios', tipo: 'capital' }, { onConflict: 'business_id,tipo,nombre_normalizado' })
+    .select('id').single();
+  if (errMayor) throw errMayor;
+  const nombrePadre = esUtilidad ? 'Resultado Utilidades' : 'Resultado Pérdidas';
+  const { data: padre, error: errPadre } = await sb.from('fz_subcuentas')
+    .upsert({ business_id: businessId, cuenta_mayor_id: mayor.id, nombre: nombrePadre }, { onConflict: 'business_id,cuenta_mayor_id,padre_id_normalizado,nombre_normalizado' })
+    .select('id').single();
+  if (errPadre) throw errPadre;
+  const { data: hija, error: errHija } = await sb.from('fz_subcuentas')
+    .upsert({ business_id: businessId, cuenta_mayor_id: mayor.id, subcuenta_padre_id: padre.id, nombre: `Ejercicio ${ejercicio}` }, { onConflict: 'business_id,cuenta_mayor_id,padre_id_normalizado,nombre_normalizado' })
+    .select('id').single();
+  if (errHija) throw errHija;
+  return hija.id;
+}
+
+// SOLO LECTURA — calcula el resultado contable del ejercicio a partir del MISMO motor de partida
+// doble que ya usan Balanza/Estado de Resultados. Nunca una fórmula paralela. Devuelve las líneas
+// de cancelación (una por cada subcuenta de ingreso/costo/gasto con movimiento en el año) y el
+// resultado neto, sin escribir nada todavía.
+async function calcularResultadoEjercicioParaCierre(businessId, ejercicio) {
+  const desde = `${ejercicio}-01-01`, hasta = `${ejercicio}-12-31`;
+  const { filas, totalCargo, totalAbono } = await getLibroPartidaDobleConOrigen(businessId, hasta, desde);
+  const cuadra = Math.abs(totalCargo - totalAbono) < 0.01;
+  const netoPorSubcuenta = {};
+  filas.filter(f => f.clave.startsWith('sub:') && ['ingreso','costo','gasto'].includes(f.tipo)).forEach(f => {
+    const subId = f.clave.slice(4);
+    netoPorSubcuenta[subId] = netoPorSubcuenta[subId] || { subcuentaId: subId, tipo: f.tipo, neto: 0 };
+    netoPorSubcuenta[subId].neto += netoNaturaleza(f);
+  });
+  const lineasCancelacion = Object.values(netoPorSubcuenta)
+    .filter(l => Math.abs(l.neto) > 0.004)
+    .map(l => {
+      // Cancelar significa llevar el saldo a $0 — se hace el movimiento CONTRARIO a su naturaleza.
+      const esDeudora = l.tipo === 'costo' || l.tipo === 'gasto';
+      return esDeudora
+        ? { subcuenta_id: l.subcuentaId, cargo: 0, abono: redondearMoneda(l.neto) }   // era deudor, se cancela con abono
+        : { subcuenta_id: l.subcuentaId, cargo: redondearMoneda(l.neto), abono: 0 };  // era acreedor (ingreso), se cancela con cargo
+    });
+  const resultado = redondearMoneda(
+    Object.values(netoPorSubcuenta).reduce((s,l) => s + (l.tipo === 'ingreso' ? l.neto : -l.neto), 0)
+  ); // ingresos (positivo, naturaleza acreedora) − costos/gastos (positivo, naturaleza deudora) = utilidad(+)/pérdida(−)
+  return { lineasCancelacion, resultado, esUtilidad: resultado >= 0, totalCargo, totalAbono, cuadra, diferencia: redondearMoneda(totalCargo - totalAbono) };
+}
+
+// Cierra un ejercicio completo: valida cuadre, arma UNA póliza real (visible en Pólizas/
+// Auxiliares) que cancela ingresos/costos/gastos del año y traslada el neto a la cuenta histórica
+// del ejercicio, y bloquea los 12 meses reutilizando fz_cierres_periodo/bloqueadoPorCierre — sin
+// crear un segundo mecanismo de bloqueo. Idempotente por el índice único
+// (business_id, ejercicio_cierre) — no permite cerrar dos veces.
+async function cerrarEjercicioContable(businessId, ejercicio, usuarioEmail) {
+  const { data: existente } = await sb.from('fz_polizas').select('id').eq('business_id', businessId).eq('ejercicio_cierre', ejercicio).eq('es_cierre_anual', true).maybeSingle();
+  if (existente) return { estado: 'ya_cerrado', polizaId: existente.id };
+
+  const calc = await calcularResultadoEjercicioParaCierre(businessId, ejercicio);
+  if (!calc.cuadra) return { estado: 'descuadrado', diferencia: calc.diferencia };
+  if (!calc.lineasCancelacion.length) return { estado: 'sin_movimientos' };
+
+  const subcuentaHistorica = await obtenerOCrearSubcuentaEjercicioResultado(businessId, calc.esUtilidad, ejercicio);
+  // La cuenta histórica es de naturaleza capital (acreedora): utilidad se abona, pérdida se carga.
+  const lineaHistorica = calc.esUtilidad
+    ? { subcuenta_id: subcuentaHistorica, cargo: 0, abono: Math.abs(calc.resultado) }
+    : { subcuenta_id: subcuentaHistorica, cargo: Math.abs(calc.resultado), abono: 0 };
+  const todasLasLineas = [...calc.lineasCancelacion, lineaHistorica];
+
+  const concepto = `[Auto] Cierre contable del ejercicio ${ejercicio}`;
+  const { data: nuevaPoliza, error: errPoliza } = await sb.from('fz_polizas')
+    .insert({ business_id: businessId, fecha: `${ejercicio}-12-31`, concepto, es_cierre_anual: true, ejercicio_cierre: ejercicio })
+    .select().single();
+  if (errPoliza) return { estado: 'error', error: errPoliza.message };
+  const { error: errLineas } = await sb.from('fz_polizas_lineas').insert(
+    todasLasLineas.map((l, i) => ({ ...l, business_id: businessId, poliza_id: nuevaPoliza.id, cuenta_tipo: 'subcuenta', descripcion: concepto, orden: i }))
+  );
+  if (errLineas) { await sb.from('fz_polizas').delete().eq('id', nuevaPoliza.id); return { estado: 'error', error: errLineas.message }; }
+
+  // Bloquear los 12 meses del ejercicio — reutiliza EXACTAMENTE el mecanismo ya existente
+  // (fz_cierres_periodo), sin crear un segundo sistema de bloqueo.
+  for (let m = 1; m <= 12; m++) {
+    const periodo = `${ejercicio}-${String(m).padStart(2,'0')}`;
+    await sb.from('fz_cierres_periodo').upsert(
+      { business_id: businessId, periodo, fecha_cierre: todayStr(), cerrado_por: usuarioEmail || null, reabierto: false, reabierto_por: null, fecha_reapertura: null },
+      { onConflict: 'business_id,periodo' }
+    );
+  }
+  invalidarCacheCierres(businessId);
+  registrarAuditoria(businessId, 'crear', 'Configuración', `Cierre contable del ejercicio ${ejercicio} — ${calc.esUtilidad?'utilidad':'pérdida'} de ${fmt(Math.abs(calc.resultado))}`);
+  return { estado: 'ok', polizaId: nuevaPoliza.id, resultado: calc.resultado, esUtilidad: calc.esUtilidad };
+}
+
+// Reabre un ejercicio: encuentra la póliza automática por su marca inequívoca (nunca por texto),
+// elimina ÚNICAMENTE esa póliza y sus líneas (nunca operaciones del usuario), y desbloquea los 12
+// meses reutilizando el mismo mecanismo de reapertura ya existente para periodos mensuales.
+async function reabrirEjercicioContable(businessId, ejercicio, usuarioEmail) {
+  const { data: poliza } = await sb.from('fz_polizas').select('id').eq('business_id', businessId).eq('ejercicio_cierre', ejercicio).eq('es_cierre_anual', true).maybeSingle();
+  if (!poliza) return { estado: 'no_existe' };
+  await sb.from('fz_polizas_lineas').delete().eq('poliza_id', poliza.id);
+  const { error } = await sb.from('fz_polizas').delete().eq('id', poliza.id);
+  if (error) return { estado: 'error', error: error.message };
+  for (let m = 1; m <= 12; m++) {
+    const periodo = `${ejercicio}-${String(m).padStart(2,'0')}`;
+    await sb.from('fz_cierres_periodo').update({ reabierto: true, reabierto_por: usuarioEmail || null, fecha_reapertura: todayStr() }).eq('business_id', businessId).eq('periodo', periodo);
+  }
+  invalidarCacheCierres(businessId);
+  registrarAuditoria(businessId, 'editar', 'Configuración', `Cierre contable del ejercicio ${ejercicio} revertido — ejercicio reabierto`);
+  return { estado: 'ok' };
+}
+
 // Sincroniza la provisión contable de UN registro de ISR Provisional ya determinado.
 // Idempotente: compara lo ya provisionado (suma de fz_provisiones_fiscales) contra el
 // monto actual — si coincide, no hace nada; si cambió, ajusta SOLO la diferencia.
@@ -7681,8 +7800,45 @@ async function renderIvaFiscalAnual(el, b) {
 async function abrirModalCierrePeriodo(businessId) {
   document.getElementById('cierrePeriodoMes').value = STATE.currentMonth || todayStr().slice(0,7);
   await renderListaCierres(businessId);
+  await renderListaCierresAnuales(businessId);
   document.getElementById('modalCierrePeriodo').classList.add('show');
 }
+async function renderListaCierresAnuales(businessId) {
+  const { data: cierres } = await sb.from('fz_polizas').select('id, ejercicio_cierre, fecha, concepto').eq('business_id', businessId).eq('es_cierre_anual', true).order('ejercicio_cierre', { ascending: false });
+  const box = document.getElementById('cierreAnualLista');
+  box.innerHTML = (cierres && cierres.length) ? cierres.map(c => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 4px;border-bottom:1px solid var(--line);font-size:13px;">
+      <span><strong>Ejercicio ${c.ejercicio_cierre}</strong> — <span style="color:var(--green);">Cerrado (póliza ${fechaCorta(c.fecha)})</span></span>
+      <button class="btn btn-ghost btn-sm reabrir-ejercicio-btn" data-ejercicio="${c.ejercicio_cierre}">Reabrir ejercicio</button>
+    </div>`).join('') : `<p class="empty" style="padding:10px 0;">Aún no has cerrado ningún ejercicio contable en este negocio.</p>`;
+  box.querySelectorAll('.reabrir-ejercicio-btn').forEach(btn => btn.addEventListener('click', async () => {
+    if (!puedeReabrirPeriodo()) { toast('Solo Administrador, Propietario, Socio o Gerencia pueden reabrir un ejercicio.', 'error'); return; }
+    if (!confirm(`¿Reabrir el ejercicio ${btn.dataset.ejercicio}? Se eliminará ÚNICAMENTE la póliza automática de cierre y se desbloquearán sus 12 meses — ninguna operación capturada se pierde.`)) return;
+    const r = await reabrirEjercicioContable(businessId, btn.dataset.ejercicio, STATE.user?.email);
+    if (r.estado === 'error') { toast('Error: ' + r.error, 'error'); return; }
+    toast(`Ejercicio ${btn.dataset.ejercicio} reabierto.`);
+    await renderListaCierresAnuales(businessId);
+    await renderListaCierres(businessId);
+  }));
+}
+document.getElementById('cerrarEjercicioBtn').addEventListener('click', async () => {
+  const b = biz();
+  if (!b) return;
+  const ejercicio = document.getElementById('cierreAnualEjercicio').value.trim();
+  if (!/^\d{4}$/.test(ejercicio)) { toast('Indica el ejercicio a cerrar (4 dígitos).', 'error'); return; }
+  if (!confirm(`¿Cerrar contablemente el ejercicio ${ejercicio}? Se generará una póliza real que cancela ingresos/costos/gastos del año y se bloquearán sus 12 meses. Esto NO calcula nada fiscal.`)) return;
+  const r = await cerrarEjercicioContable(b.id, ejercicio, STATE.user?.email);
+  if (r.estado === 'ya_cerrado') { toast(`El ejercicio ${ejercicio} ya estaba cerrado.`, 'error'); }
+  else if (r.estado === 'descuadrado') { toast(`Este ejercicio no puede cerrarse porque la contabilidad presenta una diferencia de ${fmt(Math.abs(r.diferencia))}. Revisa Balanza/Auxiliares para localizar el origen antes de intentar de nuevo.`, 'error'); }
+  else if (r.estado === 'sin_movimientos') { toast(`El ejercicio ${ejercicio} no tiene movimientos de ingresos/costos/gastos que cerrar.`, 'error'); }
+  else if (r.estado === 'error') { toast('Error: ' + r.error, 'error'); }
+  else {
+    toast(`Ejercicio ${ejercicio} cerrado — ${r.esUtilidad?'utilidad':'pérdida'} de ${fmt(Math.abs(r.resultado))}.`);
+    document.getElementById('cierreAnualEjercicio').value = '';
+    await renderListaCierresAnuales(b.id);
+    await renderListaCierres(b.id);
+  }
+});
 async function renderListaCierres(businessId) {
   const { data: cierres } = await sb.from('fz_cierres_periodo').select('*').eq('business_id', businessId).order('periodo', { ascending: false });
   const box = document.getElementById('cierrePeriodoLista');

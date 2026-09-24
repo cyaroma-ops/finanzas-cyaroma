@@ -2342,6 +2342,21 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
       </div>
     </div>
     <div id="cierrePeriodoLista"></div>
+
+    <hr style="margin:18px 0;border-color:var(--line);">
+    <h3>Cierre contable anual</h3>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:14px;">Cancela ingresos/costos/gastos del ejercicio mediante una póliza real y traslada el resultado a "Resultado de Ejercicios". Bloquea automáticamente los 12 meses del año. Solo cierre CONTABLE — no calcula nada fiscal.</p>
+    <div class="grid-2" style="margin-bottom:14px;">
+      <div class="field">
+        <label>Ejercicio a cerrar</label>
+        <input type="text" id="cierreAnualEjercicio" placeholder="Ej. 2023" maxlength="4">
+      </div>
+      <div class="field" style="display:flex;align-items:flex-end;">
+        <button class="btn btn-gold" id="cerrarEjercicioBtn" style="width:100%;">Cerrar ejercicio</button>
+      </div>
+    </div>
+    <div id="cierreAnualLista"></div>
+
     <div class="modal-actions">
       <button class="btn btn-ghost" id="closeCierrePeriodo">Cerrar ventana</button>
     </div>
