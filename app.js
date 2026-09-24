@@ -5154,11 +5154,14 @@ async function construirMatrizAnual(businessId, tipoPapel, ejercicio, conceptosD
       // PTU: la disponible/aplicable se resuelve contra la Cédula Maestra PTU (obtenerReferenciaPTUParaISRPM),
       // nunca un motor propio — se propone automáticamente solo si no hay una captura real ya
       // guardada para este mes, igual que pérdidas.
-      const ptuCapturada = valorMes('ptu_aplicable', mm);
+      const filaPTU = filaPorClave['ptu_aplicable'];
+      const celdaPTU = filaPTU ? filaPTU.porMes[mm] : null;
+      const ptuTieneCapturaProtegida = celdaPTU && celdaPTU.valor !== null && celdaPTU.origen !== 'sistema';
+      const ptuCapturada = ptuTieneCapturaProtegida ? celdaPTU.valor : null;
       const utilidadFiscalPrePTU = (coeficiente !== null && ingresosAcum !== null) ? redondearMoneda(ingresosAcum * coeficiente) : 0;
       const refPTU = await obtenerReferenciaPTUParaISRPM(businessId, `${ejercicio}-${mm}`, utilidadFiscalPrePTU);
       const ptuAplicable = ptuCapturada !== null ? ptuCapturada : refPTU.maximoAplicable;
-      setSiVacio('ptu_aplicable', mm, ptuAplicable, 'sistema');
+      if (filaPTU) { celdaPTU.valor = ptuAplicable; celdaPTU.origen = ptuCapturada !== null ? celdaPTU.origen : 'sistema'; }
 
       const cadena = calcularCadenaISRPM({ ingresosAcumPrevio, ingresosMes, coeficiente, ptuAplicable, perdidasAplicadas, pagosProvisionalesAnteriores, retenciones });
 
@@ -6821,7 +6824,8 @@ async function renderPapelISRPM(b) {
   const cadenaPrePTU = calcularCadenaISRPM({ ingresosAcumPrevio, ingresosMes, coeficiente, ptuAplicable: 0, perdidasAplicadas: 0, pagosProvisionalesAnteriores: 0, retenciones: 0 });
   const refPTU = await obtenerReferenciaPTUParaISRPM(b.id, periodo, cadenaPrePTU.utilidadFiscal);
   const conceptoPTU = conceptos.find(c=>c.clave_concepto==='ptu_aplicable');
-  const ptuYaCapturada = conceptoPTU && (conceptoPTU.id || conceptoPTU.valor_original !== null) ? Number(conceptoPTU.valor_aplicado) : null;
+  const ptuTieneCapturaProtegida = conceptoPTU && (conceptoPTU.id || conceptoPTU.valor_original !== null) && conceptoPTU.origen !== 'sistema';
+  const ptuYaCapturada = ptuTieneCapturaProtegida ? Number(conceptoPTU.valor_aplicado) : null;
   const ptuAplicable = ptuYaCapturada !== null ? ptuYaCapturada : refPTU.maximoAplicable;
   if (conceptoPTU && conceptoSinIntencionExplicita(conceptoPTU) && refPTU.evento) {
     // Propuesta automática de PTU, igual que pérdidas — solo si no hay una captura real, nunca
