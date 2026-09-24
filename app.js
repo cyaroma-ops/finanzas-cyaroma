@@ -6754,7 +6754,8 @@ async function renderPapelISRPM(b) {
   const perdidasConSaldo = refPerdidas.perdidasConSaldo;
   const perdidasAplicadas = refPerdidas.aplicadoActual !== null ? refPerdidas.aplicadoActual : (refPerdidas.tope.ok ? refPerdidas.tope.maximo : 0); // sin captura explícita → propuesta automática (nunca una segunda fórmula: reutiliza calcularMaximoAplicablePerdidas)
   const conceptoPerdidasAplicables = conceptos.find(c=>c.clave_concepto==='perdidas_aplicables');
-  if (conceptoPerdidasAplicables && conceptoSinIntencionExplicita(conceptoPerdidasAplicables) && refPerdidas.aplicadoActual === null && refPerdidas.tope.ok) {
+  const puedeRefrescarsePerdidas = conceptoPerdidasAplicables && (conceptoSinIntencionExplicita(conceptoPerdidasAplicables) || conceptoPerdidasAplicables.origen === 'sistema');
+  if (puedeRefrescarsePerdidas && refPerdidas.aplicadoActual === null && refPerdidas.tope.ok) {
     // No hay aplicación explícita registrada en la Cédula — la fila visible refleja la propuesta
     // automática, igual que el resto de insumos resolubles. Nunca se propone si ya existe una
     // aplicación real (aplicadoActual !== null), para no pisar lo que la Cédula ya tiene.
