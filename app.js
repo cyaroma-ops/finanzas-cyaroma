@@ -2618,7 +2618,7 @@ async function agregarConceptoPapel(papelId, datos) {
   const valorAplicadoInicial = datos.valorAplicado ?? datos.valorOriginal ?? 0;
   const { data: nuevo, error } = await sb.from('fz_papel_conceptos').insert({
     papel_id: papelId, concepto: datos.concepto, clave_concepto: datos.claveConcepto || null,
-    orden: datos.orden || 0, origen: datos.origen || 'manual',
+    orden: datos.orden || 0, origen: datos.origen ?? null,
     valor_original: datos.valorOriginal ?? null, valor_aplicado: valorAplicadoInicial,
     requiere_accesorios: !!datos.requiereAccesorios, created_by: STATE.user?.email || null,
   }).select().single();
@@ -2636,7 +2636,7 @@ async function asegurarConceptoPersistido(businessId, tipoPapel, ejercicio, peri
   if (concepto.id) return { papel, concepto };
   const nuevo = await agregarConceptoPapel(papel.id, {
     concepto: concepto.concepto, claveConcepto: concepto.clave_concepto, orden: concepto.orden || 0,
-    origen: concepto.origen || 'manual', valorAplicado: Number(concepto.valor_aplicado) || 0,
+    origen: concepto.origen ?? null, valorAplicado: Number(concepto.valor_aplicado) || 0,
     requiereAccesorios: !!concepto.requiere_accesorios,
   });
   return { papel, concepto: nuevo };
@@ -2723,6 +2723,40 @@ function conceptoSinIntencionExplicita(concepto) {
   if (concepto.motivo_ajuste) return false; // hubo un ajuste explícito alguna vez
   const v = concepto.valor_aplicado;
   return v === null || v === undefined || Math.abs(Number(v)) < 0.005;
+}
+
+// ============================================================
+// RESOLUCIÓN DE ORIGEN/OVERRIDE — regla única, reutilizada por Mensual y Anual. El campo
+// `origen` es solo información de PROCEDENCIA (de dónde vino el número) — NUNCA prueba por sí
+// solo de que el contador decidió sobrescribirlo a mano. La única evidencia confiable de una
+// edición manual real es que exista un registro en fz_papel_historial con campo='valor_aplicado'
+// para ese concepto — esa fila SOLO la escribe actualizarValorConceptoPapel, la única ruta detrás
+// del botón "Editar" de cualquier concepto. Nunca "origen==='manual'", nunca "valor=0", nunca
+// "existe un id" — ninguno de esos tres demuestra intención humana por sí solo.
+// ============================================================
+
+// SOLO LECTURA — una sola consulta para todos los conceptos de uno o varios papeles (nunca una
+// consulta por concepto). Devuelve un Set de concepto_id que sí tienen una edición manual real.
+async function obtenerEdicionesManualesReales(papelIds) {
+  const ids = Array.isArray(papelIds) ? papelIds : [papelIds];
+  if (!ids.length) return new Set();
+  const { data } = await sb.from('fz_papel_historial').select('concepto_id').in('papel_id', ids).eq('campo', 'valor_aplicado');
+  return new Set((data || []).map(h => h.concepto_id).filter(Boolean));
+}
+
+// Verificación puntual O(1) contra el Set ya cargado — nunca una consulta propia.
+function conceptoTieneEdicionManualReal(conceptoId, edicionesReales) {
+  return !!conceptoId && edicionesReales instanceof Set && edicionesReales.has(conceptoId);
+}
+
+// Regla ÚNICA: un concepto AUTO-RESOLUBLE (PTU, pérdidas, pagos provisionales anteriores,
+// ingresos, coeficiente) puede refrescarse con su propuesta automática siempre que NO exista
+// evidencia de edición manual real — sin importar qué diga actualmente `origen` (que puede ser
+// un residuo histórico: 'manual' asignado por un fallback viejo, sin que nadie haya editado
+// nada). Retenciones y demás conceptos genuinamente manuales nunca deben pasar por esta función
+// — su origen 'manual' siempre es correcto, tengan o no historial.
+function conceptoEsRefrescableAutomaticamente(concepto, conceptoId, edicionesReales) {
+  return !conceptoTieneEdicionManualReal(concepto && concepto.id ? concepto.id : conceptoId, edicionesReales);
 }
 
 // Neto de una línea del libro de partida doble RESPETANDO su naturaleza contable — activo,
@@ -3488,7 +3522,7 @@ async function resolverValorFiscalEfectivo(businessId, tipoPapel, claveConcepto,
   if (conceptoPersistido && !conceptoSinIntencionExplicita(conceptoPersistido)) {
     const tieneOrigen = conceptoPersistido.valor_original !== null && conceptoPersistido.valor_original !== undefined;
     return {
-      valor: Number(conceptoPersistido.valor_aplicado), origen: conceptoPersistido.origen || 'manual',
+      valor: Number(conceptoPersistido.valor_aplicado), origen: conceptoPersistido.origen ?? null,
       valorOrigen: tieneOrigen ? Number(conceptoPersistido.valor_original) : null,
       esOverride: tieneOrigen && Math.abs(Number(conceptoPersistido.valor_aplicado) - Number(conceptoPersistido.valor_original)) > 0.005,
       motivo: conceptoPersistido.motivo_ajuste || null,
@@ -3496,7 +3530,7 @@ async function resolverValorFiscalEfectivo(businessId, tipoPapel, claveConcepto,
   }
   const prop = await obtenerPropuestaContable(businessId, tipoPapel, claveConcepto, periodo);
   if (prop.hayPropuesta) return { valor: redondearMoneda(prop.total), origen: 'contabilidad', valorOrigen: redondearMoneda(prop.total), esOverride: false, motivo: null };
-  return { valor: null, origen: 'manual', valorOrigen: null, esOverride: false, motivo: null };
+  return { valor: null, origen: null, valorOrigen: null, esOverride: false, motivo: null };
 }
 
 // SOLO LECTURA, POR LOTES — resuelve la propuesta contable de un concepto para los 12 meses de un
@@ -5045,7 +5079,11 @@ const CONCEPTOS_DEFAULT_ISR_PM = [
 const CONCEPTOS_CALCULADOS_ISR_PM = ['ingresos_nominales_acum', 'utilidad_fiscal', 'base', 'isr_determinado', 'resultado_determinado'];
 
 function etiquetaOrigen(origen) {
-  return origen === 'contabilidad' ? 'Contabilidad' : origen === 'sistema' ? 'Sistema' : 'Captura manual';
+  if (origen === 'contabilidad') return 'Contabilidad';
+  if (origen === 'sistema') return 'Sistema';
+  if (origen === 'parametro_fiscal') return 'Parámetro fiscal';
+  if (origen === 'manual') return 'Captura manual';
+  return 'Sin origen registrado';
 }
 
 // Construye la matriz anual (Concepto × Ene..Dic + Total) — SOLO LECTURA, nunca crea papeles
@@ -5062,6 +5100,9 @@ async function construirMatrizAnual(businessId, tipoPapel, ejercicio, conceptosD
   const conceptoIds = (todosConceptos||[]).map(c=>c.id);
   const { data: todosAccesorios } = conceptoIds.length ? await sb.from('fz_papel_concepto_accesorios').select('*').in('concepto_id', conceptoIds) : { data: [] };
   const accesoriosPorConcepto = Object.fromEntries((todosAccesorios||[]).map(a=>[a.concepto_id, a]));
+  // Evidencia de ediciones manuales reales para el año completo — UNA sola consulta con .in(),
+  // nunca una por mes/concepto. Misma regla central que usa el detalle mensual.
+  const edicionesRealesAnio = await obtenerEdicionesManualesReales(papelIds);
 
   // Conceptos CALCULADOS nunca reciben propuesta contable directa (se calculan de sus insumos) —
   // el resto son candidatos. Esto es lo que hace transversal la corrección: la MISMA función
@@ -5152,12 +5193,11 @@ async function construirMatrizAnual(businessId, tipoPapel, ejercicio, conceptosD
       if (ingresosMes !== null) ingresosAcum = redondearMoneda(ingresosAcum + ingresosMes);
 
       // PTU: la disponible/aplicable se resuelve contra la Cédula Maestra PTU (obtenerReferenciaPTUParaISRPM),
-      // nunca un motor propio — se propone automáticamente solo si no hay una captura real ya
-      // guardada para este mes, igual que pérdidas.
+      // nunca un motor propio — se propone automáticamente salvo evidencia real de edición manual
+      // (regla central única, misma que usa Mensual).
       const filaPTU = filaPorClave['ptu_aplicable'];
       const celdaPTU = filaPTU ? filaPTU.porMes[mm] : null;
-      const ptuTieneCapturaProtegida = celdaPTU && celdaPTU.valor !== null && celdaPTU.origen !== 'sistema';
-      const ptuCapturada = ptuTieneCapturaProtegida ? celdaPTU.valor : null;
+      const ptuCapturada = celdaPTU && celdaPTU.valor !== null && !conceptoEsRefrescableAutomaticamente(null, celdaPTU.conceptoId, edicionesRealesAnio) ? celdaPTU.valor : null;
       const utilidadFiscalPrePTU = (coeficiente !== null && ingresosAcum !== null) ? redondearMoneda(ingresosAcum * coeficiente) : 0;
       const refPTU = await obtenerReferenciaPTUParaISRPM(businessId, `${ejercicio}-${mm}`, utilidadFiscalPrePTU);
       const ptuAplicable = ptuCapturada !== null ? ptuCapturada : refPTU.maximoAplicable;
@@ -6462,7 +6502,7 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
   const { data: conceptosReales } = papel ? await sb.from('fz_papel_conceptos').select('*').eq('papel_id', papel.id).order('orden', { ascending: true }) : { data: [] };
   const conceptos = conceptosDefault.map((def, i) => {
     const real = (conceptosReales||[]).find(c => c.clave_concepto === def.clave);
-    return real || { id: null, papel_id: null, clave_concepto: def.clave, concepto: def.nombre, orden: i, origen: 'manual', valor_original: null, valor_aplicado: null, motivo_ajuste: null, requiere_accesorios: !!opciones.accesorios };
+    return real || { id: null, papel_id: null, clave_concepto: def.clave, concepto: def.nombre, orden: i, origen: null, valor_original: null, valor_aplicado: null, motivo_ajuste: null, requiere_accesorios: !!opciones.accesorios };
   });
   // Resolución de valor efectivo — LA MISMA función (resolverValorFiscalEfectivo) que usa la
   // cédula anual, ISR PM y el diagnóstico. Cubre IVA y ambas Retenciones sin código separado.
@@ -6749,7 +6789,7 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
     // virtuales que el contador no llegó a editar individualmente.
     const papelReal = await obtenerOCrearPapelTrabajo(b.id, tipoPapel, ejercicio, 'mensual', periodo);
     for (const c of conceptos) {
-      if (!c.id && c.valor_aplicado !== null) await agregarConceptoPapel(papelReal.id, { concepto: c.concepto, claveConcepto: c.clave_concepto, orden: c.orden||0, origen: c.origen||'manual', valorAplicado: Number(c.valor_aplicado), requiereAccesorios: !!opciones.accesorios });
+      if (!c.id && c.valor_aplicado !== null) await agregarConceptoPapel(papelReal.id, { concepto: c.concepto, claveConcepto: c.clave_concepto, orden: c.orden||0, origen: c.origen ?? null, valorAplicado: Number(c.valor_aplicado), requiereAccesorios: !!opciones.accesorios });
       else if (c.id && c._sincronizarOrigenAlGuardar) await sb.from('fz_papel_conceptos').update({ valor_original: c.valor_original, valor_aplicado: c.valor_aplicado, origen: c.origen }).eq('id', c.id);
     }
     await sb.from('fz_papeles_trabajo').update({ estado: 'guardado', notas, updated_at: new Date().toISOString() }).eq('id', papelReal.id);
@@ -6770,13 +6810,16 @@ async function renderPapelISRPM(b) {
 
   // SOLO LECTURA — abrir/visualizar este periodo NUNCA debe crear ni materializar su papel.
   const papel = await obtenerPapelTrabajoSiExiste(b.id, 'isr_pm', ejercicio, 'mensual', periodo);
+  // Evidencia de ediciones manuales reales — UNA sola consulta para todo el papel, nunca una por
+  // concepto. Si el papel no existe todavía, no hay historial posible (Set vacío).
+  const edicionesReales = papel ? await obtenerEdicionesManualesReales(papel.id) : new Set();
   const { data: conceptosReales } = papel ? await sb.from('fz_papel_conceptos').select('*').eq('papel_id', papel.id).order('orden', { ascending: true }) : { data: [] };
   // Plantilla: cada concepto default se muestra con su valor real si ya fue persistido, o como
   // renglón VIRTUAL (id null, valor 0 solo visual) si el papel/concepto todavía no existen — esto
   // nunca escribe nada en BD, es puramente para facilitar la captura.
   const conceptos = CONCEPTOS_DEFAULT_ISR_PM.map((def, i) => {
     const real = (conceptosReales||[]).find(c => c.clave_concepto === def.clave);
-    return real || { id: null, papel_id: null, clave_concepto: def.clave, concepto: def.nombre, orden: i, origen: 'manual', valor_original: null, valor_aplicado: null, motivo_ajuste: null };
+    return real || { id: null, papel_id: null, clave_concepto: def.clave, concepto: def.nombre, orden: i, origen: null, valor_original: null, valor_aplicado: null, motivo_ajuste: null };
   });
   conceptos.push(...(conceptosReales||[]).filter(c => !CONCEPTOS_DEFAULT_ISR_PM.some(d=>d.clave===c.clave_concepto)));
   const papelVirtual = papel || { estado: 'sin_iniciar', created_at: null, updated_at: null, notas: '', created_by: null };
@@ -6824,15 +6867,11 @@ async function renderPapelISRPM(b) {
   const cadenaPrePTU = calcularCadenaISRPM({ ingresosAcumPrevio, ingresosMes, coeficiente, ptuAplicable: 0, perdidasAplicadas: 0, pagosProvisionalesAnteriores: 0, retenciones: 0 });
   const refPTU = await obtenerReferenciaPTUParaISRPM(b.id, periodo, cadenaPrePTU.utilidadFiscal);
   const conceptoPTU = conceptos.find(c=>c.clave_concepto==='ptu_aplicable');
-  // Único punto de resolución — antes existían dos bloques separados (uno decidía la variable que
-  // alimenta la cadena, otro refrescaba la fila visible) con dos condiciones DISTINTAS, resueltos
-  // en momentos distintos. Como ptuAplicable es un primitivo, si se copiaba ANTES de que el
-  // segundo bloque refrescara el concepto, la cadena se quedaba con el valor viejo aunque la
-  // pantalla ya mostrara el correcto. Ahora: se refresca el concepto PRIMERO (si corresponde) y
-  // ptuAplicable se lee del resultado ya refrescado — nunca al revés. Solo un origen distinto de
-  // 'sistema' protege un valor real capturado a mano; nunca se pisa ese caso.
-  const ptuEsRefrescable = !conceptoPTU || (!conceptoPTU.id && conceptoPTU.valor_original === null) || conceptoPTU.origen !== 'manual';
-  if (conceptoPTU && ptuEsRefrescable && refPTU.evento) {
+  // Único punto de resolución, regla central única — nunca origen==='manual'/'sistema' como
+  // criterio: la única evidencia confiable de una edición real es el historial de
+  // valor_aplicado. Se refresca el concepto PRIMERO (si corresponde) y ptuAplicable se lee del
+  // resultado ya refrescado — nunca al revés.
+  if (conceptoPTU && conceptoEsRefrescableAutomaticamente(conceptoPTU, conceptoPTU.id, edicionesReales) && refPTU.evento) {
     conceptoPTU.valor_original = refPTU.maximoAplicable; conceptoPTU.valor_aplicado = refPTU.maximoAplicable; conceptoPTU.origen = 'sistema';
     if (conceptoPTU.id) conceptoPTU._sincronizarOrigenAlGuardar = true;
   }
@@ -6864,12 +6903,9 @@ async function renderPapelISRPM(b) {
   // meses posteriores usan la suma real de ISR determinado ya persistido, si existe.
   const pagosProvisionalesAnterioresPropuesto = mesNum === 1 ? 0 : await obtenerPagosProvisionalesAnterioresPropuesta(b.id, ejercicio, periodo);
   const conceptoPagosAnteriores = conceptos.find(c=>c.clave_concepto==='pagos_provisionales_anteriores');
-  // Refrescar si nunca tuvo intención real (nunca capturado) O si lo último que tiene es una
-  // propuesta del propio sistema (origen='sistema') — nunca si el contador lo capturó/ajustó a
-  // mano (origen='manual'). Sin esto, una propuesta automática vieja quedaba protegida para
-  // siempre en cuanto se guardaba una vez, indistinguible de un override real del contador.
-  const puedeRefrescarsePagosAnteriores = conceptoPagosAnteriores && (conceptoSinIntencionExplicita(conceptoPagosAnteriores) || conceptoPagosAnteriores.origen === 'sistema');
-  if (puedeRefrescarsePagosAnteriores && pagosProvisionalesAnterioresPropuesto!==null) {
+  // Regla central única — nunca origen==='sistema'/'manual' como criterio: la evidencia
+  // confiable es el historial de valor_aplicado.
+  if (conceptoPagosAnteriores && conceptoEsRefrescableAutomaticamente(conceptoPagosAnteriores, conceptoPagosAnteriores.id, edicionesReales) && pagosProvisionalesAnterioresPropuesto!==null) {
     conceptoPagosAnteriores.valor_original = pagosProvisionalesAnterioresPropuesto; conceptoPagosAnteriores.valor_aplicado = pagosProvisionalesAnterioresPropuesto; conceptoPagosAnteriores.origen = 'sistema';
     if (conceptoPagosAnteriores.id) conceptoPagosAnteriores._sincronizarOrigenAlGuardar = true; // ya persistido sin intención explícita (ej. 0 de arrastre) — la corrección se escribe solo al Guardar, nunca por abrir
   }
@@ -7162,7 +7198,7 @@ async function renderPapelISRPM(b) {
     // virtuales que el contador no llegó a editar individualmente, con su valor visual actual.
     const papelReal = await obtenerOCrearPapelTrabajo(b.id, 'isr_pm', ejercicio, 'mensual', periodo);
     for (const c of conceptos) {
-      if (!c.id && c.valor_aplicado !== null) await agregarConceptoPapel(papelReal.id, { concepto: c.concepto, claveConcepto: c.clave_concepto, orden: c.orden||0, origen: c.origen||'manual', valorAplicado: Number(c.valor_aplicado) });
+      if (!c.id && c.valor_aplicado !== null) await agregarConceptoPapel(papelReal.id, { concepto: c.concepto, claveConcepto: c.clave_concepto, orden: c.orden||0, origen: c.origen ?? null, valorAplicado: Number(c.valor_aplicado) });
       else if (c.id && c._sincronizarOrigenAlGuardar) await sb.from('fz_papel_conceptos').update({ valor_original: c.valor_original, valor_aplicado: c.valor_aplicado, origen: c.origen }).eq('id', c.id);
     }
     // Aplicación automática de pérdidas — se persiste al Guardar (nunca al abrir). Idempotente:
