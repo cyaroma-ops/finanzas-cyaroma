@@ -3072,8 +3072,19 @@ async function registrarAplicacionProvisionalPerdida(perdidaId, ejercicioControl
 async function eliminarAplicacionProvisionalPerdida(perdidaId, periodo, usuarioEmail) {
   const { data: existente } = await sb.from('fz_perdidas_fiscales_aplicaciones').select('*').eq('perdida_id', perdidaId).eq('periodo', periodo).maybeSingle();
   if (!existente) return { estado: 'ok' }; // nada que eliminar — no es un error
-  const { error } = await sb.from('fz_perdidas_fiscales_aplicaciones').delete().eq('id', existente.id);
+  // .select() encadenado al delete devuelve las filas REALMENTE eliminadas — si el arreglo viene
+  // vacío, nada se borró de verdad (bloqueo silencioso de RLS u otra condición), aunque error sea
+  // null. Nunca se asume éxito solo por ausencia de error.
+  const { data: borradas, error } = await sb.from('fz_perdidas_fiscales_aplicaciones').delete().eq('id', existente.id).select();
   if (error) return { estado: 'error', error: error.message };
+  if (!borradas || borradas.length === 0) {
+    return { estado: 'error', error: 'El borrado no tuvo efecto — probablemente bloqueado por permisos/RLS. La fila sigue existiendo; no se tocó el historial.' };
+  }
+  // Verificación adicional: re-consultar por id para confirmar que genuinamente ya no existe.
+  const { data: siguenExistiendo } = await sb.from('fz_perdidas_fiscales_aplicaciones').select('id').eq('id', existente.id).maybeSingle();
+  if (siguenExistiendo) {
+    return { estado: 'error', error: 'El borrado reportó éxito pero la fila sigue existiendo al re-consultarla. No se tocó el historial.' };
+  }
   await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: `aplicación ${periodo}`, valor_anterior: String(existente.aplicado_acumulado), valor_nuevo: '(eliminada)', usuario: usuarioEmail || null });
   return { estado: 'ok' };
 }
