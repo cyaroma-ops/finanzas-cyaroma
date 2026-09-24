@@ -6754,13 +6754,13 @@ async function renderPapelISRPM(b) {
   const perdidasConSaldo = refPerdidas.perdidasConSaldo;
   const perdidasAplicadas = refPerdidas.aplicadoActual !== null ? refPerdidas.aplicadoActual : (refPerdidas.tope.ok ? refPerdidas.tope.maximo : 0); // sin captura explícita → propuesta automática (nunca una segunda fórmula: reutiliza calcularMaximoAplicablePerdidas)
   const conceptoPerdidasAplicables = conceptos.find(c=>c.clave_concepto==='perdidas_aplicables');
-  const puedeRefrescarsePerdidas = conceptoPerdidasAplicables && (conceptoSinIntencionExplicita(conceptoPerdidasAplicables) || conceptoPerdidasAplicables.origen === 'sistema');
-  if (puedeRefrescarsePerdidas && refPerdidas.aplicadoActual === null && refPerdidas.tope.ok) {
-    // No hay aplicación explícita registrada en la Cédula — la fila visible refleja la propuesta
-    // automática, igual que el resto de insumos resolubles. Nunca se propone si ya existe una
-    // aplicación real (aplicadoActual !== null), para no pisar lo que la Cédula ya tiene.
-    conceptoPerdidasAplicables.valor_original = refPerdidas.tope.maximo;
-    conceptoPerdidasAplicables.valor_aplicado = refPerdidas.tope.maximo;
+  if (conceptoPerdidasAplicables) {
+    // La Cédula Maestra de Pérdidas es la única autoridad de este importe — esta fila es solo su
+    // espejo, igual que Base/ISR determinado ya reflejan siempre el cálculo vigente. Nunca debe
+    // quedar congelada en un número desconectado de lo que la Cédula realmente dice, exista o no
+    // una aplicación real ya registrada (incluyendo un $0 real, que también debe reflejarse).
+    conceptoPerdidasAplicables.valor_original = perdidasAplicadas;
+    conceptoPerdidasAplicables.valor_aplicado = perdidasAplicadas;
     conceptoPerdidasAplicables.origen = 'sistema';
     if (conceptoPerdidasAplicables.id) conceptoPerdidasAplicables._sincronizarOrigenAlGuardar = true;
   }
