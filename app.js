@@ -6824,26 +6824,23 @@ async function renderPapelISRPM(b) {
   const cadenaPrePTU = calcularCadenaISRPM({ ingresosAcumPrevio, ingresosMes, coeficiente, ptuAplicable: 0, perdidasAplicadas: 0, pagosProvisionalesAnteriores: 0, retenciones: 0 });
   const refPTU = await obtenerReferenciaPTUParaISRPM(b.id, periodo, cadenaPrePTU.utilidadFiscal);
   const conceptoPTU = conceptos.find(c=>c.clave_concepto==='ptu_aplicable');
-  console.log('[TRAZA PTU]', periodo, '1. ANTES de resolver — conceptoPTU.id=', conceptoPTU?.id, 'valor_original=', conceptoPTU?.valor_original, 'valor_aplicado=', conceptoPTU?.valor_aplicado, 'origen=', conceptoPTU?.origen);
-  const ptuTieneCapturaProtegida = conceptoPTU && (conceptoPTU.id || conceptoPTU.valor_original !== null) && conceptoPTU.origen !== 'sistema';
-  const ptuYaCapturada = ptuTieneCapturaProtegida ? Number(conceptoPTU.valor_aplicado) : null;
-  console.log('[TRAZA PTU]', periodo, '2. refPTU.maximoAplicable=', refPTU.maximoAplicable, 'ptuTieneCapturaProtegida=', ptuTieneCapturaProtegida, 'ptuYaCapturada=', ptuYaCapturada);
-  const ptuAplicable = ptuYaCapturada !== null ? ptuYaCapturada : refPTU.maximoAplicable;
-  console.log('[TRAZA PTU]', periodo, '3. ptuAplicable RESUELTO (variable que usará la cadena)=', ptuAplicable);
-  if (conceptoPTU && conceptoSinIntencionExplicita(conceptoPTU) && refPTU.evento) {
-    // Propuesta automática de PTU, igual que pérdidas — solo si no hay una captura real, nunca
-    // pisa un valor que el contador ya haya puesto a mano.
+  // Único punto de resolución — antes existían dos bloques separados (uno decidía la variable que
+  // alimenta la cadena, otro refrescaba la fila visible) con dos condiciones DISTINTAS, resueltos
+  // en momentos distintos. Como ptuAplicable es un primitivo, si se copiaba ANTES de que el
+  // segundo bloque refrescara el concepto, la cadena se quedaba con el valor viejo aunque la
+  // pantalla ya mostrara el correcto. Ahora: se refresca el concepto PRIMERO (si corresponde) y
+  // ptuAplicable se lee del resultado ya refrescado — nunca al revés. Solo un origen distinto de
+  // 'sistema' protege un valor real capturado a mano; nunca se pisa ese caso.
+  const ptuEsRefrescable = !conceptoPTU || (!conceptoPTU.id && conceptoPTU.valor_original === null) || conceptoPTU.origen !== 'manual';
+  if (conceptoPTU && ptuEsRefrescable && refPTU.evento) {
     conceptoPTU.valor_original = refPTU.maximoAplicable; conceptoPTU.valor_aplicado = refPTU.maximoAplicable; conceptoPTU.origen = 'sistema';
     if (conceptoPTU.id) conceptoPTU._sincronizarOrigenAlGuardar = true;
-    console.log('[TRAZA PTU]', periodo, '4. Bloque de refresco de DISPLAY SÍ se ejecutó — conceptoPTU.valor_aplicado ahora=', conceptoPTU.valor_aplicado);
-  } else {
-    console.log('[TRAZA PTU]', periodo, '4. Bloque de refresco de DISPLAY NO se ejecutó — conceptoPTU.valor_aplicado sigue=', conceptoPTU?.valor_aplicado, 'conceptoSinIntencionExplicita=', conceptoPTU?conceptoSinIntencionExplicita(conceptoPTU):null, 'refPTU.evento existe=', !!refPTU.evento);
   }
+  const ptuAplicable = conceptoPTU ? Number(conceptoPTU.valor_aplicado ?? refPTU.maximoAplicable) : refPTU.maximoAplicable;
 
   // Cadena parcial (sin pérdidas todavía) — necesaria para alimentar el TOPE de pérdidas con la
   // utilidad fiscal REAL calculada, no con un número capturado aparte.
   const cadenaParcial = calcularCadenaISRPM({ ingresosAcumPrevio, ingresosMes, coeficiente, ptuAplicable, perdidasAplicadas: 0, pagosProvisionalesAnteriores: 0, retenciones: 0 });
-  console.log('[TRAZA PTU]', periodo, '5. cadenaParcial.utilidadDespuesPTU=', cadenaParcial.utilidadDespuesPTU, '(debería ser utilidadFiscal - ptuAplicable=', cadenaParcial.utilidadFiscal, '-', ptuAplicable, ')');
   const utilidadFiscalActual = cadenaParcial.utilidadDespuesPTU; // ya con PTU restado — tope de pérdidas se calcula sobre la utilidad susceptible real
 
   // Integración con Pérdidas Fiscales — ahora alimentada por la utilidad fiscal CALCULADA, nunca
@@ -6880,9 +6877,7 @@ async function renderPapelISRPM(b) {
 
   // Cadena COMPLETA — esta es la que se muestra y, al Guardar, se persiste como snapshot de los
   // conceptos CALCULADOS (nunca captura independiente).
-  console.log('[TRAZA PTU]', periodo, '6. JUSTO ANTES de la cadena FINAL — ptuAplicable=', ptuAplicable, 'perdidasAplicadas=', perdidasAplicadas, 'pagosProvisionalesAnteriores=', pagosProvisionalesAnteriores);
   const cadena = calcularCadenaISRPM({ ingresosAcumPrevio, ingresosMes, coeficiente, ptuAplicable, perdidasAplicadas, pagosProvisionalesAnteriores, retenciones });
-  console.log('[TRAZA PTU]', periodo, '7. CADENA FINAL devolvió — utilidadFiscal=', cadena.utilidadFiscal, 'utilidadDespuesPTU=', cadena.utilidadDespuesPTU, 'base=', cadena.base, 'isrCausado=', cadena.isrCausado, 'isrDeterminado=', cadena.isrDeterminado);
 
   // Inconsistencia — si la pérdida YA aplicada/persistida excede el nuevo máximo recalculado
   // (porque cambiaron ingresos/coeficiente/PTU), NUNCA se corrige en silencio: se marca para
@@ -6900,7 +6895,6 @@ async function renderPapelISRPM(b) {
     const c = conceptos.find(x=>x.clave_concepto===clave);
     if (!c) return;
     const valorCalc = clave==='ingresos_nominales_acum' ? cadena.ingresosAcum : clave==='utilidad_fiscal' ? cadena.utilidadFiscal : clave==='base' ? cadena.base : cadena.isrCausado;
-    if (clave==='base' || clave==='isr_determinado') console.log('[TRAZA PTU]', periodo, '8. Asignando a la fila visible', clave, '=', valorCalc);
     // DERIVADO del motor: el cálculo actual es siempre la autoridad para la propuesta que se
     // muestra, exista o no un id persistido de una determinación anterior. Esto solo corrige el
     // objeto en memoria para esta vista — no escribe nada a Supabase por sí mismo (abrir ≠
