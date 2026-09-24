@@ -3129,6 +3129,26 @@ async function diagnosticarAplicacionesPerdidaSospechosas(perdidaId) {
   return resultado;
 }
 
+// Limpieza DIRIGIDA de residuos dejados por la reconciliación defectuosa — solo actúa sobre
+// filas que, en este mismo momento, vuelven a cumplir el criterio seguro (re-verifica siempre;
+// nunca confía en un diagnóstico anterior que pudo quedar desactualizado si algo cambió mientras
+// tanto). Reutiliza eliminarAplicacionProvisionalPerdida (ya existente, sin cambios) — deja la
+// fila sin ningún registro, NUNCA restaura un valor viejo del historial, NUNCA genera una
+// aplicación nueva. El historial existente no se toca; solo se agrega una entrada adicional
+// documentando explícitamente la corrección de este incidente.
+async function limpiarResiduosReconciliacionDefectuosa(perdidaId, usuarioEmail) {
+  const diagnostico = await diagnosticarAplicacionesPerdidaSospechosas(perdidaId);
+  const limpiados = []; const omitidos = [];
+  for (const d of diagnostico) {
+    if (!d.esSospechoso) { omitidos.push(d.periodo); continue; }
+    const r = await eliminarAplicacionProvisionalPerdida(perdidaId, d.periodo, usuarioEmail);
+    if (r.estado === 'error') return { estado: 'error', error: r.error, periodo: d.periodo, limpiadosHastaAhora: limpiados };
+    await sb.from('fz_perdidas_fiscales_historial').insert({ perdida_id: perdidaId, campo: `aplicación ${d.periodo}`, valor_anterior: '0', valor_nuevo: '(sin aplicación registrada)', motivo: 'Corrección de incidente: se eliminó el $0 dejado por una reconciliación defectuosa (saldo vigente $0 en ese momento). No se restauró ningún valor anterior — queda pendiente de nueva determinación.', usuario: usuarioEmail || null });
+    limpiados.push(d.periodo);
+  }
+  return { estado: 'ok', limpiados, omitidos };
+}
+
 async function reconciliarAplicacionesContraSaldoVigente(businessId, perdidaId, ejercicioControl, usuarioEmail) {
   const perdidas = await obtenerPerdidasFiscalesSiExisten(businessId, ejercicioControl);
   const p = perdidas.find(x => x.id === perdidaId);
@@ -5793,11 +5813,23 @@ async function renderPerdidasFiscales(b) {
       <h3>Diagnóstico de aplicaciones en $0 — solo lectura</h3>
       <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">${sospechosos.length} de ${diag.length} periodo(s) muestran el patrón exacto de la reconciliación defectuosa (último evento = reconciliación, resultado = $0). Nada se modificó al ver este reporte.</p>
       <div class="table-wrap"><table class="report-table"><thead><tr><th>Periodo</th><th>Valor actual</th><th>Último motivo</th><th>Valor antes de ese evento</th><th></th></tr></thead><tbody>${filasHtml || '<tr><td colspan="5" style="text-align:center;color:var(--muted);">Sin aplicaciones registradas.</td></tr>'}</tbody></table></div>
-      <div class="modal-actions"><button class="btn btn-gold" id="diagCerrarBtn">Cerrar</button></div>
+      <div class="modal-actions">
+        ${sospechosos.length ? `<button class="btn btn-ghost" id="diagLimpiarBtn" style="color:var(--red);margin-right:auto;">Eliminar los ${sospechosos.length} residuos identificados</button>` : ''}
+        <button class="btn btn-gold" id="diagCerrarBtn">Cerrar</button>
+      </div>
     </div></div>`;
     document.getElementById('diagModalContainer')?.remove();
     const cont = document.createElement('div'); cont.id = 'diagModalContainer'; cont.innerHTML = html; document.body.appendChild(cont);
     document.getElementById('diagCerrarBtn').addEventListener('click', () => cont.remove());
+    const btnLimpiar = document.getElementById('diagLimpiarBtn');
+    if (btnLimpiar) btnLimpiar.addEventListener('click', async () => {
+      if (!confirm(`¿Eliminar el registro de $0 de ${sospechosos.map(s=>s.periodo).join(', ')}? Quedarán como "sin aplicación registrada" — NO se restaura ningún valor anterior, y no se genera ninguna aplicación nueva. Tú validarás cada mes desde ISR PM.`)) return;
+      const r = await limpiarResiduosReconciliacionDefectuosa(a.dataset.id, STATE.user?.email);
+      if (r.estado === 'error') { toast('Error al limpiar ' + r.periodo + ': ' + r.error, 'error'); return; }
+      cont.remove();
+      toast(`Limpiados: ${r.limpiados.join(', ')}. Quedan sin aplicación registrada.`);
+      await renderPerdidasFiscales(b);
+    });
   }));
 
   if (STATE_perdidaExpandida) wireDetallePerdida(b, perdidas.find(p=>p.id===STATE_perdidaExpandida), ejercicio);
