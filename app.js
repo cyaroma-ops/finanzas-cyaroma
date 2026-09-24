@@ -5105,7 +5105,10 @@ async function construirMatrizAnual(businessId, tipoPapel, ejercicio, conceptosD
 
       const cadena = calcularCadenaISRPM({ ingresosAcumPrevio, ingresosMes, coeficiente, ptuAplicable, perdidasAplicadas, pagosProvisionalesAnteriores, retenciones });
 
-      setSiVacio('perdidas_aplicables', mm, perdidasAplicadas, 'sistema');
+      if (filaPorClave['perdidas_aplicables'] && perdidasAplicadas !== null) {
+        filaPorClave['perdidas_aplicables'].porMes[mm].valor = perdidasAplicadas;
+        filaPorClave['perdidas_aplicables'].porMes[mm].origen = 'contabilidad';
+      }
       setSiVacio('ingresos_nominales_acum', mm, cadena.ingresosAcum);
       setSiVacio('utilidad_fiscal', mm, cadena.utilidadFiscal);
       setSiVacio('base', mm, cadena.base);
