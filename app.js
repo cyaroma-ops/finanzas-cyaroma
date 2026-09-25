@@ -16688,6 +16688,16 @@ function construirArbolSubcuenta(subcuentaId, subcuentas, porSubcuenta, visitado
 function aplanarArbol(nodo) {
   return [nodo, ...nodo.hijos.flatMap(aplanarArbol)];
 }
+// Copia filtrada de un árbol de subcuenta, excluyendo los nodos que NO cumplan el predicado
+// (por nombre) — nunca muta el árbol original. Usado solo para presentación (separar un renglón
+// específico, como "Ingresos financieros", hacia otra sección del Estado de Resultados).
+function filtrarNodoArbol(nodo, predicado) {
+  const hijosFiltrados = nodo.hijos.map(h => filtrarNodoArbol(h, predicado)).filter(Boolean);
+  const propioIncluido = predicado(nodo) ? nodo.propio : 0;
+  const total = propioIncluido + hijosFiltrados.reduce((s,h)=>s+h.total,0);
+  if (!predicado(nodo) && !hijosFiltrados.length) return null;
+  return { ...nodo, propio: propioIncluido, hijos: hijosFiltrados, total };
+}
 
 /* ============================================================
    BALANCE GENERAL — Activo = Pasivo + Capital
@@ -17987,30 +17997,52 @@ async function computeGananciaCambiaria(businessId, periodo, cobrosCompartidos =
   }, 0);
 }
 
-// SOLO para el Estado de Resultados — misma consulta y misma fórmula por cobro que
-// computeGananciaCambiaria (no se modifica esa función ni se altera ninguno de sus otros
-// llamadores), pero aquí se separan ganancia y pérdida en vez de devolver un solo neto. Así
-// Ganancia cambiaria puede clasificarse en Otros Ingresos y Pérdida cambiaria en Gastos
-// Financieros, sin netear una contra la otra ni contra Ventas.
-async function computeGananciaPerdidaCambiariaSeparadaPL(businessId, periodo) {
-  const r = await sb.from('fz_cobros_aplicados')
+// FUENTE ÚNICA de ganancia/pérdida cambiaria para todo el Estado de Resultados — combina
+// Clientes (fz_cobros_aplicados) Y Proveedores (fz_pagos_aplicados), reutilizando la MISMA
+// fórmula y la MISMA convención de signo que ya usa getLibroPartidaDobleConOrigen para cada lado
+// (nunca se inventa un segundo cálculo): así ER, Balanza y Auxiliares siempre coinciden.
+async function computeGananciaPerdidaCambiariaER(businessId, periodo) {
+  let ganancia = 0, perdida = 0;
+
+  // Clientes — activo: diferencia>0 es ganancia (cobraste más pesos de los esperados),
+  // diferencia<0 es pérdida. Idéntico a la rama 'cliente' de getLibroPartidaDobleConOrigen.
+  const { data: cobros } = await sb.from('fz_cobros_aplicados')
     .select('monto,tipo_cambio,factura_id,fecha')
     .eq('business_id', businessId).gte('fecha', periodo.start).lte('fecha', periodo.end).not('tipo_cambio', 'is', null);
-  const cobros = r.data;
-  if (!cobros || !cobros.length) return { ganancia: 0, perdida: 0 };
-  const facturaIds = [...new Set(cobros.map(c => c.factura_id))];
-  const { data: facturas } = await sb.from('fz_facturas_clientes').select('id,tipo_cambio').in('id', facturaIds);
-  const tcOriginalPorFactura = Object.fromEntries((facturas||[]).map(f => [f.id, Number(f.tipo_cambio)||1]));
-  let ganancia = 0, perdida = 0;
-  cobros.forEach(c => {
-    const tcOriginal = tcOriginalPorFactura[c.factura_id] || 1;
-    const tcReal = Number(c.tipo_cambio) || tcOriginal;
-    const diferencia = (Number(c.monto)||0) * (tcReal - tcOriginal);
-    if (diferencia > 0) ganancia += diferencia;
-    else if (diferencia < 0) perdida += -diferencia; // magnitud positiva, para presentarse como gasto
-  });
+  if (cobros && cobros.length) {
+    const facturaIds = [...new Set(cobros.map(c => c.factura_id))];
+    const { data: facturas } = await sb.from('fz_facturas_clientes').select('id,tipo_cambio').in('id', facturaIds);
+    const tcOriginalPorFactura = Object.fromEntries((facturas||[]).map(f => [f.id, Number(f.tipo_cambio)||1]));
+    cobros.forEach(c => {
+      const tcOriginal = tcOriginalPorFactura[c.factura_id] || 1;
+      const tcReal = Number(c.tipo_cambio) || tcOriginal;
+      const diferencia = (Number(c.monto)||0) * (tcReal - tcOriginal);
+      if (diferencia > 0.004) ganancia += diferencia;
+      else if (diferencia < -0.004) perdida += -diferencia;
+    });
+  }
+
+  // Proveedores — pasivo: convención INVERTIDA (diferencia>0 es pérdida, pagaste más pesos de
+  // los esperados). Idéntico a la rama 'proveedor' de getLibroPartidaDobleConOrigen.
+  const { data: pagos } = await sb.from('fz_pagos_aplicados')
+    .select('monto,tipo_cambio,factura_id,fecha')
+    .eq('business_id', businessId).gte('fecha', periodo.start).lte('fecha', periodo.end).not('tipo_cambio', 'is', null);
+  if (pagos && pagos.length) {
+    const facturaIdsProv = [...new Set(pagos.map(p => p.factura_id))];
+    const { data: facturasProv } = await sb.from('fz_proveedores').select('id,tipo_cambio').in('id', facturaIdsProv);
+    const tcOriginalPorFacturaProv = Object.fromEntries((facturasProv||[]).map(f => [f.id, Number(f.tipo_cambio)||1]));
+    pagos.forEach(p => {
+      const tcOriginal = tcOriginalPorFacturaProv[p.factura_id] || 1;
+      const tcReal = Number(p.tipo_cambio) || tcOriginal;
+      const diferencia = (Number(p.monto)||0) * (tcReal - tcOriginal);
+      if (diferencia > 0.004) perdida += diferencia;
+      else if (diferencia < -0.004) ganancia += -diferencia;
+    });
+  }
+
   return { ganancia: redondearMoneda(ganancia), perdida: redondearMoneda(perdida) };
 }
+
 
 // Ingresos ya representados en el motor consolidado (facturas de clientes, pólizas manuales,
 // Ganancia Cambiaria, y cualquier cuenta de Ingreso futura) — se leen de una sola fuente,
@@ -18552,12 +18584,49 @@ async function renderPL() {
     computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'gasto', true, datosGC3),
     computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'costo', true, datosGC3),
   ]);
-  const iPoliza = await computeIngresosPoliza(b.id, periodo, subcuentas, mayores, true);
-  const { ganancia: gananciaCambiaria, perdida: perdidaCambiaria } = await computeGananciaPerdidaCambiariaSeparadaPL(b.id, periodo);
-  const totalIngresosFinal = totalIngresos + iPoliza.total + gananciaCambiaria;
+  const iPolizaOriginal = await computeIngresosPoliza(b.id, periodo, subcuentas, mayores, true);
+  const { ganancia: gananciaCambiaria, perdida: perdidaCambiaria } = await computeGananciaPerdidaCambiariaER(b.id, periodo);
+
+  // RIF — extracción de una sola fuente, sin duplicar. Nunca se toca gClas/iPoliza en sí (sus
+  // datos siguen sirviendo para Balanza/Auxiliares vía las mismas funciones); aquí solo se separa
+  // qué renglón va a Operación y cuál va al bloque financiero único.
+  const RE_CAMBIARIA = /p[ée]rdida cambiaria|ganancia cambiaria/i;
+  const RE_GASTOS_FIN = /gastos financieros/i;
+  const RE_OTROS_ING = /otros ingresos/i;
+  const RE_ING_FIN = /ingresos financieros|productos financieros/i;
+
+  const mayorGastosFin = gClas.porMayor.find(m => RE_GASTOS_FIN.test(m.nombre));
+  const gastosFinancierosReales = mayorGastosFin
+    ? mayorGastosFin.subs.reduce((s,raiz) => s + aplanarArbol(raiz).filter(n => !RE_CAMBIARIA.test(n.nombre)).reduce((s2,n)=>s2+n.propio,0), 0)
+    : 0;
+  const gClasOperacion = { ...gClas, porMayor: gClas.porMayor.filter(m => !RE_GASTOS_FIN.test(m.nombre)) };
+
+  const mayorOtrosIngOriginal = iPolizaOriginal.porMayor.find(m => RE_OTROS_ING.test(m.nombre));
+  const productosFinancieros = mayorOtrosIngOriginal
+    ? mayorOtrosIngOriginal.subs.reduce((s,raiz) => s + aplanarArbol(raiz).filter(n => RE_ING_FIN.test(n.nombre)).reduce((s2,n)=>s2+n.propio,0), 0)
+    : 0;
+  // Copia de Otros Ingresos SIN el renglón financiero, solo para lo que se muestra en Ingresos —
+  // el árbol original (con todo) sigue intacto para cualquier otro consumidor.
+  const iPoliza = {
+    total: iPolizaOriginal.total - productosFinancieros,
+    porMayor: iPolizaOriginal.porMayor.map(m => {
+      if (!RE_OTROS_ING.test(m.nombre) || !productosFinancieros) return m;
+      const subsFiltrados = m.subs.map(raiz => filtrarNodoArbol(raiz, n => !RE_ING_FIN.test(n.nombre))).filter(Boolean);
+      return { ...m, subs: subsFiltrados, subtotal: subsFiltrados.reduce((s,r)=>s+r.total,0) };
+    }),
+  };
+
+  const totalIngresosFinal = totalIngresos + iPoliza.total; // NUNCA incluye cambiaria ni financieros — eso vive solo en RIF
   const utilidadBruta = totalIngresosFinal - gCostos.totalClasificado;
-  const gastosTotales = gastosOperativos + gClas.totalClasificado + gClas.sinClasificar + faltanteCaja + perdidaCambiaria;
-  const utilidad = utilidadBruta - gastosTotales;
+  const gastosOperacionTotal = gastosOperativos + gClasOperacion.totalClasificado + gClasOperacion.sinClasificar + faltanteCaja;
+  const resultadoOperacion = utilidadBruta - gastosOperacionTotal;
+  const rifNeto = redondearMoneda(productosFinancieros - gastosFinancierosReales + gananciaCambiaria - perdidaCambiaria);
+  const impuestosReconocidos = 0; // solo importes efectivamente reconocidos contablemente — ninguno todavía
+  const resultadoAntesImpuestos = resultadoOperacion + rifNeto;
+  const utilidad = resultadoAntesImpuestos - impuestosReconocidos;
+  // Compatibilidad con el resto del render (gastosTotales ya no incluye RIF, pero se conserva el
+  // nombre para las tarjetas KPI que ya existían)
+  const gastosTotales = gastosOperacionTotal;
   const margen = totalIngresosFinal ? (utilidad/totalIngresosFinal*100) : 0;
   const periodoLabel = STATE_plVista === 'acumulado' ? `Acumulado ${STATE.currentMonth.slice(0,4)} (ene—${STATE.currentMonth.slice(5,7)})` : (STATE_plRangoDesde && STATE_plRangoHasta ? `${fechaCorta(periodo.start)} — ${fechaCorta(periodo.end)}` : STATE.currentMonth);
 
@@ -18615,7 +18684,6 @@ async function renderPL() {
             return (ingresosPorConcepto.length ? gruposHtml + sinGrupo.map(filaIngresoHtml).join('') : (Object.keys(grupos).length ? gruposHtml : `<tr><td colspan="2" class="empty">Este negocio no tiene categorías de venta configuradas (ve a Ventas → Configurar categorías de venta).</td></tr>`));
           })()}
           ${sobranteCaja ? `<tr><td>Sobrante de caja (conciliación de Ventas)</td><td class="num" style="color:var(--green);">${fmt(sobranteCaja)}</td></tr>` : ''}
-          ${gananciaCambiaria > 0.004 ? `<tr><td>Ganancia cambiaria</td><td class="num" style="color:var(--green);">${fmt(gananciaCambiaria)}</td></tr>` : ''}
           <tr class="total-row"><td>Total ingresos</td><td class="num">${fmtNeg(totalIngresosFinal)}</td></tr>
         </tbody>
       </table>
@@ -18656,17 +18724,14 @@ async function renderPL() {
         <tbody>
           <tr><td>Gastos operativos del día (desde Ventas, sin clasificar)</td><td class="num">${fmtNeg(gastosOperativos)}</td><td class="td-vacia-reporte"></td></tr>
           ${faltanteCaja ? `<tr><td>Faltante de caja (conciliación de Ventas)</td><td class="num" style="color:var(--red);">${fmt(faltanteCaja)}</td><td class="td-vacia-reporte"></td></tr>` : ''}
-          ${gClas.porMayor.map(m => `
+          ${gClasOperacion.porMayor.map(m => `
             <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">${m.nombre}</td><td class="td-vacia-reporte"></td></tr>
             ${m.subs.map(s => filaArbolSubcuentaHtml(s, true, 0, detalleGastoHtml)).join('')}
             <tr><td style="padding-left:22px;font-style:italic;color:var(--muted);">Subtotal ${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.subtotal)}</td><td class="td-vacia-reporte"></td></tr>
           `).join('')}
-          ${gClas.sinClasificar ? `<tr><td>Otros gastos sin subcuenta asignada</td><td class="num">${fmtNeg(gClas.sinClasificar)}</td><td class="td-vacia-reporte"></td></tr>` : ''}
-          ${perdidaCambiaria > 0.004 ? `
-            <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">Gastos Financieros</td><td class="td-vacia-reporte"></td></tr>
-            <tr><td style="padding-left:22px;color:var(--muted);font-size:12.5px;">Pérdida cambiaria</td><td class="num" style="color:var(--red);">${fmt(perdidaCambiaria)}</td><td class="td-vacia-reporte"></td></tr>
-          ` : ''}
-          <tr class="total-row"><td>Total gastos</td><td class="num">${fmtNeg(gastosTotales)}</td><td class="td-vacia-reporte"></td></tr>
+          ${gClasOperacion.sinClasificar ? `<tr><td>Otros gastos sin subcuenta asignada</td><td class="num">${fmtNeg(gClasOperacion.sinClasificar)}</td><td class="td-vacia-reporte"></td></tr>` : ''}
+          <tr class="total-row"><td>Total gastos de operación</td><td class="num">${fmtNeg(gastosTotales)}</td><td class="td-vacia-reporte"></td></tr>
+          <tr class="total-row" style="border-top:2px solid var(--navy-1);"><td>Resultado de Operación</td><td class="num" style="color:${resultadoOperacion>=0?'var(--green)':'var(--red)'};">${fmt(resultadoOperacion)}</td><td class="td-vacia-reporte"></td></tr>
         </tbody>
       </table>
       </div>
@@ -18692,6 +18757,22 @@ async function renderPL() {
     </div>
 
     <div class="card">
+      <div class="card-head"><h3>Resultado Integral de Financiamiento (RIF) — ${periodoLabel}</h3></div>
+      <div class="table-wrap tabla-contable-wrap">
+      <table class="report-table">
+        <tbody>
+          ${productosFinancieros > 0.004 ? `<tr><td>Productos / ingresos por intereses</td><td class="num" style="color:var(--green);">${fmt(productosFinancieros)}</td></tr>` : ''}
+          ${gastosFinancierosReales > 0.004 ? `<tr><td>Comisiones e intereses pagados</td><td class="num" style="color:var(--red);">-${fmt(gastosFinancierosReales)}</td></tr>` : ''}
+          ${gananciaCambiaria > 0.004 ? `<tr><td>Ganancia cambiaria</td><td class="num" style="color:var(--green);">${fmt(gananciaCambiaria)}</td></tr>` : ''}
+          ${perdidaCambiaria > 0.004 ? `<tr><td>Pérdida cambiaria</td><td class="num" style="color:var(--red);">-${fmt(perdidaCambiaria)}</td></tr>` : ''}
+          ${(productosFinancieros<=0.004 && gastosFinancierosReales<=0.004 && gananciaCambiaria<=0.004 && perdidaCambiaria<=0.004) ? `<tr><td class="empty">Sin conceptos financieros en este periodo.</td><td></td></tr>` : ''}
+          <tr class="total-row"><td>RIF neto</td><td class="num" style="color:${rifNeto>=0?'var(--green)':'var(--red)'};">${fmt(rifNeto)}</td></tr>
+        </tbody>
+      </table>
+      </div>
+    </div>
+
+    <div class="card">
       <div class="card-head"><h3>Resultado</h3></div>
       <div class="table-wrap tabla-contable-wrap">
       <table class="report-table">
@@ -18700,7 +18781,11 @@ async function renderPL() {
           ${mayores.some(m => m.tipo === 'costo') ? `
           <tr><td>Costo de Ventas</td><td class="num" style="color:var(--red);">-${fmt(gCostos.totalClasificado)}</td></tr>
           <tr class="total-row"><td>Utilidad Bruta</td><td class="num" style="color:${utilidadBruta>=0?'var(--green)':'var(--red)'};">${fmt(utilidadBruta)}</td></tr>` : ''}
-          <tr><td>Total gastos</td><td class="num" style="color:var(--red);">-${fmt(gastosTotales)}</td></tr>
+          <tr><td>Total gastos de operación</td><td class="num" style="color:var(--red);">-${fmt(gastosTotales)}</td></tr>
+          <tr class="total-row"><td>Resultado de Operación</td><td class="num" style="color:${resultadoOperacion>=0?'var(--green)':'var(--red)'};">${fmt(resultadoOperacion)}</td></tr>
+          <tr><td>RIF neto</td><td class="num" style="color:${rifNeto>=0?'var(--green)':'var(--red)'};">${rifNeto>=0?'':'-'}${fmt(Math.abs(rifNeto))}</td></tr>
+          <tr class="total-row"><td>Resultado antes de Impuestos</td><td class="num" style="color:${resultadoAntesImpuestos>=0?'var(--green)':'var(--red)'};">${fmt(resultadoAntesImpuestos)}</td></tr>
+          <tr><td>Impuestos a la utilidad reconocidos</td><td class="num">${fmt(impuestosReconocidos)}</td></tr>
           <tr class="total-row"><td>Utilidad / Pérdida neta</td><td class="num ${utilidad>=0?'':'red'}" style="color:${utilidad>=0?'var(--green)':'var(--red)'};">${fmt(utilidad)}</td></tr>
         </tbody>
       </table>
