@@ -16831,23 +16831,27 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   const { data: facturasProv } = await conDesde(sb.from('fz_proveedores').select('*').eq('business_id', businessId).lte('fecha', hastaFecha));
   for (const f of (facturasProv||[])) {
     if (f.origen_poliza_id) continue; // ya se contabilizó como provisión en Pólizas
-    const base = { modulo: 'Factura de Proveedor', tipoOrigen: 'factura_proveedor', id: f.id, fecha: f.fecha, referencia: f.factura || 's/f', detalle: f.proveedor || '' };
-    desgloseLineas(f.desglose).forEach(linea => push({ ...base, cuenta: nombreSub(linea.subcuenta_id) }, 'sub:'+linea.subcuenta_id, tipoDeSub(linea.subcuenta_id), Number(linea.monto)||0, 0));
+    // Mismo patrón exacto que ya usa Clientes: el documento/CxP conserva su moneda original y TC
+    // histórico (fz_proveedores.moneda/tipo_cambio, sin tocar), pero la contabilidad SIEMPRE se
+    // expresa en MXN multiplicando por ese TC. Para MXN, tc=1 y el resultado es idéntico a antes.
+    const tc = Number(f.tipo_cambio) || 1;
+    const base = { modulo: 'Factura de Proveedor', tipoOrigen: 'factura_proveedor', id: f.id, fecha: f.fecha, referencia: `${f.factura || 's/f'}${f.moneda && f.moneda!=='MXN'?` (${f.moneda} ${fmt(f.importe)} @ TC ${tc})`:''}`, detalle: f.proveedor || '' };
+    desgloseLineas(f.desglose).forEach(linea => push({ ...base, cuenta: nombreSub(linea.subcuenta_id) }, 'sub:'+linea.subcuenta_id, tipoDeSub(linea.subcuenta_id), (Number(linea.monto)||0) * tc, 0));
     if (f.aplica_iva && Number(f.iva_monto)) {
-      if (esRealizacionActiva(f.fecha)) { const id = await subRealizacion('IVA Acreditable — Pendiente de pago', 'activo'); push({ ...base, cuenta: 'IVA Acreditable — Pendiente de pago' }, 'sub:'+id, 'activo', Number(f.iva_monto), 0); }
-      else push({ ...base, cuenta: 'IVA Acreditable' }, 'iva_acreditable', 'activo', Number(f.iva_monto), 0);
+      if (esRealizacionActiva(f.fecha)) { const id = await subRealizacion('IVA Acreditable — Pendiente de pago', 'activo'); push({ ...base, cuenta: 'IVA Acreditable — Pendiente de pago' }, 'sub:'+id, 'activo', (Number(f.iva_monto)) * tc, 0); }
+      else push({ ...base, cuenta: 'IVA Acreditable' }, 'iva_acreditable', 'activo', (Number(f.iva_monto)) * tc, 0);
     }
     if (f.aplica_retencion && Number(f.retencion_isr_monto)) {
       const cat = f.retencion_categoria||'Sin categoría';
-      if (esRealizacionActiva(f.fecha)) { const id = await subRealizacion(`Retención ISR — ${cat} — Pendiente de pago`, 'pasivo'); push({ ...base, cuenta: `Retención ISR — ${cat} — Pendiente de pago` }, 'sub:'+id, 'pasivo', 0, Number(f.retencion_isr_monto)); }
-      else push({ ...base, cuenta: `Retención ISR — ${cat}` }, 'ret_isr:'+cat, 'pasivo', 0, Number(f.retencion_isr_monto));
+      if (esRealizacionActiva(f.fecha)) { const id = await subRealizacion(`Retención ISR — ${cat} — Pendiente de pago`, 'pasivo'); push({ ...base, cuenta: `Retención ISR — ${cat} — Pendiente de pago` }, 'sub:'+id, 'pasivo', 0, (Number(f.retencion_isr_monto)) * tc); }
+      else push({ ...base, cuenta: `Retención ISR — ${cat}` }, 'ret_isr:'+cat, 'pasivo', 0, (Number(f.retencion_isr_monto)) * tc);
     }
     if (f.aplica_retencion && Number(f.retencion_iva_monto)) {
       const cat = f.retencion_categoria||'Sin categoría';
-      if (esRealizacionActiva(f.fecha)) { const id = await subRealizacion(`Retención IVA — ${cat} — Pendiente de pago`, 'pasivo'); push({ ...base, cuenta: `Retención IVA — ${cat} — Pendiente de pago` }, 'sub:'+id, 'pasivo', 0, Number(f.retencion_iva_monto)); }
-      else push({ ...base, cuenta: `Retención IVA — ${cat}` }, 'ret_iva:'+cat, 'pasivo', 0, Number(f.retencion_iva_monto));
+      if (esRealizacionActiva(f.fecha)) { const id = await subRealizacion(`Retención IVA — ${cat} — Pendiente de pago`, 'pasivo'); push({ ...base, cuenta: `Retención IVA — ${cat} — Pendiente de pago` }, 'sub:'+id, 'pasivo', 0, (Number(f.retencion_iva_monto)) * tc); }
+      else push({ ...base, cuenta: `Retención IVA — ${cat}` }, 'ret_iva:'+cat, 'pasivo', 0, (Number(f.retencion_iva_monto)) * tc);
     }
-    push({ ...base, cuenta: 'Proveedores' }, 'proveedores', 'pasivo', 0, Number(f.importe)||0);
+    push({ ...base, cuenta: 'Proveedores' }, 'proveedores', 'pasivo', 0, (Number(f.importe)||0) * tc);
   }
 
   // 3. Facturas de Clientes — Dr Clientes, Cr [líneas] + Cr IVA Trasladado.
