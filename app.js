@@ -12337,11 +12337,35 @@ async function confirmarYEliminarMovimiento(table, row, onDone) {
   if (await bloqueadoPorCierre(row.business_id, row.fecha)) return;
   const idsAfectados = facturaIdsDe(row);
   const idsAfectadosCliente = facturaIdsClienteDe(row);
+
+  // Punto C: si este movimiento generó un crédito a favor (sobrante de pago) y ese crédito YA fue
+  // utilizado en otra operación posterior, bloquear la eliminación completa — borrarlo rompería
+  // esa otra operación. Se revisa ANTES de pedir cualquier otra confirmación.
+  let creditoLigado = null;
+  if (row.tipo_salida === 'proveedor') {
+    const { data: credito } = await sb.from('fz_proveedores').select('*').eq('origen_tabla', table).eq('origen_id', row.id).lt('importe', 0).maybeSingle();
+    if (credito) {
+      if (Number(credito.importe_pagado) > 0.009) {
+        alert(`Este movimiento generó un crédito a favor ("${credito.factura}") que YA FUE UTILIZADO en otra operación posterior. No se puede eliminar este movimiento sin dejar esa operación inconsistente.\n\nRevisa primero dónde se aplicó ese crédito (en el detalle del proveedor) antes de intentar eliminar este pago.`);
+        return;
+      }
+      creditoLigado = credito;
+    }
+  }
+
   if (row.tipo_salida === 'proveedor' && idsAfectados.length) {
-    const ok = confirm(`Este movimiento tiene un pago aplicado a ${idsAfectados.length} factura(s) de Proveedores. Al eliminarlo, se revertirá ese pago (regresarán a Pendiente/Parcial según corresponda). ¿Continuar?`);
+    const ok = confirm(`Este movimiento tiene un pago aplicado a ${idsAfectados.length} factura(s) de Proveedores.${creditoLigado ? ` Además generó un crédito a favor por ${fmt(-creditoLigado.importe)} que también se eliminará.` : ''} Al eliminarlo, se revertirá ese pago (regresarán a Pendiente/Parcial según corresponda). ¿Continuar?`);
     if (!ok) return;
     const montoMovimiento = Number(row.cargos) > 0 ? Number(row.cargos) : Number(row.depositos) || 0;
     await revertirPagoAFacturas(idsAfectados, montoMovimiento, row.business_id, table, row.id);
+  } else if (creditoLigado) {
+    // El movimiento solo generó el crédito (no quedó nada aplicado a facturas reales, p.ej. porque
+    // ya estaban saldadas) — igual se le avisa y se elimina el crédito huérfano junto con él.
+    const ok = confirm(`Este movimiento generó un crédito a favor por ${fmt(-creditoLigado.importe)} ("${creditoLigado.factura}") que se eliminará junto con el movimiento. ¿Continuar?`);
+    if (!ok) return;
+  }
+  if (creditoLigado) {
+    await sb.from('fz_proveedores').delete().eq('id', creditoLigado.id);
   }
   if (row.tipo_entrada === 'cliente' && idsAfectadosCliente.length) {
     const ok = confirm(`Este movimiento tiene un cobro aplicado a ${idsAfectadosCliente.length} factura(s) de Clientes. Al eliminarlo, se revertirá ese cobro (regresarán a Pendiente/Parcial según corresponda). ¿Continuar?`);
@@ -12357,7 +12381,7 @@ async function confirmarYEliminarMovimiento(table, row, onDone) {
   await sb.from(table).delete().eq('id', row.id);
   const modulo = table === 'fz_bancos_mov' ? 'Bancos' : 'Efectivo';
   const monto = Number(row.cargos) > 0 ? Number(row.cargos) : Number(row.depositos) || 0;
-  registrarAuditoria(row.business_id, 'eliminar', modulo, `Movimiento ${row.fecha} · ${row.descripcion||row.proveedor||''} · ${fmt(monto)}${idsAfectados.length?' (revirtió '+idsAfectados.length+' factura(s) de proveedor)':''}${idsAfectadosCliente.length?' (revirtió '+idsAfectadosCliente.length+' factura(s) de cliente)':''}`);
+  registrarAuditoria(row.business_id, 'eliminar', modulo, `Movimiento ${row.fecha} · ${row.descripcion||row.proveedor||''} · ${fmt(monto)}${idsAfectados.length?' (revirtió '+idsAfectados.length+' factura(s) de proveedor)':''}${idsAfectadosCliente.length?' (revirtió '+idsAfectadosCliente.length+' factura(s) de cliente)':''}${creditoLigado?' (eliminó crédito a favor por '+fmt(-creditoLigado.importe)+' generado por este mismo movimiento)':''}`);
   onDone();
 }
 
@@ -12439,6 +12463,7 @@ async function aplicarPagoFacturas(idsSeleccionados, montoDisponibleInicial, fec
         business_id: businessId, proveedor_id: base.proveedor_id, proveedor: base.proveedor,
         fecha: fechaMov, factura: `Crédito a favor (pago del ${fechaMov})`,
         importe: -disponible, estatus: 'Pendiente',
+        origen_tabla: origenInfo.origen_tabla || null, origen_id: origenInfo.origen_id || null,
       });
       creadoCredito = true;
     }
