@@ -2335,7 +2335,10 @@ async function openModalActivoFijo(activo, businessId) {
   document.getElementById('afFechaAdquisicion').value = activo?.fecha_adquisicion || todayStr();
   document.getElementById('afFechaDisponible').value = activo?.fecha_disponible_uso || '';
   document.getElementById('afCosto').value = fmtInputVal(activo?.costo_adquisicion || 0);
+  document.getElementById('afOtrosCostos').value = fmtInputVal(activo?.otros_costos_capitalizables || 0);
   document.getElementById('afValorRescate').value = fmtInputVal(activo?.valor_rescate || 0);
+  document.getElementById('afMetodo').value = activo?.metodo_depreciacion || 'linea_recta';
+  document.getElementById('afVidaUtilMeses').value = activo?.vida_util_meses ?? '';
   document.getElementById('afPorcentaje').value = activo?.porcentaje_anual ?? 10;
 
   // Corrección controlada — SOLO diagnóstico, nunca automático. Si este activo viene de una
@@ -2364,19 +2367,27 @@ async function openModalActivoFijo(activo, businessId) {
 
   document.getElementById('darDeBajaActivoFijo').style.display = (activo && activo.activo) ? '' : 'none';
 
+  // Misma regla exacta que baseDepreciableDe/depreciacionMensualDe del motor: si hay vida útil
+  // en meses, gobierna el cálculo directamente; si no, cae al % anual (activos existentes).
   const actualizarCalculo = () => {
     const costo = leerMonto(document.getElementById('afCosto').value) || 0;
+    const otros = leerMonto(document.getElementById('afOtrosCostos').value) || 0;
     const rescate = leerMonto(document.getElementById('afValorRescate').value) || 0;
+    const vidaUtil = leerMonto(document.getElementById('afVidaUtilMeses').value) || 0;
     const pct = leerMonto(document.getElementById('afPorcentaje').value) || 0;
-    const mensual = Math.max(0, (costo - rescate) * pct / 100 / 12);
+    const base = Math.max(0, costo + otros - rescate);
+    const mensual = vidaUtil > 0 ? Math.max(0, base / vidaUtil) : Math.max(0, base * pct / 100 / 12);
     document.getElementById('afMensualCalc').value = fmt(mensual);
   };
+  document.getElementById('afOtrosCostos').oninput = actualizarCalculo;
+  document.getElementById('afVidaUtilMeses').oninput = actualizarCalculo;
   document.getElementById('afCosto').oninput = actualizarCalculo;
   document.getElementById('afValorRescate').oninput = actualizarCalculo;
   document.getElementById('afPorcentaje').oninput = actualizarCalculo;
   selCat.onchange = () => {
     const opt = selCat.selectedOptions[0];
-    if (opt && opt.dataset.pct) { document.getElementById('afPorcentaje').value = opt.dataset.pct; }
+    const yaTieneVidaUtil = (leerMonto(document.getElementById('afVidaUtilMeses').value) || 0) > 0;
+    if (opt && opt.dataset.pct && !yaTieneVidaUtil) { document.getElementById('afPorcentaje').value = opt.dataset.pct; }
     actualizarCalculo();
   };
   actualizarCalculo();
@@ -2402,13 +2413,17 @@ document.getElementById('saveActivoFijo').addEventListener('click', async () => 
   if (!b) return;
   const nombre = document.getElementById('afNombre').value.trim();
   if (!nombre) { toast('Escribe el nombre del activo.', 'error'); return; }
+  const vidaUtilInput = leerMonto(document.getElementById('afVidaUtilMeses').value);
   const payload = {
     business_id: b.id, nombre,
     categoria: document.getElementById('afCategoria').value || null,
     fecha_adquisicion: document.getElementById('afFechaAdquisicion').value || todayStr(),
     fecha_disponible_uso: document.getElementById('afFechaDisponible').value || null,
     costo_adquisicion: leerMonto(document.getElementById('afCosto').value) || 0,
+    otros_costos_capitalizables: leerMonto(document.getElementById('afOtrosCostos').value) || 0,
     valor_rescate: leerMonto(document.getElementById('afValorRescate').value) || 0,
+    metodo_depreciacion: document.getElementById('afMetodo').value || 'linea_recta',
+    vida_util_meses: (vidaUtilInput && vidaUtilInput > 0) ? vidaUtilInput : null,
     porcentaje_anual: leerMonto(document.getElementById('afPorcentaje').value) || 0,
     cuenta_gasto_id: document.getElementById('afCuentaGasto').value || null,
     cuenta_depreciacion_id: document.getElementById('afCuentaDepreciacion').value || null,

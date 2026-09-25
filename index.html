@@ -2177,7 +2177,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
       <input type="text" id="afNombre" placeholder="Ej. Refrigerador comercial, Laptop administración...">
     </div>
     <div class="field">
-      <label>Categoría (sugiere el % anual según la Ley del ISR — editable)</label>
+      <label>Categoría — solo referencia/sugerencia LISR, no gobierna el cálculo contable si defines vida útil abajo</label>
       <select id="afCategoria"></select>
     </div>
     <div class="grid-3">
@@ -2197,20 +2197,36 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
     <div id="afSugerenciaCorreccion" style="display:none;background:#fdf3e3;border:1px solid var(--gold);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:12.5px;"></div>
     <div class="grid-2">
       <div class="field">
-        <label>Valor de rescate (opcional)</label>
-        <input type="text" inputmode="decimal" id="afValorRescate" placeholder="0.00">
+        <label>Otros costos capitalizables (opcional)</label>
+        <input type="text" inputmode="decimal" id="afOtrosCostos" placeholder="0.00">
       </div>
       <div class="field">
-        <label>% de depreciación anual</label>
-        <input type="text" inputmode="decimal" id="afPorcentaje" placeholder="10">
+        <label>Valor residual (opcional)</label>
+        <input type="text" inputmode="decimal" id="afValorRescate" placeholder="0.00">
       </div>
     </div>
     <div class="grid-2">
       <div class="field">
+        <label>Método de depreciación</label>
+        <select id="afMetodo">
+          <option value="linea_recta">Línea recta</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Vida útil contable (meses)</label>
+        <input type="text" inputmode="numeric" id="afVidaUtilMeses" placeholder="Ej. 60">
+      </div>
+    </div>
+    <p style="font-size:11px;color:var(--muted);margin:-6px 0 8px;">Si defines la vida útil, el cálculo contable la usa directamente (base depreciable ÷ meses) y el % anual de abajo queda solo como referencia. Si dejas la vida útil vacía, se sigue usando el % anual (compatibilidad con activos existentes).</p>
+    <div class="grid-2">
+      <div class="field">
+        <label>% de depreciación anual — usado solo si no defines vida útil arriba</label>
+        <input type="text" inputmode="decimal" id="afPorcentaje" placeholder="10">
+      </div>
+      <div class="field">
         <label>Depreciación mensual (calculada)</label>
         <input type="text" id="afMensualCalc" readonly style="background:#f2f4f8;color:var(--muted);">
       </div>
-      <div class="field"></div>
     </div>
     <div class="grid-2">
       <div class="field">
