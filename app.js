@@ -2319,9 +2319,18 @@ async function renderActivosFijos() {
   contenido.querySelectorAll('.af-catchup').forEach(btn => btn.addEventListener('click', async (e) => {
     e.stopPropagation();
     const h = huecosPorActivo[btn.dataset.id];
-    if (!confirm(`Se generarán ${h.faltantes.length} póliza(s) histórica(s) de depreciación para "${h.nombre}" (periodos: ${h.faltantes.join(', ')}), por un total aproximado de ${fmt(h.montoEstimado)}.\n\nEsta acción crea pólizas de diario reales. ¿Continuar?`)) return;
-    const { generadas, saltadas } = await generarPolizasHistoricasPendientes(b.id, btn.dataset.id);
-    toast(`${generadas} póliza(s) histórica(s) generada(s)${saltadas?`, ${saltadas} omitida(s) por periodo cerrado`:''}.`);
+    const anioPrimerFaltante = h.faltantes[0].slice(0,4);
+    const sugerido = `${anioPrimerFaltante}-12` <= periodoActualYm ? `${anioPrimerFaltante}-12` : periodoActualYm;
+    const hastaYm = prompt(`¿Generar hasta qué periodo (AAAA-MM)?\n\nPeriodos pendientes de "${h.nombre}": ${h.faltantes[0]} — ${h.faltantes[h.faltantes.length-1]}.\n\nSe generará solo hasta el corte que indiques (o hasta antes, si encuentra un periodo cerrado).`, sugerido);
+    if (!hastaYm) return;
+    if (!/^\d{4}-\d{2}$/.test(hastaYm)) { toast('Formato inválido — usa AAAA-MM, ej. 2023-12.', 'error'); return; }
+    if (!confirm(`Se generarán las pólizas históricas de depreciación para "${h.nombre}" desde ${h.faltantes[0]} hasta ${hastaYm} (lo que exista pendiente en ese rango).\n\nSi encuentra un periodo contable ya cerrado, se detendrá ahí y te avisará — no lo saltará.\n\n¿Continuar?`)) return;
+    const { generadas, detenidoPor } = await generarPolizasHistoricasPendientes(b.id, btn.dataset.id, hastaYm);
+    if (detenidoPor) {
+      toast(`${generadas} póliza(s) generada(s). Detenido en ${detenidoPor.periodo}${detenidoPor.error ? ' por un error: '+detenidoPor.error : ' — ese periodo está cerrado. Reábrelo y vuelve a ejecutar para continuar.'}`, 'error');
+    } else {
+      toast(`${generadas} póliza(s) histórica(s) generada(s), hasta ${hastaYm}.`);
+    }
     renderActivosFijos();
   }));
   contenido.querySelectorAll('.af-eliminar').forEach(btn => btn.addEventListener('click', async (e) => {
@@ -5369,19 +5378,23 @@ async function diagnosticarHuecosDepreciacion(businessId) {
 
 // Catch-up EXPLÍCITO y controlado — solo se ejecuta cuando el usuario lo confirma desde la UI,
 // nunca automáticamente. Genera, activo por activo y periodo por periodo en orden cronológico,
-// exactamente los meses faltantes detectados por diagnosticarHuecosDepreciacion. La restricción
-// UNIQUE(activo_fijo_id, periodo) en fz_depreciaciones_generadas protege contra duplicados
-// incluso si esto se llama más de una vez.
-async function generarPolizasHistoricasPendientes(businessId, activoId) {
+// exactamente los meses faltantes detectados por diagnosticarHuecosDepreciacion, hasta el corte
+// que indique hastaYm (o el mes actual si no se especifica). La restricción única parcial en
+// fz_depreciaciones_generadas protege contra duplicados incluso si esto se llama más de una vez.
+// Si encuentra un periodo contable cerrado, SE DETIENE ahí mismo (no lo salta ni continúa) —
+// reporta el corte para que el usuario reabra ese periodo antes de seguir.
+async function generarPolizasHistoricasPendientes(businessId, activoId, hastaYm = null) {
   const { data: a } = await sb.from('fz_activos_fijos').select('*').eq('id', activoId).single();
-  if (!a || !a.cuenta_gasto_id || !a.cuenta_depreciacion_id) return { generadas: 0, saltadas: 0 };
+  if (!a || !a.cuenta_gasto_id || !a.cuenta_depreciacion_id) return { generadas: 0, detenidoPor: null };
   const fechaInicio = a.fecha_disponible_uso || a.fecha_adquisicion;
   const periodoActual = todayStr().slice(0,7);
-  const fechaFinTope = a.fecha_baja && a.fecha_baja.slice(0,7) < periodoActual ? a.fecha_baja.slice(0,7) : periodoActual;
+  const corteSolicitado = hastaYm && hastaYm <= periodoActual ? hastaYm : periodoActual;
+  const fechaFinTope = a.fecha_baja && a.fecha_baja.slice(0,7) < corteSolicitado ? a.fecha_baja.slice(0,7) : corteSolicitado;
   const tope = topeDepreciableConReserva(a);
   const mensual = depreciacionMensualDe(a);
   let ym = fechaInicio.slice(0,7);
-  let generadas = 0, saltadas = 0;
+  let generadas = 0;
+  let detenidoPor = null; // { periodo, fecha } cuando el recorrido se detiene por un cierre
   while (ym <= fechaFinTope) {
     const { data: yaExiste } = await sb.from('fz_depreciaciones_generadas').select('id').eq('activo_fijo_id', a.id).eq('periodo', ym).is('revertido_at', null).maybeSingle();
     if (yaExiste) { ym = siguienteMesYm(ym); continue; }
@@ -5390,11 +5403,14 @@ async function generarPolizasHistoricasPendientes(businessId, activoId) {
     const monto = Math.min(mensual, tope - acumuladoPrevio);
     if (monto <= 0.004) { ym = siguienteMesYm(ym); continue; }
     const fechaPoliza = ym === periodoActual ? todayStr() : ultimoDiaDeMes(ym);
-    if (await periodoEstaCerrado(businessId, fechaPoliza)) { saltadas++; ym = siguienteMesYm(ym); continue; }
+    if (await periodoEstaCerrado(businessId, fechaPoliza)) {
+      detenidoPor = { periodo: ym, fecha: fechaPoliza };
+      break; // SE DETIENE aquí — no salta el mes cerrado ni continúa con los siguientes
+    }
     const { data: nuevaPoliza, error: errPoliza } = await sb.from('fz_polizas').insert({
       business_id: businessId, fecha: fechaPoliza, concepto: `Depreciación ${ym} — ${a.nombre} (histórica)`,
     }).select().single();
-    if (errPoliza) { saltadas++; ym = siguienteMesYm(ym); continue; }
+    if (errPoliza) { detenidoPor = { periodo: ym, fecha: fechaPoliza, error: errPoliza.message }; break; }
     await sb.from('fz_polizas_lineas').insert([
       { poliza_id: nuevaPoliza.id, business_id: businessId, cuenta_tipo: 'subcuenta', subcuenta_id: a.cuenta_gasto_id, cargo: monto, abono: 0, descripcion: `Depreciación ${ym} ${a.nombre}`, orden: 0 },
       { poliza_id: nuevaPoliza.id, business_id: businessId, cuenta_tipo: 'subcuenta', subcuenta_id: a.cuenta_depreciacion_id, cargo: 0, abono: monto, descripcion: `Depreciación acumulada ${ym} ${a.nombre}`, orden: 1 },
@@ -5403,8 +5419,8 @@ async function generarPolizasHistoricasPendientes(businessId, activoId) {
     generadas++;
     ym = siguienteMesYm(ym);
   }
-  if (generadas) registrarAuditoria(businessId, 'crear', 'Activos Fijos', `Catch-up histórico: ${generadas} depreciación(es) generada(s) para ${a.nombre} (acción explícita del usuario)`);
-  return { generadas, saltadas };
+  if (generadas) registrarAuditoria(businessId, 'crear', 'Activos Fijos', `Catch-up histórico hasta ${corteSolicitado}: ${generadas} depreciación(es) generada(s) para ${a.nombre}${detenidoPor?` — detenido en ${detenidoPor.periodo} por periodo cerrado`:''} (acción explícita del usuario)`);
+  return { generadas, detenidoPor };
 }
 
 // Corrección CONTROLADA de una depreciación ya materializada — nunca borra ni edita in-place.
