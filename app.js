@@ -13639,7 +13639,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     ${datalistSubcuentas}
     <div id="sinClasificarBannerBanco">${sinClasificarBannerHtml(sinClasificar.length, totalSinClasificar)}</div>
     <div class="card-head" style="margin-top:14px;">
-      <span class="hint">${cuentaArr?.nombre || ''} · <span class="mf-badge-moneda">${monedaCuentaBanco}</span> — Saldo al inicio de ${STATE.currentMonth}: ${pfxBanco} ${fmt(saldoApertura)}</span>
+      <span class="hint">${cuentaArr?.nombre || ''} · <span class="mf-badge-moneda">${monedaCuentaBanco}</span> — ${STATE.currentMonth}: Saldo inicial ${pfxBanco} ${fmt(saldoApertura)} · Depósitos ${pfxBanco} ${fmt(totalDepositosMes)} · Retiros ${pfxBanco} ${fmt(totalCargosMes)} · <strong>Saldo final ${pfxBanco} ${fmt(saldo)}</strong></span>
       <div style="display:flex;gap:8px;">
         <button class="btn btn-ghost btn-sm" id="conciliarBtn">Conciliar</button>
         <button class="btn btn-ghost btn-sm" id="importMovBtn" title="Columnas: Fecha, Descripción, Concepto, Referencia, Depósitos, Cargos. Opcional para traspasos: Tipo (escribe &quot;Traspaso&quot;) y Cuenta destino (nombre exacto del banco o caja de efectivo).">Importar movimientos (Excel)</button>
@@ -13649,8 +13649,8 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     <div class="table-wrap scroll-sticky">
       <table class="tabla-operativa tabla-operativa--ledger">
         <thead><tr><th>Fecha</th><th>Tercero</th><th>Concepto / Referencia</th><th>Moneda</th><th>Depósitos</th><th>Retiros</th><th>Saldo</th><th title="Conciliado">✓</th><th></th></tr></thead>
-        <tbody>${rowsHtml || `<tr><td colspan="11" class="empty">Sin movimientos.</td></tr>`}</tbody>
-        <tfoot><tr class="total-row"><td colspan="4">Total ${STATE.currentMonth} (${monedaCuentaBanco})</td><td class="num">${fmtNum(totalDepositosMes)}</td><td class="num">${fmtNum(totalCargosMes)}</td><td colspan="5"></td></tr></tfoot>
+        <tbody>${rowsHtml || `<tr><td colspan="11" class="empty">Sin movimientos en el periodo · Saldo al cierre: ${pfxBanco} ${fmt(saldo)}</td></tr>`}</tbody>
+        <tfoot><tr class="total-row"><td colspan="4">Total ${STATE.currentMonth} (${monedaCuentaBanco})</td><td class="num">${fmtNum(totalDepositosMes)}</td><td class="num">${fmtNum(totalCargosMes)}</td><td class="num">${fmt(saldo)}</td><td colspan="4"></td></tr></tfoot>
       </table>
     </div>
   `;
