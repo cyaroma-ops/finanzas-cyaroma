@@ -2124,6 +2124,19 @@ function tarjetaConfigHtml(id, titulo, descripcion) {
 function baseDepreciableDe(activo) {
   return Math.max(0, (Number(activo.costo_adquisicion)||0) + (Number(activo.otros_costos_capitalizables)||0) - (Number(activo.valor_rescate)||0));
 }
+// Tope hasta dónde se permite ACUMULAR depreciación — nunca la tasa mensual en sí (esa la sigue
+// dando depreciacionMensualDe con la base completa). Art. 31 LISR, supuesto de activo que sigue
+// en uso: mientras esté en uso, se conserva $1 de valor en libros en vez de llegar a $0. Si el
+// valor residual ya es >= $1, no hace falta reserva adicional (nunca llega a cero). Si el activo
+// fue dado de baja (ya no está en uso), la reserva ya no aplica.
+function topeDepreciableConReserva(activo) {
+  const base = baseDepreciableDe(activo);
+  const enUso = activo.activo !== false;
+  if (!enUso) return base;
+  const valorRescate = Number(activo.valor_rescate)||0;
+  const reservaAdicional = valorRescate >= 1 ? 0 : (1 - valorRescate);
+  return Math.max(0, base - reservaAdicional);
+}
 function depreciacionMensualDe(activo) {
   const base = baseDepreciableDe(activo);
   if (activo.vida_util_meses && Number(activo.vida_util_meses) > 0) {
@@ -5257,6 +5270,7 @@ async function generarPolizaPagoIsr(pagoImpuesto, businessId, cuentaTipo, cuenta
 function calcularEstadoDepreciacion(activo, periodoLimiteYm) {
   const fechaInicio = activo.fecha_disponible_uso || activo.fecha_adquisicion;
   const base = baseDepreciableDe(activo);
+  const tope = topeDepreciableConReserva(activo);
   const mensual = depreciacionMensualDe(activo);
   if (!fechaInicio || fechaInicio.slice(0,7) > periodoLimiteYm || base <= 0 || mensual <= 0) {
     return { acumuladaTeorica: 0, valorLibrosTeorico: base > 0 ? Number(activo.costo_adquisicion||0) + Number(activo.otros_costos_capitalizables||0) : 0, mesesTranscurridos: 0, completo: false };
@@ -5265,9 +5279,9 @@ function calcularEstadoDepreciacion(activo, periodoLimiteYm) {
   let meses = 0;
   let ym = fechaInicio.slice(0,7);
   while (ym <= fechaFinTope) { meses++; ym = siguienteMesYm(ym); }
-  const acumuladaTeorica = Math.min(base, redondearMoneda(mensual * meses));
+  const acumuladaTeorica = Math.min(tope, redondearMoneda(mensual * meses));
   const valorNeto = Number(activo.costo_adquisicion||0) + Number(activo.otros_costos_capitalizables||0) - acumuladaTeorica;
-  return { acumuladaTeorica, valorLibrosTeorico: Math.max(Number(activo.valor_rescate||0), valorNeto), mesesTranscurridos: meses, completo: acumuladaTeorica >= base - 0.5 };
+  return { acumuladaTeorica, valorLibrosTeorico: Math.max(Number(activo.valor_rescate||0), valorNeto), mesesTranscurridos: meses, completo: acumuladaTeorica >= tope - 0.5 };
 }
 
 // Materialización AUTOMÁTICA — solo el mes calendario actual, y solo si no existe ya. Bajo riesgo
@@ -5291,9 +5305,9 @@ async function generarDepreciacionesSiCorresponde(businessId) {
     const periodoEsperado = ultimaGenerada ? siguienteMesYm(ultimaGenerada.periodo) : fechaInicio.slice(0,7);
     if (periodoEsperado !== periodoActual) continue; // hay hueco histórico — requiere catch-up explícito
     const acumuladoPrevio = await acumuladoDe(a.id);
-    const base = baseDepreciableDe(a);
-    if (acumuladoPrevio >= base - 0.5) continue; // ya se depreció por completo
-    const mensual = Math.min(depreciacionMensualDe(a), base - acumuladoPrevio);
+    const tope = topeDepreciableConReserva(a);
+    if (acumuladoPrevio >= tope - 0.5) continue; // ya se depreció hasta el tope permitido
+    const mensual = Math.min(depreciacionMensualDe(a), tope - acumuladoPrevio);
     if (mensual <= 0.004) continue;
     if (await periodoEstaCerrado(businessId, hoy)) continue; // no generar en un mes cerrado
 
@@ -5324,16 +5338,16 @@ async function diagnosticarHuecosDepreciacion(businessId) {
     const periodoActual = todayStr().slice(0,7);
     const { data: generadas } = await sb.from('fz_depreciaciones_generadas').select('periodo').eq('activo_fijo_id', a.id);
     const yaGeneradosSet = new Set((generadas||[]).map(g=>g.periodo));
-    const base = baseDepreciableDe(a);
+    const tope = topeDepreciableConReserva(a);
     let ym = fechaInicio.slice(0,7);
     const faltantes = [];
     let acumuladoSimulado = 0;
-    while (ym <= periodoActual && acumuladoSimulado < base - 0.5) {
+    while (ym <= periodoActual && acumuladoSimulado < tope - 0.5) {
       if (!yaGeneradosSet.has(ym)) faltantes.push(ym);
       else acumuladoSimulado += Number([...(generadas||[])].find(g=>g.periodo===ym)?.monto || 0);
       // para el propósito del diagnóstico (solo contar huecos), se acumula con el monto mensual
       // teórico cuando falta, evitando quedarnos cortos si nunca se generó nada:
-      if (!yaGeneradosSet.has(ym)) acumuladoSimulado += Math.min(depreciacionMensualDe(a), Math.max(0, base - acumuladoSimulado));
+      if (!yaGeneradosSet.has(ym)) acumuladoSimulado += Math.min(depreciacionMensualDe(a), Math.max(0, tope - acumuladoSimulado));
       ym = siguienteMesYm(ym);
     }
     if (faltantes.length) resultado.push({ activoId: a.id, nombre: a.nombre, faltantes, montoEstimado: faltantes.length * depreciacionMensualDe(a) });
@@ -5352,7 +5366,7 @@ async function generarPolizasHistoricasPendientes(businessId, activoId) {
   const fechaInicio = a.fecha_disponible_uso || a.fecha_adquisicion;
   const periodoActual = todayStr().slice(0,7);
   const fechaFinTope = a.fecha_baja && a.fecha_baja.slice(0,7) < periodoActual ? a.fecha_baja.slice(0,7) : periodoActual;
-  const base = baseDepreciableDe(a);
+  const tope = topeDepreciableConReserva(a);
   const mensual = depreciacionMensualDe(a);
   let ym = fechaInicio.slice(0,7);
   let generadas = 0, saltadas = 0;
@@ -5360,8 +5374,8 @@ async function generarPolizasHistoricasPendientes(businessId, activoId) {
     const { data: yaExiste } = await sb.from('fz_depreciaciones_generadas').select('id').eq('activo_fijo_id', a.id).eq('periodo', ym).maybeSingle();
     if (yaExiste) { ym = siguienteMesYm(ym); continue; }
     const acumuladoPrevio = await acumuladoDe(a.id);
-    if (acumuladoPrevio >= base - 0.5) break; // completamente depreciado, no seguir
-    const monto = Math.min(mensual, base - acumuladoPrevio);
+    if (acumuladoPrevio >= tope - 0.5) break; // ya alcanzó el tope permitido, no seguir
+    const monto = Math.min(mensual, tope - acumuladoPrevio);
     if (monto <= 0.004) { ym = siguienteMesYm(ym); continue; }
     const fechaPoliza = ym === periodoActual ? todayStr() : ultimoDiaDeMes(ym);
     if (await periodoEstaCerrado(businessId, fechaPoliza)) { saltadas++; ym = siguienteMesYm(ym); continue; }
