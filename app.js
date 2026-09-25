@@ -12116,74 +12116,64 @@ function openFacturasCobroModal(rowId, table, facturasClientesPend, onDone) {
     Object.values(porCliente).forEach(lista => lista.sort((a,b) => a.fecha.localeCompare(b.fecha)));
     const box = document.getElementById('facturasPagoList');
     const nombresCliente = Object.keys(porCliente).sort((a,b)=>a.localeCompare(b));
-    document.querySelector('#modalFacturasPago h3').textContent = 'Elegir facturas a cobrar';
-    document.querySelector('#modalFacturasPago p').textContent = 'Marca todas las que se cobren con este depósito. Se marcarán como "Pagado" al aplicar.';
-    box.innerHTML = nombresCliente.map(cli => `
-      <div class="factura-provgroup" data-prov="${cli.toLowerCase()}" style="margin-bottom:10px;">
-        <div style="font-weight:700;font-size:12.5px;color:var(--navy-1);margin-bottom:4px;">${cli}</div>
-        ${porCliente[cli].map(f => {
-          const saldo = Number(f.total) - Number(f.importe_pagado||0);
-          return `
-          <label style="display:flex;align-items:center;gap:8px;padding:5px 4px;border-bottom:1px solid var(--line);font-size:13px;cursor:pointer;">
-            <input type="checkbox" class="factura-check" value="${f.id}" data-importe="${saldo}" ${idsActuales.has(f.id)?'checked':''}>
-            <span>${f.fecha} · Factura #${f.folio} · ${fmt(saldo)}${f.estatus==='Parcial'?' (parcial, de '+fmt(f.total)+')':''}${f.estatus==='Pagado'?' (ya pagada)':''}</span>
-          </label>`;
-        }).join('')}
-      </div>`).join('') || `<div class="empty">No hay facturas pendientes de cobro.</div>`;
+    document.getElementById('facturasPagoTitulo').textContent = 'Cobro de cliente';
+    document.getElementById('facturasPagoSubtitulo').textContent = 'Selecciona las facturas que incluye este depósito. El monto se distribuirá automáticamente si marcas varias.';
+    document.getElementById('facturasPagoResumenLabel').textContent = 'Resumen del cobro';
+    document.getElementById('facturasPagoBuscarProv').placeholder = 'Buscar cliente, folio o número de factura...';
 
     const selectProv = document.getElementById('facturasPagoSelectProv');
     const buscarProv = document.getElementById('facturasPagoBuscarProv');
-    selectProv.innerHTML = `<option value="">— todos los clientes —</option>` + nombresCliente.map(p => `<option value="${p.toLowerCase()}">${p}</option>`).join('');
-    buscarProv.placeholder = '🔎 Buscar cliente…';
+    selectProv.style.display = 'none';
     buscarProv.value = '';
-    const aplicarFiltro = () => {
-      const porTexto = buscarProv.value.trim().toLowerCase();
-      const porSelect = selectProv.value;
-      box.querySelectorAll('.factura-provgroup').forEach(grp => {
-        const nombre = grp.dataset.prov;
-        const pasaTexto = !porTexto || nombre.includes(porTexto);
-        const pasaSelect = !porSelect || nombre === porSelect;
-        grp.style.display = (pasaTexto && pasaSelect) ? '' : 'none';
-      });
-    };
-    buscarProv.oninput = () => { selectProv.value = ''; aplicarFiltro(); };
-    selectProv.onchange = () => { buscarProv.value = ''; aplicarFiltro(); };
 
-    // Mismo patrón exacto que el modal de pagos a proveedores: el TC pertenece al COBRO, no a las
-    // facturas; si hay monedas mixtas entre las marcadas, no hay forma inequívoca de asignar un
-    // solo TC — se bloquea "Aplicar" en vez de inventar un reparto.
     const mapaFacturaPorId = Object.fromEntries(opciones.map(f => [f.id, f]));
     const actualizarResumen = () => {
       const marcadas = Array.from(box.querySelectorAll('.factura-check:checked'));
       const totalSeleccionado = marcadas.reduce((s,c) => s + (Number(c.dataset.importe) || 0), 0);
       const diferencia = montoMovimiento - totalSeleccionado;
       const cuadra = Math.abs(diferencia) < 0.01;
-      document.getElementById('facturasPagoResumen').innerHTML = `
-        <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Monto del depósito</span><strong>${fmt(montoMovimiento)}</strong></div>
-        <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Total seleccionado (${marcadas.length})</span><strong>${fmt(totalSeleccionado)}</strong></div>
-        <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--muted)'};font-weight:700;"><span>${cuadra?'✓ Cuadra exacto':(diferencia>0?'Si aplicas, sobrará sin asignar':'Si aplicas, quedará pendiente/parcial')}</span><span>${cuadra?'':fmt(Math.abs(diferencia))}</span></div>
-      `;
       const monedas = [...new Set(marcadas.map(c => (mapaFacturaPorId[c.value]?.moneda || 'MXN')))];
-      const tcWrap = document.getElementById('facturasPagoTcWrap');
-      const tcAviso = document.getElementById('facturasPagoTcAviso');
-      const tcCampo = document.getElementById('facturasPagoTcCampo');
-      const btnAplicar = document.getElementById('applyFacturasPago');
+      const monedaUnica = monedas.length === 1 ? monedas[0] : null;
+      const tcActual = leerMonto(document.getElementById('facturasPagoTc').value) || 1;
+      const esExtranjera = monedaUnica && monedaUnica !== 'MXN';
+
+      let estadoHtml;
       if (monedas.length > 1) {
-        tcWrap.style.display = '';
-        tcCampo.style.display = 'none';
-        tcAviso.style.display = '';
-        tcAviso.textContent = `Las facturas marcadas tienen monedas distintas (${monedas.join(', ')}) — no pueden aplicarse conjuntamente en un mismo cobro. Selecciona facturas de una sola moneda.`;
-        btnAplicar.disabled = true; btnAplicar.style.opacity = '0.5'; btnAplicar.style.cursor = 'not-allowed';
+        estadoHtml = `<div class="mf-resumen-estado error">✕ Monedas distintas (${monedas.join(', ')}) — selecciona solo una moneda</div>`;
+      } else if (cuadra && marcadas.length) {
+        estadoHtml = `<div class="mf-resumen-estado ok">✓ El cobro cuadra exactamente</div>`;
+      } else if (marcadas.length) {
+        estadoHtml = `<div class="mf-resumen-estado warn">${diferencia>0?'Sobrará sin asignar: ':'Quedará pendiente/parcial: '}${prefijoMoneda(monedaUnica)} ${fmt(Math.abs(diferencia))}</div>`;
+      } else { estadoHtml = ''; }
+
+      document.getElementById('facturasPagoResumen').innerHTML = `
+        <div class="mf-resumen-linea"><span class="mf-label">Facturas seleccionadas</span><span class="mf-valor">${marcadas.length}</span></div>
+        <div class="mf-resumen-linea"><span class="mf-label">Total seleccionado</span><span class="mf-valor">${prefijoMoneda(monedaUnica)} ${fmt(totalSeleccionado)}</span></div>
+        <div class="mf-resumen-linea mf-resumen-destacado"><span class="mf-label">Monto del cobro</span><span class="mf-valor">${fmt(montoMovimiento)}</span></div>
+        ${esExtranjera ? `
+        <div class="mf-resumen-linea"><span class="mf-label">Tipo de cambio</span><span class="mf-valor">${fmtTC(tcActual)}</span></div>
+        <div class="mf-resumen-linea mf-resumen-destacado"><span class="mf-label">Equivalente en MXN</span><span class="mf-valor">MXN ${fmt(montoMovimiento * tcActual)}</span></div>` : ''}
+        ${estadoHtml}
+        <ul class="mf-info-aux">
+          <li>Si seleccionas varias facturas, el monto se distribuye automáticamente.</li>
+          <li>Solo puedes seleccionar facturas de la misma moneda.</li>
+          <li>El TC de este cobro no modifica el TC histórico de las facturas.</li>
+        </ul>
+      `;
+      const tcWrap = document.getElementById('facturasPagoTcWrap');
+      const tcCampo = document.getElementById('facturasPagoTcCampo');
+      const tcAviso = document.getElementById('facturasPagoTcAviso');
+      const btnAplicar = document.getElementById('applyFacturasPago');
+      document.getElementById('facturasPagoTcLabel').textContent = 'Tipo de cambio de este cobro';
+      if (monedas.length > 1) {
+        tcWrap.style.display = ''; tcCampo.style.display = 'none'; tcAviso.style.display = '';
+        tcAviso.textContent = `Las facturas marcadas tienen monedas distintas (${monedas.join(', ')}) — no pueden aplicarse conjuntamente en un mismo cobro.`;
+        btnAplicar.disabled = true;
       } else {
-        btnAplicar.disabled = false; btnAplicar.style.opacity = ''; btnAplicar.style.cursor = '';
-        tcAviso.style.display = 'none';
-        const monedaUnica = monedas[0] || 'MXN';
-        if (monedaUnica === 'MXN') {
-          tcWrap.style.display = 'none';
-        } else {
-          tcWrap.style.display = '';
-          tcCampo.style.display = '';
-          document.querySelector('#facturasPagoTcCampo label').textContent = 'Tipo de cambio de este cobro';
+        btnAplicar.disabled = false; tcAviso.style.display = 'none';
+        if (monedaUnica === 'MXN' || !monedaUnica) { tcWrap.style.display = 'none'; }
+        else {
+          tcWrap.style.display = ''; tcCampo.style.display = '';
           if (!document.getElementById('facturasPagoTc').dataset.tocado) {
             const primeraFactura = mapaFacturaPorId[marcadas[0]?.value];
             document.getElementById('facturasPagoTc').value = fmtInputVal(primeraFactura?.tipo_cambio || 1);
@@ -12192,12 +12182,49 @@ function openFacturasCobroModal(rowId, table, facturasClientesPend, onDone) {
       }
     };
     document.getElementById('facturasPagoTc').dataset.tocado = '';
-    document.getElementById('facturasPagoTc').oninput = (e) => { e.target.dataset.tocado = '1'; };
-    box.querySelectorAll('.factura-check').forEach(chk => chk.addEventListener('change', actualizarResumen));
-    actualizarResumen();
+    document.getElementById('facturasPagoTc').oninput = (e) => { e.target.dataset.tocado = '1'; actualizarResumen(); };
+
+    const renderLista = () => {
+      const texto = buscarProv.value.trim().toLowerCase();
+      box.innerHTML = nombresCliente.map(cli => {
+        const facturasCli = porCliente[cli].filter(f => !texto || cli.toLowerCase().includes(texto) || String(f.folio).includes(texto) || (f.numero_factura||'').toLowerCase().includes(texto));
+        if (!facturasCli.length) return '';
+        const filasHtml = facturasCli.map(f => {
+          const saldo = Number(f.total) - Number(f.importe_pagado||0);
+          return `<tr>
+            <td><input type="checkbox" class="factura-check" value="${f.id}" data-importe="${saldo}" ${idsActuales.has(f.id)?'checked':''}></td>
+            <td>${fechaCorta(f.fecha)}</td>
+            <td>#${f.folio}</td>
+            <td>${f.numero_factura || '—'}</td>
+            <td><span class="mf-badge-moneda">${f.moneda||'MXN'}</span></td>
+            <td class="mf-num">${fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}</td>
+            <td>${f.fecha_vencimiento ? fechaCorta(f.fecha_vencimiento) : '—'}</td>
+          </tr>`;
+        }).join('');
+        return `<div class="mf-grupo">
+          <div class="mf-grupo-head">
+            <span class="mf-grupo-nombre">${cli}</span>
+            <span class="mf-grupo-meta">${facturasCli.length} factura(s) <span class="mf-grupo-chevron">▾</span></span>
+          </div>
+          <div class="mf-tabla-wrap"><table class="mf-tabla">
+            <thead><tr><th></th><th>Fecha</th><th>Folio</th><th>No. Factura</th><th>Moneda</th><th class="mf-num">Saldo pendiente</th><th>Vencimiento</th></tr></thead>
+            <tbody>${filasHtml}</tbody>
+          </table></div>
+        </div>`;
+      }).join('') || `<div class="empty" style="padding:14px;">No hay facturas pendientes de cobro.</div>`;
+      box.querySelectorAll('.factura-check').forEach(chk => chk.addEventListener('change', actualizarResumen));
+      box.querySelectorAll('.mf-grupo-head').forEach(head => head.addEventListener('click', (e) => {
+        if (e.target.closest('.factura-check')) return;
+        head.parentElement.classList.toggle('collapsed');
+      }));
+      actualizarResumen();
+    };
+    buscarProv.oninput = renderLista;
+    renderLista();
 
     document.getElementById('modalFacturasPago').classList.add('show');
     document.getElementById('closeFacturasPago').onclick = () => document.getElementById('modalFacturasPago').classList.remove('show');
+    document.getElementById('closeFacturasPagoX').onclick = () => document.getElementById('modalFacturasPago').classList.remove('show');
     document.getElementById('applyFacturasPago').onclick = async () => {
       const idsSeleccionados = Array.from(box.querySelectorAll('.factura-check:checked')).map(c => c.value);
       const tcWrapVisible = document.getElementById('facturasPagoTcCampo').style.display !== 'none';
@@ -12228,41 +12255,16 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
     });
     Object.values(porProveedor).forEach(lista => lista.sort((a,b) => a.fecha.localeCompare(b.fecha)));
     const box = document.getElementById('facturasPagoList');
-    document.querySelector('#modalFacturasPago h3').textContent = 'Elegir facturas a pagar';
-    document.querySelector('#modalFacturasPago p').textContent = 'Marca todas las que se paguen con este movimiento. Se marcarán como "Pagado" al aplicar.';
-    document.querySelector('#facturasPagoTcCampo label').textContent = 'Tipo de cambio de este pago';
+    document.getElementById('facturasPagoTitulo').textContent = 'Pago a proveedor';
+    document.getElementById('facturasPagoSubtitulo').textContent = 'Selecciona las facturas que incluye este pago. El monto se distribuirá automáticamente si marcas varias.';
+    document.getElementById('facturasPagoResumenLabel').textContent = 'Resumen del pago';
+    document.getElementById('facturasPagoBuscarProv').placeholder = 'Buscar proveedor, folio o número de factura...';
     const nombresProveedor = Object.keys(porProveedor).sort((a,b)=>a.localeCompare(b));
-    box.innerHTML = nombresProveedor.map(prov => `
-      <div class="factura-provgroup" data-prov="${prov.toLowerCase()}" style="margin-bottom:10px;">
-        <div style="font-weight:700;font-size:12.5px;color:var(--navy-1);margin-bottom:4px;">${prov}</div>
-        ${porProveedor[prov].map(f => {
-          const saldo = Number(f.importe) - Number(f.importe_pagado||0);
-          const esCredito = Number(f.importe) < 0;
-          return `
-          <label style="display:flex;align-items:center;gap:8px;padding:5px 4px;border-bottom:1px solid var(--line);font-size:13px;cursor:pointer;">
-            <input type="checkbox" class="factura-check" value="${f.id}" data-importe="${saldo}" ${idsActuales.has(f.id)?'checked':''}>
-            <span>${f.fecha} · ${f.factura||'s/f'} · ${esCredito?`<span style="color:var(--green);">crédito ${fmt(saldo)}</span>`:fmt(saldo)}${f.estatus==='Parcial'?' (parcial, de '+fmt(f.importe)+')':''}${f.estatus==='Pagado'?' (ya pagada)':''}</span>
-          </label>`;
-        }).join('')}
-      </div>`).join('') || `<div class="empty">No hay facturas disponibles.</div>`;
 
     const selectProv = document.getElementById('facturasPagoSelectProv');
     const buscarProv = document.getElementById('facturasPagoBuscarProv');
-    selectProv.innerHTML = `<option value="">— todos los proveedores —</option>` + nombresProveedor.map(p => `<option value="${p.toLowerCase()}">${p}</option>`).join('');
-    buscarProv.placeholder = '🔎 Buscar proveedor…';
+    selectProv.style.display = 'none';
     buscarProv.value = '';
-    const aplicarFiltroProveedor = () => {
-      const porTexto = buscarProv.value.trim().toLowerCase();
-      const porSelect = selectProv.value;
-      box.querySelectorAll('.factura-provgroup').forEach(grp => {
-        const nombre = grp.dataset.prov;
-        const pasaTexto = !porTexto || nombre.includes(porTexto);
-        const pasaSelect = !porSelect || nombre === porSelect;
-        grp.style.display = (pasaTexto && pasaSelect) ? '' : 'none';
-      });
-    };
-    buscarProv.oninput = () => { selectProv.value = ''; aplicarFiltroProveedor(); };
-    selectProv.onchange = () => { buscarProv.value = ''; aplicarFiltroProveedor(); };
 
     const mapaFacturaPorId = Object.fromEntries(opciones.map(f => [f.id, f]));
     const actualizarResumen = () => {
@@ -12270,34 +12272,48 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
       const totalSeleccionado = marcadas.reduce((s,c) => s + (Number(c.dataset.importe) || 0), 0);
       const diferencia = montoMovimiento - totalSeleccionado;
       const cuadra = Math.abs(diferencia) < 0.01;
-      document.getElementById('facturasPagoResumen').innerHTML = `
-        <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Monto del movimiento</span><strong>${fmt(montoMovimiento)}</strong></div>
-        <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Total seleccionado (${marcadas.length})</span><strong>${fmt(totalSeleccionado)}</strong></div>
-        <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--muted)'};font-weight:700;"><span>${cuadra?'✓ Cuadra exacto':(diferencia>0?'Si aplicas, sobrará como crédito a favor':'Si aplicas, quedará pendiente/parcial')}</span><span>${cuadra?'':fmt(Math.abs(diferencia))}</span></div>
-      `;
-      // Consistencia de moneda entre las facturas marcadas — el TC del pago es UN solo valor para
-      // todo el movimiento; si hay monedas mixtas, no hay forma inequívoca de asignarlo, así que se
-      // bloquea "Aplicar" en vez de inventar un reparto.
       const monedas = [...new Set(marcadas.map(c => (mapaFacturaPorId[c.value]?.moneda || 'MXN')))];
-      const tcWrap = document.getElementById('facturasPagoTcWrap');
-      const tcAviso = document.getElementById('facturasPagoTcAviso');
-      const tcCampo = document.getElementById('facturasPagoTcCampo');
-      const btnAplicar = document.getElementById('applyFacturasPago');
+      const monedaUnica = monedas.length === 1 ? monedas[0] : null;
+      const tcActual = leerMonto(document.getElementById('facturasPagoTc').value) || 1;
+      const esExtranjera = monedaUnica && monedaUnica !== 'MXN';
+
+      let estadoHtml;
       if (monedas.length > 1) {
-        tcWrap.style.display = '';
-        tcCampo.style.display = 'none';
-        tcAviso.style.display = '';
-        tcAviso.textContent = `Las facturas marcadas tienen monedas distintas (${monedas.join(', ')}) — no es posible asignar un único tipo de cambio a este pago. Selecciona facturas de una sola moneda.`;
-        btnAplicar.disabled = true; btnAplicar.style.opacity = '0.5'; btnAplicar.style.cursor = 'not-allowed';
+        estadoHtml = `<div class="mf-resumen-estado error">✕ Monedas distintas (${monedas.join(', ')}) — selecciona solo una moneda</div>`;
+      } else if (cuadra && marcadas.length) {
+        estadoHtml = `<div class="mf-resumen-estado ok">✓ El pago cuadra exactamente</div>`;
+      } else if (marcadas.length) {
+        estadoHtml = `<div class="mf-resumen-estado warn">${diferencia>0?'Sobrará como crédito a favor: ':'Quedará pendiente/parcial: '}${prefijoMoneda(monedaUnica)} ${fmt(Math.abs(diferencia))}</div>`;
+      } else { estadoHtml = ''; }
+
+      document.getElementById('facturasPagoResumen').innerHTML = `
+        <div class="mf-resumen-linea"><span class="mf-label">Facturas seleccionadas</span><span class="mf-valor">${marcadas.length}</span></div>
+        <div class="mf-resumen-linea"><span class="mf-label">Total seleccionado</span><span class="mf-valor">${prefijoMoneda(monedaUnica)} ${fmt(totalSeleccionado)}</span></div>
+        <div class="mf-resumen-linea mf-resumen-destacado"><span class="mf-label">Monto del pago</span><span class="mf-valor">${fmt(montoMovimiento)}</span></div>
+        ${esExtranjera ? `
+        <div class="mf-resumen-linea"><span class="mf-label">Tipo de cambio</span><span class="mf-valor">${fmtTC(tcActual)}</span></div>
+        <div class="mf-resumen-linea mf-resumen-destacado"><span class="mf-label">Equivalente en MXN</span><span class="mf-valor">MXN ${fmt(montoMovimiento * tcActual)}</span></div>` : ''}
+        ${estadoHtml}
+        <ul class="mf-info-aux">
+          <li>Si seleccionas varias facturas, el monto se distribuye automáticamente.</li>
+          <li>Solo puedes seleccionar facturas de la misma moneda.</li>
+          <li>El TC de este pago no modifica el TC histórico de las facturas.</li>
+        </ul>
+      `;
+      const tcWrap = document.getElementById('facturasPagoTcWrap');
+      const tcCampo = document.getElementById('facturasPagoTcCampo');
+      const tcAviso = document.getElementById('facturasPagoTcAviso');
+      const btnAplicar = document.getElementById('applyFacturasPago');
+      document.getElementById('facturasPagoTcLabel').textContent = 'Tipo de cambio de este pago';
+      if (monedas.length > 1) {
+        tcWrap.style.display = ''; tcCampo.style.display = 'none'; tcAviso.style.display = '';
+        tcAviso.textContent = `Las facturas marcadas tienen monedas distintas (${monedas.join(', ')}) — no es posible asignar un único tipo de cambio a este pago.`;
+        btnAplicar.disabled = true;
       } else {
-        btnAplicar.disabled = false; btnAplicar.style.opacity = ''; btnAplicar.style.cursor = '';
-        tcAviso.style.display = 'none';
-        const monedaUnica = monedas[0] || 'MXN';
-        if (monedaUnica === 'MXN') {
-          tcWrap.style.display = 'none';
-        } else {
-          tcWrap.style.display = '';
-          tcCampo.style.display = '';
+        btnAplicar.disabled = false; tcAviso.style.display = 'none';
+        if (monedaUnica === 'MXN' || !monedaUnica) { tcWrap.style.display = 'none'; }
+        else {
+          tcWrap.style.display = ''; tcCampo.style.display = '';
           if (!document.getElementById('facturasPagoTc').dataset.tocado) {
             const primeraFactura = mapaFacturaPorId[marcadas[0]?.value];
             document.getElementById('facturasPagoTc').value = fmtInputVal(primeraFactura?.tipo_cambio || 1);
@@ -12306,12 +12322,50 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
       }
     };
     document.getElementById('facturasPagoTc').dataset.tocado = '';
-    document.getElementById('facturasPagoTc').oninput = (e) => { e.target.dataset.tocado = '1'; };
-    box.querySelectorAll('.factura-check').forEach(chk => chk.addEventListener('change', actualizarResumen));
-    actualizarResumen();
+    document.getElementById('facturasPagoTc').oninput = (e) => { e.target.dataset.tocado = '1'; actualizarResumen(); };
+
+    const renderLista = () => {
+      const texto = buscarProv.value.trim().toLowerCase();
+      box.innerHTML = nombresProveedor.map(prov => {
+        const facturasProv = porProveedor[prov].filter(f => !texto || prov.toLowerCase().includes(texto) || (f.factura||'').toLowerCase().includes(texto) || (f.folio?String(f.folio).includes(texto):false));
+        if (!facturasProv.length) return '';
+        const filasHtml = facturasProv.map(f => {
+          const saldo = Number(f.importe) - Number(f.importe_pagado||0);
+          const esCredito = Number(f.importe) < 0;
+          return `<tr>
+            <td><input type="checkbox" class="factura-check" value="${f.id}" data-importe="${saldo}" ${idsActuales.has(f.id)?'checked':''}></td>
+            <td>${fechaCorta(f.fecha)}</td>
+            <td>${f.folio ? '#'+f.folio : '—'}</td>
+            <td>${f.factura || '—'}</td>
+            <td><span class="mf-badge-moneda">${f.moneda||'MXN'}</span></td>
+            <td class="mf-num" style="${esCredito?'color:var(--green);':''}">${esCredito?'crédito ':''}${fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}</td>
+            <td>${f.fecha_vencimiento ? fechaCorta(f.fecha_vencimiento) : '—'}</td>
+          </tr>`;
+        }).join('');
+        return `<div class="mf-grupo">
+          <div class="mf-grupo-head">
+            <span class="mf-grupo-nombre">${prov}</span>
+            <span class="mf-grupo-meta">${facturasProv.length} factura(s) <span class="mf-grupo-chevron">▾</span></span>
+          </div>
+          <div class="mf-tabla-wrap"><table class="mf-tabla">
+            <thead><tr><th></th><th>Fecha</th><th>Folio</th><th>No. Factura</th><th>Moneda</th><th class="mf-num">Saldo pendiente</th><th>Vencimiento</th></tr></thead>
+            <tbody>${filasHtml}</tbody>
+          </table></div>
+        </div>`;
+      }).join('') || `<div class="empty" style="padding:14px;">No hay facturas disponibles.</div>`;
+      box.querySelectorAll('.factura-check').forEach(chk => chk.addEventListener('change', actualizarResumen));
+      box.querySelectorAll('.mf-grupo-head').forEach(head => head.addEventListener('click', (e) => {
+        if (e.target.closest('.factura-check')) return;
+        head.parentElement.classList.toggle('collapsed');
+      }));
+      actualizarResumen();
+    };
+    buscarProv.oninput = renderLista;
+    renderLista();
 
     document.getElementById('modalFacturasPago').classList.add('show');
     document.getElementById('closeFacturasPago').onclick = () => document.getElementById('modalFacturasPago').classList.remove('show');
+    document.getElementById('closeFacturasPagoX').onclick = () => document.getElementById('modalFacturasPago').classList.remove('show');
     document.getElementById('applyFacturasPago').onclick = async () => {
       const idsSeleccionados = Array.from(box.querySelectorAll('.factura-check:checked')).map(c => c.value);
       const tcWrapVisible = document.getElementById('facturasPagoTcCampo').style.display !== 'none';
@@ -12513,17 +12567,23 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   const nombresProveedorMov = Object.keys(porProveedor).sort((a,b)=>a.localeCompare(b));
   const movFacturasBox = document.getElementById('movFacturasList');
   movFacturasBox.innerHTML = nombresProveedorMov.map(prov => `
-    <div class="factura-provgroup" data-prov="${prov.toLowerCase()}" style="margin-bottom:6px;">
-      <div style="font-weight:700;font-size:11.5px;color:var(--navy-1);">${prov}</div>
-      ${porProveedor[prov].map(f => {
-        const saldo = Number(f.importe) - Number(f.importe_pagado||0);
-        const esCredito = Number(f.importe) < 0;
-        return `
-        <label style="display:flex;align-items:center;gap:7px;padding:2px 2px;font-size:12px;cursor:pointer;">
-          <input type="checkbox" class="mov-factura-check" value="${f.id}" data-importe="${saldo}" ${idsProvYaVinculados.includes(f.id)?'checked':''}>
-          <span>${fechaCorta(f.fecha)} · ${f.factura||'s/f'} · ${f.moneda && f.moneda!=='MXN' ? f.moneda+' ' : ''}${esCredito?`<span style="color:var(--green);">crédito ${fmt(saldo)}</span>`:fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}</span>
-        </label>`;
-      }).join('')}
+    <div class="mf-grupo factura-provgroup" data-prov="${prov.toLowerCase()}" style="margin-bottom:8px;">
+      <div class="mf-grupo-head" style="padding:6px 10px;"><span class="mf-grupo-nombre" style="font-size:11.5px;">${prov}</span><span class="mf-grupo-meta" style="font-size:10.5px;">${porProveedor[prov].length}</span></div>
+      <div class="mf-tabla-wrap"><table class="mf-tabla" style="font-size:11.5px;">
+        <tbody>
+        ${porProveedor[prov].map(f => {
+          const saldo = Number(f.importe) - Number(f.importe_pagado||0);
+          const esCredito = Number(f.importe) < 0;
+          return `<tr>
+            <td style="width:20px;"><input type="checkbox" class="mov-factura-check" value="${f.id}" data-importe="${saldo}" ${idsProvYaVinculados.includes(f.id)?'checked':''}></td>
+            <td>${fechaCorta(f.fecha)}</td>
+            <td>${f.factura||'—'}</td>
+            <td><span class="mf-badge-moneda">${f.moneda||'MXN'}</span></td>
+            <td class="mf-num" style="${esCredito?'color:var(--green);':''}">${esCredito?'crédito ':''}${fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}</td>
+          </tr>`;
+        }).join('')}
+        </tbody>
+      </table></div>
     </div>`).join('') || `<div class="empty" style="padding:6px;font-size:12px;">No hay facturas pendientes.</div>`;
 
   const movSelectProv = document.getElementById('movFacturasSelectProv');
@@ -12550,12 +12610,16 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     const montoMovimiento = Number(document.getElementById('movCargos').value) || 0;
     const diferencia = montoMovimiento - totalSeleccionado;
     const cuadra = Math.abs(diferencia) < 0.01;
-    document.getElementById('movFacturasResumen').innerHTML = `
-      <div style="display:flex;justify-content:space-between;"><span>Monto del movimiento</span><strong>${fmt(montoMovimiento)}</strong></div>
-      <div style="display:flex;justify-content:space-between;"><span>Aplicado a facturas (${marcadas.length})</span><strong>${fmt(totalSeleccionado)}</strong></div>
-      <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--muted)'};font-weight:700;"><span>${cuadra?'Diferencia':(diferencia>0?'Sobrará como crédito a favor':'Quedará pendiente/parcial')}</span><span>${cuadra?'$0.00 ✓':fmt(Math.abs(diferencia))}</span></div>
-    `;
     const monedas = [...new Set(marcadas.map(c => (mapaFacturaProvMov[c.value]?.moneda || 'MXN')))];
+    const monedaUnica = monedas.length === 1 ? monedas[0] : null;
+    const esExtranjera = monedaUnica && monedaUnica !== 'MXN';
+    const tcActual = leerMonto(document.getElementById('movFacturasTc').value) || 1;
+    document.getElementById('movFacturasResumen').innerHTML = `
+      <div class="mf-resumen-linea" style="margin-bottom:5px;"><span class="mf-label">Monto del movimiento</span><span class="mf-valor">${fmt(montoMovimiento)}</span></div>
+      <div class="mf-resumen-linea" style="margin-bottom:5px;"><span class="mf-label">Aplicado a facturas (${marcadas.length})</span><span class="mf-valor">${fmt(totalSeleccionado)}</span></div>
+      ${esExtranjera ? `<div class="mf-resumen-linea" style="margin-bottom:5px;"><span class="mf-label">Equivalente en MXN</span><span class="mf-valor">MXN ${fmt(montoMovimiento * tcActual)}</span></div>` : ''}
+      <div class="mf-resumen-estado ${monedas.length>1?'error':(cuadra?'ok':'warn')}" style="margin-top:4px;padding:6px 9px;font-size:11.5px;">${monedas.length>1?'✕ Monedas distintas':(cuadra?'✓ Diferencia $0.00':(diferencia>0?'Sobrará como crédito a favor: '+fmt(Math.abs(diferencia)):'Quedará pendiente/parcial: '+fmt(Math.abs(diferencia))))}</div>
+    `;
     const tcWrap = document.getElementById('movFacturasTcWrap');
     const tcAviso = document.getElementById('movFacturasTcAviso');
     const tcCampo = document.getElementById('movFacturasTcCampo');
@@ -12566,8 +12630,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     } else {
       STATE_movFacturasMonedaMixta = false;
       tcAviso.style.display = 'none';
-      const monedaUnica = monedas[0] || 'MXN';
-      if (monedaUnica === 'MXN') { tcWrap.style.display = 'none'; }
+      if (monedaUnica === 'MXN' || !monedaUnica) { tcWrap.style.display = 'none'; }
       else {
         tcWrap.style.display = ''; tcCampo.style.display = '';
         if (!document.getElementById('movFacturasTc').dataset.tocado) {
@@ -12578,7 +12641,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     }
   };
   document.getElementById('movFacturasTc').dataset.tocado = '';
-  document.getElementById('movFacturasTc').oninput = (e) => { e.target.dataset.tocado = '1'; };
+  document.getElementById('movFacturasTc').oninput = (e) => { e.target.dataset.tocado = '1'; actualizarResumenMovFacturas(); };
   document.querySelectorAll('.mov-factura-check').forEach(chk => chk.addEventListener('change', actualizarResumenMovFacturas));
   document.getElementById('movCargos').oninput = actualizarResumenMovFacturas;
   actualizarResumenMovFacturas();
@@ -12592,16 +12655,23 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   const nombresClienteMov = Object.keys(porClienteMov).sort((a,b)=>a.localeCompare(b));
   const movFacturasClienteBox = document.getElementById('movFacturasClienteList');
   movFacturasClienteBox.innerHTML = nombresClienteMov.map(cli => `
-    <div class="factura-provgroup" data-prov="${cli.toLowerCase()}" style="margin-bottom:8px;">
-      <div style="font-weight:700;font-size:12px;color:var(--navy-1);">${cli}</div>
-      ${porClienteMov[cli].map(f => {
-        const saldo = Number(f.total) - Number(f.importe_pagado||0);
-        return `
-        <label style="display:flex;align-items:center;gap:8px;padding:4px 2px;font-size:12.5px;cursor:pointer;">
-          <input type="checkbox" class="mov-factura-cliente-check" value="${f.id}" data-importe="${saldo}" data-cliente="${cli}" ${idsClienteYaVinculados.includes(f.id)?'checked':''}>
-          <span>${fechaCorta(f.fecha)} · Factura #${f.folio}${f.numero_factura?' ('+f.numero_factura+')':''} · ${f.moneda && f.moneda!=='MXN' ? f.moneda+' ' : ''}${fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}</span>
-        </label>`;
-      }).join('')}
+    <div class="mf-grupo factura-provgroup" data-prov="${cli.toLowerCase()}" style="margin-bottom:8px;">
+      <div class="mf-grupo-head" style="padding:6px 10px;"><span class="mf-grupo-nombre" style="font-size:12px;">${cli}</span><span class="mf-grupo-meta" style="font-size:10.5px;">${porClienteMov[cli].length}</span></div>
+      <div class="mf-tabla-wrap"><table class="mf-tabla" style="font-size:12px;">
+        <tbody>
+        ${porClienteMov[cli].map(f => {
+          const saldo = Number(f.total) - Number(f.importe_pagado||0);
+          return `<tr>
+            <td style="width:20px;"><input type="checkbox" class="mov-factura-cliente-check" value="${f.id}" data-importe="${saldo}" data-cliente="${cli}" ${idsClienteYaVinculados.includes(f.id)?'checked':''}></td>
+            <td>${fechaCorta(f.fecha)}</td>
+            <td>#${f.folio}</td>
+            <td>${f.numero_factura || '—'}</td>
+            <td><span class="mf-badge-moneda">${f.moneda||'MXN'}</span></td>
+            <td class="mf-num">${fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}</td>
+          </tr>`;
+        }).join('')}
+        </tbody>
+      </table></div>
     </div>`).join('') || `<div class="empty" style="padding:8px;">No hay facturas pendientes de cobro.</div>`;
 
   const movSelectCliente = document.getElementById('movFacturasClienteSelect');
@@ -12633,12 +12703,16 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     // usuario lo aclare (no se inventa un nombre combinado).
     const clientesDistintos = [...new Set(marcadas.map(c=>c.dataset.cliente))];
     if (clientesDistintos.length === 1) document.getElementById('movCampo1').value = clientesDistintos[0];
-    document.getElementById('movFacturasClienteResumen').innerHTML = `
-      <div style="display:flex;justify-content:space-between;margin-bottom:2px;"><span>Depósito capturado</span><strong>${fmt(montoMovimiento)}</strong></div>
-      <div style="display:flex;justify-content:space-between;margin-bottom:2px;"><span>Total seleccionado (${marcadas.length})</span><strong>${fmt(totalSeleccionado)}</strong></div>
-      <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--muted)'};font-weight:700;"><span>${cuadra?'✓ Cuadra exacto':(diferencia>0?'Sobrará sin asignar':'Quedará pendiente/parcial')}</span><span>${cuadra?'':fmt(Math.abs(diferencia))}</span></div>
-    `;
     const monedas = [...new Set(marcadas.map(c => (mapaFacturaClienteMov[c.value]?.moneda || 'MXN')))];
+    const monedaUnica = monedas.length === 1 ? monedas[0] : null;
+    const esExtranjera = monedaUnica && monedaUnica !== 'MXN';
+    const tcActual = leerMonto(document.getElementById('movFacturasClienteTc').value) || 1;
+    document.getElementById('movFacturasClienteResumen').innerHTML = `
+      <div class="mf-resumen-linea" style="margin-bottom:5px;"><span class="mf-label">Depósito capturado</span><span class="mf-valor">${fmt(montoMovimiento)}</span></div>
+      <div class="mf-resumen-linea" style="margin-bottom:5px;"><span class="mf-label">Total seleccionado (${marcadas.length})</span><span class="mf-valor">${fmt(totalSeleccionado)}</span></div>
+      ${esExtranjera ? `<div class="mf-resumen-linea" style="margin-bottom:5px;"><span class="mf-label">Equivalente en MXN</span><span class="mf-valor">MXN ${fmt(montoMovimiento * tcActual)}</span></div>` : ''}
+      <div class="mf-resumen-estado ${monedas.length>1?'error':(cuadra?'ok':'warn')}" style="margin-top:4px;padding:6px 9px;font-size:11.5px;">${monedas.length>1?'✕ Monedas distintas':(cuadra?'✓ Cuadra exacto':(diferencia>0?'Sobrará sin asignar: '+fmt(Math.abs(diferencia)):'Quedará pendiente/parcial: '+fmt(Math.abs(diferencia))))}</div>
+    `;
     const tcWrap = document.getElementById('movFacturasClienteTcWrap');
     const tcAviso = document.getElementById('movFacturasClienteTcAviso');
     const tcCampo = document.getElementById('movFacturasClienteTcCampo');
@@ -12649,8 +12723,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     } else {
       STATE_movFacturasClienteMonedaMixta = false;
       tcAviso.style.display = 'none';
-      const monedaUnica = monedas[0] || 'MXN';
-      if (monedaUnica === 'MXN') { tcWrap.style.display = 'none'; }
+      if (monedaUnica === 'MXN' || !monedaUnica) { tcWrap.style.display = 'none'; }
       else {
         tcWrap.style.display = ''; tcCampo.style.display = '';
         if (!document.getElementById('movFacturasClienteTc').dataset.tocado) {
@@ -12661,7 +12734,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     }
   };
   document.getElementById('movFacturasClienteTc').dataset.tocado = '';
-  document.getElementById('movFacturasClienteTc').oninput = (e) => { e.target.dataset.tocado = '1'; };
+  document.getElementById('movFacturasClienteTc').oninput = (e) => { e.target.dataset.tocado = '1'; actualizarResumenMovFacturasCliente(); };
   document.querySelectorAll('.mov-factura-cliente-check').forEach(chk => chk.addEventListener('change', actualizarResumenMovFacturasCliente));
   document.getElementById('movDepositos').oninput = actualizarResumenMovFacturasCliente;
   actualizarResumenMovFacturasCliente();
@@ -14693,57 +14766,86 @@ async function abrirElegirFacturaCobro(businessId) {
     const montoIngresado = leerMonto(document.getElementById('elegirFacturaCobroMonto').value) || 0;
     const diferencia = montoIngresado - totalSeleccionado;
     const cuadra = Math.abs(diferencia) < 0.01;
-    document.getElementById('elegirFacturaCobroResumen').innerHTML = `
-      <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Monto a aplicar</span><strong>${fmt(montoIngresado)}</strong></div>
-      <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Total seleccionado (${marcadas.length})</span><strong>${fmt(totalSeleccionado)}</strong></div>
-      <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--muted)'};font-weight:700;"><span>${cuadra?'✓ Cuadra exacto':(diferencia>0?'Sobrará sin asignar':'Quedará pendiente/parcial')}</span><span>${cuadra?'':fmt(Math.abs(diferencia))}</span></div>
-    `;
     const monedas = [...new Set(marcadas.map(c => c.dataset.moneda || 'MXN'))];
+    const monedaUnica = monedas.length === 1 ? monedas[0] : null;
+    const tcActual = leerMonto(document.getElementById('elegirFacturaCobroTc').value) || 1;
+    const esExtranjera = monedaUnica && monedaUnica !== 'MXN';
+
+    let estadoHtml;
+    if (monedas.length > 1) {
+      estadoHtml = `<div class="mf-resumen-estado error">✕ Monedas distintas (${monedas.join(', ')}) — selecciona solo una moneda</div>`;
+    } else if (cuadra && marcadas.length) {
+      estadoHtml = `<div class="mf-resumen-estado ok">✓ El cobro cuadra exactamente</div>`;
+    } else if (marcadas.length) {
+      estadoHtml = `<div class="mf-resumen-estado warn">${diferencia>0?'Sobrará sin asignar: ':'Falta por cubrir: '}${prefijoMoneda(monedaUnica)} ${fmt(Math.abs(diferencia))}</div>`;
+    } else {
+      estadoHtml = '';
+    }
+
+    document.getElementById('elegirFacturaCobroResumen').innerHTML = `
+      <div class="mf-resumen-linea"><span class="mf-label">Facturas seleccionadas</span><span class="mf-valor">${marcadas.length}</span></div>
+      <div class="mf-resumen-linea"><span class="mf-label">Total seleccionado</span><span class="mf-valor">${prefijoMoneda(monedaUnica)} ${fmt(totalSeleccionado)}</span></div>
+      <div class="mf-resumen-linea mf-resumen-destacado"><span class="mf-label">Monto del cobro</span><span class="mf-valor">${prefijoMoneda(monedaUnica)} ${fmt(montoIngresado)}</span></div>
+      ${esExtranjera ? `
+      <div class="mf-resumen-linea"><span class="mf-label">Tipo de cambio</span><span class="mf-valor">${fmtTC(tcActual)}</span></div>
+      <div class="mf-resumen-linea mf-resumen-destacado"><span class="mf-label">Equivalente en MXN</span><span class="mf-valor">MXN ${fmt(montoIngresado * tcActual)}</span></div>` : ''}
+      ${estadoHtml}
+      <ul class="mf-info-aux">
+        <li>Si seleccionas varias facturas, el monto se distribuye automáticamente.</li>
+        <li>Solo puedes seleccionar facturas de la misma moneda.</li>
+        <li>El TC de este cobro no modifica el TC histórico de las facturas.</li>
+      </ul>
+    `;
     const tcWrap = document.getElementById('elegirFacturaCobroTcWrap');
     const btnAplicar = document.getElementById('aplicarElegirFacturaCobro');
-    let avisoEl = document.getElementById('elegirFacturaCobroAviso');
-    if (!avisoEl) {
-      avisoEl = document.createElement('p');
-      avisoEl.id = 'elegirFacturaCobroAviso';
-      avisoEl.style.cssText = 'font-size:12px;color:var(--red);margin-top:6px;';
-      tcWrap.parentNode.insertBefore(avisoEl, tcWrap.nextSibling);
-    }
     if (monedas.length > 1) {
       tcWrap.style.display = 'none';
-      avisoEl.style.display = '';
-      avisoEl.textContent = `Las facturas marcadas tienen monedas distintas (${monedas.join(', ')}) — no pueden aplicarse conjuntamente en un mismo cobro. Selecciona facturas de una sola moneda.`;
-      btnAplicar.disabled = true; btnAplicar.style.opacity = '0.5'; btnAplicar.style.cursor = 'not-allowed';
+      btnAplicar.disabled = true;
     } else {
-      btnAplicar.disabled = false; btnAplicar.style.opacity = ''; btnAplicar.style.cursor = '';
-      avisoEl.style.display = 'none';
-      const monedaUnica = monedas[0] || 'MXN';
-      tcWrap.style.display = monedaUnica !== 'MXN' ? '' : 'none';
-      if (monedaUnica !== 'MXN' && !document.getElementById('elegirFacturaCobroTc').dataset.tocado) {
+      btnAplicar.disabled = false;
+      tcWrap.style.display = esExtranjera ? '' : 'none';
+      if (esExtranjera && !document.getElementById('elegirFacturaCobroTc').dataset.tocado) {
         const primeraFactura = marcadas[0];
         document.getElementById('elegirFacturaCobroTc').value = fmtInputVal(primeraFactura?.dataset.tc || 1);
       }
     }
   };
   document.getElementById('elegirFacturaCobroTc').dataset.tocado = '';
-  document.getElementById('elegirFacturaCobroTc').oninput = (e) => { e.target.dataset.tocado = '1'; };
+  document.getElementById('elegirFacturaCobroTc').oninput = (e) => { e.target.dataset.tocado = '1'; actualizarResumen(); };
 
   const renderLista = () => {
     const texto = buscar.value.trim().toLowerCase();
     box.innerHTML = nombresCliente.map(cli => {
-      const facturasCli = porCliente[cli].filter(f => !texto || cli.toLowerCase().includes(texto) || String(f.folio).includes(texto));
+      const facturasCli = porCliente[cli].filter(f => !texto || cli.toLowerCase().includes(texto) || String(f.folio).includes(texto) || (f.numero_factura||'').toLowerCase().includes(texto));
       if (!facturasCli.length) return '';
-      return `<div style="margin-bottom:10px;">
-        <div style="font-weight:700;font-size:12.5px;color:var(--navy-1);margin-bottom:4px;">${cli}</div>
-        ${facturasCli.map(f => {
-          const saldo = Number(f.total) - Number(f.importe_pagado||0);
-          return `<label style="display:flex;align-items:center;gap:8px;padding:5px 4px;border-bottom:1px solid var(--line);font-size:13px;cursor:pointer;">
-            <input type="checkbox" class="efc-check" value="${f.id}" data-importe="${saldo}" data-moneda="${f.moneda||'MXN'}" data-tc="${f.tipo_cambio||1}">
-            <span>${fechaCorta(f.fecha)} · Folio #${f.folio}${f.numero_factura?' · '+f.numero_factura:''}${f.estatus==='Parcial'?' (parcial)':''} · ${prefijoMoneda(f.moneda)} ${fmt(saldo)}${f.fecha_vencimiento?' · vence '+fechaCorta(f.fecha_vencimiento):''}</span>
-          </label>`;
-        }).join('')}
+      const filasHtml = facturasCli.map(f => {
+        const saldo = Number(f.total) - Number(f.importe_pagado||0);
+        return `<tr>
+          <td><input type="checkbox" class="efc-check" value="${f.id}" data-importe="${saldo}" data-moneda="${f.moneda||'MXN'}" data-tc="${f.tipo_cambio||1}"></td>
+          <td>${fechaCorta(f.fecha)}</td>
+          <td>#${f.folio}</td>
+          <td>${f.numero_factura || '—'}</td>
+          <td><span class="mf-badge-moneda">${f.moneda||'MXN'}</span></td>
+          <td class="mf-num">${fmt(saldo)}</td>
+          <td>${f.fecha_vencimiento ? fechaCorta(f.fecha_vencimiento) : '—'}</td>
+        </tr>`;
+      }).join('');
+      return `<div class="mf-grupo">
+        <div class="mf-grupo-head">
+          <span class="mf-grupo-nombre">${cli}</span>
+          <span class="mf-grupo-meta">${facturasCli.length} factura(s) <span class="mf-grupo-chevron">▾</span></span>
+        </div>
+        <div class="mf-tabla-wrap"><table class="mf-tabla">
+          <thead><tr><th></th><th>Fecha</th><th>Folio</th><th>No. Factura</th><th>Moneda</th><th class="mf-num">Saldo pendiente</th><th>Vencimiento</th></tr></thead>
+          <tbody>${filasHtml}</tbody>
+        </table></div>
       </div>`;
     }).join('') || `<div class="empty" style="padding:14px;">No hay facturas pendientes de cobro.</div>`;
     box.querySelectorAll('.efc-check').forEach(chk => chk.addEventListener('change', actualizarResumen));
+    box.querySelectorAll('.mf-grupo-head').forEach(head => head.addEventListener('click', (e) => {
+      if (e.target.closest('.efc-check')) return;
+      head.parentElement.classList.toggle('collapsed');
+    }));
     actualizarResumen();
   };
   buscar.value = '';
@@ -14787,6 +14889,9 @@ document.getElementById('aplicarElegirFacturaCobro').addEventListener('click', a
 document.getElementById('closeElegirFacturaCobro').addEventListener('click', () => {
   document.getElementById('modalElegirFacturaCobro').classList.remove('show');
 });
+document.getElementById('closeElegirFacturaCobro2').addEventListener('click', () => {
+  document.getElementById('modalElegirFacturaCobro').classList.remove('show');
+});
 
 // Espejo exacto de abrirElegirFacturaCobro, del lado de proveedores — reutiliza
 // aplicarPagoFacturas (el mismo motor que ya usa Bancos → Pago a proveedor), nunca un motor nuevo.
@@ -14820,55 +14925,84 @@ async function abrirElegirFacturaPago(businessId, proveedorPreseleccionado) {
     const montoIngresado = leerMonto(document.getElementById('elegirFacturaPagoMonto').value) || 0;
     const diferencia = montoIngresado - totalSeleccionado;
     const cuadra = Math.abs(diferencia) < 0.01;
-    document.getElementById('elegirFacturaPagoResumen').innerHTML = `
-      <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Monto a aplicar</span><strong>${fmt(montoIngresado)}</strong></div>
-      <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Total seleccionado (${marcadas.length})</span><strong>${fmt(totalSeleccionado)}</strong></div>
-      <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--muted)'};font-weight:700;"><span>${cuadra?'✓ Cuadra exacto':(diferencia>0?'Sobrará sin asignar':'Quedará pendiente/parcial')}</span><span>${cuadra?'':fmt(Math.abs(diferencia))}</span></div>
-    `;
     const monedas = [...new Set(marcadas.map(c => c.dataset.moneda || 'MXN'))];
+    const monedaUnica = monedas.length === 1 ? monedas[0] : null;
+    const tcActual = leerMonto(document.getElementById('elegirFacturaPagoTc').value) || 1;
+    const esExtranjera = monedaUnica && monedaUnica !== 'MXN';
+
+    let estadoHtml;
+    if (monedas.length > 1) {
+      estadoHtml = `<div class="mf-resumen-estado error">✕ Monedas distintas (${monedas.join(', ')}) — selecciona solo una moneda</div>`;
+    } else if (cuadra && marcadas.length) {
+      estadoHtml = `<div class="mf-resumen-estado ok">✓ El pago cuadra exactamente</div>`;
+    } else if (marcadas.length) {
+      estadoHtml = `<div class="mf-resumen-estado warn">${diferencia>0?'Sobrará como crédito a favor: ':'Quedará pendiente/parcial: '}${prefijoMoneda(monedaUnica)} ${fmt(Math.abs(diferencia))}</div>`;
+    } else {
+      estadoHtml = '';
+    }
+
+    document.getElementById('elegirFacturaPagoResumen').innerHTML = `
+      <div class="mf-resumen-linea"><span class="mf-label">Facturas seleccionadas</span><span class="mf-valor">${marcadas.length}</span></div>
+      <div class="mf-resumen-linea"><span class="mf-label">Total seleccionado</span><span class="mf-valor">${prefijoMoneda(monedaUnica)} ${fmt(totalSeleccionado)}</span></div>
+      <div class="mf-resumen-linea mf-resumen-destacado"><span class="mf-label">Monto del pago</span><span class="mf-valor">${prefijoMoneda(monedaUnica)} ${fmt(montoIngresado)}</span></div>
+      ${esExtranjera ? `
+      <div class="mf-resumen-linea"><span class="mf-label">Tipo de cambio</span><span class="mf-valor">${fmtTC(tcActual)}</span></div>
+      <div class="mf-resumen-linea mf-resumen-destacado"><span class="mf-label">Equivalente en MXN</span><span class="mf-valor">MXN ${fmt(montoIngresado * tcActual)}</span></div>` : ''}
+      ${estadoHtml}
+      <ul class="mf-info-aux">
+        <li>Si seleccionas varias facturas, el monto se distribuye automáticamente.</li>
+        <li>Solo puedes seleccionar facturas de la misma moneda.</li>
+        <li>El TC de este pago no modifica el TC histórico de las facturas.</li>
+      </ul>
+    `;
     const tcWrap = document.getElementById('elegirFacturaPagoTcWrap');
     const btnAplicar = document.getElementById('aplicarElegirFacturaPago');
-    let avisoEl = document.getElementById('elegirFacturaPagoAviso');
-    if (!avisoEl) {
-      avisoEl = document.createElement('p');
-      avisoEl.id = 'elegirFacturaPagoAviso';
-      avisoEl.style.cssText = 'font-size:12px;color:var(--red);margin-top:6px;';
-      tcWrap.parentNode.insertBefore(avisoEl, tcWrap.nextSibling);
-    }
     if (monedas.length > 1) {
       tcWrap.style.display = 'none';
-      avisoEl.style.display = '';
-      avisoEl.textContent = `Las facturas marcadas tienen monedas distintas (${monedas.join(', ')}) — no pueden aplicarse conjuntamente en un mismo pago. Selecciona facturas de una sola moneda.`;
-      btnAplicar.disabled = true; btnAplicar.style.opacity = '0.5'; btnAplicar.style.cursor = 'not-allowed';
+      btnAplicar.disabled = true;
     } else {
-      btnAplicar.disabled = false; btnAplicar.style.opacity = ''; btnAplicar.style.cursor = '';
-      avisoEl.style.display = 'none';
-      const monedaUnica = monedas[0] || 'MXN';
-      tcWrap.style.display = monedaUnica !== 'MXN' ? '' : 'none';
-      if (monedaUnica !== 'MXN' && !document.getElementById('elegirFacturaPagoTc').dataset.tocado) {
+      btnAplicar.disabled = false;
+      tcWrap.style.display = esExtranjera ? '' : 'none';
+      if (esExtranjera && !document.getElementById('elegirFacturaPagoTc').dataset.tocado) {
         document.getElementById('elegirFacturaPagoTc').value = fmtInputVal(marcadas[0]?.dataset.tc || 1);
       }
     }
   };
-  document.getElementById('elegirFacturaPagoTc').oninput = (e) => { e.target.dataset.tocado = '1'; };
+  document.getElementById('elegirFacturaPagoTc').oninput = (e) => { e.target.dataset.tocado = '1'; actualizarResumen(); };
 
   const renderLista = () => {
     const texto = buscar.value.trim().toLowerCase();
     box.innerHTML = nombresProveedor.map(prov => {
-      const facturasProv = porProveedor[prov].filter(f => !texto || prov.toLowerCase().includes(texto) || (f.factura||'').toLowerCase().includes(texto));
+      const facturasProv = porProveedor[prov].filter(f => !texto || prov.toLowerCase().includes(texto) || (f.factura||'').toLowerCase().includes(texto) || (f.folio ? String(f.folio).includes(texto) : false));
       if (!facturasProv.length) return '';
-      return `<div style="margin-bottom:10px;">
-        <div style="font-weight:700;font-size:12.5px;color:var(--navy-1);margin-bottom:4px;">${prov}</div>
-        ${facturasProv.map(f => {
-          const saldo = Number(f.importe) - Number(f.importe_pagado||0);
-          return `<label style="display:flex;align-items:center;gap:8px;padding:5px 4px;border-bottom:1px solid var(--line);font-size:13px;cursor:pointer;">
-            <input type="checkbox" class="efp-check" value="${f.id}" data-importe="${saldo}" data-moneda="${f.moneda||'MXN'}" data-tc="${f.tipo_cambio||1}">
-            <span>${fechaCorta(f.fecha)}${f.folio?' · Folio #'+f.folio:''}${f.factura?' · '+f.factura:''}${f.estatus==='Parcial'?' (parcial)':''} · ${prefijoMoneda(f.moneda)} ${fmt(saldo)}${f.fecha_vencimiento?' · vence '+fechaCorta(f.fecha_vencimiento):''}</span>
-          </label>`;
-        }).join('')}
+      const filasHtml = facturasProv.map(f => {
+        const saldo = Number(f.importe) - Number(f.importe_pagado||0);
+        return `<tr>
+          <td><input type="checkbox" class="efp-check" value="${f.id}" data-importe="${saldo}" data-moneda="${f.moneda||'MXN'}" data-tc="${f.tipo_cambio||1}"></td>
+          <td>${fechaCorta(f.fecha)}</td>
+          <td>${f.folio ? '#'+f.folio : '—'}</td>
+          <td>${f.factura || '—'}</td>
+          <td><span class="mf-badge-moneda">${f.moneda||'MXN'}</span></td>
+          <td class="mf-num">${fmt(saldo)}</td>
+          <td>${f.fecha_vencimiento ? fechaCorta(f.fecha_vencimiento) : '—'}</td>
+        </tr>`;
+      }).join('');
+      return `<div class="mf-grupo">
+        <div class="mf-grupo-head">
+          <span class="mf-grupo-nombre">${prov}</span>
+          <span class="mf-grupo-meta">${facturasProv.length} factura(s) <span class="mf-grupo-chevron">▾</span></span>
+        </div>
+        <div class="mf-tabla-wrap"><table class="mf-tabla">
+          <thead><tr><th></th><th>Fecha</th><th>Folio</th><th>No. Factura</th><th>Moneda</th><th class="mf-num">Saldo pendiente</th><th>Vencimiento</th></tr></thead>
+          <tbody>${filasHtml}</tbody>
+        </table></div>
       </div>`;
     }).join('') || `<div class="empty" style="padding:14px;">No hay facturas pendientes de pago.</div>`;
     box.querySelectorAll('.efp-check').forEach(chk => chk.addEventListener('change', actualizarResumen));
+    box.querySelectorAll('.mf-grupo-head').forEach(head => head.addEventListener('click', (e) => {
+      if (e.target.closest('.efp-check')) return;
+      head.parentElement.classList.toggle('collapsed');
+    }));
     if (proveedorPreseleccionado) {
       box.querySelectorAll('.efp-check').forEach(chk => {
         const f = pendientes.find(x => x.id === chk.value);
@@ -14920,6 +15054,9 @@ document.getElementById('aplicarElegirFacturaPago').addEventListener('click', as
   document.getElementById('modalElegirFacturaPago').classList.remove('show');
 });
 document.getElementById('closeElegirFacturaPago').addEventListener('click', () => {
+  document.getElementById('modalElegirFacturaPago').classList.remove('show');
+});
+document.getElementById('closeElegirFacturaPago2').addEventListener('click', () => {
   document.getElementById('modalElegirFacturaPago').classList.remove('show');
 });
 
