@@ -1815,6 +1815,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
           <strong id="facturaIvaTxt">$0.00</strong>
         </div>
         <div style="display:flex;justify-content:space-between;font-size:15px;padding:8px 0;border-top:1.5px solid var(--navy-1);margin-top:4px;"><span>Total</span><strong id="facturaTotalTxt">$0.00</strong></div>
+        <div id="facturaEquivalenteMxnWrap" style="display:none;font-size:12px;color:var(--muted);text-align:right;padding-top:2px;">Equivalente MXN al TC <span id="facturaEquivalenteTcTxt"></span>: <strong id="facturaEquivalenteMxnTxt"></strong></div>
       </div>
     </div>
 
@@ -1928,6 +1929,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
     <div class="field">
       <label id="fpImporteLabel">Importe</label>
       <input type="text" inputmode="decimal" id="fpImporte" placeholder="0.00">
+      <div id="fpEquivalenteMxnWrap" style="display:none;font-size:11.5px;color:var(--muted);margin-top:4px;">Equivalente MXN al TC <span id="fpEquivalenteTcTxt"></span>: <strong id="fpEquivalenteMxnTxt"></strong></div>
     </div>
     <div id="fpIvaWrap" style="display:none;border:1.5px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:12px;">
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;margin-bottom:8px;">
@@ -2421,7 +2423,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 <!-- Modal: elegir factura para registrar un pago (desde "+ Nueva transacción") -->
 <div class="modal-bg" id="modalElegirFacturaCobro">
   <div class="modal" style="width:min(560px,94vw);max-height:88vh;overflow-y:auto;">
-    <h3>Registrar un pago</h3>
+    <h3>Registrar cobro</h3>
     <p style="font-size:12px;color:var(--muted);margin-bottom:12px;">Marca una o varias facturas — si el cliente pagó varias juntas, el monto se reparte automáticamente entre ellas.</p>
     <div class="field" style="margin-bottom:12px;">
       <input type="text" id="elegirFacturaCobroBuscar" placeholder="Buscar cliente o folio…">
@@ -2443,12 +2445,47 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
       </div>
     </div>
     <div class="field" id="elegirFacturaCobroTcWrap" style="display:none;max-width:280px;">
-      <label>Tipo de cambio real de hoy (para facturas en USD)</label>
+      <label>Tipo de cambio de este cobro</label>
       <input type="text" inputmode="decimal" id="elegirFacturaCobroTc" placeholder="Ej. 18.50">
     </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="closeElegirFacturaCobro">Cerrar</button>
-      <button class="btn btn-gold" id="aplicarElegirFacturaCobro">Aplicar</button>
+      <button class="btn btn-gold" id="aplicarElegirFacturaCobro">Registrar cobro</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Registrar pago a proveedor (espejo exacto del de cobro de cliente) -->
+<div class="modal-bg" id="modalElegirFacturaPago">
+  <div class="modal" style="width:min(560px,94vw);max-height:88vh;overflow-y:auto;">
+    <h3>Registrar pago</h3>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:12px;">Marca una o varias facturas — si pagaste varias juntas, el monto se reparte automáticamente entre ellas.</p>
+    <div class="field" style="margin-bottom:12px;">
+      <input type="text" id="elegirFacturaPagoBuscar" placeholder="Buscar proveedor o factura…">
+    </div>
+    <div id="elegirFacturaPagoResumen" style="background:#f7f9fc;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;"></div>
+    <div id="elegirFacturaPagoList" style="max-height:280px;overflow-y:auto;margin-bottom:14px;"></div>
+    <div class="grid-3">
+      <div class="field">
+        <label>Fecha</label>
+        <input type="date" id="elegirFacturaPagoFecha">
+      </div>
+      <div class="field">
+        <label>Monto a aplicar</label>
+        <input type="text" inputmode="decimal" id="elegirFacturaPagoMonto" placeholder="0.00">
+      </div>
+      <div class="field">
+        <label>Cuenta origen</label>
+        <select id="elegirFacturaPagoCuenta"></select>
+      </div>
+    </div>
+    <div class="field" id="elegirFacturaPagoTcWrap" style="display:none;max-width:280px;">
+      <label>Tipo de cambio de este pago</label>
+      <input type="text" inputmode="decimal" id="elegirFacturaPagoTc" placeholder="Ej. 18.50">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="closeElegirFacturaPago">Cerrar</button>
+      <button class="btn btn-gold" id="aplicarElegirFacturaPago">Registrar pago</button>
     </div>
   </div>
 </div>
@@ -2716,6 +2753,13 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
     <div class="field" id="movFacturasWrap" style="display:none;">
       <label>Facturas a pagar</label>
       <div id="movFacturasResumen" style="background:#f7f9fc;border-radius:8px;padding:7px 10px;margin-bottom:6px;font-size:12px;"></div>
+      <div id="movFacturasTcWrap" style="display:none;margin-bottom:6px;">
+        <div class="field" id="movFacturasTcCampo" style="margin-bottom:0;">
+          <label style="font-size:11.5px;">Tipo de cambio de este pago</label>
+          <input type="text" inputmode="decimal" id="movFacturasTc" placeholder="Ej. 18.50">
+        </div>
+        <p id="movFacturasTcAviso" style="font-size:11.5px;color:var(--red);margin-top:4px;display:none;"></p>
+      </div>
       <div class="grid-2" style="margin-bottom:6px;gap:6px;">
         <input type="text" id="movFacturasBuscarProv" placeholder="🔎 Buscar proveedor…" style="margin:0;">
         <select id="movFacturasSelectProv" style="margin:0;">
@@ -2727,6 +2771,13 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
     <div class="field" id="movFacturasClienteWrap" style="display:none;">
       <label>Facturas a cobrar</label>
       <div id="movFacturasClienteResumen" style="background:#f7f9fc;border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:12.5px;"></div>
+      <div id="movFacturasClienteTcWrap" style="display:none;margin-bottom:8px;">
+        <div class="field" id="movFacturasClienteTcCampo" style="margin-bottom:0;">
+          <label style="font-size:11.5px;">Tipo de cambio de este cobro</label>
+          <input type="text" inputmode="decimal" id="movFacturasClienteTc" placeholder="Ej. 18.50">
+        </div>
+        <p id="movFacturasClienteTcAviso" style="font-size:11.5px;color:var(--red);margin-top:4px;display:none;"></p>
+      </div>
       <div class="field" style="margin-bottom:6px;">
         <input type="text" id="movFacturasClienteBuscar" placeholder="🔎 Buscar cliente…">
       </div>

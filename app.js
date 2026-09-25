@@ -12334,7 +12334,7 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
 
 async function loadFacturasClientesPendConNombre(businessId) {
   const [facturasQ, clientesQ] = await Promise.all([
-    sb.from('fz_facturas_clientes').select('id,folio,total,importe_pagado,estatus,fecha,cliente_id').eq('business_id', businessId).order('fecha'),
+    sb.from('fz_facturas_clientes').select('id,folio,total,importe_pagado,estatus,fecha,cliente_id,moneda,tipo_cambio,numero_factura,fecha_vencimiento').eq('business_id', businessId).order('fecha'),
     loadClientes(businessId),
   ]);
   const nombreCliente = Object.fromEntries(clientesQ.map(c => [c.id, c.razon_social || c.nombre_comercial]));
@@ -12396,6 +12396,8 @@ function wireEntradaCellHandlers(container, table, onChange, facturasClientesPen
 }
 
 let STATE_movArchivosPendientes = [];
+let STATE_movFacturasMonedaMixta = false;
+let STATE_movFacturasClienteMonedaMixta = false;
 // Helper compartido — muestra/oculta el panel embebido de documento en el workspace de dos
 // paneles (Bancos/Proveedores/Pólizas), usando el archivo pendiente más reciente. Solo
 // presentación: no sube ni asocia nada, reutiliza URL.createObjectURL como verArchivoPendiente.
@@ -12478,7 +12480,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   const [subcuentas, mayores, facturasPend, cuentaInfo, facturasClientesPend] = await Promise.all([
     loadSubcuentas(contexto.businessId),
     loadCuentasMayor(contexto.businessId),
-    sb.from('fz_proveedores').select('id,proveedor,fecha,factura,importe,importe_pagado,estatus').eq('business_id', contexto.businessId).order('fecha', { ascending: false }).limit(5000).then(r => r.data || []),
+    sb.from('fz_proveedores').select('id,proveedor,fecha,factura,importe,importe_pagado,estatus,moneda,tipo_cambio,fecha_vencimiento').eq('business_id', contexto.businessId).order('fecha', { ascending: false }).limit(5000).then(r => r.data || []),
     contexto.tipo === 'efectivo'
       ? sb.from('fz_efectivo_monedas').select('nombre').eq('id', contexto.refId).single().then(r => r.data)
       : sb.from('fz_bancos_cuentas').select('nombre').eq('id', contexto.refId).single().then(r => r.data),
@@ -12519,7 +12521,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
         return `
         <label style="display:flex;align-items:center;gap:7px;padding:2px 2px;font-size:12px;cursor:pointer;">
           <input type="checkbox" class="mov-factura-check" value="${f.id}" data-importe="${saldo}" ${idsProvYaVinculados.includes(f.id)?'checked':''}>
-          <span>${f.fecha} · ${f.factura||'s/f'} · ${esCredito?`<span style="color:var(--green);">crédito ${fmt(saldo)}</span>`:fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}</span>
+          <span>${fechaCorta(f.fecha)} · ${f.factura||'s/f'} · ${f.moneda && f.moneda!=='MXN' ? f.moneda+' ' : ''}${esCredito?`<span style="color:var(--green);">crédito ${fmt(saldo)}</span>`:fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}</span>
         </label>`;
       }).join('')}
     </div>`).join('') || `<div class="empty" style="padding:6px;font-size:12px;">No hay facturas pendientes.</div>`;
@@ -12541,6 +12543,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   movBuscarProv.oninput = () => { movSelectProv.value = ''; aplicarFiltroProveedorMov(); };
   movSelectProv.onchange = () => { movBuscarProv.value = ''; aplicarFiltroProveedorMov(); };
 
+  const mapaFacturaProvMov = Object.fromEntries(pendientes.map(f => [f.id, f]));
   const actualizarResumenMovFacturas = () => {
     const marcadas = Array.from(document.querySelectorAll('.mov-factura-check:checked'));
     const totalSeleccionado = marcadas.reduce((s,c)=>s+(Number(c.dataset.importe)||0),0);
@@ -12552,7 +12555,30 @@ async function openMovimientoModal(contexto, movimientoExistente) {
       <div style="display:flex;justify-content:space-between;"><span>Aplicado a facturas (${marcadas.length})</span><strong>${fmt(totalSeleccionado)}</strong></div>
       <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--muted)'};font-weight:700;"><span>${cuadra?'Diferencia':(diferencia>0?'Sobrará como crédito a favor':'Quedará pendiente/parcial')}</span><span>${cuadra?'$0.00 ✓':fmt(Math.abs(diferencia))}</span></div>
     `;
+    const monedas = [...new Set(marcadas.map(c => (mapaFacturaProvMov[c.value]?.moneda || 'MXN')))];
+    const tcWrap = document.getElementById('movFacturasTcWrap');
+    const tcAviso = document.getElementById('movFacturasTcAviso');
+    const tcCampo = document.getElementById('movFacturasTcCampo');
+    if (monedas.length > 1) {
+      tcWrap.style.display = ''; tcCampo.style.display = 'none'; tcAviso.style.display = '';
+      tcAviso.textContent = `Las facturas marcadas tienen monedas distintas (${monedas.join(', ')}) — no pueden aplicarse conjuntamente en un mismo pago. Selecciona facturas de una sola moneda.`;
+      STATE_movFacturasMonedaMixta = true;
+    } else {
+      STATE_movFacturasMonedaMixta = false;
+      tcAviso.style.display = 'none';
+      const monedaUnica = monedas[0] || 'MXN';
+      if (monedaUnica === 'MXN') { tcWrap.style.display = 'none'; }
+      else {
+        tcWrap.style.display = ''; tcCampo.style.display = '';
+        if (!document.getElementById('movFacturasTc').dataset.tocado) {
+          const primeraFactura = mapaFacturaProvMov[marcadas[0]?.value];
+          document.getElementById('movFacturasTc').value = fmtInputVal(primeraFactura?.tipo_cambio || 1);
+        }
+      }
+    }
   };
+  document.getElementById('movFacturasTc').dataset.tocado = '';
+  document.getElementById('movFacturasTc').oninput = (e) => { e.target.dataset.tocado = '1'; };
   document.querySelectorAll('.mov-factura-check').forEach(chk => chk.addEventListener('change', actualizarResumenMovFacturas));
   document.getElementById('movCargos').oninput = actualizarResumenMovFacturas;
   actualizarResumenMovFacturas();
@@ -12573,7 +12599,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
         return `
         <label style="display:flex;align-items:center;gap:8px;padding:4px 2px;font-size:12.5px;cursor:pointer;">
           <input type="checkbox" class="mov-factura-cliente-check" value="${f.id}" data-importe="${saldo}" data-cliente="${cli}" ${idsClienteYaVinculados.includes(f.id)?'checked':''}>
-          <span>${f.fecha} · Factura #${f.folio} · ${fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}</span>
+          <span>${fechaCorta(f.fecha)} · Factura #${f.folio}${f.numero_factura?' ('+f.numero_factura+')':''} · ${f.moneda && f.moneda!=='MXN' ? f.moneda+' ' : ''}${fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}</span>
         </label>`;
       }).join('')}
     </div>`).join('') || `<div class="empty" style="padding:8px;">No hay facturas pendientes de cobro.</div>`;
@@ -12595,6 +12621,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   movBuscarCliente.oninput = () => { movSelectCliente.value = ''; aplicarFiltroClienteMov(); };
   movSelectCliente.onchange = () => { movBuscarCliente.value = ''; aplicarFiltroClienteMov(); };
 
+  const mapaFacturaClienteMov = Object.fromEntries(pendientesCliente.map(f => [f.id, f]));
   const actualizarResumenMovFacturasCliente = () => {
     const marcadas = Array.from(document.querySelectorAll('.mov-factura-cliente-check:checked'));
     const totalSeleccionado = marcadas.reduce((s,c)=>s+(Number(c.dataset.importe)||0),0);
@@ -12611,7 +12638,30 @@ async function openMovimientoModal(contexto, movimientoExistente) {
       <div style="display:flex;justify-content:space-between;margin-bottom:2px;"><span>Total seleccionado (${marcadas.length})</span><strong>${fmt(totalSeleccionado)}</strong></div>
       <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--muted)'};font-weight:700;"><span>${cuadra?'✓ Cuadra exacto':(diferencia>0?'Sobrará sin asignar':'Quedará pendiente/parcial')}</span><span>${cuadra?'':fmt(Math.abs(diferencia))}</span></div>
     `;
+    const monedas = [...new Set(marcadas.map(c => (mapaFacturaClienteMov[c.value]?.moneda || 'MXN')))];
+    const tcWrap = document.getElementById('movFacturasClienteTcWrap');
+    const tcAviso = document.getElementById('movFacturasClienteTcAviso');
+    const tcCampo = document.getElementById('movFacturasClienteTcCampo');
+    if (monedas.length > 1) {
+      tcWrap.style.display = ''; tcCampo.style.display = 'none'; tcAviso.style.display = '';
+      tcAviso.textContent = `Las facturas marcadas tienen monedas distintas (${monedas.join(', ')}) — no pueden aplicarse conjuntamente en un mismo cobro. Selecciona facturas de una sola moneda.`;
+      STATE_movFacturasClienteMonedaMixta = true;
+    } else {
+      STATE_movFacturasClienteMonedaMixta = false;
+      tcAviso.style.display = 'none';
+      const monedaUnica = monedas[0] || 'MXN';
+      if (monedaUnica === 'MXN') { tcWrap.style.display = 'none'; }
+      else {
+        tcWrap.style.display = ''; tcCampo.style.display = '';
+        if (!document.getElementById('movFacturasClienteTc').dataset.tocado) {
+          const primeraFactura = mapaFacturaClienteMov[marcadas[0]?.value];
+          document.getElementById('movFacturasClienteTc').value = fmtInputVal(primeraFactura?.tipo_cambio || 1);
+        }
+      }
+    }
   };
+  document.getElementById('movFacturasClienteTc').dataset.tocado = '';
+  document.getElementById('movFacturasClienteTc').oninput = (e) => { e.target.dataset.tocado = '1'; };
   document.querySelectorAll('.mov-factura-cliente-check').forEach(chk => chk.addEventListener('change', actualizarResumenMovFacturasCliente));
   document.getElementById('movDepositos').oninput = actualizarResumenMovFacturasCliente;
   actualizarResumenMovFacturasCliente();
@@ -12696,6 +12746,8 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     const tipoElegido = document.getElementById('movTipoSalida').value;
     if (!cargos && !depositos) { toast('Escribe un monto en Cargos o Depósitos.', 'error'); return; }
     const esClasifCliente = tipoElegido === 'cliente';
+    if (tipoElegido === 'proveedor' && STATE_movFacturasMonedaMixta) { toast('Las facturas marcadas tienen monedas distintas — selecciona facturas de una sola moneda antes de guardar.', 'error'); return; }
+    if (esClasifCliente && STATE_movFacturasClienteMonedaMixta) { toast('Las facturas marcadas tienen monedas distintas — selecciona facturas de una sola moneda antes de guardar.', 'error'); return; }
     const esTraspaso = tipoElegido === 'traspaso_banco' || tipoElegido === 'traspaso_efectivo';
     const idsFacturas = tipoElegido === 'proveedor' ? Array.from(document.querySelectorAll('.mov-factura-check:checked')).map(c => c.value) : [];
     const idsFacturasCliente = esClasifCliente ? Array.from(document.querySelectorAll('.mov-factura-cliente-check:checked')).map(c => c.value) : [];
@@ -12763,19 +12815,25 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     let creadoCredito = false;
     if (movId || tipoElegido === 'proveedor') {
       const montoDisponible = cargos > 0 ? cargos : depositos;
+      const tcWrapVisibleProv = document.getElementById('movFacturasTcCampo').style.display !== 'none';
+      const tipoCambioPagoMov = tcWrapVisibleProv ? (leerMonto(document.getElementById('movFacturasTc').value) || 1) : 1;
       const resultado = await aplicarPagoFacturas(idsFacturas, montoDisponible, fecha, contexto.businessId, {
         pagado_desde: origenCorto,
         pagado_desde_tipo: contexto.tipo === 'efectivo' ? 'efectivo' : 'banco',
         pagado_desde_cuenta_id: contexto.refId,
         origen_tabla: table, origen_id: nuevoMov.id,
+        tipo_cambio_pago: tipoCambioPagoMov,
       });
       creadoCredito = resultado.creadoCredito;
       await sb.from(table).update({ proveedor_factura_ids: resultado.idsAfectados, proveedor_factura_id: resultado.idsAfectados[0] || null }).eq('id', nuevoMov.id);
       if (idsFacturas.length) toast(`${idsFacturas.length} factura(s) procesada(s)${creadoCredito ? ' · se generó un crédito a favor' : ''}.`);
     }
     if (movId || esClasifCliente) {
+      const tcWrapVisibleCli = document.getElementById('movFacturasClienteTcCampo').style.display !== 'none';
+      const tipoCambioCobroMov = tcWrapVisibleCli ? (leerMonto(document.getElementById('movFacturasClienteTc').value) || 1) : 1;
       const resultado = await aplicarCobroFacturas(idsFacturasCliente, depositos, fecha, contexto.businessId, {
         origen_tabla: table, origen_id: nuevoMov.id,
+        tipo_cambio_real: tipoCambioCobroMov,
       });
       if (resultado.idsAfectados.length) toast(`${resultado.idsAfectados.length} factura(s) cobrada(s).`);
       await sb.from(table).update({ cliente_factura_ids: resultado.idsAfectados, cliente_factura_id: resultado.idsAfectados[0] || null }).eq('id', nuevoMov.id);
@@ -13505,6 +13563,16 @@ function wireProvTabs(el) {
   document.getElementById('provTabDirectorio').addEventListener('click', () => { STATE_provVista = 'directorio'; renderProveedores(); });
 }
 
+async function construirOpcionesPagoDesde(businessId) {
+  const [cuentasBancoQ, monedasQ] = await Promise.all([
+    sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
+    sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
+  ]);
+  return [
+    ...(cuentasBancoQ.data || []).map(c => ({ value: 'banco:' + c.id, label: 'Banco — ' + c.nombre })),
+    ...(monedasQ.data || []).map(m => ({ value: 'efectivo:' + m.id, label: 'Caja — ' + m.nombre })),
+  ];
+}
 async function renderProveedores() {
   const el = document.getElementById('sec-proveedores');
   const b = biz();
@@ -13515,7 +13583,7 @@ async function renderProveedores() {
 
   const scrollY = window.scrollY;
   const [provQ, catalogo, cuentasBancoQ, monedasQ] = await Promise.all([
-    sb.from('fz_proveedores').select('*').eq('business_id', b.id).order('fecha', { ascending: false }).order('created_at', { ascending: false }),
+    sb.from('fz_proveedores').select('*').eq('business_id', b.id).order('fecha', { ascending: false }).order('folio', { ascending: false, nullsFirst: false }).order('created_at', { ascending: false }),
     loadProveedoresCatalogo(b.id),
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', b.id).eq('activo', true),
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', b.id).eq('activo', true),
@@ -13590,9 +13658,9 @@ async function renderProveedores() {
       </div>
       <div class="table-wrap scroll-sticky">
         <table class="tabla-operativa tabla-operativa--scroll">
-          <thead><tr><th>Fecha</th><th>No. Factura</th><th>Proveedor</th><th>Moneda</th><th>TC</th><th>Total</th><th>Pagado</th><th>Saldo</th><th>Vencimiento</th><th>Días retraso</th><th>Desglose</th><th>Estatus</th><th>Fecha pago</th><th>Pagado desde</th><th>Adjunto</th><th></th></tr></thead>
+          <thead><tr><th>Fecha</th><th>Folio</th><th>No. Factura</th><th>Proveedor</th><th>Moneda</th><th>TC</th><th>Total</th><th>Pagado</th><th>Saldo</th><th>Vencimiento</th><th>Días retraso</th><th>Desglose</th><th>Estatus</th><th>Fecha pago</th><th>Pagado desde</th><th>Adjunto</th><th></th></tr></thead>
           <tbody>
-            ${rows.map(p => provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntosProv[p.id], all)).join('') || `<tr><td colspan="13" class="empty">Sin registros.</td></tr>`}
+            ${rows.map(p => provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntosProv[p.id], all)).join('') || `<tr><td colspan="16" class="empty">Sin registros.</td></tr>`}
           </tbody>
         </table>
       </div>
@@ -13763,10 +13831,15 @@ async function renderDirectorioProveedores(el, b) {
   const grupos = {};
   (all || []).forEach(f => {
     const key = claveProveedor(f);
-    if (!grupos[key]) grupos[key] = { key, nombre: nombreProveedor(f), facturado: 0, pagado: 0, cantidad: 0 };
+    if (!grupos[key]) grupos[key] = { key, nombre: nombreProveedor(f), facturado: 0, pagado: 0, cantidad: 0, porMoneda: {} };
     grupos[key].facturado += Number(f.importe) || 0;
     grupos[key].pagado += Number(f.importe_pagado) || 0;
     grupos[key].cantidad += 1;
+    const pendFactura = redondearMoneda((Number(f.importe)||0) - (Number(f.importe_pagado)||0));
+    if (Math.abs(pendFactura) > 0.004) {
+      const mon = f.moneda || 'MXN';
+      grupos[key].porMoneda[mon] = (grupos[key].porMoneda[mon] || 0) + pendFactura;
+    }
   });
   const lista = Object.values(grupos).map(g => ({ ...g, pendiente: g.facturado - g.pagado })).sort((a,b) => b.pendiente - a.pendiente);
 
@@ -13774,9 +13847,10 @@ async function renderDirectorioProveedores(el, b) {
   const mesActual = STATE.currentMonth;
   let totalPorPagar = 0, pagadoEsteMes = 0, facturasPendientes = 0, pendientesDesglose = 0;
   (all || []).forEach(f => {
-    const saldo = (Number(f.importe) || 0) - (Number(f.importe_pagado) || 0);
+    const tcP = f.moneda && f.moneda !== 'MXN' ? (Number(f.tipo_cambio) || 1) : 1;
+    const saldo = ((Number(f.importe) || 0) - (Number(f.importe_pagado) || 0)) * tcP;
     if (saldo > 0.004) { totalPorPagar += saldo; facturasPendientes++; }
-    if (f.fecha_pago && f.fecha_pago.slice(0,7) === mesActual) pagadoEsteMes += Number(f.importe_pagado) || 0;
+    if (f.fecha_pago && f.fecha_pago.slice(0,7) === mesActual) pagadoEsteMes += (Number(f.importe_pagado) || 0) * tcP;
     const desgloseTotal = desgloseLineas(f.desglose).reduce((s,l)=>s+(Number(l.monto)||0),0);
     const metaDesglose = f.aplica_iva ? (Number(f.subtotal)||0) : (Number(f.importe)||0);
     if (!(Math.abs(desgloseTotal - metaDesglose) < 1 && desgloseTotal > 0)) pendientesDesglose++;
@@ -13785,30 +13859,60 @@ async function renderDirectorioProveedores(el, b) {
   el.innerHTML = `
     ${provTabsHtml()}
     <div class="kpi-grid kpi-grid-mobile-compact" style="margin-bottom:14px;">
-      <div class="kpi"><div class="label">Total por pagar</div><div class="value num ${totalPorPagar>0.004?'red':''}">${fmt(totalPorPagar)}</div></div>
-      <div class="kpi"><div class="label">Pagado este mes</div><div class="value num green">${fmt(pagadoEsteMes)}</div></div>
+      <div class="kpi"><div class="label">Total por pagar (MXN)</div><div class="value num ${totalPorPagar>0.004?'red':''}">${fmt(totalPorPagar)}</div></div>
+      <div class="kpi"><div class="label">Pagado este mes (MXN)</div><div class="value num green">${fmt(pagadoEsteMes)}</div></div>
       <div class="kpi"><div class="label">Facturas pendientes</div><div class="value">${facturasPendientes}</div></div>
       <div class="kpi"><div class="label">Pendientes de desglosar</div><div class="value ${pendientesDesglose>0?'red':''}">${pendientesDesglose}</div></div>
     </div>
     <div class="card">
-      <div class="card-head"><h3>Directorio de proveedores</h3><span class="hint">Clic en un proveedor para ver todo su historial</span></div>
+      <div class="card-head">
+        <h3>Directorio de proveedores</h3>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <span class="hint">Clic en un proveedor para ver todo su historial</span>
+          <div style="position:relative;">
+            <button class="btn btn-gold btn-sm" id="nuevaTransaccionProvBtn">+ Nueva transacción</button>
+            <div id="nuevaTransaccionProvDropdown" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:180px;overflow:hidden;">
+              <button class="ntp-factura" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Factura</button>
+              <button class="ntp-pago" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Registrar pago</button>
+            </div>
+          </div>
+        </div>
+      </div>
       <div class="table-wrap scroll-sticky">
         <table class="tabla-operativa tabla-operativa--scroll">
-          <thead><tr><th>Proveedor</th><th>No. facturas</th><th>Total facturado</th><th>Total pagado</th><th>Saldo pendiente</th></tr></thead>
+          <thead><tr><th>Proveedor</th><th>No. facturas</th><th>Moneda</th><th>Total facturado</th><th>Total pagado</th><th>Saldo pendiente / Por pagar</th></tr></thead>
           <tbody>
-            ${lista.length ? lista.map(g => `<tr class="prov-dir-row" data-key="${g.key}" style="cursor:pointer;">
+            ${lista.length ? lista.map(g => {
+              const monedas = Object.keys(g.porMoneda);
+              const monedaTexto = monedas.length ? monedas.join(' / ') : 'MXN';
+              const saldoTexto = monedas.length
+                ? monedas.map(m => `${prefijoMoneda(m)} ${fmt(g.porMoneda[m])}`).join('<br>')
+                : fmt(0);
+              return `<tr class="prov-dir-row" data-key="${g.key}" style="cursor:pointer;">
               <td data-rol="principal">${g.nombre}</td>
               <td data-rol="meta">${g.cantidad} factura(s)</td>
+              <td data-rol="meta">${monedaTexto}</td>
               <td class="num" data-rol="meta">${fmt(g.facturado)}</td>
               <td class="num" data-rol="meta">${fmt(g.pagado)}</td>
-              <td class="num" data-rol="importe" style="font-weight:700;">${fmtSigno(-g.pendiente)}</td>
-            </tr>`).join('') : `<tr><td colspan="5" class="empty">Aún no hay proveedores registrados.</td></tr>`}
+              <td class="num" data-rol="importe" style="font-weight:700;">${saldoTexto}</td>
+            </tr>`;}).join('') : `<tr><td colspan="6" class="empty">Aún no hay proveedores registrados.</td></tr>`}
           </tbody>
         </table>
       </div>
     </div>
   `;
   wireProvTabs(el);
+  document.getElementById('nuevaTransaccionProvBtn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const dd = document.getElementById('nuevaTransaccionProvDropdown');
+    dd.style.display = dd.style.display === 'none' ? 'block' : 'none';
+  });
+  document.addEventListener('click', () => { const dd = document.getElementById('nuevaTransaccionProvDropdown'); if (dd) dd.style.display = 'none'; });
+  el.querySelector('.ntp-factura').addEventListener('click', async () => {
+    const opcionesPagoDesde = await construirOpcionesPagoDesde(b.id);
+    await openModalFacturaProveedor(null, b.id, catalogo, opcionesPagoDesde);
+  });
+  el.querySelector('.ntp-pago').addEventListener('click', () => abrirElegirFacturaPago(b.id));
   el.querySelectorAll('.prov-dir-row').forEach(tr => tr.addEventListener('click', () => {
     STATE_provDetalleKey = tr.dataset.key;
     STATE_provVista = 'detalle';
@@ -13897,10 +14001,17 @@ async function renderProveedorDetalle(el, b) {
       <div class="kpi"><div class="label">Saldo pendiente</div><div class="value num ${pendiente>0.004?'red':'green'}">${fmt(pendiente)}</div></div>
     </div>
     <div class="card">
-      <div class="card-head"><h3>${nombre}</h3><span class="hint">Todas las transacciones, más reciente primero</span></div>
+      <div class="card-head">
+        <h3>${nombre}</h3>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <span class="hint">Todas las transacciones, más reciente primero</span>
+          <button class="btn btn-ghost btn-sm" id="provDetalleNuevaFactura">+ Nueva factura</button>
+          <button class="btn btn-gold btn-sm" id="provDetalleRegistrarPago">Registrar pago</button>
+        </div>
+      </div>
       <div class="table-wrap scroll-sticky">
         <table>
-          <thead><tr><th>Fecha</th><th>Tipo</th><th>Referencia</th><th>Monto</th><th>Saldo</th><th></th></tr></thead>
+          <thead><tr><th>Fecha</th><th>Tipo</th><th>Referencia</th><th>Monto</th><th>Saldo acumulado</th><th></th></tr></thead>
           <tbody>
             ${transacciones.length ? transacciones.map(t => `<tr>
               <td>${fechaCorta(t.fecha)}</td>
@@ -13916,6 +14027,11 @@ async function renderProveedorDetalle(el, b) {
     </div>
   `;
   document.getElementById('provDetalleVolver').addEventListener('click', () => { STATE_provVista = 'directorio'; renderProveedores(); });
+  document.getElementById('provDetalleNuevaFactura').addEventListener('click', async () => {
+    const opcionesPagoDesde = await construirOpcionesPagoDesde(b.id);
+    await openModalFacturaProveedor(null, b.id, catalogo, opcionesPagoDesde, primeraFactura?.proveedor_id || null);
+  });
+  document.getElementById('provDetalleRegistrarPago').addEventListener('click', () => abrirElegirFacturaPago(b.id, primeraFactura?.proveedor || null));
   el.querySelectorAll('.abrir-origen-btn').forEach(btn => btn.addEventListener('click', () => {
     const origen = JSON.parse(btn.dataset.origen.replace(/&apos;/g, "'"));
     abrirOrigenDesdeDetalle(origen, b.id);
@@ -14185,12 +14301,12 @@ async function renderDirectorioClientes(el, b) {
   });
 
   // Resumen general: por cobrar, vencido, cobrado este mes, pendientes de facturar fiscalmente
-  const { data: todasFacturas } = await sb.from('fz_facturas_clientes').select('total,importe_pagado,fecha_vencimiento,fecha_pago,estatus_fiscal,moneda,tipo_cambio').eq('business_id', b.id);
+  const { data: todasFacturas } = await sb.from('fz_facturas_clientes').select('total,importe_pagado,fecha_vencimiento,fecha_pago,estatus_fiscal,moneda,tipo_cambio,cliente_id').eq('business_id', b.id);
   const hoy = todayStr();
   const mesActual = STATE.currentMonth;
   let totalPorCobrar = 0, totalVencido = 0, cobradoEsteMes = 0, pendientesFiscal = 0;
   (todasFacturas || []).forEach(f => {
-    const tc = f.moneda === 'USD' ? (Number(f.tipo_cambio) || 1) : 1;
+    const tc = f.moneda && f.moneda !== 'MXN' ? (Number(f.tipo_cambio) || 1) : 1;
     const pendiente = ((Number(f.total) || 0) - (Number(f.importe_pagado) || 0)) * tc;
     if (pendiente > 0.004) {
       totalPorCobrar += pendiente;
@@ -14199,13 +14315,23 @@ async function renderDirectorioClientes(el, b) {
     if (f.fecha_pago && f.fecha_pago.slice(0,7) === mesActual) cobradoEsteMes += (Number(f.importe_pagado) || 0) * tc;
     if (f.estatus_fiscal === 'pendiente') pendientesFiscal++;
   });
+  // Desglose por moneda SIN convertir/sumar entre monedas — reutiliza el mismo saldo real
+  // (total - importe_pagado) de cada factura, solo agrupado por cliente y moneda para mostrarlo.
+  const saldosPorClienteYMoneda = {};
+  (todasFacturas || []).forEach(f => {
+    const pend = redondearMoneda((Number(f.total)||0) - (Number(f.importe_pagado)||0));
+    if (Math.abs(pend) < 0.005) return;
+    const mon = f.moneda || 'MXN';
+    saldosPorClienteYMoneda[f.cliente_id] = saldosPorClienteYMoneda[f.cliente_id] || {};
+    saldosPorClienteYMoneda[f.cliente_id][mon] = (saldosPorClienteYMoneda[f.cliente_id][mon] || 0) + pend;
+  });
 
   el.innerHTML = `
     ${clientesTabsHtml()}
     <div class="kpi-grid kpi-grid-mobile-compact" style="margin-bottom:14px;">
-      <div class="kpi"><div class="label">Total por cobrar</div><div class="value num">${fmt(totalPorCobrar)}</div></div>
-      <div class="kpi"><div class="label">Vencido</div><div class="value num ${totalVencido>0.004?'red':''}">${fmt(totalVencido)}</div></div>
-      <div class="kpi"><div class="label">Cobrado este mes</div><div class="value num green">${fmt(cobradoEsteMes)}</div></div>
+      <div class="kpi"><div class="label">Total por cobrar (MXN)</div><div class="value num">${fmt(totalPorCobrar)}</div></div>
+      <div class="kpi"><div class="label">Vencido (MXN)</div><div class="value num ${totalVencido>0.004?'red':''}">${fmt(totalVencido)}</div></div>
+      <div class="kpi"><div class="label">Cobrado este mes (MXN)</div><div class="value num green">${fmt(cobradoEsteMes)}</div></div>
       <div class="kpi"><div class="label">Pendientes de facturar</div><div class="value ${pendientesFiscal>0?'red':''}">${pendientesFiscal}</div></div>
     </div>
     <div class="card">
@@ -14217,7 +14343,7 @@ async function renderDirectorioClientes(el, b) {
             <div id="nuevaTransaccionDropdown" style="display:none;position:absolute;left:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:180px;overflow:hidden;">
               <button class="nt-factura" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Factura</button>
               <button class="nt-orden" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Orden de venta</button>
-              <button class="nt-pago" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Registrar un pago</button>
+              <button class="nt-pago" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Registrar cobro</button>
             </div>
           </div>
           <button class="btn btn-ghost btn-sm" id="openProductosBtn">${iconoConfigurar()}Productos y Servicios</button>
@@ -14226,18 +14352,25 @@ async function renderDirectorioClientes(el, b) {
       </div>
       <div class="tag-row" style="margin-bottom:12px;">
         <div class="tag ${STATE_clienteOrden==='nombre'?'active':''}" id="clienteOrdenNombre">Ordenar por nombre</div>
-        <div class="tag ${STATE_clienteOrden==='saldo'?'active':''}" id="clienteOrdenSaldo">Ordenar por saldo (Open Balance)</div>
+        <div class="tag ${STATE_clienteOrden==='saldo'?'active':''}" id="clienteOrdenSaldo">Ordenar por saldo (Open Balance, en MXN)</div>
       </div>
       <div class="table-wrap scroll-sticky">
         <table class="tabla-operativa tabla-operativa--scroll">
-          <thead><tr><th>Razón social</th><th>Nombre comercial</th><th>Teléfono</th><th>Moneda / TC</th><th>Open Balance</th><th></th></tr></thead>
+          <thead><tr><th>Razón social</th><th>Nombre comercial</th><th>Teléfono</th><th>Moneda</th><th>Open Balance</th><th></th></tr></thead>
           <tbody>
-            ${ordenados.length ? ordenados.map(c => `<tr class="cliente-fila" data-id="${c.id}" style="cursor:pointer;">
+            ${ordenados.length ? ordenados.map(c => {
+              const desglose = saldosPorClienteYMoneda[c.id] || {};
+              const monedasConSaldo = Object.keys(desglose);
+              const monedaTexto = monedasConSaldo.length ? monedasConSaldo.join(' / ') : (c.moneda || 'MXN');
+              const openBalanceTexto = monedasConSaldo.length
+                ? monedasConSaldo.map(m => `${prefijoMoneda(m)} ${fmt(desglose[m])}`).join('<br>')
+                : fmt(0);
+              return `<tr class="cliente-fila" data-id="${c.id}" style="cursor:pointer;">
               <td data-rol="meta">${c.razon_social || '<span style="color:var(--muted);">—</span>'}</td>
               <td data-rol="principal"><strong>${c.nombre_comercial}</strong></td>
               <td data-rol="meta">${c.telefono || '<span style="color:var(--muted);">—</span>'}</td>
-              <td data-rol="meta">${c.moneda}${c.moneda==='USD' ? ' · ' + fmtNum(c.tipo_cambio) : ''}</td>
-              <td class="num" data-rol="importe" style="font-weight:700;">${fmt(c.saldo)}</td>
+              <td data-rol="meta">${monedaTexto}</td>
+              <td class="num" data-rol="importe" style="font-weight:700;">${openBalanceTexto}</td>
               <td data-rol="acciones" style="position:relative;">
                 <button class="btn btn-ghost btn-sm cliente-menu-btn" data-id="${c.id}" style="padding:5px 12px;">⋯</button>
                 <div class="cliente-menu-dropdown" data-menu="${c.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:130px;overflow:hidden;">
@@ -14245,7 +14378,7 @@ async function renderDirectorioClientes(el, b) {
                   <button class="cliente-del" data-id="${c.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>
                 </div>
               </td>
-            </tr>`).join('') : `<tr><td colspan="6" class="empty">Aún no tienes clientes registrados. Usa "+ Agregar cliente".</td></tr>`}
+            </tr>`;}).join('') : `<tr><td colspan="6" class="empty">Aún no tienes clientes registrados. Usa "+ Agregar cliente".</td></tr>`}
           </tbody>
         </table>
       </div>
@@ -14565,8 +14698,34 @@ async function abrirElegirFacturaCobro(businessId) {
       <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Total seleccionado (${marcadas.length})</span><strong>${fmt(totalSeleccionado)}</strong></div>
       <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--muted)'};font-weight:700;"><span>${cuadra?'✓ Cuadra exacto':(diferencia>0?'Sobrará sin asignar':'Quedará pendiente/parcial')}</span><span>${cuadra?'':fmt(Math.abs(diferencia))}</span></div>
     `;
-    document.getElementById('elegirFacturaCobroTcWrap').style.display = marcadas.some(c => c.dataset.moneda === 'USD') ? '' : 'none';
+    const monedas = [...new Set(marcadas.map(c => c.dataset.moneda || 'MXN'))];
+    const tcWrap = document.getElementById('elegirFacturaCobroTcWrap');
+    const btnAplicar = document.getElementById('aplicarElegirFacturaCobro');
+    let avisoEl = document.getElementById('elegirFacturaCobroAviso');
+    if (!avisoEl) {
+      avisoEl = document.createElement('p');
+      avisoEl.id = 'elegirFacturaCobroAviso';
+      avisoEl.style.cssText = 'font-size:12px;color:var(--red);margin-top:6px;';
+      tcWrap.parentNode.insertBefore(avisoEl, tcWrap.nextSibling);
+    }
+    if (monedas.length > 1) {
+      tcWrap.style.display = 'none';
+      avisoEl.style.display = '';
+      avisoEl.textContent = `Las facturas marcadas tienen monedas distintas (${monedas.join(', ')}) — no pueden aplicarse conjuntamente en un mismo cobro. Selecciona facturas de una sola moneda.`;
+      btnAplicar.disabled = true; btnAplicar.style.opacity = '0.5'; btnAplicar.style.cursor = 'not-allowed';
+    } else {
+      btnAplicar.disabled = false; btnAplicar.style.opacity = ''; btnAplicar.style.cursor = '';
+      avisoEl.style.display = 'none';
+      const monedaUnica = monedas[0] || 'MXN';
+      tcWrap.style.display = monedaUnica !== 'MXN' ? '' : 'none';
+      if (monedaUnica !== 'MXN' && !document.getElementById('elegirFacturaCobroTc').dataset.tocado) {
+        const primeraFactura = marcadas[0];
+        document.getElementById('elegirFacturaCobroTc').value = fmtInputVal(primeraFactura?.dataset.tc || 1);
+      }
+    }
   };
+  document.getElementById('elegirFacturaCobroTc').dataset.tocado = '';
+  document.getElementById('elegirFacturaCobroTc').oninput = (e) => { e.target.dataset.tocado = '1'; };
 
   const renderLista = () => {
     const texto = buscar.value.trim().toLowerCase();
@@ -14579,7 +14738,7 @@ async function abrirElegirFacturaCobro(businessId) {
           const saldo = Number(f.total) - Number(f.importe_pagado||0);
           return `<label style="display:flex;align-items:center;gap:8px;padding:5px 4px;border-bottom:1px solid var(--line);font-size:13px;cursor:pointer;">
             <input type="checkbox" class="efc-check" value="${f.id}" data-importe="${saldo}" data-moneda="${f.moneda||'MXN'}" data-tc="${f.tipo_cambio||1}">
-            <span>${f.fecha} · Factura #${f.folio}${f.estatus==='Parcial'?' (parcial)':''} · ${fmt(saldo)}${f.moneda==='USD'?' USD':''}</span>
+            <span>${fechaCorta(f.fecha)} · Folio #${f.folio}${f.numero_factura?' · '+f.numero_factura:''}${f.estatus==='Parcial'?' (parcial)':''} · ${prefijoMoneda(f.moneda)} ${fmt(saldo)}${f.fecha_vencimiento?' · vence '+fechaCorta(f.fecha_vencimiento):''}</span>
           </label>`;
         }).join('')}
       </div>`;
@@ -14598,6 +14757,8 @@ document.getElementById('aplicarElegirFacturaCobro').addEventListener('click', a
   if (!b) return;
   const idsSeleccionados = Array.from(document.querySelectorAll('.efc-check:checked')).map(c => c.value);
   if (!idsSeleccionados.length) { toast('Marca al menos una factura.', 'error'); return; }
+  const monedasMarcadas = [...new Set(Array.from(document.querySelectorAll('.efc-check:checked')).map(c => c.dataset.moneda || 'MXN'))];
+  if (monedasMarcadas.length > 1) { toast('Las facturas marcadas tienen monedas distintas — no pueden aplicarse conjuntamente en un mismo cobro.', 'error'); return; }
   const monto = leerMonto(document.getElementById('elegirFacturaCobroMonto').value);
   if (!monto || monto <= 0) { toast('Escribe el monto a aplicar.', 'error'); return; }
   const fecha = document.getElementById('elegirFacturaCobroFecha').value || todayStr();
@@ -14616,13 +14777,150 @@ document.getElementById('aplicarElegirFacturaCobro').addEventListener('click', a
     origen_tabla = tabla; origen_id = mov.id;
   }
 
-  const resultado = await aplicarCobroFacturas(idsSeleccionados, monto, fecha, b.id, { origen_tabla, origen_id, tipo_cambio_real: leerMonto(document.getElementById('elegirFacturaCobroTc').value) || null });
+  const tcWrapVisibleEfc = document.getElementById('elegirFacturaCobroTcWrap').style.display !== 'none';
+  const tipoCambioEfc = tcWrapVisibleEfc ? (leerMonto(document.getElementById('elegirFacturaCobroTc').value) || 1) : 1;
+  const resultado = await aplicarCobroFacturas(idsSeleccionados, monto, fecha, b.id, { origen_tabla, origen_id, tipo_cambio_real: tipoCambioEfc });
   if (origen_id) await sb.from(origen_tabla).update({ cliente_factura_ids: resultado.idsAfectados, cliente_factura_id: resultado.idsAfectados[0] || null }).eq('id', origen_id);
   if (resultado.idsAfectados.length) toast(`${resultado.idsAfectados.length} factura(s) actualizada(s).`);
   document.getElementById('modalElegirFacturaCobro').classList.remove('show');
 });
 document.getElementById('closeElegirFacturaCobro').addEventListener('click', () => {
   document.getElementById('modalElegirFacturaCobro').classList.remove('show');
+});
+
+// Espejo exacto de abrirElegirFacturaCobro, del lado de proveedores — reutiliza
+// aplicarPagoFacturas (el mismo motor que ya usa Bancos → Pago a proveedor), nunca un motor nuevo.
+async function abrirElegirFacturaPago(businessId, proveedorPreseleccionado) {
+  const { data: pendientesRaw } = await sb.from('fz_proveedores').select('id,proveedor,proveedor_id,factura,folio,fecha,importe,importe_pagado,estatus,moneda,tipo_cambio,fecha_vencimiento').eq('business_id', businessId).neq('estatus', 'Pagado').order('fecha', { ascending: false });
+  const pendientes = pendientesRaw || [];
+  const [cuentasBancoQ, monedasQ] = await Promise.all([
+    sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
+    sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
+  ]);
+  const selCuenta = document.getElementById('elegirFacturaPagoCuenta');
+  selCuenta.innerHTML = `<option value="manual">Salida directa (sin registrar en Banco/Efectivo)</option>`
+    + (cuentasBancoQ.data||[]).map(c => `<option value="banco:${c.id}">Banco — ${c.nombre}</option>`).join('')
+    + (monedasQ.data||[]).map(m => `<option value="efectivo:${m.id}">Efectivo — ${m.nombre}</option>`).join('');
+  document.getElementById('elegirFacturaPagoFecha').value = todayStr();
+  document.getElementById('elegirFacturaPagoMonto').value = '';
+  document.getElementById('elegirFacturaPagoTc').value = '';
+  document.getElementById('elegirFacturaPagoTcWrap').style.display = 'none';
+  document.getElementById('elegirFacturaPagoTc').dataset.tocado = '';
+
+  const box = document.getElementById('elegirFacturaPagoList');
+  const buscar = document.getElementById('elegirFacturaPagoBuscar');
+  const porProveedor = {};
+  pendientes.forEach(f => { (porProveedor[f.proveedor || '(sin proveedor)'] = porProveedor[f.proveedor || '(sin proveedor)'] || []).push(f); });
+  Object.values(porProveedor).forEach(lista => lista.sort((a,b) => a.fecha.localeCompare(b.fecha)));
+  const nombresProveedor = Object.keys(porProveedor).sort((a,b)=>a.localeCompare(b));
+
+  const actualizarResumen = () => {
+    const marcadas = Array.from(box.querySelectorAll('.efp-check:checked'));
+    const totalSeleccionado = marcadas.reduce((s,c) => s + (Number(c.dataset.importe) || 0), 0);
+    const montoIngresado = leerMonto(document.getElementById('elegirFacturaPagoMonto').value) || 0;
+    const diferencia = montoIngresado - totalSeleccionado;
+    const cuadra = Math.abs(diferencia) < 0.01;
+    document.getElementById('elegirFacturaPagoResumen').innerHTML = `
+      <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Monto a aplicar</span><strong>${fmt(montoIngresado)}</strong></div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Total seleccionado (${marcadas.length})</span><strong>${fmt(totalSeleccionado)}</strong></div>
+      <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--muted)'};font-weight:700;"><span>${cuadra?'✓ Cuadra exacto':(diferencia>0?'Sobrará sin asignar':'Quedará pendiente/parcial')}</span><span>${cuadra?'':fmt(Math.abs(diferencia))}</span></div>
+    `;
+    const monedas = [...new Set(marcadas.map(c => c.dataset.moneda || 'MXN'))];
+    const tcWrap = document.getElementById('elegirFacturaPagoTcWrap');
+    const btnAplicar = document.getElementById('aplicarElegirFacturaPago');
+    let avisoEl = document.getElementById('elegirFacturaPagoAviso');
+    if (!avisoEl) {
+      avisoEl = document.createElement('p');
+      avisoEl.id = 'elegirFacturaPagoAviso';
+      avisoEl.style.cssText = 'font-size:12px;color:var(--red);margin-top:6px;';
+      tcWrap.parentNode.insertBefore(avisoEl, tcWrap.nextSibling);
+    }
+    if (monedas.length > 1) {
+      tcWrap.style.display = 'none';
+      avisoEl.style.display = '';
+      avisoEl.textContent = `Las facturas marcadas tienen monedas distintas (${monedas.join(', ')}) — no pueden aplicarse conjuntamente en un mismo pago. Selecciona facturas de una sola moneda.`;
+      btnAplicar.disabled = true; btnAplicar.style.opacity = '0.5'; btnAplicar.style.cursor = 'not-allowed';
+    } else {
+      btnAplicar.disabled = false; btnAplicar.style.opacity = ''; btnAplicar.style.cursor = '';
+      avisoEl.style.display = 'none';
+      const monedaUnica = monedas[0] || 'MXN';
+      tcWrap.style.display = monedaUnica !== 'MXN' ? '' : 'none';
+      if (monedaUnica !== 'MXN' && !document.getElementById('elegirFacturaPagoTc').dataset.tocado) {
+        document.getElementById('elegirFacturaPagoTc').value = fmtInputVal(marcadas[0]?.dataset.tc || 1);
+      }
+    }
+  };
+  document.getElementById('elegirFacturaPagoTc').oninput = (e) => { e.target.dataset.tocado = '1'; };
+
+  const renderLista = () => {
+    const texto = buscar.value.trim().toLowerCase();
+    box.innerHTML = nombresProveedor.map(prov => {
+      const facturasProv = porProveedor[prov].filter(f => !texto || prov.toLowerCase().includes(texto) || (f.factura||'').toLowerCase().includes(texto));
+      if (!facturasProv.length) return '';
+      return `<div style="margin-bottom:10px;">
+        <div style="font-weight:700;font-size:12.5px;color:var(--navy-1);margin-bottom:4px;">${prov}</div>
+        ${facturasProv.map(f => {
+          const saldo = Number(f.importe) - Number(f.importe_pagado||0);
+          return `<label style="display:flex;align-items:center;gap:8px;padding:5px 4px;border-bottom:1px solid var(--line);font-size:13px;cursor:pointer;">
+            <input type="checkbox" class="efp-check" value="${f.id}" data-importe="${saldo}" data-moneda="${f.moneda||'MXN'}" data-tc="${f.tipo_cambio||1}">
+            <span>${fechaCorta(f.fecha)}${f.folio?' · Folio #'+f.folio:''}${f.factura?' · '+f.factura:''}${f.estatus==='Parcial'?' (parcial)':''} · ${prefijoMoneda(f.moneda)} ${fmt(saldo)}${f.fecha_vencimiento?' · vence '+fechaCorta(f.fecha_vencimiento):''}</span>
+          </label>`;
+        }).join('')}
+      </div>`;
+    }).join('') || `<div class="empty" style="padding:14px;">No hay facturas pendientes de pago.</div>`;
+    box.querySelectorAll('.efp-check').forEach(chk => chk.addEventListener('change', actualizarResumen));
+    if (proveedorPreseleccionado) {
+      box.querySelectorAll('.efp-check').forEach(chk => {
+        const f = pendientes.find(x => x.id === chk.value);
+        if (f && f.proveedor === proveedorPreseleccionado) chk.checked = true;
+      });
+    }
+    actualizarResumen();
+  };
+  buscar.value = '';
+  buscar.oninput = renderLista;
+  document.getElementById('elegirFacturaPagoMonto').oninput = actualizarResumen;
+  renderLista();
+  document.getElementById('modalElegirFacturaPago').classList.add('show');
+}
+document.getElementById('aplicarElegirFacturaPago').addEventListener('click', async () => {
+  const b = biz();
+  if (!b) return;
+  const idsSeleccionados = Array.from(document.querySelectorAll('.efp-check:checked')).map(c => c.value);
+  if (!idsSeleccionados.length) { toast('Marca al menos una factura.', 'error'); return; }
+  const monedasMarcadas = [...new Set(Array.from(document.querySelectorAll('.efp-check:checked')).map(c => c.dataset.moneda || 'MXN'))];
+  if (monedasMarcadas.length > 1) { toast('Las facturas marcadas tienen monedas distintas — no pueden aplicarse conjuntamente en un mismo pago.', 'error'); return; }
+  const monto = leerMonto(document.getElementById('elegirFacturaPagoMonto').value);
+  if (!monto || monto <= 0) { toast('Escribe el monto a aplicar.', 'error'); return; }
+  const fecha = document.getElementById('elegirFacturaPagoFecha').value || todayStr();
+  if (await bloqueadoPorCierre(b.id, fecha)) return;
+  const destino = document.getElementById('elegirFacturaPagoCuenta').value;
+
+  let origen_tabla = 'manual', origen_id = null, origenCorto = null;
+  if (destino !== 'manual') {
+    const [tipo, refId] = destino.split(':');
+    const tabla = tipo === 'banco' ? 'fz_bancos_mov' : 'fz_efectivo_mov';
+    const payload = tipo === 'banco'
+      ? { business_id: b.id, cuenta_id: refId, fecha, concepto: 'Pago a proveedor', descripcion: '', cargos: monto, depositos: 0, tipo_salida: 'proveedor' }
+      : { business_id: b.id, moneda_id: refId, fecha, proveedor: '', descripcion: 'Pago a proveedor', cargos: monto, depositos: 0, tipo_salida: 'proveedor' };
+    const { data: mov, error } = await sb.from(tabla).insert(payload).select().single();
+    if (error) { toast('Error creando el movimiento: ' + error.message, 'error'); return; }
+    origen_tabla = tabla; origen_id = mov.id;
+  }
+
+  const tcWrapVisibleEfp = document.getElementById('elegirFacturaPagoTcWrap').style.display !== 'none';
+  const tipoCambioEfp = tcWrapVisibleEfp ? (leerMonto(document.getElementById('elegirFacturaPagoTc').value) || 1) : 1;
+  const resultado = await aplicarPagoFacturas(idsSeleccionados, monto, fecha, b.id, {
+    pagado_desde_tipo: destino !== 'manual' ? destino.split(':')[0] : null,
+    pagado_desde_cuenta_id: destino !== 'manual' ? destino.split(':')[1] : null,
+    origen_tabla, origen_id, tipo_cambio_pago: tipoCambioEfp,
+  });
+  if (origen_id) await sb.from(origen_tabla).update({ proveedor_factura_ids: resultado.idsAfectados, proveedor_factura_id: resultado.idsAfectados[0] || null }).eq('id', origen_id);
+  if (resultado.idsAfectados.length) toast(`${resultado.idsAfectados.length} factura(s) actualizada(s)${resultado.creadoCredito?' · se generó un crédito a favor':''}.`);
+  document.getElementById('modalElegirFacturaPago').classList.remove('show');
+});
+document.getElementById('closeElegirFacturaPago').addEventListener('click', () => {
+  document.getElementById('modalElegirFacturaPago').classList.remove('show');
 });
 
 /* ---------- Facturas de clientes ---------- */
@@ -15158,10 +15456,22 @@ function actualizarTotalesFactura() {
   const aplicaIva = document.getElementById('facturaAplicaIva').checked;
   const ivaPct = Number(document.getElementById('facturaIvaPorcentaje').value) || 0;
   const ivaMonto = aplicaIva ? subtotal * ivaPct / 100 : 0;
-  document.getElementById('facturaSubtotalTxt').textContent = fmt(subtotal);
-  document.getElementById('facturaIvaTxt').textContent = fmt(ivaMonto);
-  document.getElementById('facturaTotalTxt').textContent = fmt(subtotal + ivaMonto);
+  const total = subtotal + ivaMonto;
+  const moneda = document.getElementById('facturaMoneda').value;
+  document.getElementById('facturaSubtotalTxt').textContent = `${prefijoMoneda(moneda)} ${fmt(subtotal)}`;
+  document.getElementById('facturaIvaTxt').textContent = `${prefijoMoneda(moneda)} ${fmt(ivaMonto)}`;
+  document.getElementById('facturaTotalTxt').textContent = `${prefijoMoneda(moneda)} ${fmt(total)}`;
+  const wrapEq = document.getElementById('facturaEquivalenteMxnWrap');
+  if (moneda === 'MXN') { wrapEq.style.display = 'none'; }
+  else {
+    const tc = leerMonto(document.getElementById('facturaTipoCambio').value) || 1;
+    wrapEq.style.display = '';
+    document.getElementById('facturaEquivalenteTcTxt').textContent = fmtTC(tc);
+    document.getElementById('facturaEquivalenteMxnTxt').textContent = 'MXN ' + fmt(total * tc);
+  }
 }
+document.getElementById('facturaMoneda').addEventListener('change', actualizarTotalesFactura);
+document.getElementById('facturaTipoCambio').addEventListener('input', actualizarTotalesFactura);
 document.getElementById('facturaAplicaIva').addEventListener('change', actualizarTotalesFactura);
 document.getElementById('facturaIvaPorcentaje').addEventListener('input', actualizarTotalesFactura);
 document.getElementById('facturaEstatusFiscal').addEventListener('change', (e) => {
@@ -15664,12 +15974,13 @@ function renderFpAdjuntoPendiente() {
   if (window.innerWidth > 880) actualizarPanelDocumentoEmbebido(IDS_PANEL_DOC_FP, pendientes);
 }
 
-async function openModalFacturaProveedor(factura, businessId, catalogo, opcionesPagoDesde) {
+async function openModalFacturaProveedor(factura, businessId, catalogo, opcionesPagoDesde, proveedorPreseleccionadoId) {
   STATE_facturaProveedorEditandoId = factura ? factura.id : null;
   document.getElementById('modalFacturaProveedorTitulo').textContent = factura ? 'Editar factura de proveedor' : 'Nueva factura de proveedor';
   const selProv = document.getElementById('fpProveedor');
+  const proveedorAPreseleccionar = factura?.proveedor_id || proveedorPreseleccionadoId || null;
   selProv.innerHTML = `<option value="">${factura?.proveedor || '— elegir —'}</option>` +
-    catalogo.map(c => `<option value="${c.id}" ${factura?.proveedor_id===c.id?'selected':''}>${c.razon_social ? c.razon_social + ' — ' : ''}${c.nombre_comercial || c.nombre}</option>`).join('');
+    catalogo.map(c => `<option value="${c.id}" ${proveedorAPreseleccionar===c.id?'selected':''}>${c.razon_social ? c.razon_social + ' — ' : ''}${c.nombre_comercial || c.nombre}</option>`).join('');
   document.getElementById('fpFactura').value = factura?.factura || '';
   document.getElementById('fpFecha').value = factura?.fecha || todayStr();
   document.getElementById('fpVencimiento').value = factura?.fecha_vencimiento || '';
@@ -15685,6 +15996,7 @@ async function openModalFacturaProveedor(factura, businessId, catalogo, opciones
   inputTcFp.value = fmtInputVal(factura?.tipo_cambio || 1);
   actualizarTcWrapFp();
   document.getElementById('fpImporte').value = fmtInputVal(factura?.importe || 0);
+  if (typeof actualizarEquivalenteMxnProveedor === 'function') setTimeout(actualizarEquivalenteMxnProveedor, 0);
   document.getElementById('fpEstatus').value = factura?.estatus || 'Pendiente';
   document.getElementById('fpFechaPago').value = factura?.fecha_pago || '';
 
@@ -15787,7 +16099,21 @@ const fpActualizarIva = () => {
 
   document.getElementById('fpImporte').value = fmtInputVal(subtotal + ivaMonto - isrMonto - ivaRetMonto);
   if (typeof renderFpDesgloseList === 'function' && document.getElementById('fpDesgloseList')) renderFpDesgloseList();
+  actualizarEquivalenteMxnProveedor();
 };
+function actualizarEquivalenteMxnProveedor() {
+  const moneda = document.getElementById('fpMoneda').value;
+  const wrapEq = document.getElementById('fpEquivalenteMxnWrap');
+  if (moneda === 'MXN') { wrapEq.style.display = 'none'; return; }
+  const importe = leerMonto(document.getElementById('fpImporte').value) || 0;
+  const tc = leerMonto(document.getElementById('fpTipoCambio').value) || 1;
+  wrapEq.style.display = '';
+  document.getElementById('fpEquivalenteTcTxt').textContent = fmtTC(tc);
+  document.getElementById('fpEquivalenteMxnTxt').textContent = 'MXN ' + fmt(importe * tc);
+}
+document.getElementById('fpImporte').addEventListener('input', actualizarEquivalenteMxnProveedor);
+document.getElementById('fpTipoCambio').addEventListener('input', actualizarEquivalenteMxnProveedor);
+document.getElementById('fpMoneda').addEventListener('change', actualizarEquivalenteMxnProveedor);
 document.getElementById('fpSubtotal').addEventListener('input', fpActualizarIva);
 document.getElementById('fpIvaPorcentaje').addEventListener('input', fpActualizarIva);
 document.getElementById('fpAplicaIva').addEventListener('change', fpActualizarIva);
@@ -15952,6 +16278,7 @@ document.getElementById('saveFacturaProveedor').addEventListener('click', async 
     const { error } = await sb.from('fz_proveedores').update(payload).eq('id', idEditando);
     if (error) { toast('Error: ' + error.message, 'error'); return; }
   } else {
+    payload.folio = await siguienteFolio(b.id, 'factura_proveedor');
     const { data, error } = await sb.from('fz_proveedores').insert(payload).select().single();
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     facturaId = data.id;
@@ -16023,6 +16350,7 @@ function provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntos, todasFactur
   const esMxnProv = !p.moneda || p.moneda === 'MXN';
   return `<tr style="${esCredito?'background:#f2fbf5;':''}">
     <td data-rol="principal"><input class="cell prov-cell" type="date" value="${p.fecha}" data-id="${p.id}" data-field="fecha"></td>
+    <td data-rol="secundario">${p.folio ? '#'+p.folio : '—'}</td>
     <td data-rol="secundario"><input class="cell prov-cell" type="text" value="${p.factura||''}" data-id="${p.id}" data-field="factura"></td>
     <td data-rol="secundario">${nombreMostrado}</td>
     <td data-rol="meta">${p.moneda || 'MXN'}</td>
