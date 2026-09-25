@@ -2153,7 +2153,7 @@ function ultimoDiaDeMes(ym) {
   return new Date(y, m, 0).toISOString().slice(0,10);
 }
 async function acumuladoDe(activoId) {
-  const { data } = await sb.from('fz_depreciaciones_generadas').select('monto').eq('activo_fijo_id', activoId);
+  const { data } = await sb.from('fz_depreciaciones_generadas').select('monto').eq('activo_fijo_id', activoId).is('revertido_at', null);
   return (data||[]).reduce((s,d)=>s+(Number(d.monto)||0),0);
 }
 // Elimina un activo fijo POR COMPLETO: borra también cada póliza de depreciación que se generó
@@ -2267,28 +2267,40 @@ async function renderActivosFijos() {
     const cont = document.getElementById(`afDetalle-${STATE_afDetalleAbierto}`);
     if (cont) {
       const activoAbierto = conDatos.find(a => a.id === STATE_afDetalleAbierto);
-      const { data: historial } = await sb.from('fz_depreciaciones_generadas').select('*').eq('activo_fijo_id', STATE_afDetalleAbierto).order('periodo');
+      const { data: historial } = await sb.from('fz_depreciaciones_generadas').select('*').eq('activo_fijo_id', STATE_afDetalleAbierto).order('periodo').order('created_at');
       let acumSoFar = 0;
+      const mensualVigente = depreciacionMensualDe(activoAbierto);
       cont.innerHTML = `
         <table class="tabla-operativa" style="background:#fff;">
-          <thead><tr><th>Periodo</th><th>Base depreciable</th><th>Depreciación del periodo</th><th>Depreciación acumulada</th><th>Valor en libros</th><th>Póliza</th></tr></thead>
+          <thead><tr><th>Periodo</th><th>Base depreciable</th><th>Depreciación del periodo</th><th>Depreciación acumulada</th><th>Valor en libros</th><th>Estado</th><th>Póliza</th><th></th></tr></thead>
           <tbody>
             ${(historial||[]).length ? (historial||[]).map(h => {
-              acumSoFar += Number(h.monto)||0;
+              const esVigente = !h.revertido_at;
+              if (esVigente) acumSoFar += Number(h.monto)||0;
               const valorLibros = Number(activoAbierto.costo_adquisicion||0) + Number(activoAbierto.otros_costos_capitalizables||0) - acumSoFar;
-              return `<tr>
+              const difiereDelCalculoActual = esVigente && Math.abs(Number(h.monto) - mensualVigente) > 0.5;
+              return `<tr${!esVigente?' style="color:var(--muted);text-decoration:line-through;"':''}>
                 <td>${h.periodo}</td>
                 <td class="num">${fmt(baseDepreciableDe(activoAbierto))}</td>
                 <td class="num">${fmt(h.monto)}</td>
-                <td class="num">${fmt(acumSoFar)}</td>
-                <td class="num">${fmt(Math.max(0,valorLibros))}</td>
-                <td>${h.poliza_id ? `<button class="btn btn-ghost btn-sm af-ver-poliza" data-poliza="${h.poliza_id}" style="font-size:11px;padding:3px 8px;">Ver póliza</button>` : '—'}</td>
+                <td class="num">${esVigente?fmt(acumSoFar):'—'}</td>
+                <td class="num">${esVigente?fmt(Math.max(0,valorLibros)):'—'}</td>
+                <td style="text-decoration:none;">${esVigente ? (h.reversion_de_id?'<span style="color:var(--green);font-size:11px;">Corregida ✓</span>':'') : '<span style="color:var(--red);font-size:11px;">Revertida</span>'}</td>
+                <td style="text-decoration:none;">${h.poliza_id ? `<button class="btn btn-ghost btn-sm af-ver-poliza" data-poliza="${h.poliza_id}" style="font-size:11px;padding:3px 8px;">Ver póliza</button>` : '—'}${h.poliza_reversion_id ? ` <button class="btn btn-ghost btn-sm af-ver-poliza" data-poliza="${h.poliza_reversion_id}" style="font-size:11px;padding:3px 8px;">Ver reversión</button>` : ''}</td>
+                <td style="text-decoration:none;">${difiereDelCalculoActual ? `<button class="btn btn-gold btn-sm af-corregir-periodo" data-dep="${h.id}" style="font-size:11px;padding:3px 8px;">Corregir a ${fmt(mensualVigente)}</button>` : ''}</td>
               </tr>`;
-            }).join('') : `<tr><td colspan="6" class="empty">Sin pólizas materializadas todavía para este activo.</td></tr>`}
+            }).join('') : `<tr><td colspan="8" class="empty">Sin pólizas materializadas todavía para este activo.</td></tr>`}
           </tbody>
         </table>
       `;
       cont.querySelectorAll('.af-ver-poliza').forEach(btn => btn.addEventListener('click', () => abrirOrigenDesdeDetalle({ tipo: 'poliza', id: btn.dataset.poliza }, b.id)));
+      cont.querySelectorAll('.af-corregir-periodo').forEach(btn => btn.addEventListener('click', async () => {
+        if (!confirm('Esto conservará la póliza original, generará una póliza de reversión vinculada, y creará una póliza nueva con el monto corregido para el mismo periodo.\n\n¿Continuar?')) return;
+        const resultado = await corregirDepreciacionPeriodo(b.id, btn.dataset.dep);
+        if (!resultado.ok) { toast(resultado.mensaje, 'error'); return; }
+        toast(resultado.mensaje || `Corregido: ${fmt(resultado.montoAnterior)} → ${fmt(resultado.montoNuevo)}.`);
+        renderActivosFijos();
+      }));
     }
   }
   contenido.querySelectorAll('.af-menu-btn').forEach(btn => btn.addEventListener('click', (e) => {
@@ -5297,11 +5309,11 @@ async function generarDepreciacionesSiCorresponde(businessId) {
     const fechaInicio = a.fecha_disponible_uso || a.fecha_adquisicion;
     if (fechaInicio > hoy) continue; // aún no disponible para uso
     if (!a.cuenta_gasto_id || !a.cuenta_depreciacion_id) continue; // faltan cuentas, no se puede contabilizar
-    const { data: yaExiste } = await sb.from('fz_depreciaciones_generadas').select('id').eq('activo_fijo_id', a.id).eq('periodo', periodoActual).maybeSingle();
+    const { data: yaExiste } = await sb.from('fz_depreciaciones_generadas').select('id').eq('activo_fijo_id', a.id).eq('periodo', periodoActual).is('revertido_at', null).maybeSingle();
     if (yaExiste) continue;
     // Solo genera el mes actual si es INMEDIATAMENTE el siguiente a lo ya materializado — si hay
     // huecos históricos antes, se deja para el catch-up explícito (nunca se rellenan solos aquí).
-    const { data: ultimaGenerada } = await sb.from('fz_depreciaciones_generadas').select('periodo').eq('activo_fijo_id', a.id).order('periodo', { ascending: false }).limit(1).maybeSingle();
+    const { data: ultimaGenerada } = await sb.from('fz_depreciaciones_generadas').select('periodo').eq('activo_fijo_id', a.id).is('revertido_at', null).order('periodo', { ascending: false }).limit(1).maybeSingle();
     const periodoEsperado = ultimaGenerada ? siguienteMesYm(ultimaGenerada.periodo) : fechaInicio.slice(0,7);
     if (periodoEsperado !== periodoActual) continue; // hay hueco histórico — requiere catch-up explícito
     const acumuladoPrevio = await acumuladoDe(a.id);
@@ -5336,7 +5348,7 @@ async function diagnosticarHuecosDepreciacion(businessId) {
     const fechaInicio = a.fecha_disponible_uso || a.fecha_adquisicion;
     if (!fechaInicio || fechaInicio > todayStr()) continue;
     const periodoActual = todayStr().slice(0,7);
-    const { data: generadas } = await sb.from('fz_depreciaciones_generadas').select('periodo').eq('activo_fijo_id', a.id);
+    const { data: generadas } = await sb.from('fz_depreciaciones_generadas').select('periodo').eq('activo_fijo_id', a.id).is('revertido_at', null);
     const yaGeneradosSet = new Set((generadas||[]).map(g=>g.periodo));
     const tope = topeDepreciableConReserva(a);
     let ym = fechaInicio.slice(0,7);
@@ -5371,7 +5383,7 @@ async function generarPolizasHistoricasPendientes(businessId, activoId) {
   let ym = fechaInicio.slice(0,7);
   let generadas = 0, saltadas = 0;
   while (ym <= fechaFinTope) {
-    const { data: yaExiste } = await sb.from('fz_depreciaciones_generadas').select('id').eq('activo_fijo_id', a.id).eq('periodo', ym).maybeSingle();
+    const { data: yaExiste } = await sb.from('fz_depreciaciones_generadas').select('id').eq('activo_fijo_id', a.id).eq('periodo', ym).is('revertido_at', null).maybeSingle();
     if (yaExiste) { ym = siguienteMesYm(ym); continue; }
     const acumuladoPrevio = await acumuladoDe(a.id);
     if (acumuladoPrevio >= tope - 0.5) break; // ya alcanzó el tope permitido, no seguir
@@ -5393,6 +5405,80 @@ async function generarPolizasHistoricasPendientes(businessId, activoId) {
   }
   if (generadas) registrarAuditoria(businessId, 'crear', 'Activos Fijos', `Catch-up histórico: ${generadas} depreciación(es) generada(s) para ${a.nombre} (acción explícita del usuario)`);
   return { generadas, saltadas };
+}
+
+// Corrección CONTROLADA de una depreciación ya materializada — nunca borra ni edita in-place.
+// 1) Conserva el registro y la póliza original tal cual.
+// 2) Genera una póliza de reversión vinculada (líneas invertidas de la original).
+// 3) Marca el registro original como revertido (revertido_at + poliza_reversion_id).
+// 4) Regenera el mismo periodo con el cálculo vigente del activo (nueva póliza, nuevo registro
+//    enlazado al original vía reversion_de_id).
+// 5) Dea trazabilidad completa en auditoría.
+// Idempotente: si el registro ya fue revertido antes, no hace nada más (evita doble reversión).
+// Respeta cierres: si el periodo de la póliza original está cerrado, no corrige nada — hay que
+// reabrirlo primero. Nunca toca otras depreciaciones ni otros activos.
+async function corregirDepreciacionPeriodo(businessId, depreciacionOriginalId) {
+  const { data: original } = await sb.from('fz_depreciaciones_generadas').select('*').eq('id', depreciacionOriginalId).single();
+  if (!original) return { ok: false, mensaje: 'No se encontró el registro original.' };
+  if (original.revertido_at) return { ok: false, mensaje: 'Esta depreciación ya fue corregida anteriormente — no se vuelve a revertir (idempotente).' };
+
+  const { data: activo } = await sb.from('fz_activos_fijos').select('*').eq('id', original.activo_fijo_id).single();
+  if (!activo) return { ok: false, mensaje: 'Activo no encontrado.' };
+  if (!activo.cuenta_gasto_id || !activo.cuenta_depreciacion_id) return { ok: false, mensaje: 'Al activo le faltan las subcuentas de Gasto/Depreciación Acumulada.' };
+
+  const { data: polizaOriginal } = await sb.from('fz_polizas').select('*').eq('id', original.poliza_id).maybeSingle();
+  const fechaCorreccion = polizaOriginal?.fecha || todayStr();
+  if (await periodoEstaCerrado(businessId, fechaCorreccion)) {
+    return { ok: false, mensaje: `El periodo ${original.periodo} está cerrado. Reábrelo antes de corregir esta depreciación.` };
+  }
+
+  const { data: lineasOriginales } = await sb.from('fz_polizas_lineas').select('*').eq('poliza_id', original.poliza_id);
+  if (!lineasOriginales || !lineasOriginales.length) return { ok: false, mensaje: 'No se encontraron las líneas de la póliza original — no se puede reversar con seguridad.' };
+
+  // 1-2: póliza de reversión, líneas invertidas de la original — la original NUNCA se toca.
+  const { data: polizaReversion, error: errRev } = await sb.from('fz_polizas').insert({
+    business_id: businessId, fecha: fechaCorreccion,
+    concepto: `Reversión — corrección de depreciación ${original.periodo} — ${activo.nombre}`,
+  }).select().single();
+  if (errRev) return { ok: false, mensaje: 'Error creando la póliza de reversión: ' + errRev.message };
+  const lineasReversion = lineasOriginales.map(l => ({
+    poliza_id: polizaReversion.id, business_id: businessId, cuenta_tipo: l.cuenta_tipo, subcuenta_id: l.subcuenta_id,
+    cargo: Number(l.abono) || 0, abono: Number(l.cargo) || 0, // invertido exacto
+    descripcion: `Reversión — ${l.descripcion}`, orden: l.orden,
+  }));
+  const { error: errLineasRev } = await sb.from('fz_polizas_lineas').insert(lineasReversion);
+  if (errLineasRev) { await sb.from('fz_polizas').delete().eq('id', polizaReversion.id); return { ok: false, mensaje: 'Error creando las líneas de reversión: ' + errLineasRev.message }; }
+
+  // 3: marcar el original como revertido — nunca se borra ni se edita su monto/póliza.
+  await sb.from('fz_depreciaciones_generadas').update({ revertido_at: new Date().toISOString(), poliza_reversion_id: polizaReversion.id }).eq('id', original.id);
+
+  // 4: regenerar el mismo periodo con el cálculo VIGENTE (motor ya corregido: costo sin IVA,
+  // tope con reserva de $1, vida útil si existe).
+  const acumuladoVigente = await acumuladoDe(activo.id); // ya excluye lo revertido (ver acumuladoDe)
+  const tope = topeDepreciableConReserva(activo);
+  const montoCorregido = redondearMoneda(Math.min(depreciacionMensualDe(activo), Math.max(0, tope - acumuladoVigente)));
+  if (montoCorregido <= 0.004) {
+    registrarAuditoria(businessId, 'editar', 'Activos Fijos', `Corrección de depreciación ${original.periodo} de "${activo.nombre}": se revirtió ${fmt(original.monto)} (póliza de reversión ${polizaReversion.id}). No se generó reemplazo porque el monto corregido resultó $0 — revisar parámetros del activo (posible activo ya depreciado por completo).`);
+    return { ok: true, generoReemplazo: false, montoAnterior: original.monto, mensaje: `Reversión de ${fmt(original.monto)} aplicada. El monto corregido resultó $0 — revisa costo/vida útil/valor residual del activo antes de continuar.` };
+  }
+  const { data: polizaNueva, error: errNueva } = await sb.from('fz_polizas').insert({
+    business_id: businessId, fecha: fechaCorreccion,
+    concepto: `Depreciación ${original.periodo} — ${activo.nombre} (corregida)`,
+  }).select().single();
+  if (errNueva) return { ok: false, mensaje: 'La reversión se aplicó correctamente, pero falló crear la póliza corregida: ' + errNueva.message + ' — el periodo quedó sin depreciación vigente, intenta de nuevo.' };
+  await sb.from('fz_polizas_lineas').insert([
+    { poliza_id: polizaNueva.id, business_id: businessId, cuenta_tipo: 'subcuenta', subcuenta_id: activo.cuenta_gasto_id, cargo: montoCorregido, abono: 0, descripcion: `Depreciación ${original.periodo} ${activo.nombre} (corregida)`, orden: 0 },
+    { poliza_id: polizaNueva.id, business_id: businessId, cuenta_tipo: 'subcuenta', subcuenta_id: activo.cuenta_depreciacion_id, cargo: 0, abono: montoCorregido, descripcion: `Depreciación acumulada ${original.periodo} ${activo.nombre} (corregida)`, orden: 1 },
+  ]);
+  const { error: errInsertNueva } = await sb.from('fz_depreciaciones_generadas').insert({
+    activo_fijo_id: activo.id, business_id: businessId, periodo: original.periodo, monto: montoCorregido,
+    poliza_id: polizaNueva.id, reversion_de_id: original.id,
+  });
+  if (errInsertNueva) return { ok: false, mensaje: 'Reversión y póliza corregida creadas, pero falló registrar el nuevo periodo vigente: ' + errInsertNueva.message + ' (revisar manualmente).' };
+
+  // 5: trazabilidad completa en auditoría.
+  registrarAuditoria(businessId, 'editar', 'Activos Fijos', `Corrección de depreciación ${original.periodo} de "${activo.nombre}": revertido ${fmt(original.monto)} (póliza reversión ${polizaReversion.id}) → generado ${fmt(montoCorregido)} (póliza ${polizaNueva.id}).`);
+  return { ok: true, generoReemplazo: true, montoAnterior: original.monto, montoNuevo: montoCorregido };
 }
 
 /* ---------- IVA Acreditable (Proveedores) y Trasladado (Clientes) — solo modo Fiscal Contable ---------- */
