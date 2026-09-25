@@ -12753,22 +12753,36 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
     document.getElementById('modalFacturasPago').classList.add('show');
     document.getElementById('closeFacturasPago').onclick = () => document.getElementById('modalFacturasPago').classList.remove('show');
     document.getElementById('closeFacturasPagoX').onclick = () => document.getElementById('modalFacturasPago').classList.remove('show');
-    document.getElementById('applyFacturasPago').onclick = async () => {
-      const idsSeleccionados = Array.from(box.querySelectorAll('.factura-check:checked')).map(c => c.value);
-      const tcWrapVisible = document.getElementById('facturasPagoTcCampo').style.display !== 'none';
-      const tipoCambioPago = tcWrapVisible ? (leerMonto(document.getElementById('facturasPagoTc').value) || 1) : 1;
-      const { idsAfectados, creadoCredito } = await aplicarPagoFacturas(idsSeleccionados, montoMovimiento, row?.fecha || todayStr(), row.business_id, {
-        pagado_desde: traspasoCtx?.origenCorto || null,
-        pagado_desde_tipo: traspasoCtx?.origenTipo || null,
-        pagado_desde_cuenta_id: traspasoCtx?.origenId || null,
-        origen_tabla: table, origen_id: rowId,
-        tipo_cambio_pago: tipoCambioPago,
-      });
-      const { error: e1 } = await sb.from(table).update({ proveedor_factura_ids: idsAfectados, proveedor_factura_id: idsAfectados[0] || null }).eq('id', rowId);
-      if (e1) { toast('Error al guardar: ' + e1.message, 'error'); return; }
-      if (idsAfectados.length) toast(`${idsAfectados.length} registro(s) actualizado(s)${creadoCredito ? ' · se generó un crédito a favor' : ''}.`);
-      document.getElementById('modalFacturasPago').classList.remove('show');
-      onDone();
+    document.getElementById('applyFacturasPago').onclick = async (ev) => {
+      const btn = ev.currentTarget;
+      if (btn.disabled) return; // ya se está procesando — evita doble ejecución por doble clic/reenvío
+      btn.disabled = true;
+      try {
+        const idsSeleccionados = Array.from(box.querySelectorAll('.factura-check:checked')).map(c => c.value);
+        const tcWrapVisible = document.getElementById('facturasPagoTcCampo').style.display !== 'none';
+        const tipoCambioPago = tcWrapVisible ? (leerMonto(document.getElementById('facturasPagoTc').value) || 1) : 1;
+        const fechaPago = row?.fecha || todayStr();
+        const proveedoresInvolucrados = [...new Set(idsSeleccionados.map(id => mapaFacturaPorId[id]?.proveedor).filter(Boolean))];
+        const facturasDescr = idsSeleccionados.map(id => mapaFacturaPorId[id]?.factura || 's/f').join(', ');
+        const { idsAfectados, creadoCredito } = await aplicarPagoFacturas(idsSeleccionados, montoMovimiento, fechaPago, row.business_id, {
+          pagado_desde: traspasoCtx?.origenCorto || null,
+          pagado_desde_tipo: traspasoCtx?.origenTipo || null,
+          pagado_desde_cuenta_id: traspasoCtx?.origenId || null,
+          origen_tabla: table, origen_id: rowId,
+          tipo_cambio_pago: tipoCambioPago,
+        });
+        const { error: e1 } = await sb.from(table).update({ proveedor_factura_ids: idsAfectados, proveedor_factura_id: idsAfectados[0] || null }).eq('id', rowId);
+        if (e1) { toast('Error al guardar: ' + e1.message, 'error'); return; }
+        if (idsAfectados.length) {
+          toast(`${idsAfectados.length} registro(s) actualizado(s)${creadoCredito ? ' · se generó un crédito a favor' : ''}.`);
+          registrarAuditoria(row.business_id, 'crear', 'Proveedores',
+            `Pago a proveedor: ${proveedoresInvolucrados.join(', ') || 's/proveedor'} · ${fmt(montoMovimiento)} · ${fechaPago} · ${traspasoCtx?.origenCorto || 'Banco'} · Factura(s): ${facturasDescr}${creadoCredito ? ' · Se generó crédito a favor por el sobrante' : ''}`);
+        }
+        document.getElementById('modalFacturasPago').classList.remove('show');
+        onDone();
+      } finally {
+        btn.disabled = false;
+      }
     };
   })();
 }
@@ -13197,7 +13211,11 @@ async function openMovimientoModal(contexto, movimientoExistente) {
 
   modal.classList.add('show');
   document.getElementById('closeMovimiento').onclick = () => modal.classList.remove('show');
-  document.getElementById('saveMovimiento').onclick = async () => {
+  document.getElementById('saveMovimiento').onclick = async (ev) => {
+    const btnGuardarMov = ev.currentTarget;
+    if (btnGuardarMov.disabled) return; // ya se está procesando — evita doble ejecución
+    btnGuardarMov.disabled = true;
+    try {
     const fecha = document.getElementById('movFecha').value || todayStr();
     if (await bloqueadoPorCierre(contexto.businessId, fecha)) return;
     const cargos = Number(document.getElementById('movCargos').value) || 0;
@@ -13314,7 +13332,14 @@ async function openMovimientoModal(contexto, movimientoExistente) {
       });
       creadoCredito = resultado.creadoCredito;
       await sb.from(table).update({ proveedor_factura_ids: resultado.idsAfectados, proveedor_factura_id: resultado.idsAfectados[0] || null }).eq('id', nuevoMov.id);
-      if (idsFacturas.length) toast(`${idsFacturas.length} factura(s) procesada(s)${creadoCredito ? ' · se generó un crédito a favor' : ''}.`);
+      if (idsFacturas.length) {
+        toast(`${idsFacturas.length} factura(s) procesada(s)${creadoCredito ? ' · se generó un crédito a favor' : ''}.`);
+        const facturasInfo = idsFacturas.map(id => pendientes.find(f => f.id === id)).filter(Boolean);
+        const proveedoresInvolucrados = [...new Set(facturasInfo.map(f => f.proveedor))];
+        const facturasDescr = facturasInfo.map(f => f.factura || 's/f').join(', ');
+        registrarAuditoria(contexto.businessId, 'crear', 'Proveedores',
+          `Pago a proveedor: ${proveedoresInvolucrados.join(', ') || 's/proveedor'} · ${fmt(montoDisponible)} · ${fecha} · ${origenCorto || (contexto.tipo === 'efectivo' ? 'Efectivo' : 'Banco')} · Factura(s): ${facturasDescr}${creadoCredito ? ' · Se generó crédito a favor por el sobrante' : ''}`);
+      }
     }
     if (movId || esClasifCliente) {
       const tcWrapVisibleCli = document.getElementById('movFacturasClienteTcCampo').style.display !== 'none';
@@ -13331,6 +13356,9 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     modal.classList.remove('show');
     toast(movId ? 'Movimiento actualizado.' : 'Movimiento agregado.');
     if (contexto.onDone) contexto.onDone();
+    } finally {
+      btnGuardarMov.disabled = false;
+    }
   };
   document.getElementById('deleteMovimiento').onclick = async () => {
     if (!movimientoExistente) return;
@@ -15462,7 +15490,11 @@ async function abrirElegirFacturaPago(businessId, proveedorPreseleccionado) {
   renderLista();
   document.getElementById('modalElegirFacturaPago').classList.add('show');
 }
-document.getElementById('aplicarElegirFacturaPago').addEventListener('click', async () => {
+document.getElementById('aplicarElegirFacturaPago').addEventListener('click', async (ev) => {
+  const btnPago = ev.currentTarget;
+  if (btnPago.disabled) return; // ya se está procesando — evita doble ejecución por doble clic/reenvío
+  btnPago.disabled = true;
+  try {
   const b = biz();
   if (!b) return;
   const checksMarcadosPago = Array.from(document.querySelectorAll('.efp-check:checked'));
@@ -15479,18 +15511,20 @@ document.getElementById('aplicarElegirFacturaPago').addEventListener('click', as
   const destino = document.getElementById('elegirFacturaPagoCuenta').value;
   const tcWrapVisibleEfp = document.getElementById('elegirFacturaPagoTcWrap').style.display !== 'none';
   const tipoCambioEfp = tcWrapVisibleEfp ? (leerMonto(document.getElementById('elegirFacturaPagoTc').value) || 1) : 1;
+  const nombreTerceroPago = checksMarcadosPago[0]?.dataset.tercero || '';
+  let bancoMetodoDescr = 'Manual (sin cuenta)';
 
   let origen_tabla = 'manual', origen_id = null;
   if (destino !== 'manual') {
     const [tipo, refId] = destino.split(':');
     const tabla = tipo === 'banco' ? 'fz_bancos_mov' : 'fz_efectivo_mov';
     const { data: cuentaRow } = tipo === 'banco'
-      ? await sb.from('fz_bancos_cuentas').select('moneda').eq('id', refId).maybeSingle()
+      ? await sb.from('fz_bancos_cuentas').select('moneda,nombre').eq('id', refId).maybeSingle()
       : await sb.from('fz_efectivo_monedas').select('nombre').eq('id', refId).maybeSingle();
     const monedaCuenta = tipo === 'banco' ? (cuentaRow?.moneda || 'MXN') : (cuentaRow?.nombre || 'MXN');
+    bancoMetodoDescr = tipo === 'banco' ? (cuentaRow?.nombre || 'Banco') : `Efectivo (${cuentaRow?.nombre || ''})`;
     const resuelto = resolverMovimientoMultimoneda(monedaCuenta, monedaDocumento, monto, tcHistoricoDocumento, tipoCambioEfp);
     if (!resuelto) { toast(`La cuenta origen está en una divisa distinta a la del documento (${monedaDocumento}) — este cruce todavía no está soportado. Elige una cuenta en ${monedaDocumento} o en MXN.`, 'error'); return; }
-    const nombreTerceroPago = checksMarcadosPago[0]?.dataset.tercero || '';
     const referenciaPago = idsSeleccionados.length === 1
       ? `Pago factura ${checksMarcadosPago[0]?.dataset.factura || 's/f'}`
       : `Pago de ${idsSeleccionados.length} facturas`;
@@ -15508,8 +15542,16 @@ document.getElementById('aplicarElegirFacturaPago').addEventListener('click', as
     origen_tabla, origen_id, tipo_cambio_pago: tipoCambioEfp,
   });
   if (origen_id) await sb.from(origen_tabla).update({ proveedor_factura_ids: resultado.idsAfectados, proveedor_factura_id: resultado.idsAfectados[0] || null }).eq('id', origen_id);
-  if (resultado.idsAfectados.length) toast(`${resultado.idsAfectados.length} factura(s) actualizada(s)${resultado.creadoCredito?' · se generó un crédito a favor':''}.`);
+  if (resultado.idsAfectados.length) {
+    toast(`${resultado.idsAfectados.length} factura(s) actualizada(s)${resultado.creadoCredito?' · se generó un crédito a favor':''}.`);
+    const facturasDescr = checksMarcadosPago.map(c => c.dataset.factura || 's/f').join(', ');
+    registrarAuditoria(b.id, 'crear', 'Proveedores',
+      `Pago a proveedor: ${nombreTerceroPago || 's/proveedor'} · ${fmt(monto)} · ${fecha} · ${bancoMetodoDescr} · Factura(s): ${facturasDescr}${resultado.creadoCredito ? ' · Se generó crédito a favor por el sobrante' : ''}`);
+  }
   document.getElementById('modalElegirFacturaPago').classList.remove('show');
+  } finally {
+    btnPago.disabled = false;
+  }
 });
 document.getElementById('closeElegirFacturaPago').addEventListener('click', () => {
   document.getElementById('modalElegirFacturaPago').classList.remove('show');
