@@ -63,6 +63,45 @@ function prefijoMoneda(moneda) {
   return moneda + ' ';
 }
 
+// ============================================================
+// MULTIMONEDA BANCARIA — regla única, agnóstica de moneda concreta (nunca "si es USD…").
+// depositos/cargos en fz_bancos_mov/fz_efectivo_mov SIEMPRE deben quedar en la moneda PROPIA de
+// la cuenta — nunca en la moneda del documento. tipo_cambio_historico/equivalente_mxn_historico
+// se congelan en ese instante; nunca se recalculan después con un tc_reporte que pudo cambiar.
+//
+// monedaCuenta/monedaDocumento: 'MXN' | 'USD' | 'EUR' | ... (cualquiera).
+// montoDocumento: importe en la moneda del documento (factura/aplicación).
+// tcHistoricoDocumento: TC histórico del documento (factura).
+// tcLiquidacion: TC de ESTA liquidación (cobro/pago) — puede diferir del histórico.
+//
+// Devuelve { montoCuenta, tcHistorico, equivalenteMxn } o null si el caso no está soportado
+// (cuenta en una divisa DISTINTA a la del documento — no hay TC capturado para ese cruce; nunca
+// se inventa uno).
+function resolverMovimientoMultimoneda(monedaCuenta, monedaDocumento, montoDocumento, tcHistoricoDocumento, tcLiquidacion) {
+  const monedaCta = monedaCuenta || 'MXN';
+  const monedaDoc = monedaDocumento || 'MXN';
+  const tcDoc = Number(tcHistoricoDocumento) || 1;
+  const tcLiq = Number(tcLiquidacion) || tcDoc;
+  const monto = Number(montoDocumento) || 0;
+
+  if (monedaCta === 'MXN') {
+    if (monedaDoc === 'MXN') return { montoCuenta: monto, tcHistorico: 1, equivalenteMxn: monto };
+    // Cuenta MXN recibe/paga un documento en divisa: se convierte al TC de ESTA liquidación —
+    // el importe real que entra/sale del banco ya es en pesos, y coincide con su equivalente.
+    const montoCuenta = redondearMoneda(monto * tcLiq);
+    return { montoCuenta, tcHistorico: tcLiq, equivalenteMxn: montoCuenta };
+  }
+  if (monedaCta === monedaDoc) {
+    // Cuenta en la MISMA divisa del documento: el banco conserva la divisa real tal cual — no se
+    // "realiza" ninguna conversión en este movimiento, así que el equivalente contable usa el TC
+    // HISTÓRICO del documento (nunca el de liquidación, porque no hubo conversión real aquí).
+    return { montoCuenta: monto, tcHistorico: tcDoc, equivalenteMxn: redondearMoneda(monto * tcDoc) };
+  }
+  // Cuenta en una divisa distinta a la del documento (ej. factura EUR pagada desde cuenta USD):
+  // no hay TC capturado para ese cruce — nunca se inventa uno. Gap conocido, ver auditoría.
+  return null;
+}
+
 
 // Inicia un PDF con el encabezado estándar: razón social (o nombre comercial si no hay razón
 // social distinta) + "Nombre comercial: X" cuando ambos existen y difieren + el subtítulo del
@@ -12830,6 +12869,28 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     const esTraspaso = tipoElegido === 'traspaso_banco' || tipoElegido === 'traspaso_efectivo';
     const idsFacturas = tipoElegido === 'proveedor' ? Array.from(document.querySelectorAll('.mov-factura-check:checked')).map(c => c.value) : [];
     const idsFacturasCliente = esClasifCliente ? Array.from(document.querySelectorAll('.mov-factura-cliente-check:checked')).map(c => c.value) : [];
+
+    // Multimoneda — solo aplica a las clasificaciones cliente/proveedor con al menos una factura
+    // marcada. Gasto/traspaso/otro nunca entran aquí, se comportan exactamente igual que antes.
+    let montoCuentaOverride = null, tcHistoricoMov = null, equivalenteMxnMov = null;
+    if ((tipoElegido === 'proveedor' && idsFacturas.length) || (esClasifCliente && idsFacturasCliente.length)) {
+      const checksSel = tipoElegido === 'proveedor'
+        ? Array.from(document.querySelectorAll('.mov-factura-check:checked'))
+        : Array.from(document.querySelectorAll('.mov-factura-cliente-check:checked'));
+      const monedaDocumento = checksSel[0]?.dataset.moneda || 'MXN';
+      const tcHistoricoDocumento = Number(checksSel[0]?.dataset.tc) || 1;
+      const tcLiquidacionInput = tipoElegido === 'proveedor' ? document.getElementById('movFacturasTc') : document.getElementById('movFacturasClienteTc');
+      const tcWrapVisibleMov = (tipoElegido === 'proveedor' ? document.getElementById('movFacturasTcCampo') : document.getElementById('movFacturasClienteTcCampo')).style.display !== 'none';
+      const tcLiquidacion = tcWrapVisibleMov ? (leerMonto(tcLiquidacionInput.value) || tcHistoricoDocumento) : tcHistoricoDocumento;
+      const { data: cuentaRowMov } = contexto.tipo === 'efectivo'
+        ? await sb.from('fz_efectivo_monedas').select('nombre').eq('id', contexto.refId).maybeSingle()
+        : await sb.from('fz_bancos_cuentas').select('moneda').eq('id', contexto.refId).maybeSingle();
+      const monedaCuenta = contexto.tipo === 'efectivo' ? (cuentaRowMov?.nombre || 'MXN') : (cuentaRowMov?.moneda || 'MXN');
+      const montoDocumentoTotal = tipoElegido === 'proveedor' ? cargos : depositos;
+      const resuelto = resolverMovimientoMultimoneda(monedaCuenta, monedaDocumento, montoDocumentoTotal, tcHistoricoDocumento, tcLiquidacion);
+      if (!resuelto) { toast(`Esta cuenta está en una divisa distinta a la del documento (${monedaDocumento}) — este cruce todavía no está soportado.`, 'error'); return; }
+      montoCuentaOverride = resuelto.montoCuenta; tcHistoricoMov = resuelto.tcHistorico; equivalenteMxnMov = resuelto.equivalenteMxn;
+    }
     let legDestino = null, traspasoIdNuevo = null;
     if (esTraspaso) {
       const destinoId = document.getElementById('movTraspasoDestino').value;
@@ -12848,14 +12909,20 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     }
     const tipoSalida = esClasifCliente ? 'otro' : (esTraspaso ? 'traspaso' : tipoElegido);
     const tipoEntrada = esClasifCliente ? 'cliente' : (esTraspaso ? 'traspaso' : 'otro');
+    // Si hubo resolución multimoneda (cliente/proveedor con facturas marcadas), el importe real que
+    // entra/sale de la cuenta es el recalculado — nunca el número crudo capturado en el campo. Para
+    // gasto/traspaso/otro, o cliente/proveedor sin facturas aún marcadas, se conserva tal cual.
+    const cargosFinal = (tipoElegido === 'proveedor' && montoCuentaOverride !== null) ? montoCuentaOverride : cargos;
+    const depositosFinal = (esClasifCliente && montoCuentaOverride !== null) ? montoCuentaOverride : depositos;
     let payload, table;
     if (contexto.tipo === 'efectivo') {
       table = 'fz_efectivo_mov';
-      payload = { business_id: contexto.businessId, moneda_id: contexto.refId, fecha, proveedor: document.getElementById('movCampo1').value || null, descripcion, cargos, depositos, tipo_salida: tipoSalida, tipo_entrada: tipoEntrada };
+      payload = { business_id: contexto.businessId, moneda_id: contexto.refId, fecha, proveedor: document.getElementById('movCampo1').value || null, descripcion, cargos: cargosFinal, depositos: depositosFinal, tipo_salida: tipoSalida, tipo_entrada: tipoEntrada };
     } else {
       table = 'fz_bancos_mov';
-      payload = { business_id: contexto.businessId, cuenta_id: contexto.refId, fecha, proveedor: document.getElementById('movCampo1').value || null, concepto: document.getElementById('movConcepto').value || null, referencia: document.getElementById('movReferencia').value || null, descripcion, cargos, depositos, tipo_salida: tipoSalida, tipo_entrada: tipoEntrada };
+      payload = { business_id: contexto.businessId, cuenta_id: contexto.refId, fecha, proveedor: document.getElementById('movCampo1').value || null, concepto: document.getElementById('movConcepto').value || null, referencia: document.getElementById('movReferencia').value || null, descripcion, cargos: cargosFinal, depositos: depositosFinal, tipo_salida: tipoSalida, tipo_entrada: tipoEntrada };
     }
+    if (montoCuentaOverride !== null) { payload.tipo_cambio_historico = tcHistoricoMov; payload.equivalente_mxn_historico = equivalenteMxnMov; }
     payload.subcuenta_id = tipoElegido === 'gasto' ? (document.getElementById('movSubcuenta').value || null) : null;
     payload.traspaso_id = esTraspaso ? traspasoIdNuevo : null;
     if (tipoElegido === 'gasto' && esFiscalContableMov) {
@@ -14863,30 +14930,40 @@ async function abrirElegirFacturaCobro(businessId) {
 document.getElementById('aplicarElegirFacturaCobro').addEventListener('click', async () => {
   const b = biz();
   if (!b) return;
-  const idsSeleccionados = Array.from(document.querySelectorAll('.efc-check:checked')).map(c => c.value);
+  const checksMarcados = Array.from(document.querySelectorAll('.efc-check:checked'));
+  const idsSeleccionados = checksMarcados.map(c => c.value);
   if (!idsSeleccionados.length) { toast('Marca al menos una factura.', 'error'); return; }
-  const monedasMarcadas = [...new Set(Array.from(document.querySelectorAll('.efc-check:checked')).map(c => c.dataset.moneda || 'MXN'))];
+  const monedasMarcadas = [...new Set(checksMarcados.map(c => c.dataset.moneda || 'MXN'))];
   if (monedasMarcadas.length > 1) { toast('Las facturas marcadas tienen monedas distintas — no pueden aplicarse conjuntamente en un mismo cobro.', 'error'); return; }
+  const monedaDocumento = monedasMarcadas[0] || 'MXN';
+  const tcHistoricoDocumento = Number(checksMarcados[0]?.dataset.tc) || 1;
   const monto = leerMonto(document.getElementById('elegirFacturaCobroMonto').value);
   if (!monto || monto <= 0) { toast('Escribe el monto a aplicar.', 'error'); return; }
   const fecha = document.getElementById('elegirFacturaCobroFecha').value || todayStr();
   if (await bloqueadoPorCierre(b.id, fecha)) return;
   const destino = document.getElementById('elegirFacturaCobroCuenta').value;
+  const tcWrapVisibleEfc = document.getElementById('elegirFacturaCobroTcWrap').style.display !== 'none';
+  const tipoCambioEfc = tcWrapVisibleEfc ? (leerMonto(document.getElementById('elegirFacturaCobroTc').value) || 1) : 1;
 
   let origen_tabla = 'manual', origen_id = null;
   if (destino !== 'manual') {
     const [tipo, refId] = destino.split(':');
     const tabla = tipo === 'banco' ? 'fz_bancos_mov' : 'fz_efectivo_mov';
+    // Moneda real de la cuenta destino — nunca se asume MXN, se consulta.
+    const { data: cuentaRow } = tipo === 'banco'
+      ? await sb.from('fz_bancos_cuentas').select('moneda').eq('id', refId).maybeSingle()
+      : await sb.from('fz_efectivo_monedas').select('nombre').eq('id', refId).maybeSingle();
+    const monedaCuenta = tipo === 'banco' ? (cuentaRow?.moneda || 'MXN') : (cuentaRow?.nombre || 'MXN');
+    const resuelto = resolverMovimientoMultimoneda(monedaCuenta, monedaDocumento, monto, tcHistoricoDocumento, tipoCambioEfc);
+    if (!resuelto) { toast(`La cuenta destino está en una divisa distinta a la del documento (${monedaDocumento}) — este cruce todavía no está soportado. Elige una cuenta en ${monedaDocumento} o en MXN.`, 'error'); return; }
     const payload = tipo === 'banco'
-      ? { business_id: b.id, cuenta_id: refId, fecha, concepto: 'Cobro a clientes', descripcion: '', depositos: monto, cargos: 0, tipo_entrada: 'cliente' }
-      : { business_id: b.id, moneda_id: refId, fecha, proveedor: '', descripcion: 'Cobro a clientes', depositos: monto, cargos: 0, tipo_entrada: 'cliente' };
+      ? { business_id: b.id, cuenta_id: refId, fecha, concepto: 'Cobro a clientes', descripcion: '', depositos: resuelto.montoCuenta, cargos: 0, tipo_entrada: 'cliente', tipo_cambio_historico: resuelto.tcHistorico, equivalente_mxn_historico: resuelto.equivalenteMxn }
+      : { business_id: b.id, moneda_id: refId, fecha, proveedor: '', descripcion: 'Cobro a clientes', depositos: resuelto.montoCuenta, cargos: 0, tipo_entrada: 'cliente', tipo_cambio_historico: resuelto.tcHistorico, equivalente_mxn_historico: resuelto.equivalenteMxn };
     const { data: mov, error } = await sb.from(tabla).insert(payload).select().single();
     if (error) { toast('Error creando el movimiento: ' + error.message, 'error'); return; }
     origen_tabla = tabla; origen_id = mov.id;
   }
 
-  const tcWrapVisibleEfc = document.getElementById('elegirFacturaCobroTcWrap').style.display !== 'none';
-  const tipoCambioEfc = tcWrapVisibleEfc ? (leerMonto(document.getElementById('elegirFacturaCobroTc').value) || 1) : 1;
   const resultado = await aplicarCobroFacturas(idsSeleccionados, monto, fecha, b.id, { origen_tabla, origen_id, tipo_cambio_real: tipoCambioEfc });
   if (origen_id) await sb.from(origen_tabla).update({ cliente_factura_ids: resultado.idsAfectados, cliente_factura_id: resultado.idsAfectados[0] || null }).eq('id', origen_id);
   if (resultado.idsAfectados.length) toast(`${resultado.idsAfectados.length} factura(s) actualizada(s).`);
@@ -15026,30 +15103,39 @@ async function abrirElegirFacturaPago(businessId, proveedorPreseleccionado) {
 document.getElementById('aplicarElegirFacturaPago').addEventListener('click', async () => {
   const b = biz();
   if (!b) return;
-  const idsSeleccionados = Array.from(document.querySelectorAll('.efp-check:checked')).map(c => c.value);
+  const checksMarcadosPago = Array.from(document.querySelectorAll('.efp-check:checked'));
+  const idsSeleccionados = checksMarcadosPago.map(c => c.value);
   if (!idsSeleccionados.length) { toast('Marca al menos una factura.', 'error'); return; }
-  const monedasMarcadas = [...new Set(Array.from(document.querySelectorAll('.efp-check:checked')).map(c => c.dataset.moneda || 'MXN'))];
+  const monedasMarcadas = [...new Set(checksMarcadosPago.map(c => c.dataset.moneda || 'MXN'))];
   if (monedasMarcadas.length > 1) { toast('Las facturas marcadas tienen monedas distintas — no pueden aplicarse conjuntamente en un mismo pago.', 'error'); return; }
+  const monedaDocumento = monedasMarcadas[0] || 'MXN';
+  const tcHistoricoDocumento = Number(checksMarcadosPago[0]?.dataset.tc) || 1;
   const monto = leerMonto(document.getElementById('elegirFacturaPagoMonto').value);
   if (!monto || monto <= 0) { toast('Escribe el monto a aplicar.', 'error'); return; }
   const fecha = document.getElementById('elegirFacturaPagoFecha').value || todayStr();
   if (await bloqueadoPorCierre(b.id, fecha)) return;
   const destino = document.getElementById('elegirFacturaPagoCuenta').value;
+  const tcWrapVisibleEfp = document.getElementById('elegirFacturaPagoTcWrap').style.display !== 'none';
+  const tipoCambioEfp = tcWrapVisibleEfp ? (leerMonto(document.getElementById('elegirFacturaPagoTc').value) || 1) : 1;
 
-  let origen_tabla = 'manual', origen_id = null, origenCorto = null;
+  let origen_tabla = 'manual', origen_id = null;
   if (destino !== 'manual') {
     const [tipo, refId] = destino.split(':');
     const tabla = tipo === 'banco' ? 'fz_bancos_mov' : 'fz_efectivo_mov';
+    const { data: cuentaRow } = tipo === 'banco'
+      ? await sb.from('fz_bancos_cuentas').select('moneda').eq('id', refId).maybeSingle()
+      : await sb.from('fz_efectivo_monedas').select('nombre').eq('id', refId).maybeSingle();
+    const monedaCuenta = tipo === 'banco' ? (cuentaRow?.moneda || 'MXN') : (cuentaRow?.nombre || 'MXN');
+    const resuelto = resolverMovimientoMultimoneda(monedaCuenta, monedaDocumento, monto, tcHistoricoDocumento, tipoCambioEfp);
+    if (!resuelto) { toast(`La cuenta origen está en una divisa distinta a la del documento (${monedaDocumento}) — este cruce todavía no está soportado. Elige una cuenta en ${monedaDocumento} o en MXN.`, 'error'); return; }
     const payload = tipo === 'banco'
-      ? { business_id: b.id, cuenta_id: refId, fecha, concepto: 'Pago a proveedor', descripcion: '', cargos: monto, depositos: 0, tipo_salida: 'proveedor' }
-      : { business_id: b.id, moneda_id: refId, fecha, proveedor: '', descripcion: 'Pago a proveedor', cargos: monto, depositos: 0, tipo_salida: 'proveedor' };
+      ? { business_id: b.id, cuenta_id: refId, fecha, concepto: 'Pago a proveedor', descripcion: '', cargos: resuelto.montoCuenta, depositos: 0, tipo_salida: 'proveedor', tipo_cambio_historico: resuelto.tcHistorico, equivalente_mxn_historico: resuelto.equivalenteMxn }
+      : { business_id: b.id, moneda_id: refId, fecha, proveedor: '', descripcion: 'Pago a proveedor', cargos: resuelto.montoCuenta, depositos: 0, tipo_salida: 'proveedor', tipo_cambio_historico: resuelto.tcHistorico, equivalente_mxn_historico: resuelto.equivalenteMxn };
     const { data: mov, error } = await sb.from(tabla).insert(payload).select().single();
     if (error) { toast('Error creando el movimiento: ' + error.message, 'error'); return; }
     origen_tabla = tabla; origen_id = mov.id;
   }
 
-  const tcWrapVisibleEfp = document.getElementById('elegirFacturaPagoTcWrap').style.display !== 'none';
-  const tipoCambioEfp = tcWrapVisibleEfp ? (leerMonto(document.getElementById('elegirFacturaPagoTc').value) || 1) : 1;
   const resultado = await aplicarPagoFacturas(idsSeleccionados, monto, fecha, b.id, {
     pagado_desde_tipo: destino !== 'manual' ? destino.split(':')[0] : null,
     pagado_desde_cuenta_id: destino !== 'manual' ? destino.split(':')[1] : null,
@@ -16835,6 +16921,7 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
     return id;
   };
   const { data: facturasProv } = await conDesde(sb.from('fz_proveedores').select('*').eq('business_id', businessId).lte('fecha', hastaFecha));
+  const facturasProvMapGlobal = Object.fromEntries((facturasProv||[]).map(f => [f.id, f]));
   for (const f of (facturasProv||[])) {
     if (f.origen_poliza_id) continue; // ya se contabilizó como provisión en Pólizas
     // Mismo patrón exacto que ya usa Clientes: el documento/CxP conserva su moneda original y TC
@@ -16887,6 +16974,9 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   const { data: todosCobrosAplicados } = await sb.from('fz_cobros_aplicados').select('*').eq('business_id', businessId).lte('fecha', hastaFecha);
   const cobrosPorOrigen = {};
   (todosCobrosAplicados||[]).forEach(c => { const k = `${c.origen_tabla}|${c.origen_id}`; (cobrosPorOrigen[k] = cobrosPorOrigen[k]||[]).push(c); });
+  const { data: todosPagosAplicados } = await sb.from('fz_pagos_aplicados').select('*').eq('business_id', businessId).lte('fecha', hastaFecha);
+  const pagosPorOrigen = {};
+  (todosPagosAplicados||[]).forEach(p => { const k = `${p.origen_tabla}|${p.origen_id}`; (pagosPorOrigen[k] = pagosPorOrigen[k]||[]).push(p); });
 
   const { data: todasAplicacionesFiscales } = await sb.from('fz_aplicaciones_pago_fiscal').select('*').eq('business_id', businessId).lte('fecha', hastaFecha).is('revertido_at', null);
   const aplicacionesFiscalesPorOrigen = {};
@@ -16962,10 +17052,35 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
           push({ ...base, cuenta: nombreOrigenCuenta }, claveOrigenCuenta, 'activo', 0, Number(m.cargos));
           return;
         }
+        if (m.tipo_salida === 'proveedor') {
+          const pagosParaEste = pagosPorOrigen[`${tablaOrigenNombre}|${m.id}`] || [];
+          if (pagosParaEste.length) {
+            pagosParaEste.forEach(p => {
+              const fProv = facturasProvMapGlobal[p.factura_id];
+              const tcOriginal = fProv ? (Number(fProv.tipo_cambio)||1) : 1;
+              const tcReal = Number(p.tipo_cambio) || tcOriginal;
+              const montoOriginal = Number(p.monto)||0;
+              // Proveedores se cancela al TC HISTÓRICO (el mismo con el que se registró la
+              // factura) — nunca al de liquidación, así la cuenta cierra exacto sin importar
+              // cuánto cambió el TC entre la factura y el pago.
+              push({ ...base, cuenta: 'Proveedores' }, 'proveedores', 'pasivo', montoOriginal * tcOriginal, 0);
+              const diferencia = montoOriginal * (tcReal - tcOriginal);
+              if (Math.abs(diferencia) > 0.004) {
+                if (diferencia > 0) push({ ...base, cuenta: 'Pérdida Cambiaria' }, 'perdida_cambiaria', 'gasto', diferencia, 0);
+                else push({ ...base, cuenta: 'Ganancia Cambiaria' }, 'ganancia_cambiaria', 'ingreso', 0, -diferencia);
+              }
+            });
+          } else {
+            // Pago sin registro en fz_pagos_aplicados — no debería pasar en el flujo normal; por
+            // seguridad se liquida tal cual, sin inventar un tipo de cambio que no existe.
+            push({ ...base, cuenta: 'Proveedores' }, 'proveedores', 'pasivo', Number(m.cargos), 0);
+          }
+          push({ ...base, cuenta: nombreOrigenCuenta }, claveOrigenCuenta, 'activo', 0, (m.equivalente_mxn_historico!==null && m.equivalente_mxn_historico!==undefined) ? Number(m.equivalente_mxn_historico) : Number(m.cargos));
+          return;
+        }
         let cuentaContraria = 'Sin clasificar (revisar)', claveContraria = 'sin_clasificar', tipoContraria = 'gasto';
         let subtotalContraria = Number(m.cargos);
-        if (m.tipo_salida === 'proveedor') { cuentaContraria = 'Proveedores'; claveContraria = 'proveedores'; tipoContraria = 'pasivo'; }
-        else if (m.tipo_salida === 'gasto') {
+        if (m.tipo_salida === 'gasto') {
           cuentaContraria = nombreSub(m.subcuenta_id); claveContraria = 'sub:'+m.subcuenta_id; tipoContraria = tipoDeSub(m.subcuenta_id);
           subtotalContraria = m.aplica_iva ? (Number(m.subtotal)||0) : Number(m.cargos);
         }
@@ -16976,12 +17091,15 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
         push({ ...base, cuenta: nombreOrigenCuenta }, claveOrigenCuenta, 'activo', 0, Number(m.cargos));
       }
       if (Number(m.depositos)) {
-        // El Banco se contabiliza en MXN real — para un cobro de cliente en moneda extranjera,
-        // eso es monto original × TC REAL del cobro (nunca el TC histórico de la factura, y nunca
-        // el número crudo capturado en la moneda original). Para MXN (tc=1) o si no hay cobros
-        // registrados aún, el resultado es idéntico al comportamiento anterior.
+        // El Banco se contabiliza en MXN real. Si el movimiento ya tiene su snapshot histórico
+        // congelado (equivalente_mxn_historico, generado por el punto de guardado corregido),
+        // se usa TAL CUAL — nunca se recalcula con datos que pudieron cambiar después. Solo los
+        // movimientos ANTERIORES a esta corrección (sin ese campo) caen al cálculo en vivo previo,
+        // para no alterar retroactivamente nada ya validado.
         let montoBancoMxn = Number(m.depositos);
-        if (m.tipo_entrada === 'cliente') {
+        if (m.equivalente_mxn_historico !== null && m.equivalente_mxn_historico !== undefined) {
+          montoBancoMxn = Number(m.equivalente_mxn_historico);
+        } else if (m.tipo_entrada === 'cliente') {
           const cobrosParaBanco = cobrosPorOrigen[`${tablaOrigenNombre}|${m.id}`] || [];
           if (cobrosParaBanco.length) {
             montoBancoMxn = cobrosParaBanco.reduce((s,c) => {
