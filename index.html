@@ -2139,7 +2139,12 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
             <select id="fpAfCuentaDepreciacion"></select>
           </div>
         </div>
-        <p style="font-size:11px;color:var(--muted);">El costo de adquisición y la fecha se toman del importe y la fecha de esta misma factura.</p>
+        <div class="field">
+          <label>Fecha disponible para uso (inicio de depreciación) — opcional</label>
+          <input type="date" id="fpAfFechaDisponible">
+          <p style="font-size:11px;color:var(--muted);margin-top:4px;">Si se deja vacío, se usa la fecha de esta factura.</p>
+        </div>
+        <p style="font-size:11px;color:var(--muted);">El costo contable toma el subtotal SIN IVA de esta factura cuando el desglose fiscal está capturado (IVA se guarda por separado, solo como referencia); si no hay desglose fiscal, toma el importe tal cual.</p>
       </div>
     </div>
     <div class="field" id="fpAdjuntoWrap">
@@ -2181,23 +2186,31 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <input type="date" id="afFechaAdquisicion">
       </div>
       <div class="field">
-        <label>Costo de adquisición</label>
+        <label>Disponible para uso (opcional)</label>
+        <input type="date" id="afFechaDisponible">
+      </div>
+      <div class="field">
+        <label>Costo contable (sin IVA)</label>
         <input type="text" inputmode="decimal" id="afCosto" placeholder="0.00">
       </div>
+    </div>
+    <div id="afSugerenciaCorreccion" style="display:none;background:#fdf3e3;border:1px solid var(--gold);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:12.5px;"></div>
+    <div class="grid-2">
       <div class="field">
         <label>Valor de rescate (opcional)</label>
         <input type="text" inputmode="decimal" id="afValorRescate" placeholder="0.00">
       </div>
-    </div>
-    <div class="grid-2">
       <div class="field">
         <label>% de depreciación anual</label>
         <input type="text" inputmode="decimal" id="afPorcentaje" placeholder="10">
       </div>
+    </div>
+    <div class="grid-2">
       <div class="field">
         <label>Depreciación mensual (calculada)</label>
         <input type="text" id="afMensualCalc" readonly style="background:#f2f4f8;color:var(--muted);">
       </div>
+      <div class="field"></div>
     </div>
     <div class="grid-2">
       <div class="field">

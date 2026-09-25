@@ -2117,9 +2117,27 @@ function tarjetaConfigHtml(id, titulo, descripcion) {
   </div>`;
 }
 /* ---------- Activos Fijos y Depreciación ---------- */
+// Base depreciable = costo contable + otros costos capitalizables - valor residual. Método:
+// si el activo tiene vida_util_meses explícita, se usa esa (línea recta: base/vida_util_meses);
+// si no (activos existentes, creados antes de este campo), se sigue usando porcentaje_anual
+// exactamente como antes — compatibilidad total, ningún activo existente cambia su resultado.
+function baseDepreciableDe(activo) {
+  return Math.max(0, (Number(activo.costo_adquisicion)||0) + (Number(activo.otros_costos_capitalizables)||0) - (Number(activo.valor_rescate)||0));
+}
 function depreciacionMensualDe(activo) {
-  const base = (Number(activo.costo_adquisicion)||0) - (Number(activo.valor_rescate)||0);
+  const base = baseDepreciableDe(activo);
+  if (activo.vida_util_meses && Number(activo.vida_util_meses) > 0) {
+    return Math.max(0, base / Number(activo.vida_util_meses));
+  }
   return Math.max(0, base * (Number(activo.porcentaje_anual)||0) / 100 / 12);
+}
+function siguienteMesYm(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  return m === 12 ? `${y+1}-01` : `${y}-${String(m+1).padStart(2,'0')}`;
+}
+function ultimoDiaDeMes(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  return new Date(y, m, 0).toISOString().slice(0,10);
 }
 async function acumuladoDe(activoId) {
   const { data } = await sb.from('fz_depreciaciones_generadas').select('monto').eq('activo_fijo_id', activoId);
@@ -2143,6 +2161,7 @@ async function eliminarActivoFijoCompleto(activoId, businessId) {
 }
 
 const STATE_activosDepreciacionRevisada = new Set();
+let STATE_afDetalleAbierto = null;
 async function renderActivosFijos() {
   const el = document.getElementById('sec-activosfijos');
   const b = biz();
@@ -2153,45 +2172,71 @@ async function renderActivosFijos() {
   if (!STATE_activosDepreciacionRevisada.has(b.id)) {
     STATE_activosDepreciacionRevisada.add(b.id);
     const generadas = await generarDepreciacionesSiCorresponde(b.id);
-    if (generadas) toast(`${generadas} depreciación(es) mensual(es) generada(s) automáticamente.`);
+    if (generadas) toast(`${generadas} depreciación(es) del mes actual generada(s) automáticamente.`);
   }
 
+  const periodoActualYm = todayStr().slice(0,7);
+  const inicioEjercicioYm = periodoActualYm.slice(0,4) + '-01';
+  const finEjercicioAnteriorYm = (Number(periodoActualYm.slice(0,4))-1) + '-12';
+
   const { data: activos } = await sb.from('fz_activos_fijos').select('*').eq('business_id', b.id).order('fecha_adquisicion');
-  const conAcumulado = await Promise.all((activos||[]).map(async a => ({ ...a, acumulado: await acumuladoDe(a.id) })));
+  const conDatos = (activos||[]).map(a => {
+    const estadoActual = calcularEstadoDepreciacion(a, periodoActualYm);
+    const estadoFinEjercicioAnterior = calcularEstadoDepreciacion(a, finEjercicioAnteriorYm);
+    const estadoMesAnterior = calcularEstadoDepreciacion(a, periodoActualYm === (a.fecha_disponible_uso||a.fecha_adquisicion||'').slice(0,7) ? periodoActualYm : (periodoActualYm.slice(5,7)==='01' ? (Number(periodoActualYm.slice(0,4))-1)+'-12' : periodoActualYm.slice(0,4)+'-'+String(Number(periodoActualYm.slice(5,7))-1).padStart(2,'0')));
+    const depreciacionDelPeriodo = redondearMoneda(estadoActual.acumuladaTeorica - estadoMesAnterior.acumuladaTeorica);
+    const depreciacionDelEjercicio = redondearMoneda(estadoActual.acumuladaTeorica - estadoFinEjercicioAnterior.acumuladaTeorica);
+    return { ...a, estadoActual, depreciacionDelPeriodo, depreciacionDelEjercicio };
+  });
+
+  const diagnosticoHuecos = await diagnosticarHuecosDepreciacion(b.id);
+  const huecosPorActivo = Object.fromEntries(diagnosticoHuecos.map(h => [h.activoId, h]));
 
   const contenido = document.createElement('div');
   contenido.innerHTML = `
+    ${diagnosticoHuecos.length ? `
+    <div class="card" style="background:#fdf3e3;border-color:var(--gold);margin-bottom:12px;">
+      <div class="card-head"><h3 style="font-size:14px;">⚠ Pólizas históricas pendientes</h3></div>
+      <p style="font-size:12.5px;color:var(--navy-1);">${diagnosticoHuecos.length} activo(s) tienen meses de depreciación calculados pero sin póliza generada todavía (nunca se generan solos — requiere tu confirmación por activo, abajo en "⋯ → Generar histórico pendiente").</p>
+    </div>` : ''}
     <div class="card">
       <div class="card-head">
-        <h3>Activos Fijos</h3>
+        <h3>Activos Fijos — Cédula de depreciación contable</h3>
         <button class="btn btn-gold btn-sm" id="addActivoFijoBtn">+ Agregar activo</button>
       </div>
-      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">La depreciación mensual se genera sola (línea recta) cada vez que entras a esta pantalla, si ya tocaba — se registra como una Póliza de Diario automática.</p>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Nombre</th><th>Categoría</th><th>Costo</th><th>% anual</th><th>Mensual</th><th>Acumulada</th><th>Valor en libros</th><th>Estatus</th><th></th></tr></thead>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Los importes de depreciación mostrados son el cálculo contable correcto según los parámetros de cada activo — independiente de si la póliza ya fue materializada. Clic en un activo para ver su historial periodo por periodo.</p>
+      <div class="table-wrap scroll-sticky">
+        <table class="tabla-operativa">
+          <thead><tr><th>Activo</th><th>Adquisición</th><th>Disp. para uso</th><th>Costo contable</th><th>Val. residual</th><th>Vida útil</th><th>Método</th><th>Depr. del periodo</th><th>Depr. del ejercicio</th><th>Depr. acumulada</th><th>Valor neto en libros</th><th>Estado</th><th></th></tr></thead>
           <tbody>
-            ${conAcumulado.length ? conAcumulado.map(a => {
-              const mensual = depreciacionMensualDe(a);
-              const valorLibros = (Number(a.costo_adquisicion)||0) - a.acumulado;
-              return `<tr>
-                <td>${a.nombre}</td>
-                <td style="color:var(--muted);font-size:12px;">${a.categoria || '—'}</td>
+            ${conDatos.length ? conDatos.map(a => {
+              const vidaUtilLabel = a.vida_util_meses ? `${a.vida_util_meses} meses` : (a.porcentaje_anual ? `${fmtNum(a.porcentaje_anual)}%/año` : '—');
+              const abierto = STATE_afDetalleAbierto === a.id;
+              const tieneHueco = !!huecosPorActivo[a.id];
+              return `<tr class="af-fila-activo" data-id="${a.id}" style="cursor:pointer;${tieneHueco?'background:#fdf3e3;':''}">
+                <td>${abierto?'▾':'▸'} ${a.nombre}${tieneHueco?' <span title="Tiene meses pendientes de póliza" style="color:var(--gold);">⚠</span>':''}</td>
+                <td>${fechaCorta(a.fecha_adquisicion)}</td>
+                <td>${fechaCorta(a.fecha_disponible_uso || a.fecha_adquisicion)}</td>
                 <td class="num">${fmt(a.costo_adquisicion)}</td>
-                <td class="num">${fmtNum(a.porcentaje_anual)}%</td>
-                <td class="num">${fmt(mensual)}</td>
-                <td class="num">${fmt(a.acumulado)}</td>
-                <td class="num" style="font-weight:700;">${fmt(Math.max(0,valorLibros))}</td>
-                <td>${a.activo ? '<span class="badge pag">Activo</span>' : '<span style="color:var(--muted);font-size:12px;">Dado de baja</span>'}</td>
+                <td class="num">${fmt(a.valor_rescate||0)}</td>
+                <td>${vidaUtilLabel}</td>
+                <td style="font-size:11.5px;color:var(--muted);">${a.metodo_depreciacion==='linea_recta'||!a.metodo_depreciacion?'Línea recta':a.metodo_depreciacion}</td>
+                <td class="num">${fmt(a.depreciacionDelPeriodo)}</td>
+                <td class="num">${fmt(a.depreciacionDelEjercicio)}</td>
+                <td class="num">${fmt(a.estadoActual.acumuladaTeorica)}</td>
+                <td class="num" style="font-weight:700;">${fmt(a.estadoActual.valorLibrosTeorico)}</td>
+                <td>${a.activo ? (a.estadoActual.completo?'<span style="color:var(--muted);font-size:12px;">Depreciado</span>':'<span class="badge pag">Activo</span>') : '<span style="color:var(--muted);font-size:12px;">Dado de baja</span>'}</td>
                 <td style="position:relative;">
                   <button class="btn btn-ghost btn-sm af-menu-btn" data-id="${a.id}" style="padding:5px 12px;">⋯</button>
-                  <div class="af-menu-dropdown" data-menu="${a.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:130px;overflow:hidden;">
+                  <div class="af-menu-dropdown" data-menu="${a.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:180px;overflow:hidden;">
                     <button class="af-editar" data-id="${a.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Editar</button>
+                    ${tieneHueco ? `<button class="af-catchup" data-id="${a.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--gold);border-top:1px solid var(--line);">Generar histórico pendiente (${huecosPorActivo[a.id].faltantes.length} mes(es))</button>` : ''}
                     <button class="af-eliminar" data-id="${a.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>
                   </div>
                 </td>
-              </tr>`;
-            }).join('') : `<tr><td colspan="9" class="empty">Aún no tienes activos fijos registrados. Usa "+ Agregar activo".</td></tr>`}
+              </tr>
+              ${abierto ? `<tr><td colspan="13" style="padding:0;background:var(--paper);"><div id="afDetalle-${a.id}" style="padding:12px 16px;">Cargando…</div></td></tr>` : ''}`;
+            }).join('') : `<tr><td colspan="13" class="empty">Aún no tienes activos fijos registrados. Usa "+ Agregar activo".</td></tr>`}
           </tbody>
         </table>
       </div>
@@ -2200,6 +2245,39 @@ async function renderActivosFijos() {
   el.appendChild(contenido);
 
   document.getElementById('addActivoFijoBtn').addEventListener('click', () => openModalActivoFijo(null, b.id));
+  contenido.querySelectorAll('.af-fila-activo').forEach(tr => tr.addEventListener('click', (e) => {
+    if (e.target.closest('.af-menu-btn') || e.target.closest('.af-menu-dropdown')) return;
+    STATE_afDetalleAbierto = STATE_afDetalleAbierto === tr.dataset.id ? null : tr.dataset.id;
+    renderActivosFijos();
+  }));
+  if (STATE_afDetalleAbierto) {
+    const cont = document.getElementById(`afDetalle-${STATE_afDetalleAbierto}`);
+    if (cont) {
+      const activoAbierto = conDatos.find(a => a.id === STATE_afDetalleAbierto);
+      const { data: historial } = await sb.from('fz_depreciaciones_generadas').select('*').eq('activo_fijo_id', STATE_afDetalleAbierto).order('periodo');
+      let acumSoFar = 0;
+      cont.innerHTML = `
+        <table class="tabla-operativa" style="background:#fff;">
+          <thead><tr><th>Periodo</th><th>Base depreciable</th><th>Depreciación del periodo</th><th>Depreciación acumulada</th><th>Valor en libros</th><th>Póliza</th></tr></thead>
+          <tbody>
+            ${(historial||[]).length ? (historial||[]).map(h => {
+              acumSoFar += Number(h.monto)||0;
+              const valorLibros = Number(activoAbierto.costo_adquisicion||0) + Number(activoAbierto.otros_costos_capitalizables||0) - acumSoFar;
+              return `<tr>
+                <td>${h.periodo}</td>
+                <td class="num">${fmt(baseDepreciableDe(activoAbierto))}</td>
+                <td class="num">${fmt(h.monto)}</td>
+                <td class="num">${fmt(acumSoFar)}</td>
+                <td class="num">${fmt(Math.max(0,valorLibros))}</td>
+                <td>${h.poliza_id ? `<button class="btn btn-ghost btn-sm af-ver-poliza" data-poliza="${h.poliza_id}" style="font-size:11px;padding:3px 8px;">Ver póliza</button>` : '—'}</td>
+              </tr>`;
+            }).join('') : `<tr><td colspan="6" class="empty">Sin pólizas materializadas todavía para este activo.</td></tr>`}
+          </tbody>
+        </table>
+      `;
+      cont.querySelectorAll('.af-ver-poliza').forEach(btn => btn.addEventListener('click', () => abrirOrigenDesdeDetalle({ tipo: 'poliza', id: btn.dataset.poliza }, b.id)));
+    }
+  }
   contenido.querySelectorAll('.af-menu-btn').forEach(btn => btn.addEventListener('click', (e) => {
     e.stopPropagation();
     const dropdown = contenido.querySelector(`.af-menu-dropdown[data-menu="${btn.dataset.id}"]`);
@@ -2208,11 +2286,21 @@ async function renderActivosFijos() {
     dropdown.style.display = abierto ? 'none' : 'block';
   }));
   document.addEventListener('click', () => contenido.querySelectorAll('.af-menu-dropdown').forEach(d => d.style.display = 'none'));
-  contenido.querySelectorAll('.af-editar').forEach(btn => btn.addEventListener('click', async () => {
+  contenido.querySelectorAll('.af-editar').forEach(btn => btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
     const { data: a } = await sb.from('fz_activos_fijos').select('*').eq('id', btn.dataset.id).single();
     if (a) openModalActivoFijo(a, b.id);
   }));
-  contenido.querySelectorAll('.af-eliminar').forEach(btn => btn.addEventListener('click', async () => {
+  contenido.querySelectorAll('.af-catchup').forEach(btn => btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const h = huecosPorActivo[btn.dataset.id];
+    if (!confirm(`Se generarán ${h.faltantes.length} póliza(s) histórica(s) de depreciación para "${h.nombre}" (periodos: ${h.faltantes.join(', ')}), por un total aproximado de ${fmt(h.montoEstimado)}.\n\nEsta acción crea pólizas de diario reales. ¿Continuar?`)) return;
+    const { generadas, saltadas } = await generarPolizasHistoricasPendientes(b.id, btn.dataset.id);
+    toast(`${generadas} póliza(s) histórica(s) generada(s)${saltadas?`, ${saltadas} omitida(s) por periodo cerrado`:''}.`);
+    renderActivosFijos();
+  }));
+  contenido.querySelectorAll('.af-eliminar').forEach(btn => btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
     const acumulado = await acumuladoDe(btn.dataset.id);
     if (acumulado > 0.004) {
       const purgar = confirm(
@@ -2236,16 +2324,39 @@ async function renderActivosFijos() {
 }
 
 let STATE_activoFijoEditandoId = null;
+let STATE_afCorreccionAplicadaEnSesion = false;
 async function openModalActivoFijo(activo, businessId) {
   STATE_activoFijoEditandoId = activo ? activo.id : null;
+  STATE_afCorreccionAplicadaEnSesion = false;
   document.getElementById('modalActivoFijoTitulo').textContent = activo ? 'Editar activo fijo' : 'Nuevo activo fijo';
   document.getElementById('afNombre').value = activo?.nombre || '';
   const selCat = document.getElementById('afCategoria');
   selCat.innerHTML = `<option value="">— sin categoría —</option>` + CATEGORIAS_ACTIVO_LISR.map(c => `<option value="${c.nombre}" data-pct="${c.pct ?? ''}" ${activo?.categoria===c.nombre?'selected':''}>${c.nombre}${c.pct!==null?' — '+c.pct+'% anual':''}</option>`).join('');
   document.getElementById('afFechaAdquisicion').value = activo?.fecha_adquisicion || todayStr();
+  document.getElementById('afFechaDisponible').value = activo?.fecha_disponible_uso || '';
   document.getElementById('afCosto').value = fmtInputVal(activo?.costo_adquisicion || 0);
   document.getElementById('afValorRescate').value = fmtInputVal(activo?.valor_rescate || 0);
   document.getElementById('afPorcentaje').value = activo?.porcentaje_anual ?? 10;
+
+  // Corrección controlada — SOLO diagnóstico, nunca automático. Si este activo viene de una
+  // factura de proveedor con desglose fiscal capturado, y su subtotal (sin IVA) difiere de lo
+  // que hoy tiene guardado costo_adquisicion, se sugiere la corrección con un botón explícito.
+  const sugerenciaEl = document.getElementById('afSugerenciaCorreccion');
+  sugerenciaEl.style.display = 'none';
+  if (activo && !activo.costo_corregido_manualmente) {
+    const { data: facturaLigada } = await sb.from('fz_proveedores').select('id,subtotal,iva_monto,importe').eq('activo_fijo_id', activo.id).maybeSingle();
+    if (facturaLigada && Number(facturaLigada.subtotal) > 0 && Math.abs(Number(facturaLigada.subtotal) - Number(activo.costo_adquisicion)) > 0.5) {
+      sugerenciaEl.style.display = '';
+      sugerenciaEl.innerHTML = `⚠ El costo guardado (${fmt(activo.costo_adquisicion)}) no coincide con el subtotal sin IVA de la factura vinculada (${fmt(facturaLigada.subtotal)}). Esto puede significar que el costo incluye IVA por error.
+        <div style="margin-top:6px;"><button type="button" class="btn btn-gold btn-sm" id="afAplicarCorreccion" data-subtotal="${facturaLigada.subtotal}" data-iva="${facturaLigada.iva_monto||0}">Corregir costo a ${fmt(facturaLigada.subtotal)}</button></div>`;
+      document.getElementById('afAplicarCorreccion').addEventListener('click', (ev) => {
+        STATE_afCorreccionAplicadaEnSesion = true;
+        document.getElementById('afCosto').value = fmtInputVal(ev.target.dataset.subtotal);
+        sugerenciaEl.innerHTML = `<span style="color:var(--green);">✓ Costo actualizado en el formulario a ${fmt(ev.target.dataset.subtotal)} — recuerda Guardar para confirmar. Esto NO recalcula pólizas ya generadas; revisa el historial del activo si necesitas corregirlas también.</span>`;
+        actualizarCalculo();
+      });
+    }
+  }
 
   const [subcuentas, mayores] = await Promise.all([loadSubcuentas(businessId), loadCuentasMayor(businessId)]);
   document.getElementById('afCuentaGasto').innerHTML = opcionesSubcuentaHtml(subcuentas, mayores, activo?.cuenta_gasto_id || null) || `<option value="">— crea una subcuenta de Gasto primero —</option>`;
@@ -2295,12 +2406,14 @@ document.getElementById('saveActivoFijo').addEventListener('click', async () => 
     business_id: b.id, nombre,
     categoria: document.getElementById('afCategoria').value || null,
     fecha_adquisicion: document.getElementById('afFechaAdquisicion').value || todayStr(),
+    fecha_disponible_uso: document.getElementById('afFechaDisponible').value || null,
     costo_adquisicion: leerMonto(document.getElementById('afCosto').value) || 0,
     valor_rescate: leerMonto(document.getElementById('afValorRescate').value) || 0,
     porcentaje_anual: leerMonto(document.getElementById('afPorcentaje').value) || 0,
     cuenta_gasto_id: document.getElementById('afCuentaGasto').value || null,
     cuenta_depreciacion_id: document.getElementById('afCuentaDepreciacion').value || null,
   };
+  if (STATE_afCorreccionAplicadaEnSesion) payload.costo_corregido_manualmente = true;
   let error;
   if (STATE_activoFijoEditandoId) {
     ({ error } = await sb.from('fz_activos_fijos').update(payload).eq('id', STATE_activoFijoEditandoId));
@@ -5122,6 +5235,29 @@ async function generarPolizaPagoIsr(pagoImpuesto, businessId, cuentaTipo, cuenta
   await sb.from('fz_provisiones_fiscales').insert({ business_id: businessId, pago_impuesto_id: pagoImpuesto.id, tipo: 'pago', monto, poliza_id: nuevaPoliza.id, fecha: pagoImpuesto.fecha_pago });
 }
 
+// Cálculo PURO (nunca escribe nada) de cuánto DEBERÍA llevar depreciado un activo hasta el fin de
+// un periodo dado, según sus parámetros contables — independiente de qué pólizas ya se
+// materializaron. Esto es lo que alimenta la cédula: siempre muestra el número correcto, incluso
+// si faltan pólizas históricas por generar.
+function calcularEstadoDepreciacion(activo, periodoLimiteYm) {
+  const fechaInicio = activo.fecha_disponible_uso || activo.fecha_adquisicion;
+  const base = baseDepreciableDe(activo);
+  const mensual = depreciacionMensualDe(activo);
+  if (!fechaInicio || fechaInicio.slice(0,7) > periodoLimiteYm || base <= 0 || mensual <= 0) {
+    return { acumuladaTeorica: 0, valorLibrosTeorico: base > 0 ? Number(activo.costo_adquisicion||0) + Number(activo.otros_costos_capitalizables||0) : 0, mesesTranscurridos: 0, completo: false };
+  }
+  let fechaFinTope = activo.fecha_baja && activo.fecha_baja.slice(0,7) < periodoLimiteYm ? activo.fecha_baja.slice(0,7) : periodoLimiteYm;
+  let meses = 0;
+  let ym = fechaInicio.slice(0,7);
+  while (ym <= fechaFinTope) { meses++; ym = siguienteMesYm(ym); }
+  const acumuladaTeorica = Math.min(base, redondearMoneda(mensual * meses));
+  const valorNeto = Number(activo.costo_adquisicion||0) + Number(activo.otros_costos_capitalizables||0) - acumuladaTeorica;
+  return { acumuladaTeorica, valorLibrosTeorico: Math.max(Number(activo.valor_rescate||0), valorNeto), mesesTranscurridos: meses, completo: acumuladaTeorica >= base - 0.5 };
+}
+
+// Materialización AUTOMÁTICA — solo el mes calendario actual, y solo si no existe ya. Bajo riesgo
+// (una póliza más, nunca un lote histórico). El catch-up de meses históricos pendientes es una
+// acción EXPLÍCITA y controlada del usuario, ver generarPolizasHistoricasPendientes más abajo.
 async function generarDepreciacionesSiCorresponde(businessId) {
   const hoy = todayStr();
   const periodoActual = hoy.slice(0, 7);
@@ -5129,12 +5265,18 @@ async function generarDepreciacionesSiCorresponde(businessId) {
   if (!activos || !activos.length) return 0;
   let generadas = 0;
   for (const a of activos) {
-    if (a.fecha_adquisicion > hoy) continue; // aún no se adquiere
+    const fechaInicio = a.fecha_disponible_uso || a.fecha_adquisicion;
+    if (fechaInicio > hoy) continue; // aún no disponible para uso
     if (!a.cuenta_gasto_id || !a.cuenta_depreciacion_id) continue; // faltan cuentas, no se puede contabilizar
     const { data: yaExiste } = await sb.from('fz_depreciaciones_generadas').select('id').eq('activo_fijo_id', a.id).eq('periodo', periodoActual).maybeSingle();
     if (yaExiste) continue;
+    // Solo genera el mes actual si es INMEDIATAMENTE el siguiente a lo ya materializado — si hay
+    // huecos históricos antes, se deja para el catch-up explícito (nunca se rellenan solos aquí).
+    const { data: ultimaGenerada } = await sb.from('fz_depreciaciones_generadas').select('periodo').eq('activo_fijo_id', a.id).order('periodo', { ascending: false }).limit(1).maybeSingle();
+    const periodoEsperado = ultimaGenerada ? siguienteMesYm(ultimaGenerada.periodo) : fechaInicio.slice(0,7);
+    if (periodoEsperado !== periodoActual) continue; // hay hueco histórico — requiere catch-up explícito
     const acumuladoPrevio = await acumuladoDe(a.id);
-    const base = (Number(a.costo_adquisicion)||0) - (Number(a.valor_rescate)||0);
+    const base = baseDepreciableDe(a);
     if (acumuladoPrevio >= base - 0.5) continue; // ya se depreció por completo
     const mensual = Math.min(depreciacionMensualDe(a), base - acumuladoPrevio);
     if (mensual <= 0.004) continue;
@@ -5153,6 +5295,75 @@ async function generarDepreciacionesSiCorresponde(businessId) {
     generadas++;
   }
   return generadas;
+}
+
+// Diagnóstico de huecos — SOLO LECTURA, para mostrar al usuario qué falta antes de decidir si
+// materializar el catch-up histórico. Nunca escribe nada.
+async function diagnosticarHuecosDepreciacion(businessId) {
+  const { data: activos } = await sb.from('fz_activos_fijos').select('*').eq('business_id', businessId).eq('activo', true);
+  const resultado = [];
+  for (const a of (activos||[])) {
+    if (!a.cuenta_gasto_id || !a.cuenta_depreciacion_id) continue;
+    const fechaInicio = a.fecha_disponible_uso || a.fecha_adquisicion;
+    if (!fechaInicio || fechaInicio > todayStr()) continue;
+    const periodoActual = todayStr().slice(0,7);
+    const { data: generadas } = await sb.from('fz_depreciaciones_generadas').select('periodo').eq('activo_fijo_id', a.id);
+    const yaGeneradosSet = new Set((generadas||[]).map(g=>g.periodo));
+    const base = baseDepreciableDe(a);
+    let ym = fechaInicio.slice(0,7);
+    const faltantes = [];
+    let acumuladoSimulado = 0;
+    while (ym <= periodoActual && acumuladoSimulado < base - 0.5) {
+      if (!yaGeneradosSet.has(ym)) faltantes.push(ym);
+      else acumuladoSimulado += Number([...(generadas||[])].find(g=>g.periodo===ym)?.monto || 0);
+      // para el propósito del diagnóstico (solo contar huecos), se acumula con el monto mensual
+      // teórico cuando falta, evitando quedarnos cortos si nunca se generó nada:
+      if (!yaGeneradosSet.has(ym)) acumuladoSimulado += Math.min(depreciacionMensualDe(a), Math.max(0, base - acumuladoSimulado));
+      ym = siguienteMesYm(ym);
+    }
+    if (faltantes.length) resultado.push({ activoId: a.id, nombre: a.nombre, faltantes, montoEstimado: faltantes.length * depreciacionMensualDe(a) });
+  }
+  return resultado;
+}
+
+// Catch-up EXPLÍCITO y controlado — solo se ejecuta cuando el usuario lo confirma desde la UI,
+// nunca automáticamente. Genera, activo por activo y periodo por periodo en orden cronológico,
+// exactamente los meses faltantes detectados por diagnosticarHuecosDepreciacion. La restricción
+// UNIQUE(activo_fijo_id, periodo) en fz_depreciaciones_generadas protege contra duplicados
+// incluso si esto se llama más de una vez.
+async function generarPolizasHistoricasPendientes(businessId, activoId) {
+  const { data: a } = await sb.from('fz_activos_fijos').select('*').eq('id', activoId).single();
+  if (!a || !a.cuenta_gasto_id || !a.cuenta_depreciacion_id) return { generadas: 0, saltadas: 0 };
+  const fechaInicio = a.fecha_disponible_uso || a.fecha_adquisicion;
+  const periodoActual = todayStr().slice(0,7);
+  const fechaFinTope = a.fecha_baja && a.fecha_baja.slice(0,7) < periodoActual ? a.fecha_baja.slice(0,7) : periodoActual;
+  const base = baseDepreciableDe(a);
+  const mensual = depreciacionMensualDe(a);
+  let ym = fechaInicio.slice(0,7);
+  let generadas = 0, saltadas = 0;
+  while (ym <= fechaFinTope) {
+    const { data: yaExiste } = await sb.from('fz_depreciaciones_generadas').select('id').eq('activo_fijo_id', a.id).eq('periodo', ym).maybeSingle();
+    if (yaExiste) { ym = siguienteMesYm(ym); continue; }
+    const acumuladoPrevio = await acumuladoDe(a.id);
+    if (acumuladoPrevio >= base - 0.5) break; // completamente depreciado, no seguir
+    const monto = Math.min(mensual, base - acumuladoPrevio);
+    if (monto <= 0.004) { ym = siguienteMesYm(ym); continue; }
+    const fechaPoliza = ym === periodoActual ? todayStr() : ultimoDiaDeMes(ym);
+    if (await periodoEstaCerrado(businessId, fechaPoliza)) { saltadas++; ym = siguienteMesYm(ym); continue; }
+    const { data: nuevaPoliza, error: errPoliza } = await sb.from('fz_polizas').insert({
+      business_id: businessId, fecha: fechaPoliza, concepto: `Depreciación ${ym} — ${a.nombre} (histórica)`,
+    }).select().single();
+    if (errPoliza) { saltadas++; ym = siguienteMesYm(ym); continue; }
+    await sb.from('fz_polizas_lineas').insert([
+      { poliza_id: nuevaPoliza.id, business_id: businessId, cuenta_tipo: 'subcuenta', subcuenta_id: a.cuenta_gasto_id, cargo: monto, abono: 0, descripcion: `Depreciación ${ym} ${a.nombre}`, orden: 0 },
+      { poliza_id: nuevaPoliza.id, business_id: businessId, cuenta_tipo: 'subcuenta', subcuenta_id: a.cuenta_depreciacion_id, cargo: 0, abono: monto, descripcion: `Depreciación acumulada ${ym} ${a.nombre}`, orden: 1 },
+    ]);
+    await sb.from('fz_depreciaciones_generadas').insert({ activo_fijo_id: a.id, business_id: businessId, periodo: ym, monto, poliza_id: nuevaPoliza.id });
+    generadas++;
+    ym = siguienteMesYm(ym);
+  }
+  if (generadas) registrarAuditoria(businessId, 'crear', 'Activos Fijos', `Catch-up histórico: ${generadas} depreciación(es) generada(s) para ${a.nombre} (acción explícita del usuario)`);
+  return { generadas, saltadas };
 }
 
 /* ---------- IVA Acreditable (Proveedores) y Trasladado (Clientes) — solo modo Fiscal Contable ---------- */
@@ -16299,6 +16510,7 @@ async function openModalFacturaProveedor(factura, businessId, catalogo, opciones
   document.getElementById('fpAfCuentaDepreciacion').innerHTML = opcionesSubcuentaHtml(subcuentas, mayores, null) || `<option value="">— crea una subcuenta primero —</option>`;
   document.getElementById('fpAfNombre').value = '';
   document.getElementById('fpAfPorcentaje').value = 10;
+  document.getElementById('fpAfFechaDisponible').value = '';
   document.getElementById('fpEsActivoFijo').checked = false;
   document.getElementById('fpActivoFijoCampos').style.display = 'none';
   if (factura?.activo_fijo_id) {
@@ -16312,6 +16524,7 @@ async function openModalFacturaProveedor(factura, businessId, catalogo, opciones
       document.getElementById('fpAfPorcentaje').value = af.porcentaje_anual ?? 10;
       document.getElementById('fpAfCuentaGasto').value = af.cuenta_gasto_id || '';
       document.getElementById('fpAfCuentaDepreciacion').value = af.cuenta_depreciacion_id || '';
+      document.getElementById('fpAfFechaDisponible').value = af.fecha_disponible_uso || '';
     }
   }
 
@@ -16545,12 +16758,22 @@ document.getElementById('saveFacturaProveedor').addEventListener('click', async 
   // Activo Fijo vinculado a esta factura
   const esActivoFijo = document.getElementById('fpEsActivoFijo').checked;
   if (esActivoFijo) {
+    // Costo contable: NUNCA el total con IVA. Si la factura tiene desglose fiscal capturado
+    // (subtotal/iva_monto separados), el costo es el subtotal — el IVA se conserva aparte, solo
+    // como referencia. Si no hay desglose fiscal, no existe una base separable y se usa el
+    // importe tal cual (no hay otro dato del que partir). Regla dinámica — nunca un monto fijo.
+    const tieneDesgloseFiscal = payload.subtotal !== null && payload.subtotal !== undefined && Number(payload.subtotal) > 0;
+    const costoContable = tieneDesgloseFiscal ? Number(payload.subtotal) : Number(payload.importe);
+    const ivaSeparado = tieneDesgloseFiscal ? Number(payload.iva_monto || 0) : 0;
+    const fechaDisponibleUso = document.getElementById('fpAfFechaDisponible').value || payload.fecha;
     const afPayload = {
       business_id: b.id,
       nombre: document.getElementById('fpAfNombre').value.trim() || payload.proveedor,
       categoria: document.getElementById('fpAfCategoria').value || null,
       fecha_adquisicion: payload.fecha,
-      costo_adquisicion: payload.importe,
+      fecha_disponible_uso: fechaDisponibleUso,
+      costo_adquisicion: costoContable,
+      iva_monto: ivaSeparado,
       porcentaje_anual: leerMonto(document.getElementById('fpAfPorcentaje').value) || 0,
       cuenta_gasto_id: document.getElementById('fpAfCuentaGasto').value || null,
       cuenta_depreciacion_id: document.getElementById('fpAfCuentaDepreciacion').value || null,
