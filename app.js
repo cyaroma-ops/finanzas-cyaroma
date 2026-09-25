@@ -13364,6 +13364,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
   const traspasoCtx = { cuentasBanco: cuentasBancoQ.data || [], monedasEfectivo: monedasEfectivoQ.data || [], origenTipo: 'efectivo', origenId: moneda.id, origenNombre: 'la caja ' + moneda.nombre, origenCorto: 'Caja — ' + moneda.nombre };
   let saldo = saldoApertura;
   const conteoAdjuntosEfvo = await contarAdjuntosPorRegistro('fz_efectivo_mov', ledger.filter(r => !r.auto).map(r => r.id));
+  const referenciaLegibleEfvo = (r) => r.factura || r.descripcion || '<span style="color:var(--muted);">—</span>';
   const rowsHtml = ledger.map(r => {
     saldo += (Number(r.depositos) || 0) - (Number(r.cargos) || 0);
     // Resumen visual — SOLO para el ledger compacto móvil. Usa exactamente el mismo dato que ya
@@ -13376,8 +13377,9 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
         <td data-rol="secundario"><em>${r.proveedor}</em> <span style="color:var(--muted);font-size:11px;">· auto</span></td>
         <td data-rol="estado" class="ledger-saldo-movil"><span class="ledger-saldo-label">Saldo</span> ${fmtNum(saldo)}</td>
         <td data-rol="meta" class="ledger-input-detalle">${r.descripcion}</td>
-        <td class="num ledger-input-detalle">${fmtNum(r.cargos)}</td>
+        <td class="ledger-input-detalle">${moneda.nombre}</td>
         <td class="num ledger-input-detalle">${fmtNum(r.depositos)}</td>
+        <td class="num ledger-input-detalle">${fmtNum(r.cargos)}</td>
         <td class="num ledger-input-detalle">${fmtNum(saldo)}</td>
         <td></td>
       </tr>`;
@@ -13390,9 +13392,10 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
       <td data-rol="importe" class="ledger-movimiento-resumen" style="font-weight:600;">${resumenMovil}</td>
       <td data-rol="secundario">${r.proveedor || '<span style="color:var(--muted);">—</span>'}</td>
       <td data-rol="estado" class="ledger-saldo-movil"><span class="ledger-saldo-label">Saldo</span> ${fmtNum(saldo)}</td>
-      <td data-rol="meta" class="ledger-input-detalle">${r.descripcion || ''}</td>
-      <td class="ledger-input-detalle">${fmtNum(r.cargos)}</td>
-      <td class="ledger-input-detalle">${fmtNum(r.depositos)}</td>
+      <td data-rol="meta" class="ledger-input-detalle">${referenciaLegibleEfvo(r)}</td>
+      <td class="ledger-input-detalle"><span class="mf-badge-moneda">${moneda.nombre}</span></td>
+      <td class="num ledger-input-detalle">${fmtNum(r.depositos)}</td>
+      <td class="num ledger-input-detalle">${fmtNum(r.cargos)}</td>
       <td class="num ledger-input-detalle" style="font-weight:700;">${fmtNum(saldo)}</td>
       <td data-rol="acciones" style="position:relative;">
         <button class="btn btn-ghost btn-sm mov-menu-btn" data-id="${r.id}" style="padding:5px 12px;">${sinClasificarFila?'⚠ ⋯':'⋯'}</button>
@@ -13409,12 +13412,15 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
   const sinClasificar = ledger.filter(r => !r.auto && (r.tipo_salida || 'otro') === 'otro' && (Number(r.cargos)||0) > 0);
   const totalSinClasificar = sinClasificar.reduce((s,r)=>s+(Number(r.cargos)||0),0);
   const datalistSubcuentas = `<datalist id="datalistGastoSubcuentas">${subcuentas.map(s => `<option value="${rutaSubcuenta(s, subcuentas, mayores).replace(/"/g,'&quot;')}">`).join('')}</datalist>`;
+  // Equivalente MXN de referencia — dato SECUNDARIO, solo para consolidación, nunca sustituye el
+  // saldo real de la caja (que sigue siendo en su propia moneda, arriba).
+  const equivalenteMxnRef = moneda.nombre !== 'MXN' && moneda.nombre !== 'Pesos' ? ` <span style="color:var(--muted);font-size:11.5px;">(≈ MXN ${fmt(saldoApertura * (Number(moneda.tc_reporte)||1))} de referencia, TC ${fmtTC(moneda.tc_reporte||1)})</span>` : '';
 
   box.innerHTML = `
     ${datalistSubcuentas}
     <div id="sinClasificarBannerEfvo">${sinClasificarBannerHtml(sinClasificar.length, totalSinClasificar)}</div>
     <div class="card-head" style="margin-top:14px;">
-      <span class="hint">Saldo al inicio de ${STATE.currentMonth}: ${fmtNum(saldoApertura)} ${moneda.nombre}</span>
+      <span class="hint">${moneda.nombre} · <span class="mf-badge-moneda">${moneda.nombre}</span> — Saldo al inicio de ${STATE.currentMonth}: ${fmtNum(saldoApertura)} ${moneda.nombre}${equivalenteMxnRef}</span>
       <div style="display:flex;gap:8px;">
         <button class="btn btn-ghost btn-sm" id="importMovBtnEfvo" title="Columnas: Fecha, Proveedor/Concepto, Descripción, Factura/Referencia, Depósitos, Cargos. Opcional para traspasos: Tipo (escribe &quot;Traspaso&quot;) y Cuenta destino (nombre exacto del banco o caja de efectivo).">Importar movimientos (Excel)</button>
         <button class="btn btn-ghost btn-sm" id="addMovBtnEfvo">+ Agregar movimiento (pago en efectivo)</button>
@@ -13422,9 +13428,9 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
     </div>
     <div class="table-wrap scroll-sticky">
       <table class="tabla-operativa tabla-operativa--ledger">
-        <thead><tr><th>Fecha</th><th>Tercero</th><th>Descripción</th><th>Cargos</th><th>Depósitos</th><th>Saldo</th><th></th></tr></thead>
+        <thead><tr><th>Fecha</th><th>Tercero</th><th>Concepto / Referencia</th><th>Moneda</th><th>Depósitos</th><th>Retiros</th><th>Saldo</th><th></th></tr></thead>
         <tbody>${rowsHtml || `<tr><td colspan="10" class="empty">Sin movimientos todavía.</td></tr>`}</tbody>
-        <tfoot><tr class="total-row"><td colspan="3">Total ${STATE.currentMonth}</td><td class="num">${fmtNum(totalCargosMes)}</td><td class="num">${fmtNum(totalDepositosMes)}</td><td colspan="5"></td></tr></tfoot>
+        <tfoot><tr class="total-row"><td colspan="4">Total ${STATE.currentMonth} (${moneda.nombre})</td><td class="num">${fmtNum(totalDepositosMes)}</td><td class="num">${fmtNum(totalCargosMes)}</td><td colspan="5"></td></tr></tfoot>
       </table>
     </div>
   `;
@@ -13491,15 +13497,18 @@ async function renderBancos() {
   const cuentasConSaldo = [];
   for (const c of (cuentasQ.data || [])) {
     const saldo = await computeBancoSaldo(b.id, c, conceptosTarjetas);
-    cuentasConSaldo.push({ ...c, saldo });
+    cuentasConSaldo.push({ ...c, saldo, moneda: c.moneda || 'MXN' });
   }
-  const totalBancos = cuentasConSaldo.filter(c=>c.activo!==false).reduce((s,c)=>s+c.saldo,0);
+  // Total por moneda — nunca se suman monedas distintas en un solo número.
+  const totalesPorMoneda = {};
+  cuentasConSaldo.filter(c=>c.activo!==false).forEach(c => { totalesPorMoneda[c.moneda] = (totalesPorMoneda[c.moneda]||0) + c.saldo; });
+  const monedasConSaldo = Object.keys(totalesPorMoneda);
 
   if (!STATE_bancoCuentaAbierta && cuentasConSaldo.length) STATE_bancoCuentaAbierta = cuentasConSaldo[0].id;
 
   el.innerHTML = `
     <div class="kpi-grid">
-      <div class="kpi"><div class="label">Total en bancos</div><div class="value num green">${fmt(totalBancos)}</div></div>
+      <div class="kpi"><div class="label">Total en bancos</div><div class="value num green">${monedasConSaldo.map(m => `${prefijoMoneda(m)} ${fmt(totalesPorMoneda[m])}`).join('<br>') || fmt(0)}</div></div>
       <div class="kpi"><div class="label">Cuentas activas</div><div class="value">${cuentasConSaldo.filter(c=>c.activo!==false).length}</div></div>
     </div>
 
@@ -13513,7 +13522,7 @@ async function renderBancos() {
       </div>
       <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">Las terminales/tarjetas conciliadas en Ventas que estén vinculadas a una cuenta (en "Conceptos de recibido") entran aquí automáticamente como "Corte de caja". Dentro de cada cuenta puedes importar su estado de cuenta desde Excel.</p>
       <div class="tag-row">
-        ${cuentasConSaldo.map(c => `<div class="tag banco-tab ${c.id===STATE_bancoCuentaAbierta?'active':''}" data-id="${c.id}">${c.nombre} · ${fmt(c.saldo)}</div>`).join('') || '<span class="hint">Aún no hay cuentas.</span>'}
+        ${cuentasConSaldo.map(c => `<div class="tag banco-tab ${c.id===STATE_bancoCuentaAbierta?'active':''}" data-id="${c.id}">${c.nombre} · <span class="mf-badge-moneda">${c.moneda}</span> · ${prefijoMoneda(c.moneda)} ${fmt(c.saldo)}</div>`).join('') || '<span class="hint">Aún no hay cuentas.</span>'}
       </div>
       <div id="bancoLedger"></div>
     </div>
@@ -13567,9 +13576,14 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     loadFacturasClientesPendConNombre(businessId),
   ]);
   const { saldoApertura, rows: ledger } = ledgerRes;
+  const monedaCuentaBanco = cuentaArr?.moneda || 'MXN';
+  const pfxBanco = prefijoMoneda(monedaCuentaBanco);
   const traspasoCtx = { cuentasBanco: cuentasBancoQ.data || [], monedasEfectivo: monedasEfectivoQ.data || [], origenTipo: 'banco', origenId: cuentaId, origenNombre: 'el banco ' + (cuentaArr?.nombre || ''), origenCorto: 'Banco — ' + (cuentaArr?.nombre || '') };
   let saldo = saldoApertura;
   const conteoAdjuntosBanco = await contarAdjuntosPorRegistro('fz_bancos_mov', ledger.filter(m => !m.auto).map(m => m.id));
+  // Referencia legible — reutiliza SIEMPRE dato ya guardado (referencia > concepto > descripción),
+  // nunca inventa texto nuevo.
+  const referenciaLegible = (m) => m.referencia || m.concepto || m.descripcion || '<span style="color:var(--muted);">—</span>';
   const rowsHtml = ledger.map(m => {
     saldo += (Number(m.depositos)||0) - (Number(m.cargos)||0);
     // Resumen visual — SOLO para el ledger compacto móvil. Usa exactamente el mismo dato que ya
@@ -13581,8 +13595,9 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
         <td data-rol="principal">${fechaCorta(m.fecha)}${conciliadoIcono}</td>
         <td data-rol="importe" class="ledger-movimiento-resumen">${resumenMovil}</td>
         <td data-rol="secundario"><em>${m.proveedor||''}</em> <span style="color:var(--muted);font-size:11px;">· auto</span></td>
-        <td data-rol="estado" class="ledger-saldo-movil"><span class="ledger-saldo-label">Saldo</span> ${fmt(saldo)}</td>
+        <td data-rol="estado" class="ledger-saldo-movil"><span class="ledger-saldo-label">Saldo</span> ${pfxBanco} ${fmt(saldo)}</td>
         <td class="ledger-input-detalle">${m.descripcion}</td>
+        <td class="ledger-input-detalle">${monedaCuentaBanco}</td>
         <td class="num ledger-input-detalle">${fmtNum(m.depositos)}</td>
         <td class="num ledger-input-detalle">${fmtNum(m.cargos)}</td>
         <td class="num ledger-input-detalle" style="font-weight:700;">${fmt(saldo)}</td>
@@ -13597,8 +13612,9 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
       <td data-rol="principal">${fechaCorta(m.fecha)}${conciliadoIcono}</td>
       <td data-rol="importe" class="ledger-movimiento-resumen" style="font-weight:600;">${resumenMovil}</td>
       <td data-rol="secundario">${m.proveedor || '<span style="color:var(--muted);">—</span>'}</td>
-      <td data-rol="estado" class="ledger-saldo-movil"><span class="ledger-saldo-label">Saldo</span> ${fmt(saldo)}</td>
-      <td class="ledger-input-detalle">${m.descripcion || ''}</td>
+      <td data-rol="estado" class="ledger-saldo-movil"><span class="ledger-saldo-label">Saldo</span> ${pfxBanco} ${fmt(saldo)}</td>
+      <td class="ledger-input-detalle">${referenciaLegible(m)}</td>
+      <td class="ledger-input-detalle"><span class="mf-badge-moneda">${monedaCuentaBanco}</span></td>
       <td class="num ledger-input-detalle">${fmtNum(m.depositos)}</td>
       <td class="num ledger-input-detalle">${fmtNum(m.cargos)}</td>
       <td class="num ledger-input-detalle" style="font-weight:700;">${fmt(saldo)}</td>
@@ -13623,7 +13639,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     ${datalistSubcuentas}
     <div id="sinClasificarBannerBanco">${sinClasificarBannerHtml(sinClasificar.length, totalSinClasificar)}</div>
     <div class="card-head" style="margin-top:14px;">
-      <span class="hint">Saldo al inicio de ${STATE.currentMonth}: ${fmt(saldoApertura)}</span>
+      <span class="hint">${cuentaArr?.nombre || ''} · <span class="mf-badge-moneda">${monedaCuentaBanco}</span> — Saldo al inicio de ${STATE.currentMonth}: ${pfxBanco} ${fmt(saldoApertura)}</span>
       <div style="display:flex;gap:8px;">
         <button class="btn btn-ghost btn-sm" id="conciliarBtn">Conciliar</button>
         <button class="btn btn-ghost btn-sm" id="importMovBtn" title="Columnas: Fecha, Descripción, Concepto, Referencia, Depósitos, Cargos. Opcional para traspasos: Tipo (escribe &quot;Traspaso&quot;) y Cuenta destino (nombre exacto del banco o caja de efectivo).">Importar movimientos (Excel)</button>
@@ -13632,9 +13648,9 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     </div>
     <div class="table-wrap scroll-sticky">
       <table class="tabla-operativa tabla-operativa--ledger">
-        <thead><tr><th>Fecha</th><th>Tercero</th><th>Descripción</th><th>Depósitos</th><th>Cargos</th><th>Saldo</th><th title="Conciliado">✓</th><th></th></tr></thead>
+        <thead><tr><th>Fecha</th><th>Tercero</th><th>Concepto / Referencia</th><th>Moneda</th><th>Depósitos</th><th>Retiros</th><th>Saldo</th><th title="Conciliado">✓</th><th></th></tr></thead>
         <tbody>${rowsHtml || `<tr><td colspan="11" class="empty">Sin movimientos.</td></tr>`}</tbody>
-        <tfoot><tr class="total-row"><td colspan="4">Total ${STATE.currentMonth}</td><td class="num">${fmtNum(totalDepositosMes)}</td><td class="num">${fmtNum(totalCargosMes)}</td><td colspan="5"></td></tr></tfoot>
+        <tfoot><tr class="total-row"><td colspan="4">Total ${STATE.currentMonth} (${monedaCuentaBanco})</td><td class="num">${fmtNum(totalDepositosMes)}</td><td class="num">${fmtNum(totalCargosMes)}</td><td colspan="5"></td></tr></tfoot>
       </table>
     </div>
   `;
@@ -14894,7 +14910,7 @@ async function abrirElegirFacturaCobro(businessId) {
       const filasHtml = facturasCli.map(f => {
         const saldo = Number(f.total) - Number(f.importe_pagado||0);
         return `<tr>
-          <td><input type="checkbox" class="efc-check" value="${f.id}" data-importe="${saldo}" data-moneda="${f.moneda||'MXN'}" data-tc="${f.tipo_cambio||1}"></td>
+          <td><input type="checkbox" class="efc-check" value="${f.id}" data-importe="${saldo}" data-moneda="${f.moneda||'MXN'}" data-tc="${f.tipo_cambio||1}" data-tercero="${cli.replace(/"/g,'&quot;')}" data-folio="${f.folio}"></td>
           <td>${fechaCorta(f.fecha)}</td>
           <td>#${f.folio}</td>
           <td>${f.numero_factura || '—'}</td>
@@ -14956,9 +14972,13 @@ document.getElementById('aplicarElegirFacturaCobro').addEventListener('click', a
     const monedaCuenta = tipo === 'banco' ? (cuentaRow?.moneda || 'MXN') : (cuentaRow?.nombre || 'MXN');
     const resuelto = resolverMovimientoMultimoneda(monedaCuenta, monedaDocumento, monto, tcHistoricoDocumento, tipoCambioEfc);
     if (!resuelto) { toast(`La cuenta destino está en una divisa distinta a la del documento (${monedaDocumento}) — este cruce todavía no está soportado. Elige una cuenta en ${monedaDocumento} o en MXN.`, 'error'); return; }
+    const nombreTerceroCobro = checksMarcados[0]?.dataset.tercero || '';
+    const referenciaCobro = idsSeleccionados.length === 1
+      ? `Cobro factura #${checksMarcados[0]?.dataset.folio || ''}`
+      : `Cobro de ${idsSeleccionados.length} facturas`;
     const payload = tipo === 'banco'
-      ? { business_id: b.id, cuenta_id: refId, fecha, concepto: 'Cobro a clientes', descripcion: '', depositos: resuelto.montoCuenta, cargos: 0, tipo_entrada: 'cliente', tipo_cambio_historico: resuelto.tcHistorico, equivalente_mxn_historico: resuelto.equivalenteMxn }
-      : { business_id: b.id, moneda_id: refId, fecha, proveedor: '', descripcion: 'Cobro a clientes', depositos: resuelto.montoCuenta, cargos: 0, tipo_entrada: 'cliente', tipo_cambio_historico: resuelto.tcHistorico, equivalente_mxn_historico: resuelto.equivalenteMxn };
+      ? { business_id: b.id, cuenta_id: refId, fecha, concepto: 'Cobro a clientes', proveedor: nombreTerceroCobro, referencia: referenciaCobro, descripcion: '', depositos: resuelto.montoCuenta, cargos: 0, tipo_entrada: 'cliente', tipo_cambio_historico: resuelto.tcHistorico, equivalente_mxn_historico: resuelto.equivalenteMxn }
+      : { business_id: b.id, moneda_id: refId, fecha, proveedor: nombreTerceroCobro, descripcion: referenciaCobro, depositos: resuelto.montoCuenta, cargos: 0, tipo_entrada: 'cliente', tipo_cambio_historico: resuelto.tcHistorico, equivalente_mxn_historico: resuelto.equivalenteMxn };
     const { data: mov, error } = await sb.from(tabla).insert(payload).select().single();
     if (error) { toast('Error creando el movimiento: ' + error.message, 'error'); return; }
     origen_tabla = tabla; origen_id = mov.id;
@@ -15061,7 +15081,7 @@ async function abrirElegirFacturaPago(businessId, proveedorPreseleccionado) {
       const filasHtml = facturasProv.map(f => {
         const saldo = Number(f.importe) - Number(f.importe_pagado||0);
         return `<tr>
-          <td><input type="checkbox" class="efp-check" value="${f.id}" data-importe="${saldo}" data-moneda="${f.moneda||'MXN'}" data-tc="${f.tipo_cambio||1}"></td>
+          <td><input type="checkbox" class="efp-check" value="${f.id}" data-importe="${saldo}" data-moneda="${f.moneda||'MXN'}" data-tc="${f.tipo_cambio||1}" data-tercero="${prov.replace(/"/g,'&quot;')}" data-factura="${(f.factura||'').replace(/"/g,'&quot;')}"></td>
           <td>${fechaCorta(f.fecha)}</td>
           <td>${f.folio ? '#'+f.folio : '—'}</td>
           <td>${f.factura || '—'}</td>
@@ -15128,9 +15148,13 @@ document.getElementById('aplicarElegirFacturaPago').addEventListener('click', as
     const monedaCuenta = tipo === 'banco' ? (cuentaRow?.moneda || 'MXN') : (cuentaRow?.nombre || 'MXN');
     const resuelto = resolverMovimientoMultimoneda(monedaCuenta, monedaDocumento, monto, tcHistoricoDocumento, tipoCambioEfp);
     if (!resuelto) { toast(`La cuenta origen está en una divisa distinta a la del documento (${monedaDocumento}) — este cruce todavía no está soportado. Elige una cuenta en ${monedaDocumento} o en MXN.`, 'error'); return; }
+    const nombreTerceroPago = checksMarcadosPago[0]?.dataset.tercero || '';
+    const referenciaPago = idsSeleccionados.length === 1
+      ? `Pago factura ${checksMarcadosPago[0]?.dataset.factura || 's/f'}`
+      : `Pago de ${idsSeleccionados.length} facturas`;
     const payload = tipo === 'banco'
-      ? { business_id: b.id, cuenta_id: refId, fecha, concepto: 'Pago a proveedor', descripcion: '', cargos: resuelto.montoCuenta, depositos: 0, tipo_salida: 'proveedor', tipo_cambio_historico: resuelto.tcHistorico, equivalente_mxn_historico: resuelto.equivalenteMxn }
-      : { business_id: b.id, moneda_id: refId, fecha, proveedor: '', descripcion: 'Pago a proveedor', cargos: resuelto.montoCuenta, depositos: 0, tipo_salida: 'proveedor', tipo_cambio_historico: resuelto.tcHistorico, equivalente_mxn_historico: resuelto.equivalenteMxn };
+      ? { business_id: b.id, cuenta_id: refId, fecha, concepto: 'Pago a proveedor', proveedor: nombreTerceroPago, referencia: referenciaPago, descripcion: '', cargos: resuelto.montoCuenta, depositos: 0, tipo_salida: 'proveedor', tipo_cambio_historico: resuelto.tcHistorico, equivalente_mxn_historico: resuelto.equivalenteMxn }
+      : { business_id: b.id, moneda_id: refId, fecha, proveedor: nombreTerceroPago, descripcion: referenciaPago, cargos: resuelto.montoCuenta, depositos: 0, tipo_salida: 'proveedor', tipo_cambio_historico: resuelto.tcHistorico, equivalente_mxn_historico: resuelto.equivalenteMxn };
     const { data: mov, error } = await sb.from(tabla).insert(payload).select().single();
     if (error) { toast('Error creando el movimiento: ' + error.message, 'error'); return; }
     origen_tabla = tabla; origen_id = mov.id;
