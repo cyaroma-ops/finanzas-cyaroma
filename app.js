@@ -4273,16 +4273,22 @@ async function sincronizarRealizacionFactura(facturaId, tipoFactura, businessId,
   const { data: aplicados } = await sb.from(tablaAplicados).select('monto').eq('factura_id', facturaId);
   const totalAplicado = (aplicados||[]).reduce((s,a)=>s+Number(a.monto||0), 0);
   const proporcion = Math.min(1, totalAplicado / importeTotal);
+  // La proporción es una razón entre montos en la MISMA moneda original — no depende del TC. Pero
+  // la reclasificación en sí debe quedar en pesos, igual que el IVA ya registrado originalmente
+  // (montoBase × tc histórico de la factura) — nunca en la moneda cruda. La diferencia cambiaria
+  // real del cobro/pago (si el TC de la operación difirió del histórico) se queda exclusivamente
+  // en Ganancia/Pérdida Cambiaria, calculada aparte — nunca se mezcla aquí.
+  const tc = Number(f.tipo_cambio) || 1;
 
   // Cada renglón: qué monto base tiene la factura, y los nombres de sus cuentas Pendiente/Realizado.
   // "activo" (IVA Acreditable) y "pasivo" (IVA Trasladado, Retenciones) usan polaridad distinta.
   const items = [];
   if (tipoFactura === 'proveedor') {
-    if (f.aplica_iva && Number(f.iva_monto)) items.push({ tipo: 'iva_acreditable', categoria: '', montoBase: Number(f.iva_monto), naturaleza: 'activo', pendiente: 'IVA Acreditable — Pendiente de pago', realizado: 'IVA Acreditable — Pagado' });
-    if (f.aplica_retencion && Number(f.retencion_isr_monto)) { const cat = f.retencion_categoria||'Sin categoría'; items.push({ tipo: 'retencion_isr', categoria: cat, montoBase: Number(f.retencion_isr_monto), naturaleza: 'pasivo', pendiente: `Retención ISR — ${cat} — Pendiente de pago`, realizado: `Retención ISR — ${cat} — Retenida` }); }
-    if (f.aplica_retencion && Number(f.retencion_iva_monto)) { const cat = f.retencion_categoria||'Sin categoría'; items.push({ tipo: 'retencion_iva', categoria: cat, montoBase: Number(f.retencion_iva_monto), naturaleza: 'pasivo', pendiente: `Retención IVA — ${cat} — Pendiente de pago`, realizado: `Retención IVA — ${cat} — Retenida` }); }
+    if (f.aplica_iva && Number(f.iva_monto)) items.push({ tipo: 'iva_acreditable', categoria: '', montoBase: Number(f.iva_monto) * tc, naturaleza: 'activo', pendiente: 'IVA Acreditable — Pendiente de pago', realizado: 'IVA Acreditable — Pagado' });
+    if (f.aplica_retencion && Number(f.retencion_isr_monto)) { const cat = f.retencion_categoria||'Sin categoría'; items.push({ tipo: 'retencion_isr', categoria: cat, montoBase: Number(f.retencion_isr_monto) * tc, naturaleza: 'pasivo', pendiente: `Retención ISR — ${cat} — Pendiente de pago`, realizado: `Retención ISR — ${cat} — Retenida` }); }
+    if (f.aplica_retencion && Number(f.retencion_iva_monto)) { const cat = f.retencion_categoria||'Sin categoría'; items.push({ tipo: 'retencion_iva', categoria: cat, montoBase: Number(f.retencion_iva_monto) * tc, naturaleza: 'pasivo', pendiente: `Retención IVA — ${cat} — Pendiente de pago`, realizado: `Retención IVA — ${cat} — Retenida` }); }
   } else {
-    if (f.aplica_iva && Number(f.iva_monto)) items.push({ tipo: 'iva_trasladado', categoria: '', montoBase: Number(f.iva_monto), naturaleza: 'pasivo', pendiente: 'IVA Trasladado — Pendiente de cobro', realizado: 'IVA Trasladado — Cobrado' });
+    if (f.aplica_iva && Number(f.iva_monto)) items.push({ tipo: 'iva_trasladado', categoria: '', montoBase: Number(f.iva_monto) * tc, naturaleza: 'pasivo', pendiente: 'IVA Trasladado — Pendiente de cobro', realizado: 'IVA Trasladado — Cobrado' });
   }
 
   for (const item of items) {
@@ -16970,7 +16976,23 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
         push({ ...base, cuenta: nombreOrigenCuenta }, claveOrigenCuenta, 'activo', 0, Number(m.cargos));
       }
       if (Number(m.depositos)) {
-        push({ ...base, cuenta: nombreOrigenCuenta }, claveOrigenCuenta, 'activo', Number(m.depositos), 0);
+        // El Banco se contabiliza en MXN real — para un cobro de cliente en moneda extranjera,
+        // eso es monto original × TC REAL del cobro (nunca el TC histórico de la factura, y nunca
+        // el número crudo capturado en la moneda original). Para MXN (tc=1) o si no hay cobros
+        // registrados aún, el resultado es idéntico al comportamiento anterior.
+        let montoBancoMxn = Number(m.depositos);
+        if (m.tipo_entrada === 'cliente') {
+          const cobrosParaBanco = cobrosPorOrigen[`${tablaOrigenNombre}|${m.id}`] || [];
+          if (cobrosParaBanco.length) {
+            montoBancoMxn = cobrosParaBanco.reduce((s,c) => {
+              const f = facturasCliMapGlobal[c.factura_id];
+              const tcOriginal = f ? (Number(f.tipo_cambio)||1) : 1;
+              const tcReal = Number(c.tipo_cambio) || tcOriginal;
+              return s + (Number(c.monto)||0) * tcReal;
+            }, 0);
+          }
+        }
+        push({ ...base, cuenta: nombreOrigenCuenta }, claveOrigenCuenta, 'activo', montoBancoMxn, 0);
         if (m.tipo_entrada === 'cliente') {
           const cobros = cobrosPorOrigen[`${tablaOrigenNombre}|${m.id}`] || [];
           if (cobros.length) {
