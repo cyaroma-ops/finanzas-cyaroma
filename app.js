@@ -21,6 +21,7 @@ const fmt = (n) => {
   return n.toLocaleString('es-MX', { style: 'currency', currency: 'MXN', minimumFractionDigits: 2 });
 };
 const fmtNum = (n) => (Number(n) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtTC = (n) => (Number(n) || 0).toLocaleString('es-MX', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
 const fechaCorta = (iso) => { if (!iso) return ''; const [y,m,d] = iso.split('-'); return d && m && y ? `${d}/${m}/${y}` : iso; };
 const fmtInputVal = (n) => (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtCoef = (n) => (Number(n) || 0).toFixed(4);
@@ -12093,7 +12094,7 @@ async function aplicarCobroFacturas(idsSeleccionados, montoDisponibleInicial, fe
     idsAfectados.push(f.id);
     disponible -= aplicar;
     if (origenInfo.origen_tabla && origenInfo.origen_id) {
-      const tcReal = f.moneda === 'USD' ? (origenInfo.tipo_cambio_real || f.tipo_cambio) : null;
+      const tcReal = f.moneda && f.moneda !== 'MXN' ? (origenInfo.tipo_cambio_real || f.tipo_cambio) : null;
       await sb.from('fz_cobros_aplicados').insert({ business_id: businessId, factura_id: f.id, monto: aplicar, origen_tabla: origenInfo.origen_tabla, origen_id: origenInfo.origen_id, fecha, tipo_cambio: tcReal });
       await sincronizarRealizacionFactura(f.id, 'cliente', businessId, fecha);
     }
@@ -12117,7 +12118,6 @@ function openFacturasCobroModal(rowId, table, facturasClientesPend, onDone) {
     const nombresCliente = Object.keys(porCliente).sort((a,b)=>a.localeCompare(b));
     document.querySelector('#modalFacturasPago h3').textContent = 'Elegir facturas a cobrar';
     document.querySelector('#modalFacturasPago p').textContent = 'Marca todas las que se cobren con este depósito. Se marcarán como "Pagado" al aplicar.';
-    document.getElementById('facturasPagoTcWrap').style.display = 'none';
     box.innerHTML = nombresCliente.map(cli => `
       <div class="factura-provgroup" data-prov="${cli.toLowerCase()}" style="margin-bottom:10px;">
         <div style="font-weight:700;font-size:12.5px;color:var(--navy-1);margin-bottom:4px;">${cli}</div>
@@ -12149,6 +12149,10 @@ function openFacturasCobroModal(rowId, table, facturasClientesPend, onDone) {
     buscarProv.oninput = () => { selectProv.value = ''; aplicarFiltro(); };
     selectProv.onchange = () => { buscarProv.value = ''; aplicarFiltro(); };
 
+    // Mismo patrón exacto que el modal de pagos a proveedores: el TC pertenece al COBRO, no a las
+    // facturas; si hay monedas mixtas entre las marcadas, no hay forma inequívoca de asignar un
+    // solo TC — se bloquea "Aplicar" en vez de inventar un reparto.
+    const mapaFacturaPorId = Object.fromEntries(opciones.map(f => [f.id, f]));
     const actualizarResumen = () => {
       const marcadas = Array.from(box.querySelectorAll('.factura-check:checked'));
       const totalSeleccionado = marcadas.reduce((s,c) => s + (Number(c.dataset.importe) || 0), 0);
@@ -12159,7 +12163,36 @@ function openFacturasCobroModal(rowId, table, facturasClientesPend, onDone) {
         <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Total seleccionado (${marcadas.length})</span><strong>${fmt(totalSeleccionado)}</strong></div>
         <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--muted)'};font-weight:700;"><span>${cuadra?'✓ Cuadra exacto':(diferencia>0?'Si aplicas, sobrará sin asignar':'Si aplicas, quedará pendiente/parcial')}</span><span>${cuadra?'':fmt(Math.abs(diferencia))}</span></div>
       `;
+      const monedas = [...new Set(marcadas.map(c => (mapaFacturaPorId[c.value]?.moneda || 'MXN')))];
+      const tcWrap = document.getElementById('facturasPagoTcWrap');
+      const tcAviso = document.getElementById('facturasPagoTcAviso');
+      const tcCampo = document.getElementById('facturasPagoTcCampo');
+      const btnAplicar = document.getElementById('applyFacturasPago');
+      if (monedas.length > 1) {
+        tcWrap.style.display = '';
+        tcCampo.style.display = 'none';
+        tcAviso.style.display = '';
+        tcAviso.textContent = `Las facturas marcadas tienen monedas distintas (${monedas.join(', ')}) — no pueden aplicarse conjuntamente en un mismo cobro. Selecciona facturas de una sola moneda.`;
+        btnAplicar.disabled = true; btnAplicar.style.opacity = '0.5'; btnAplicar.style.cursor = 'not-allowed';
+      } else {
+        btnAplicar.disabled = false; btnAplicar.style.opacity = ''; btnAplicar.style.cursor = '';
+        tcAviso.style.display = 'none';
+        const monedaUnica = monedas[0] || 'MXN';
+        if (monedaUnica === 'MXN') {
+          tcWrap.style.display = 'none';
+        } else {
+          tcWrap.style.display = '';
+          tcCampo.style.display = '';
+          document.querySelector('#facturasPagoTcCampo label').textContent = 'Tipo de cambio de este cobro';
+          if (!document.getElementById('facturasPagoTc').dataset.tocado) {
+            const primeraFactura = mapaFacturaPorId[marcadas[0]?.value];
+            document.getElementById('facturasPagoTc').value = fmtInputVal(primeraFactura?.tipo_cambio || 1);
+          }
+        }
+      }
     };
+    document.getElementById('facturasPagoTc').dataset.tocado = '';
+    document.getElementById('facturasPagoTc').oninput = (e) => { e.target.dataset.tocado = '1'; };
     box.querySelectorAll('.factura-check').forEach(chk => chk.addEventListener('change', actualizarResumen));
     actualizarResumen();
 
@@ -12167,8 +12200,11 @@ function openFacturasCobroModal(rowId, table, facturasClientesPend, onDone) {
     document.getElementById('closeFacturasPago').onclick = () => document.getElementById('modalFacturasPago').classList.remove('show');
     document.getElementById('applyFacturasPago').onclick = async () => {
       const idsSeleccionados = Array.from(box.querySelectorAll('.factura-check:checked')).map(c => c.value);
+      const tcWrapVisible = document.getElementById('facturasPagoTcCampo').style.display !== 'none';
+      const tipoCambioReal = tcWrapVisible ? (leerMonto(document.getElementById('facturasPagoTc').value) || 1) : 1;
       const { idsAfectados } = await aplicarCobroFacturas(idsSeleccionados, montoMovimiento, row?.fecha || todayStr(), row.business_id, {
         origen_tabla: table, origen_id: rowId,
+        tipo_cambio_real: tipoCambioReal,
       });
       const { error: e1 } = await sb.from(table).update({ cliente_factura_ids: idsAfectados, cliente_factura_id: idsAfectados[0] || null }).eq('id', rowId);
       if (e1) { toast('Error al guardar: ' + e1.message, 'error'); return; }
@@ -12194,6 +12230,7 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
     const box = document.getElementById('facturasPagoList');
     document.querySelector('#modalFacturasPago h3').textContent = 'Elegir facturas a pagar';
     document.querySelector('#modalFacturasPago p').textContent = 'Marca todas las que se paguen con este movimiento. Se marcarán como "Pagado" al aplicar.';
+    document.querySelector('#facturasPagoTcCampo label').textContent = 'Tipo de cambio de este pago';
     const nombresProveedor = Object.keys(porProveedor).sort((a,b)=>a.localeCompare(b));
     box.innerHTML = nombresProveedor.map(prov => `
       <div class="factura-provgroup" data-prov="${prov.toLowerCase()}" style="margin-bottom:10px;">
@@ -13478,7 +13515,7 @@ async function renderProveedores() {
 
   const scrollY = window.scrollY;
   const [provQ, catalogo, cuentasBancoQ, monedasQ] = await Promise.all([
-    sb.from('fz_proveedores').select('*').eq('business_id', b.id).order('fecha', { ascending: false }),
+    sb.from('fz_proveedores').select('*').eq('business_id', b.id).order('fecha', { ascending: false }).order('created_at', { ascending: false }),
     loadProveedoresCatalogo(b.id),
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', b.id).eq('activo', true),
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', b.id).eq('activo', true),
@@ -13553,7 +13590,7 @@ async function renderProveedores() {
       </div>
       <div class="table-wrap scroll-sticky">
         <table class="tabla-operativa tabla-operativa--scroll">
-          <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Moneda</th><th>Importe</th><th>Saldo</th><th>Vencimiento</th><th>Días retraso</th><th>Desglose</th><th>Estatus</th><th>Fecha pago</th><th>Pagado desde</th><th>Adjunto</th><th></th></tr></thead>
+          <thead><tr><th>Fecha</th><th>No. Factura</th><th>Proveedor</th><th>Moneda</th><th>TC</th><th>Total</th><th>Pagado</th><th>Saldo</th><th>Vencimiento</th><th>Días retraso</th><th>Desglose</th><th>Estatus</th><th>Fecha pago</th><th>Pagado desde</th><th>Adjunto</th><th></th></tr></thead>
           <tbody>
             ${rows.map(p => provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntosProv[p.id], all)).join('') || `<tr><td colspan="13" class="empty">Sin registros.</td></tr>`}
           </tbody>
@@ -14083,7 +14120,7 @@ async function renderClientes() {
 async function renderClienteDetalle(el, b) {
   const cliente = (await loadClientes(b.id)).find(c => c.id === STATE_clienteDetalleId);
   if (!cliente) { STATE_clientesVista = 'directorio'; return renderClientes(); }
-  const { data: facturas } = await sb.from('fz_facturas_clientes').select('*').eq('cliente_id', cliente.id).order('folio', { ascending: false });
+  const { data: facturas } = await sb.from('fz_facturas_clientes').select('*').eq('cliente_id', cliente.id).order('fecha', { ascending: false }).order('folio', { ascending: false });
   const lista = facturas || [];
   const totalFacturado = lista.reduce((s,f)=>s+(Number(f.total)||0),0);
   const totalPagado = lista.reduce((s,f)=>s+(Number(f.importe_pagado)||0),0);
@@ -14100,21 +14137,34 @@ async function renderClienteDetalle(el, b) {
       <div class="card-head"><h3>${cliente.razon_social || cliente.nombre_comercial}</h3>${cliente.razon_social ? `<span class="hint">${cliente.nombre_comercial}</span>` : ''}</div>
       <div class="table-wrap scroll-sticky">
         <table>
-          <thead><tr><th>Folio</th><th>Fecha</th><th>Total</th><th>Pagado</th><th>Pendiente</th><th>Estatus</th><th>Fiscal</th><th></th></tr></thead>
+          <thead><tr>
+            <th>Fecha</th><th>Folio</th><th>No. Factura</th>
+            <th>Moneda</th><th>TC</th>
+            <th>Total</th><th>Pagado</th><th>Saldo</th>
+            <th>Vencimiento</th><th>Días retraso</th>
+            <th>Estatus</th><th>Fiscal</th><th></th>
+          </tr></thead>
           <tbody>
             ${lista.length ? lista.map(f => {
-              const pend = Number(f.total) - Number(f.importe_pagado||0);
+              const saldo = redondearMoneda(Math.max(0, Number(f.total) - Number(f.importe_pagado||0)));
+              const diasRetraso = calcularDiasRetraso(f.fecha_vencimiento, saldo);
+              const esMxn = !f.moneda || f.moneda === 'MXN';
               return `<tr>
-                <td>#${f.folio}</td>
                 <td>${fechaCorta(f.fecha)}</td>
-                <td class="num">${f.moneda==='USD'?'US':''}${fmt(f.total)}</td>
-                <td class="num">${fmt(f.importe_pagado||0)}</td>
-                <td class="num">${fmtNeg(pend)}</td>
+                <td>#${f.folio}</td>
+                <td>${f.numero_factura || '—'}</td>
+                <td>${f.moneda || 'MXN'}</td>
+                <td class="num">${esMxn ? '—' : fmtTC(f.tipo_cambio || 1)}</td>
+                <td class="num">${prefijoMoneda(f.moneda)} ${fmt(f.total)}</td>
+                <td class="num">${prefijoMoneda(f.moneda)} ${fmt(f.importe_pagado||0)}</td>
+                <td class="num" style="${saldo>0.004?'color:var(--gold);font-weight:600;':''}">${prefijoMoneda(f.moneda)} ${fmt(saldo)}</td>
+                <td>${f.fecha_vencimiento ? fechaCorta(f.fecha_vencimiento) : '—'}</td>
+                <td style="${typeof diasRetraso==='number' && diasRetraso>0?'color:var(--red);font-weight:700;':''}">${diasRetraso}</td>
                 <td><span class="badge ${f.estatus==='Pagado'?'pag':'pend'}">${f.estatus}</span></td>
                 <td>${ESTATUS_FISCAL_BADGE[f.estatus_fiscal] || ESTATUS_FISCAL_BADGE.no_aplica}</td>
                 ${facturaMenuHtml(f.id)}
               </tr>`;
-            }).join('') : `<tr><td colspan="8" class="empty">Este cliente aún no tiene facturas.</td></tr>`}
+            }).join('') : `<tr><td colspan="13" class="empty">Este cliente aún no tiene facturas.</td></tr>`}
           </tbody>
         </table>
       </div>
@@ -14901,7 +14951,7 @@ async function siguienteFolio(businessId, tipo) {
 async function renderFacturasClientes(el, b) {
   const scrollY = window.scrollY;
   const [facturas, clientes] = await Promise.all([
-    sb.from('fz_facturas_clientes').select('*').eq('business_id', b.id).order('folio', { ascending: false }).then(r => r.data || []),
+    sb.from('fz_facturas_clientes').select('*').eq('business_id', b.id).order('fecha', { ascending: false }).order('folio', { ascending: false }).then(r => r.data || []),
     loadClientes(b.id),
   ]);
   const nombreCliente = (id) => clientes.find(c => c.id === id)?.nombre_comercial || '(cliente eliminado)';
@@ -14915,25 +14965,34 @@ async function renderFacturasClientes(el, b) {
       </div>
       <div class="table-wrap scroll-sticky">
         <table class="tabla-operativa tabla-operativa--scroll">
-          <thead><tr><th>Folio</th><th>No. Factura</th><th>Fecha</th><th>Cliente</th><th>Moneda</th><th>Total</th><th>Saldo</th><th>Estatus</th><th>Vencimiento</th><th>Días retraso</th><th>¿Se factura?</th><th></th></tr></thead>
+          <thead><tr>
+            <th>Fecha</th><th>Folio</th><th>No. Factura</th><th>Cliente</th>
+            <th>Moneda</th><th>TC</th>
+            <th>Total</th><th>Pagado</th><th>Saldo</th>
+            <th>Vencimiento</th><th>Días retraso</th>
+            <th>Estatus</th><th>Fiscal</th><th></th>
+          </tr></thead>
           <tbody>
             ${facturas.length ? facturas.map(f => {
               const saldo = redondearMoneda(Math.max(0, Number(f.total) - Number(f.importe_pagado||0)));
               const diasRetraso = calcularDiasRetraso(f.fecha_vencimiento, saldo);
+              const esMxn = !f.moneda || f.moneda === 'MXN';
               return `<tr>
+              <td data-rol="principal">${fechaCorta(f.fecha)}</td>
               <td data-rol="secundario">#${f.folio}</td>
               <td data-rol="secundario">${f.numero_factura || '—'}</td>
-              <td data-rol="principal">${fechaCorta(f.fecha)}</td>
               <td data-rol="secundario">${nombreCliente(f.cliente_id)}</td>
               <td data-rol="meta">${f.moneda || 'MXN'}</td>
-              <td class="num" data-rol="importe" style="font-weight:700;">${prefijoMoneda(f.moneda)}${fmt(f.total)}</td>
-              <td class="num" data-rol="meta" style="${saldo>0.004?'color:var(--gold);font-weight:600;':''}">${prefijoMoneda(f.moneda)}${fmt(saldo)}</td>
-              <td data-rol="estado"><span class="badge ${f.estatus==='Pagado'?'pag':'pend'}">${f.estatus}</span></td>
+              <td class="num" data-rol="meta">${esMxn ? '—' : fmtTC(f.tipo_cambio || 1)}</td>
+              <td class="num" data-rol="importe" style="font-weight:700;">${prefijoMoneda(f.moneda)} ${fmt(f.total)}</td>
+              <td class="num" data-rol="meta">${prefijoMoneda(f.moneda)} ${fmt(f.importe_pagado||0)}</td>
+              <td class="num" data-rol="meta" style="${saldo>0.004?'color:var(--gold);font-weight:600;':''}">${prefijoMoneda(f.moneda)} ${fmt(saldo)}</td>
               <td data-rol="meta">${f.fecha_vencimiento ? fechaCorta(f.fecha_vencimiento) : '—'}</td>
               <td data-rol="meta" style="${typeof diasRetraso==='number' && diasRetraso>0?'color:var(--red);font-weight:700;':''}">${diasRetraso}</td>
+              <td data-rol="estado"><span class="badge ${f.estatus==='Pagado'?'pag':'pend'}">${f.estatus}</span></td>
               <td data-rol="meta">${ESTATUS_FISCAL_BADGE[f.estatus_fiscal] || ESTATUS_FISCAL_BADGE.no_aplica}</td>
               ${facturaMenuHtml(f.id)}
-            </tr>`;}).join('') : `<tr><td colspan="12" class="empty">Aún no hay facturas. Usa "+ Nueva factura".</td></tr>`}
+            </tr>`;}).join('') : `<tr><td colspan="14" class="empty">Aún no hay facturas. Usa "+ Nueva factura".</td></tr>`}
           </tbody>
         </table>
       </div>
@@ -15961,16 +16020,19 @@ function provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntos, todasFactur
   const nombreMostrado = catMatch
     ? (catMatch.razon_social ? `${catMatch.razon_social}${catMatch.nombre_comercial ? ' — ' + catMatch.nombre_comercial : ''}` : (catMatch.nombre_comercial || catMatch.nombre))
     : (p.proveedor || '(sin proveedor)');
+  const esMxnProv = !p.moneda || p.moneda === 'MXN';
   return `<tr style="${esCredito?'background:#f2fbf5;':''}">
     <td data-rol="principal"><input class="cell prov-cell" type="date" value="${p.fecha}" data-id="${p.id}" data-field="fecha"></td>
-    <td data-rol="secundario">${nombreMostrado}</td>
     <td data-rol="secundario"><input class="cell prov-cell" type="text" value="${p.factura||''}" data-id="${p.id}" data-field="factura"></td>
+    <td data-rol="secundario">${nombreMostrado}</td>
     <td data-rol="meta">${p.moneda || 'MXN'}</td>
+    <td class="num" data-rol="meta">${esMxnProv ? '—' : fmtTC(p.tipo_cambio || 1)}</td>
     <td data-rol="importe">
       <input class="cell prov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(p.importe)}" data-id="${p.id}" data-field="importe">
-      ${esCredito ? `<div style="font-size:10.5px;color:var(--green);margin-top:2px;">crédito a favor</div>` : (Number(p.importe_pagado)>0 && p.estatus!=='Pagado' ? `<div style="font-size:10.5px;color:var(--muted);margin-top:2px;white-space:nowrap;">pagado ${fmt(p.importe_pagado)} · pendiente ${fmt(saldoPendiente)}</div>` : '')}
+      ${esCredito ? `<div style="font-size:10.5px;color:var(--green);margin-top:2px;">crédito a favor</div>` : ''}
     </td>
-    <td class="num" data-rol="meta" style="${saldoPendiente>0.004?'color:var(--gold);font-weight:600;':''}">${prefijoMoneda(p.moneda)}${fmt(saldoPendiente)}</td>
+    <td class="num" data-rol="meta">${prefijoMoneda(p.moneda)} ${fmt(p.importe_pagado||0)}</td>
+    <td class="num" data-rol="meta" style="${saldoPendiente>0.004?'color:var(--gold);font-weight:600;':''}">${prefijoMoneda(p.moneda)} ${fmt(saldoPendiente)}</td>
     <td data-rol="meta">${p.fecha_vencimiento ? fechaCorta(p.fecha_vencimiento) : '—'}</td>
     <td data-rol="meta" style="${(() => { const d = calcularDiasRetraso(p.fecha_vencimiento, saldoPendiente); return typeof d==='number' && d>0 ? 'color:var(--red);font-weight:700;' : ''; })()}">${calcularDiasRetraso(p.fecha_vencimiento, saldoPendiente)}</td>
     <td data-rol="meta"><button class="btn btn-ghost btn-sm prov-desglosar" data-id="${p.id}" style="color:${desgloseOk?'var(--green)':(desgloseTotal>0?'var(--red)':'var(--muted)')};" title="${p.aplica_iva?'No incluye IVA — el IVA ('+fmt(p.iva_monto)+') va aparte, a IVA Acreditable':''}">${desgloseTotal<=0?'Desglosar':(desgloseOk?'✓ Completo':`Falta ${fmt(Math.abs(desgloseTotal-metaDesglose))}`)}</button></td>
