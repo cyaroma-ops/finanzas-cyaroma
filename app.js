@@ -16642,6 +16642,7 @@ function provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntos, todasFactur
    P&L — ESTADO DE RESULTADOS
    ============================================================ */
 let STATE_plVista = 'mensual'; // 'mensual' | 'acumulado' | 'anual'
+let STATE_plComparacion = 'ninguna'; // 'ninguna' | 'anterior' | 'anioAnterior'
 let STATE_plRangoDesde = '';
 let STATE_plRangoHasta = '';
 let STATE_plAnualDesdeYm = ''; // 'YYYY-MM', vacío = enero del año actual
@@ -18290,6 +18291,15 @@ function plTagsHtml() {
     <div class="tag ${STATE_plVista==='acumulado'?'active':''}" id="plTabAcumulado">Acumulado</div>
     <div class="tag ${STATE_plVista==='anual'?'active':''}" id="plTabAnual">Todos los meses</div>
   </div>
+  ${STATE_plVista!=='anual' ? `
+  <div class="field" style="max-width:280px;margin:8px 0 2px;">
+    <label style="font-size:11px;">Comparar con</label>
+    <select id="plComparacionSelect">
+      <option value="ninguna" ${STATE_plComparacion==='ninguna'?'selected':''}>Sin comparación</option>
+      <option value="anterior" ${STATE_plComparacion==='anterior'?'selected':''}>Periodo anterior</option>
+      <option value="anioAnterior" ${STATE_plComparacion==='anioAnterior'?'selected':''}>Mismo periodo año anterior</option>
+    </select>
+  </div>` : ''}
   ${STATE_plVista==='mensual' ? `
     <div class="pl-controles-rango">
     <div class="grid-3" style="margin:10px 0 4px;max-width:560px;">
@@ -18342,6 +18352,8 @@ function wirePLTags(el) {
   if (pah) pah.addEventListener('change', () => { STATE_plAnualHastaYm = pah.value; STATE_plAnualDesdeYm = STATE_plAnualDesdeYm || pad.value; renderPL(); });
   const limpiarAnual = el.querySelector('#plAnualLimpiar');
   if (limpiarAnual) limpiarAnual.addEventListener('click', () => { STATE_plAnualDesdeYm=''; STATE_plAnualHastaYm=''; renderPL(); });
+  const comparacionSel = el.querySelector('#plComparacionSelect');
+  if (comparacionSel) comparacionSel.addEventListener('change', () => { STATE_plComparacion = comparacionSel.value; renderPL(); });
 }
 
 async function renderPLAnual(el, b) {
@@ -18543,17 +18555,9 @@ function filaArbolSubcuentaHtml(nodo, conTerceraColumna, nivel, detalleHtmlSiAbi
   return html;
 }
 
-async function renderPL() {
-  const el = document.getElementById('sec-pl');
-  const b = biz();
-  if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
-  if (STATE_plVista === 'anual') { await renderPLAnual(el, b); return; }
-  const scrollY = window.scrollY;
-  let periodo = periodoPL(STATE.currentMonth, STATE_plVista);
-  if (STATE_plVista === 'mensual' && STATE_plRangoDesde && STATE_plRangoHasta) {
-    periodo = { ...periodo, start: STATE_plRangoDesde, end: STATE_plRangoHasta };
-  }
-
+// Extracción EXACTA del cálculo que ya usaba renderPL — ninguna fórmula cambia, solo se
+// parametriza por periodo para poder calcular un periodo comparativo con la misma lógica.
+async function computeEstadoResultadosPeriodo(b, periodo) {
   const [ventasQ, conceptosVenta, conceptos, subcuentas, mayores, conceptosSistema] = await Promise.all([
     sb.from('fz_ventas').select('*').eq('business_id', b.id).gte('fecha', periodo.start).lte('fecha', periodo.end),
     loadConceptosVenta(b.id),
@@ -18570,7 +18574,6 @@ async function renderPL() {
   const totalIngresosVentas = ingresosPorConcepto.reduce((s, i) => s + (i.tipo === 'resta' ? -i.monto : i.monto), 0);
   const gastosOperativos = v.reduce((s,r)=>s+(Number(r.gastos)||0),0);
 
-  // Faltantes / sobrantes de caja detectados en la conciliación de Ventas
   const porCatPL = { efectivo: conceptos.filter(c=>c.categoria==='efectivo'), tarjetas: conceptos.filter(c=>c.categoria==='tarjetas'), bancos: conceptos.filter(c=>c.categoria==='bancos'), cxc: conceptos.filter(c=>c.categoria==='cxc'), propinas: conceptos.filter(c=>c.categoria==='propinas') };
   let diffPeriodo = 0;
   v.forEach(r => { diffPeriodo += computeRowDiffs(r, conceptosVenta, porCatPL, conceptosSistema).difTotal; });
@@ -18581,15 +18584,12 @@ async function renderPL() {
 
   const datosGC3 = await fetchDatosGastosCostos(b.id, periodo);
   const [gClas, gCostos] = await Promise.all([
-    computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'gasto', true, datosGC3),
-    computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'costo', true, datosGC3),
+    computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'gasto', false, datosGC3),
+    computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'costo', false, datosGC3),
   ]);
-  const iPolizaOriginal = await computeIngresosPoliza(b.id, periodo, subcuentas, mayores, true);
+  const iPolizaOriginal = await computeIngresosPoliza(b.id, periodo, subcuentas, mayores, false);
   const { ganancia: gananciaCambiaria, perdida: perdidaCambiaria } = await computeGananciaPerdidaCambiariaER(b.id, periodo);
 
-  // RIF — extracción de una sola fuente, sin duplicar. Nunca se toca gClas/iPoliza en sí (sus
-  // datos siguen sirviendo para Balanza/Auxiliares vía las mismas funciones); aquí solo se separa
-  // qué renglón va a Operación y cuál va al bloque financiero único.
   const RE_CAMBIARIA = /p[ée]rdida cambiaria|ganancia cambiaria/i;
   const RE_GASTOS_FIN = /gastos financieros/i;
   const RE_OTROS_ING = /otros ingresos/i;
@@ -18605,8 +18605,6 @@ async function renderPL() {
   const productosFinancieros = mayorOtrosIngOriginal
     ? mayorOtrosIngOriginal.subs.reduce((s,raiz) => s + aplanarArbol(raiz).filter(n => RE_ING_FIN.test(n.nombre)).reduce((s2,n)=>s2+n.propio,0), 0)
     : 0;
-  // Copia de Otros Ingresos SIN el renglón financiero, solo para lo que se muestra en Ingresos —
-  // el árbol original (con todo) sigue intacto para cualquier otro consumidor.
   const iPoliza = {
     total: iPolizaOriginal.total - productosFinancieros,
     porMayor: iPolizaOriginal.porMayor.map(m => {
@@ -18616,19 +18614,75 @@ async function renderPL() {
     }),
   };
 
-  const totalIngresosFinal = totalIngresos + iPoliza.total; // NUNCA incluye cambiaria ni financieros — eso vive solo en RIF
+  const totalIngresosFinal = totalIngresos + iPoliza.total;
   const utilidadBruta = totalIngresosFinal - gCostos.totalClasificado;
   const gastosOperacionTotal = gastosOperativos + gClasOperacion.totalClasificado + gClasOperacion.sinClasificar + faltanteCaja;
   const resultadoOperacion = utilidadBruta - gastosOperacionTotal;
   const rifNeto = redondearMoneda(productosFinancieros - gastosFinancierosReales + gananciaCambiaria - perdidaCambiaria);
-  const impuestosReconocidos = 0; // solo importes efectivamente reconocidos contablemente — ninguno todavía
+  const impuestosReconocidos = 0;
   const resultadoAntesImpuestos = resultadoOperacion + rifNeto;
   const utilidad = resultadoAntesImpuestos - impuestosReconocidos;
-  // Compatibilidad con el resto del render (gastosTotales ya no incluye RIF, pero se conserva el
-  // nombre para las tarjetas KPI que ya existían)
   const gastosTotales = gastosOperacionTotal;
   const margen = totalIngresosFinal ? (utilidad/totalIngresosFinal*100) : 0;
+
+  return {
+    periodo, conceptosVenta, conceptos, subcuentas, mayores, ingresosPorConcepto,
+    totalIngresosVentas, gastosOperativos, faltanteCaja, sobranteCaja, totalIngresos,
+    gClas, gCostos, gClasOperacion, iPoliza, iPolizaOriginal,
+    gananciaCambiaria, perdidaCambiaria, gastosFinancierosReales, productosFinancieros,
+    totalIngresosFinal, utilidadBruta, gastosOperacionTotal, resultadoOperacion, rifNeto,
+    impuestosReconocidos, resultadoAntesImpuestos, utilidad, gastosTotales, margen,
+  };
+}
+
+// Corrimiento de periodo para comparativos — respeta EXACTAMENTE la misma duración/rango, nunca
+// se inventa un rango distinto. "anterior": mismo número de días, inmediatamente antes.
+// "anioAnterior": mismo rango de mes/día, un año antes (ej. Ene—Ago 2026 -> Ene—Ago 2025).
+function periodoComparativo(periodo, modo) {
+  if (modo === 'anioAnterior') {
+    const restarAnio = (f) => { const [y,m,d] = f.split('-'); return `${Number(y)-1}`.padStart(4,'0') + '-' + m + '-' + d; };
+    return { start: restarAnio(periodo.start), end: restarAnio(periodo.end) };
+  }
+  // 'anterior': mismo número de días, justo antes del periodo actual
+  const dStart = new Date(periodo.start + 'T00:00:00');
+  const dEnd = new Date(periodo.end + 'T00:00:00');
+  const duracionDias = Math.round((dEnd - dStart) / 86400000);
+  const nuevoEnd = new Date(dStart); nuevoEnd.setDate(nuevoEnd.getDate() - 1);
+  const nuevoStart = new Date(nuevoEnd); nuevoStart.setDate(nuevoStart.getDate() - duracionDias);
+  const fmtIso = (d) => d.toISOString().slice(0,10);
+  return { start: fmtIso(nuevoStart), end: fmtIso(nuevoEnd) };
+}
+
+async function renderPL() {
+  const el = document.getElementById('sec-pl');
+  const b = biz();
+  if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
+  if (STATE_plVista === 'anual') { await renderPLAnual(el, b); return; }
+  const scrollY = window.scrollY;
+  let periodo = periodoPL(STATE.currentMonth, STATE_plVista);
+  if (STATE_plVista === 'mensual' && STATE_plRangoDesde && STATE_plRangoHasta) {
+    periodo = { ...periodo, start: STATE_plRangoDesde, end: STATE_plRangoHasta };
+  }
+
+  const r = await computeEstadoResultadosPeriodo(b, periodo);
+  const {
+    conceptosVenta, subcuentas, mayores, ingresosPorConcepto,
+    gastosOperativos, faltanteCaja, sobranteCaja,
+    gClas, gCostos, gClasOperacion, iPoliza,
+    gananciaCambiaria, perdidaCambiaria, gastosFinancierosReales, productosFinancieros,
+    totalIngresosFinal, utilidadBruta, resultadoOperacion, rifNeto,
+    impuestosReconocidos, resultadoAntesImpuestos, utilidad, gastosTotales, margen,
+  } = r;
+
+  // Comparativo -- misma logica, mismo calculo, solo para OTRO periodo (nunca altera el actual).
+  let comparativo = null, periodoComp = null;
+  if (STATE_plComparacion !== 'ninguna') {
+    periodoComp = periodoComparativo(periodo, STATE_plComparacion);
+    comparativo = await computeEstadoResultadosPeriodo(b, periodoComp);
+  }
+
   const periodoLabel = STATE_plVista === 'acumulado' ? `Acumulado ${STATE.currentMonth.slice(0,4)} (ene—${STATE.currentMonth.slice(5,7)})` : (STATE_plRangoDesde && STATE_plRangoHasta ? `${fechaCorta(periodo.start)} — ${fechaCorta(periodo.end)}` : STATE.currentMonth);
+
 
   let detalleGastoHtml = '', detalleIngresoHtml = '', detalleCostoHtml = '';
   if (STATE_plDetalleAbierto) {
@@ -18640,6 +18694,14 @@ async function renderPL() {
     else if (esIngreso) detalleIngresoHtml = detalleSubcuentaHtml(await getDetalleIngresoSubcuenta(b.id, periodo, STATE_plDetalleAbierto), 2);
   }
 
+  const variacionHtml = (actual, comp) => {
+    if (!comparativo) return '';
+    const varAbs = redondearMoneda(actual - comp);
+    const varPct = comp !== 0 ? (varAbs / Math.abs(comp) * 100) : (actual !== 0 ? 100 : 0);
+    return `<td class="num">${fmt(comp)}</td><td class="num" style="color:${varAbs>=0?'var(--green)':'var(--red)'};">${varAbs>=0?'+':''}${fmt(varAbs)}</td><td class="num" style="color:${varAbs>=0?'var(--green)':'var(--red)'};">${varAbs>=0?'+':''}${varPct.toFixed(1)}%</td>`;
+  };
+  const periodoCompLabel = comparativo ? `${fechaCorta(periodoComp.start)} — ${fechaCorta(periodoComp.end)}` : '';
+
   el.innerHTML = `
     <div class="pl-sticky-summary">
       ${plTagsHtml()}
@@ -18648,10 +18710,31 @@ async function renderPL() {
     <div class="kpi-grid kpi-grid-compact" style="margin-bottom:14px;">
       <div class="kpi"><div class="label">Total ingresos</div><div class="value num">${fmt(totalIngresosFinal)}</div></div>
       <div class="kpi"><div class="label">Utilidad bruta</div><div class="value num ${utilidadBruta>=0?'green':'red'}">${fmt(utilidadBruta)}</div></div>
-      <div class="kpi"><div class="label">Total gastos</div><div class="value num red">${fmt(gastosTotales)}</div></div>
-      <div class="kpi"><div class="label">Utilidad / Pérdida</div><div class="value num ${utilidad>=0?'green':'red'}">${fmt(utilidad)}</div></div>
+      <div class="kpi"><div class="label">Gastos de operación</div><div class="value num red">${fmt(gastosTotales)}</div></div>
+      <div class="kpi"><div class="label">RIF neto</div><div class="value num ${rifNeto>=0?'green':'red'}">${fmt(rifNeto)}</div></div>
+      <div class="kpi"><div class="label">Utilidad neta</div><div class="value num ${utilidad>=0?'green':'red'}">${fmt(utilidad)}</div></div>
       <div class="kpi"><div class="label">Margen</div><div class="value">${margen.toFixed(1)}%</div></div>
     </div>
+
+    ${comparativo ? `
+    <div class="card">
+      <div class="card-head"><h3>Comparación — ${periodoLabel} vs. ${periodoCompLabel}</h3></div>
+      <div class="table-wrap tabla-contable-wrap">
+      <table class="report-table">
+        <thead><tr><th>Concepto</th><th>Periodo actual</th><th>Periodo comparativo</th><th>Variación $</th><th>Variación %</th></tr></thead>
+        <tbody>
+          <tr><td>Total ingresos</td><td class="num">${fmt(totalIngresosFinal)}</td>${variacionHtml(totalIngresosFinal, comparativo.totalIngresosFinal)}</tr>
+          <tr><td>Costo de ventas</td><td class="num">${fmt(gCostos.totalClasificado)}</td>${variacionHtml(gCostos.totalClasificado, comparativo.gCostos.totalClasificado)}</tr>
+          <tr class="total-row"><td>Utilidad Bruta</td><td class="num">${fmt(utilidadBruta)}</td>${variacionHtml(utilidadBruta, comparativo.utilidadBruta)}</tr>
+          <tr><td>Gastos de operación</td><td class="num">${fmt(gastosTotales)}</td>${variacionHtml(gastosTotales, comparativo.gastosTotales)}</tr>
+          <tr class="total-row"><td>Resultado de Operación</td><td class="num">${fmt(resultadoOperacion)}</td>${variacionHtml(resultadoOperacion, comparativo.resultadoOperacion)}</tr>
+          <tr><td>RIF neto</td><td class="num">${fmt(rifNeto)}</td>${variacionHtml(rifNeto, comparativo.rifNeto)}</tr>
+          <tr class="total-row"><td>Resultado antes de Impuestos</td><td class="num">${fmt(resultadoAntesImpuestos)}</td>${variacionHtml(resultadoAntesImpuestos, comparativo.resultadoAntesImpuestos)}</tr>
+          <tr class="total-row"><td>Utilidad Neta</td><td class="num">${fmt(utilidad)}</td>${variacionHtml(utilidad, comparativo.utilidad)}</tr>
+        </tbody>
+      </table>
+      </div>
+    </div>` : ''}
 
     <div class="card">
       <div class="card-head"><h3>Ingresos — ${periodoLabel}</h3><span class="hint">Calculado de Ventas</span></div>
