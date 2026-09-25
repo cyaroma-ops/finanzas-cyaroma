@@ -12015,7 +12015,7 @@ async function aplicarPagoFacturas(idsSeleccionados, montoDisponibleInicial, fec
   const idsAfectados = [];
   const registrarPago = async (facturaId, monto) => {
     if (!origenInfo.origen_tabla || !origenInfo.origen_id || !monto) return;
-    await sb.from('fz_pagos_aplicados').insert({ business_id: businessId, factura_id: facturaId, monto, origen_tabla: origenInfo.origen_tabla, origen_id: origenInfo.origen_id, fecha: fechaMov });
+    await sb.from('fz_pagos_aplicados').insert({ business_id: businessId, factura_id: facturaId, monto, origen_tabla: origenInfo.origen_tabla, origen_id: origenInfo.origen_id, fecha: fechaMov, tipo_cambio: origenInfo.tipo_cambio_pago ?? null });
     await sincronizarRealizacionFactura(facturaId, 'proveedor', businessId, fechaMov);
   };
 
@@ -12117,6 +12117,7 @@ function openFacturasCobroModal(rowId, table, facturasClientesPend, onDone) {
     const nombresCliente = Object.keys(porCliente).sort((a,b)=>a.localeCompare(b));
     document.querySelector('#modalFacturasPago h3').textContent = 'Elegir facturas a cobrar';
     document.querySelector('#modalFacturasPago p').textContent = 'Marca todas las que se cobren con este depósito. Se marcarán como "Pagado" al aplicar.';
+    document.getElementById('facturasPagoTcWrap').style.display = 'none';
     box.innerHTML = nombresCliente.map(cli => `
       <div class="factura-provgroup" data-prov="${cli.toLowerCase()}" style="margin-bottom:10px;">
         <div style="font-weight:700;font-size:12.5px;color:var(--navy-1);margin-bottom:4px;">${cli}</div>
@@ -12226,6 +12227,7 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
     buscarProv.oninput = () => { selectProv.value = ''; aplicarFiltroProveedor(); };
     selectProv.onchange = () => { buscarProv.value = ''; aplicarFiltroProveedor(); };
 
+    const mapaFacturaPorId = Object.fromEntries(opciones.map(f => [f.id, f]));
     const actualizarResumen = () => {
       const marcadas = Array.from(box.querySelectorAll('.factura-check:checked'));
       const totalSeleccionado = marcadas.reduce((s,c) => s + (Number(c.dataset.importe) || 0), 0);
@@ -12236,7 +12238,38 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
         <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Total seleccionado (${marcadas.length})</span><strong>${fmt(totalSeleccionado)}</strong></div>
         <div style="display:flex;justify-content:space-between;color:${cuadra?'var(--green)':'var(--muted)'};font-weight:700;"><span>${cuadra?'✓ Cuadra exacto':(diferencia>0?'Si aplicas, sobrará como crédito a favor':'Si aplicas, quedará pendiente/parcial')}</span><span>${cuadra?'':fmt(Math.abs(diferencia))}</span></div>
       `;
+      // Consistencia de moneda entre las facturas marcadas — el TC del pago es UN solo valor para
+      // todo el movimiento; si hay monedas mixtas, no hay forma inequívoca de asignarlo, así que se
+      // bloquea "Aplicar" en vez de inventar un reparto.
+      const monedas = [...new Set(marcadas.map(c => (mapaFacturaPorId[c.value]?.moneda || 'MXN')))];
+      const tcWrap = document.getElementById('facturasPagoTcWrap');
+      const tcAviso = document.getElementById('facturasPagoTcAviso');
+      const tcCampo = document.getElementById('facturasPagoTcCampo');
+      const btnAplicar = document.getElementById('applyFacturasPago');
+      if (monedas.length > 1) {
+        tcWrap.style.display = '';
+        tcCampo.style.display = 'none';
+        tcAviso.style.display = '';
+        tcAviso.textContent = `Las facturas marcadas tienen monedas distintas (${monedas.join(', ')}) — no es posible asignar un único tipo de cambio a este pago. Selecciona facturas de una sola moneda.`;
+        btnAplicar.disabled = true; btnAplicar.style.opacity = '0.5'; btnAplicar.style.cursor = 'not-allowed';
+      } else {
+        btnAplicar.disabled = false; btnAplicar.style.opacity = ''; btnAplicar.style.cursor = '';
+        tcAviso.style.display = 'none';
+        const monedaUnica = monedas[0] || 'MXN';
+        if (monedaUnica === 'MXN') {
+          tcWrap.style.display = 'none';
+        } else {
+          tcWrap.style.display = '';
+          tcCampo.style.display = '';
+          if (!document.getElementById('facturasPagoTc').dataset.tocado) {
+            const primeraFactura = mapaFacturaPorId[marcadas[0]?.value];
+            document.getElementById('facturasPagoTc').value = fmtInputVal(primeraFactura?.tipo_cambio || 1);
+          }
+        }
+      }
     };
+    document.getElementById('facturasPagoTc').dataset.tocado = '';
+    document.getElementById('facturasPagoTc').oninput = (e) => { e.target.dataset.tocado = '1'; };
     box.querySelectorAll('.factura-check').forEach(chk => chk.addEventListener('change', actualizarResumen));
     actualizarResumen();
 
@@ -12244,11 +12277,14 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
     document.getElementById('closeFacturasPago').onclick = () => document.getElementById('modalFacturasPago').classList.remove('show');
     document.getElementById('applyFacturasPago').onclick = async () => {
       const idsSeleccionados = Array.from(box.querySelectorAll('.factura-check:checked')).map(c => c.value);
+      const tcWrapVisible = document.getElementById('facturasPagoTcCampo').style.display !== 'none';
+      const tipoCambioPago = tcWrapVisible ? (leerMonto(document.getElementById('facturasPagoTc').value) || 1) : 1;
       const { idsAfectados, creadoCredito } = await aplicarPagoFacturas(idsSeleccionados, montoMovimiento, row?.fecha || todayStr(), row.business_id, {
         pagado_desde: traspasoCtx?.origenCorto || null,
         pagado_desde_tipo: traspasoCtx?.origenTipo || null,
         pagado_desde_cuenta_id: traspasoCtx?.origenId || null,
         origen_tabla: table, origen_id: rowId,
+        tipo_cambio_pago: tipoCambioPago,
       });
       const { error: e1 } = await sb.from(table).update({ proveedor_factura_ids: idsAfectados, proveedor_factura_id: idsAfectados[0] || null }).eq('id', rowId);
       if (e1) { toast('Error al guardar: ' + e1.message, 'error'); return; }
