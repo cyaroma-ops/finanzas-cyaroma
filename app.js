@@ -17987,6 +17987,31 @@ async function computeGananciaCambiaria(businessId, periodo, cobrosCompartidos =
   }, 0);
 }
 
+// SOLO para el Estado de Resultados — misma consulta y misma fórmula por cobro que
+// computeGananciaCambiaria (no se modifica esa función ni se altera ninguno de sus otros
+// llamadores), pero aquí se separan ganancia y pérdida en vez de devolver un solo neto. Así
+// Ganancia cambiaria puede clasificarse en Otros Ingresos y Pérdida cambiaria en Gastos
+// Financieros, sin netear una contra la otra ni contra Ventas.
+async function computeGananciaPerdidaCambiariaSeparadaPL(businessId, periodo) {
+  const r = await sb.from('fz_cobros_aplicados')
+    .select('monto,tipo_cambio,factura_id,fecha')
+    .eq('business_id', businessId).gte('fecha', periodo.start).lte('fecha', periodo.end).not('tipo_cambio', 'is', null);
+  const cobros = r.data;
+  if (!cobros || !cobros.length) return { ganancia: 0, perdida: 0 };
+  const facturaIds = [...new Set(cobros.map(c => c.factura_id))];
+  const { data: facturas } = await sb.from('fz_facturas_clientes').select('id,tipo_cambio').in('id', facturaIds);
+  const tcOriginalPorFactura = Object.fromEntries((facturas||[]).map(f => [f.id, Number(f.tipo_cambio)||1]));
+  let ganancia = 0, perdida = 0;
+  cobros.forEach(c => {
+    const tcOriginal = tcOriginalPorFactura[c.factura_id] || 1;
+    const tcReal = Number(c.tipo_cambio) || tcOriginal;
+    const diferencia = (Number(c.monto)||0) * (tcReal - tcOriginal);
+    if (diferencia > 0) ganancia += diferencia;
+    else if (diferencia < 0) perdida += -diferencia; // magnitud positiva, para presentarse como gasto
+  });
+  return { ganancia: redondearMoneda(ganancia), perdida: redondearMoneda(perdida) };
+}
+
 // Ingresos ya representados en el motor consolidado (facturas de clientes, pólizas manuales,
 // Ganancia Cambiaria, y cualquier cuenta de Ingreso futura) — se leen de una sola fuente,
 // filtrada por clasificación real, nunca reconstruidos aparte por módulo de origen. fz_ventas
@@ -18528,10 +18553,10 @@ async function renderPL() {
     computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'costo', true, datosGC3),
   ]);
   const iPoliza = await computeIngresosPoliza(b.id, periodo, subcuentas, mayores, true);
-  const gananciaCambiaria = await computeGananciaCambiaria(b.id, periodo);
+  const { ganancia: gananciaCambiaria, perdida: perdidaCambiaria } = await computeGananciaPerdidaCambiariaSeparadaPL(b.id, periodo);
   const totalIngresosFinal = totalIngresos + iPoliza.total + gananciaCambiaria;
   const utilidadBruta = totalIngresosFinal - gCostos.totalClasificado;
-  const gastosTotales = gastosOperativos + gClas.totalClasificado + gClas.sinClasificar + faltanteCaja;
+  const gastosTotales = gastosOperativos + gClas.totalClasificado + gClas.sinClasificar + faltanteCaja + perdidaCambiaria;
   const utilidad = utilidadBruta - gastosTotales;
   const margen = totalIngresosFinal ? (utilidad/totalIngresosFinal*100) : 0;
   const periodoLabel = STATE_plVista === 'acumulado' ? `Acumulado ${STATE.currentMonth.slice(0,4)} (ene—${STATE.currentMonth.slice(5,7)})` : (STATE_plRangoDesde && STATE_plRangoHasta ? `${fechaCorta(periodo.start)} — ${fechaCorta(periodo.end)}` : STATE.currentMonth);
@@ -18590,7 +18615,7 @@ async function renderPL() {
             return (ingresosPorConcepto.length ? gruposHtml + sinGrupo.map(filaIngresoHtml).join('') : (Object.keys(grupos).length ? gruposHtml : `<tr><td colspan="2" class="empty">Este negocio no tiene categorías de venta configuradas (ve a Ventas → Configurar categorías de venta).</td></tr>`));
           })()}
           ${sobranteCaja ? `<tr><td>Sobrante de caja (conciliación de Ventas)</td><td class="num" style="color:var(--green);">${fmt(sobranteCaja)}</td></tr>` : ''}
-          ${Math.abs(gananciaCambiaria) > 0.004 ? `<tr><td>Ganancia/pérdida cambiaria</td><td class="num" style="color:${gananciaCambiaria>=0?'var(--green)':'var(--red)'};">${fmt(gananciaCambiaria)}</td></tr>` : ''}
+          ${gananciaCambiaria > 0.004 ? `<tr><td>Ganancia cambiaria</td><td class="num" style="color:var(--green);">${fmt(gananciaCambiaria)}</td></tr>` : ''}
           <tr class="total-row"><td>Total ingresos</td><td class="num">${fmtNeg(totalIngresosFinal)}</td></tr>
         </tbody>
       </table>
@@ -18637,6 +18662,10 @@ async function renderPL() {
             <tr><td style="padding-left:22px;font-style:italic;color:var(--muted);">Subtotal ${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.subtotal)}</td><td class="td-vacia-reporte"></td></tr>
           `).join('')}
           ${gClas.sinClasificar ? `<tr><td>Otros gastos sin subcuenta asignada</td><td class="num">${fmtNeg(gClas.sinClasificar)}</td><td class="td-vacia-reporte"></td></tr>` : ''}
+          ${perdidaCambiaria > 0.004 ? `
+            <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">Gastos Financieros</td><td class="td-vacia-reporte"></td></tr>
+            <tr><td style="padding-left:22px;color:var(--muted);font-size:12.5px;">Pérdida cambiaria</td><td class="num" style="color:var(--red);">${fmt(perdidaCambiaria)}</td><td class="td-vacia-reporte"></td></tr>
+          ` : ''}
           <tr class="total-row"><td>Total gastos</td><td class="num">${fmtNeg(gastosTotales)}</td><td class="td-vacia-reporte"></td></tr>
         </tbody>
       </table>
