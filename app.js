@@ -13414,13 +13414,13 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
   const datalistSubcuentas = `<datalist id="datalistGastoSubcuentas">${subcuentas.map(s => `<option value="${rutaSubcuenta(s, subcuentas, mayores).replace(/"/g,'&quot;')}">`).join('')}</datalist>`;
   // Equivalente MXN de referencia — dato SECUNDARIO, solo para consolidación, nunca sustituye el
   // saldo real de la caja (que sigue siendo en su propia moneda, arriba).
-  const equivalenteMxnRef = moneda.nombre !== 'MXN' && moneda.nombre !== 'Pesos' ? ` <span style="color:var(--muted);font-size:11.5px;">(≈ MXN ${fmt(saldoApertura * (Number(moneda.tc_reporte)||1))} de referencia, TC ${fmtTC(moneda.tc_reporte||1)})</span>` : '';
+  const equivalenteMxnRef = moneda.nombre !== 'MXN' && moneda.nombre !== 'Pesos' ? ` <span style="color:var(--muted);font-size:11.5px;">(≈ MXN ${fmt(saldo * (Number(moneda.tc_reporte)||1))} de referencia, TC ${fmtTC(moneda.tc_reporte||1)})</span>` : '';
 
   box.innerHTML = `
     ${datalistSubcuentas}
     <div id="sinClasificarBannerEfvo">${sinClasificarBannerHtml(sinClasificar.length, totalSinClasificar)}</div>
     <div class="card-head" style="margin-top:14px;">
-      <span class="hint">${moneda.nombre} · <span class="mf-badge-moneda">${moneda.nombre}</span> — Saldo al inicio de ${STATE.currentMonth}: ${fmtNum(saldoApertura)} ${moneda.nombre}${equivalenteMxnRef}</span>
+      <span class="hint">${moneda.nombre} · <span class="mf-badge-moneda">${moneda.nombre}</span> — ${STATE.currentMonth}: Saldo inicial ${fmtNum(saldoApertura)} · Entradas ${fmtNum(totalDepositosMes)} · Salidas ${fmtNum(totalCargosMes)} · <strong>Saldo final ${fmtNum(saldo)} ${moneda.nombre}</strong>${equivalenteMxnRef}</span>
       <div style="display:flex;gap:8px;">
         <button class="btn btn-ghost btn-sm" id="importMovBtnEfvo" title="Columnas: Fecha, Proveedor/Concepto, Descripción, Factura/Referencia, Depósitos, Cargos. Opcional para traspasos: Tipo (escribe &quot;Traspaso&quot;) y Cuenta destino (nombre exacto del banco o caja de efectivo).">Importar movimientos (Excel)</button>
         <button class="btn btn-ghost btn-sm" id="addMovBtnEfvo">+ Agregar movimiento (pago en efectivo)</button>
@@ -13429,8 +13429,8 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
     <div class="table-wrap scroll-sticky">
       <table class="tabla-operativa tabla-operativa--ledger">
         <thead><tr><th>Fecha</th><th>Tercero</th><th>Concepto / Referencia</th><th>Moneda</th><th>Depósitos</th><th>Retiros</th><th>Saldo</th><th></th></tr></thead>
-        <tbody>${rowsHtml || `<tr><td colspan="10" class="empty">Sin movimientos todavía.</td></tr>`}</tbody>
-        <tfoot><tr class="total-row"><td colspan="4">Total ${STATE.currentMonth} (${moneda.nombre})</td><td class="num">${fmtNum(totalDepositosMes)}</td><td class="num">${fmtNum(totalCargosMes)}</td><td colspan="5"></td></tr></tfoot>
+        <tbody>${rowsHtml || `<tr><td colspan="10" class="empty">Sin movimientos en el periodo · Saldo al cierre: ${fmtNum(saldo)} ${moneda.nombre}</td></tr>`}</tbody>
+        <tfoot><tr class="total-row"><td colspan="4">Total ${STATE.currentMonth} (${moneda.nombre})</td><td class="num">${fmtNum(totalDepositosMes)}</td><td class="num">${fmtNum(totalCargosMes)}</td><td class="num">${fmtNum(saldo)}</td><td colspan="1"></td></tr></tfoot>
       </table>
     </div>
   `;
