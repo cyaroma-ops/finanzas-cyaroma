@@ -44,6 +44,24 @@ const monthBounds = (ym) => {
   return { start, end };
 };
 const todayStr = () => new Date().toISOString().slice(0, 10);
+// Días de retraso — SIEMPRE calculado en vivo, nunca almacenado (cambia con el tiempo). Reutilizado
+// tal cual por Facturas de clientes y de proveedores.
+function calcularDiasRetraso(fechaVencimiento, saldoPendiente) {
+  if (!(Number(saldoPendiente) > 0.004)) return '—'; // ya liquidada
+  if (!fechaVencimiento) return '—';
+  const hoy = todayStr();
+  if (hoy <= fechaVencimiento) return 0;
+  const dias = Math.round((new Date(hoy) - new Date(fechaVencimiento)) / 86400000);
+  return dias;
+}
+// Símbolo/prefijo de moneda para mostrar en listas — genérico, no hardcodeado a USD.
+function prefijoMoneda(moneda) {
+  if (!moneda || moneda === 'MXN') return '';
+  if (moneda === 'USD') return 'US';
+  if (moneda === 'EUR') return '€';
+  return moneda + ' ';
+}
+
 
 // Inicia un PDF con el encabezado estándar: razón social (o nombre comercial si no hay razón
 // social distinta) + "Nombre comercial: X" cuando ambos existen y difieren + el subtítulo del
@@ -13499,9 +13517,9 @@ async function renderProveedores() {
       </div>
       <div class="table-wrap scroll-sticky">
         <table class="tabla-operativa tabla-operativa--scroll">
-          <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Importe</th><th>Desglose</th><th>Estatus</th><th>Fecha pago</th><th>Pagado desde</th><th>Adjunto</th><th></th></tr></thead>
+          <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Moneda</th><th>Importe</th><th>Saldo</th><th>Vencimiento</th><th>Días retraso</th><th>Desglose</th><th>Estatus</th><th>Fecha pago</th><th>Pagado desde</th><th>Adjunto</th><th></th></tr></thead>
           <tbody>
-            ${rows.map(p => provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntosProv[p.id], all)).join('') || `<tr><td colspan="9" class="empty">Sin registros.</td></tr>`}
+            ${rows.map(p => provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntosProv[p.id], all)).join('') || `<tr><td colspan="13" class="empty">Sin registros.</td></tr>`}
           </tbody>
         </table>
       </div>
@@ -14861,18 +14879,25 @@ async function renderFacturasClientes(el, b) {
       </div>
       <div class="table-wrap scroll-sticky">
         <table class="tabla-operativa tabla-operativa--scroll">
-          <thead><tr><th>Folio</th><th>Fecha</th><th>Cliente</th><th>Total</th><th>Pagado</th><th>Estatus</th><th>¿Se factura?</th><th></th></tr></thead>
+          <thead><tr><th>Folio</th><th>No. Factura</th><th>Fecha</th><th>Cliente</th><th>Moneda</th><th>Total</th><th>Saldo</th><th>Estatus</th><th>Vencimiento</th><th>Días retraso</th><th>¿Se factura?</th><th></th></tr></thead>
           <tbody>
-            ${facturas.length ? facturas.map(f => `<tr>
+            ${facturas.length ? facturas.map(f => {
+              const saldo = redondearMoneda(Math.max(0, Number(f.total) - Number(f.importe_pagado||0)));
+              const diasRetraso = calcularDiasRetraso(f.fecha_vencimiento, saldo);
+              return `<tr>
               <td data-rol="secundario">#${f.folio}</td>
+              <td data-rol="secundario">${f.numero_factura || '—'}</td>
               <td data-rol="principal">${fechaCorta(f.fecha)}</td>
               <td data-rol="secundario">${nombreCliente(f.cliente_id)}</td>
-              <td class="num" data-rol="importe" style="font-weight:700;">${f.moneda==='USD'?'US':''}${fmt(f.total)}</td>
-              <td class="num" data-rol="meta">${fmt(f.importe_pagado||0)}</td>
+              <td data-rol="meta">${f.moneda || 'MXN'}</td>
+              <td class="num" data-rol="importe" style="font-weight:700;">${prefijoMoneda(f.moneda)}${fmt(f.total)}</td>
+              <td class="num" data-rol="meta" style="${saldo>0.004?'color:var(--gold);font-weight:600;':''}">${prefijoMoneda(f.moneda)}${fmt(saldo)}</td>
               <td data-rol="estado"><span class="badge ${f.estatus==='Pagado'?'pag':'pend'}">${f.estatus}</span></td>
+              <td data-rol="meta">${f.fecha_vencimiento ? fechaCorta(f.fecha_vencimiento) : '—'}</td>
+              <td data-rol="meta" style="${typeof diasRetraso==='number' && diasRetraso>0?'color:var(--red);font-weight:700;':''}">${diasRetraso}</td>
               <td data-rol="meta">${ESTATUS_FISCAL_BADGE[f.estatus_fiscal] || ESTATUS_FISCAL_BADGE.no_aplica}</td>
               ${facturaMenuHtml(f.id)}
-            </tr>`).join('') : `<tr><td colspan="8" class="empty">Aún no hay facturas. Usa "+ Nueva factura".</td></tr>`}
+            </tr>`;}).join('') : `<tr><td colspan="12" class="empty">Aún no hay facturas. Usa "+ Nueva factura".</td></tr>`}
           </tbody>
         </table>
       </div>
@@ -14904,6 +14929,27 @@ async function openModalFactura(factura, businessId) {
   };
   selCliente.onchange = actualizarNombreComercial;
   actualizarNombreComercial();
+  document.getElementById('facturaNumero').value = factura?.numero_factura || '';
+  const selMoneda = document.getElementById('facturaMoneda');
+  const inputTc = document.getElementById('facturaTipoCambio');
+  const actualizarTcWrap = () => {
+    const esMxn = selMoneda.value === 'MXN';
+    document.getElementById('facturaTcWrap').style.display = esMxn ? 'none' : '';
+    if (esMxn) inputTc.value = '1';
+  };
+  selMoneda.onchange = actualizarTcWrap;
+  if (factura) {
+    // Factura existente: SU moneda/TC histórico, nunca se recalcula desde el cliente.
+    selMoneda.value = factura.moneda || 'MXN';
+    inputTc.value = fmtInputVal(factura.tipo_cambio || 1);
+  } else {
+    // Factura nueva: el cliente solo SUGIERE un default — editable de inmediato, y una vez
+    // guardada la factura ya nunca vuelve a leer del cliente.
+    const c = clientes.find(x => x.id === selCliente.value);
+    selMoneda.value = (c?.moneda === 'USD' || c?.moneda === 'EUR') ? c.moneda : 'MXN';
+    inputTc.value = fmtInputVal(c?.moneda && c.moneda !== 'MXN' ? (c.tipo_cambio || 1) : 1);
+  }
+  actualizarTcWrap();
   document.getElementById('facturaFecha').value = factura?.fecha || todayStr();
   document.getElementById('facturaVencimiento').value = factura?.fecha_vencimiento || '';
   document.getElementById('facturaAplicaIva').checked = factura ? !!factura.aplica_iva : true;
@@ -14921,8 +14967,8 @@ async function openModalFactura(factura, businessId) {
     cobrosSection.style.display = '';
     document.getElementById('cobroFecha').value = todayStr();
     document.getElementById('cobroMonto').value = fmtInputVal(Math.max(0, Number(factura.total) - Number(factura.importe_pagado||0)));
-    document.getElementById('cobroTcRealWrap').style.display = factura.moneda === 'USD' ? '' : 'none';
-    document.getElementById('cobroTcReal').value = factura.moneda === 'USD' ? fmtInputVal(factura.tipo_cambio || 1) : '';
+    document.getElementById('cobroTcRealWrap').style.display = factura.moneda !== 'MXN' ? '' : 'none';
+    document.getElementById('cobroTcReal').value = factura.moneda !== 'MXN' ? fmtInputVal(factura.tipo_cambio || 1) : '';
     const [cuentasBancoQ, monedasQ] = await Promise.all([
       sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
       sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
@@ -15131,10 +15177,13 @@ document.getElementById('saveModalFactura').addEventListener('click', async () =
     facturaExistente = data;
   }
 
+  const monedaFactura = document.getElementById('facturaMoneda').value;
+  const tipoCambioFactura = monedaFactura === 'MXN' ? 1 : (leerMonto(document.getElementById('facturaTipoCambio').value) || 1);
   const payload = {
     business_id: b.id, cliente_id, fecha,
     fecha_vencimiento: document.getElementById('facturaVencimiento').value || null,
-    moneda: cliente?.moneda || 'MXN', tipo_cambio: cliente?.tipo_cambio || 1,
+    numero_factura: document.getElementById('facturaNumero').value.trim() || null,
+    moneda: monedaFactura, tipo_cambio: tipoCambioFactura,
     subtotal, aplica_iva, iva_porcentaje, iva_monto: iva_monto, total: subtotal + iva_monto,
     estatus_fiscal: document.getElementById('facturaEstatusFiscal').value,
     folio_fiscal: document.getElementById('facturaFolioFiscal').value.trim() || null,
@@ -15528,6 +15577,18 @@ async function openModalFacturaProveedor(factura, businessId, catalogo, opciones
     catalogo.map(c => `<option value="${c.id}" ${factura?.proveedor_id===c.id?'selected':''}>${c.razon_social ? c.razon_social + ' — ' : ''}${c.nombre_comercial || c.nombre}</option>`).join('');
   document.getElementById('fpFactura').value = factura?.factura || '';
   document.getElementById('fpFecha').value = factura?.fecha || todayStr();
+  document.getElementById('fpVencimiento').value = factura?.fecha_vencimiento || '';
+  const selMonedaFp = document.getElementById('fpMoneda');
+  const inputTcFp = document.getElementById('fpTipoCambio');
+  const actualizarTcWrapFp = () => {
+    const esMxn = selMonedaFp.value === 'MXN';
+    document.getElementById('fpTcWrap').style.display = esMxn ? 'none' : '';
+    if (esMxn) inputTcFp.value = '1';
+  };
+  selMonedaFp.onchange = actualizarTcWrapFp;
+  selMonedaFp.value = factura?.moneda || 'MXN'; // sin suposición por nacionalidad — MXN solo como default neutro
+  inputTcFp.value = fmtInputVal(factura?.tipo_cambio || 1);
+  actualizarTcWrapFp();
   document.getElementById('fpImporte').value = fmtInputVal(factura?.importe || 0);
   document.getElementById('fpEstatus').value = factura?.estatus || 'Pendiente';
   document.getElementById('fpFechaPago').value = factura?.fecha_pago || '';
@@ -15755,12 +15816,16 @@ document.getElementById('saveFacturaProveedor').addEventListener('click', async 
   let proveedorTexto = proveedor_id ? catOption.textContent : (catOption?.textContent || 'Nuevo proveedor');
   if (!proveedor_id && proveedorTexto === '— elegir —') proveedorTexto = 'Nuevo proveedor';
   const esFiscalContable = biz()?.modo === 'fiscal_contable';
+  const monedaFp = document.getElementById('fpMoneda').value;
+  const tipoCambioFp = monedaFp === 'MXN' ? 1 : (leerMonto(document.getElementById('fpTipoCambio').value) || 1);
   const payload = {
     business_id: b.id,
     proveedor_id,
     proveedor: proveedorTexto,
     factura: document.getElementById('fpFactura').value.trim() || null,
     fecha: fechaFp,
+    fecha_vencimiento: document.getElementById('fpVencimiento').value || null,
+    moneda: monedaFp, tipo_cambio: tipoCambioFp,
     importe: leerMonto(document.getElementById('fpImporte').value) || 0,
     estatus: document.getElementById('fpEstatus').value,
     fecha_pago: document.getElementById('fpFechaPago').value || null,
@@ -15864,10 +15929,14 @@ function provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntos, todasFactur
     <td data-rol="principal"><input class="cell prov-cell" type="date" value="${p.fecha}" data-id="${p.id}" data-field="fecha"></td>
     <td data-rol="secundario">${nombreMostrado}</td>
     <td data-rol="secundario"><input class="cell prov-cell" type="text" value="${p.factura||''}" data-id="${p.id}" data-field="factura"></td>
+    <td data-rol="meta">${p.moneda || 'MXN'}</td>
     <td data-rol="importe">
       <input class="cell prov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(p.importe)}" data-id="${p.id}" data-field="importe">
       ${esCredito ? `<div style="font-size:10.5px;color:var(--green);margin-top:2px;">crédito a favor</div>` : (Number(p.importe_pagado)>0 && p.estatus!=='Pagado' ? `<div style="font-size:10.5px;color:var(--muted);margin-top:2px;white-space:nowrap;">pagado ${fmt(p.importe_pagado)} · pendiente ${fmt(saldoPendiente)}</div>` : '')}
     </td>
+    <td class="num" data-rol="meta" style="${saldoPendiente>0.004?'color:var(--gold);font-weight:600;':''}">${prefijoMoneda(p.moneda)}${fmt(saldoPendiente)}</td>
+    <td data-rol="meta">${p.fecha_vencimiento ? fechaCorta(p.fecha_vencimiento) : '—'}</td>
+    <td data-rol="meta" style="${(() => { const d = calcularDiasRetraso(p.fecha_vencimiento, saldoPendiente); return typeof d==='number' && d>0 ? 'color:var(--red);font-weight:700;' : ''; })()}">${calcularDiasRetraso(p.fecha_vencimiento, saldoPendiente)}</td>
     <td data-rol="meta"><button class="btn btn-ghost btn-sm prov-desglosar" data-id="${p.id}" style="color:${desgloseOk?'var(--green)':(desgloseTotal>0?'var(--red)':'var(--muted)')};" title="${p.aplica_iva?'No incluye IVA — el IVA ('+fmt(p.iva_monto)+') va aparte, a IVA Acreditable':''}">${desgloseTotal<=0?'Desglosar':(desgloseOk?'✓ Completo':`Falta ${fmt(Math.abs(desgloseTotal-metaDesglose))}`)}</button></td>
     <td data-rol="estado"><select class="cell prov-cell" data-id="${p.id}" data-field="estatus">
       <option ${p.estatus==='Pendiente'?'selected':''}>Pendiente</option>

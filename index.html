@@ -1773,6 +1773,24 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <input type="date" id="facturaFecha">
       </div>
     </div>
+    <div class="grid-3">
+      <div class="field">
+        <label>No. de factura (opcional)</label>
+        <input type="text" id="facturaNumero" placeholder="Ej. A-1548">
+      </div>
+      <div class="field">
+        <label>Moneda</label>
+        <select id="facturaMoneda">
+          <option value="MXN">MXN</option>
+          <option value="USD">USD</option>
+          <option value="EUR">EUR</option>
+        </select>
+      </div>
+      <div class="field" id="facturaTcWrap" style="display:none;">
+        <label>Tipo de cambio de esta factura</label>
+        <input type="text" inputmode="decimal" id="facturaTipoCambio" placeholder="Ej. 18.50">
+      </div>
+    </div>
     <div class="field" style="max-width:240px;">
       <label>Fecha de vencimiento (opcional)</label>
       <input type="date" id="facturaVencimiento">
@@ -1885,15 +1903,31 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <input type="text" id="fpFactura" placeholder="Ej. A-4512">
       </div>
     </div>
-    <div class="grid-2">
+    <div class="grid-3">
       <div class="field">
         <label>Fecha</label>
         <input type="date" id="fpFecha">
       </div>
       <div class="field">
-        <label id="fpImporteLabel">Importe</label>
-        <input type="text" inputmode="decimal" id="fpImporte" placeholder="0.00">
+        <label>Moneda</label>
+        <select id="fpMoneda">
+          <option value="MXN">MXN</option>
+          <option value="USD">USD</option>
+          <option value="EUR">EUR</option>
+        </select>
       </div>
+      <div class="field" id="fpTcWrap" style="display:none;">
+        <label>Tipo de cambio de esta factura</label>
+        <input type="text" inputmode="decimal" id="fpTipoCambio" placeholder="Ej. 18.50">
+      </div>
+    </div>
+    <div class="field" style="max-width:240px;">
+      <label>Fecha de vencimiento (opcional)</label>
+      <input type="date" id="fpVencimiento">
+    </div>
+    <div class="field">
+      <label id="fpImporteLabel">Importe</label>
+      <input type="text" inputmode="decimal" id="fpImporte" placeholder="0.00">
     </div>
     <div id="fpIvaWrap" style="display:none;border:1.5px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:12px;">
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;margin-bottom:8px;">
