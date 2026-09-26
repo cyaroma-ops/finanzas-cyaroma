@@ -998,7 +998,7 @@ const SECTION_META = {
 };
 // Estas viven "dentro" de Configuración: ya no tienen su propio ítem en el menú principal,
 // pero conservan su sección y su función de render tal cual, solo cambia cómo se llega ahí.
-const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos', 'comparativo'];
+const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos', 'pagosclasificar', 'comparativo'];
 function marcarNavActivo(seccion) {
   document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
   const seccionNav = SECCIONES_EN_CONFIGURACION.includes(seccion) ? 'configuracion' : seccion;
@@ -1128,6 +1128,7 @@ async function renderCurrentSection() {
   if (s === 'proveedores') return renderProveedores();
   if (s === 'clientes') return renderClientes();
   if (s === 'activosfijos') return renderActivosFijos();
+  if (s === 'pagosclasificar') return renderPagosPorClasificar();
   if (s === 'ivafiscal') return renderIvaFiscal();
   if (s === 'impuestos') return renderImpuestos();
   if (s === 'papelestrabajo') return renderPapelesTrabajo();
@@ -2175,6 +2176,89 @@ async function eliminarActivoFijoCompleto(activoId, businessId) {
 
 const STATE_activosDepreciacionRevisada = new Set();
 let STATE_afDetalleAbierto = null;
+async function renderPagosPorClasificar() {
+  const el = document.getElementById('sec-pagosclasificar');
+  const b = biz();
+  if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
+  el.innerHTML = '';
+  agregarBotonVolverConfig(el);
+
+  const { data: pendientes } = await sb.from('fz_pagos_por_clasificar').select('*').eq('business_id', b.id).eq('estado', 'pendiente').order('fecha', { ascending: false });
+  const ids = (pendientes||[]).map(p=>p.id);
+  const { data: aplicacionesTodas } = ids.length ? await sb.from('fz_pagos_aplicados').select('*').eq('origen_tabla','fz_pagos_por_clasificar').in('origen_id', ids) : { data: [] };
+  const aplicadasPorId = {};
+  (aplicacionesTodas||[]).forEach(a => { (aplicadasPorId[a.origen_id] ||= []).push(a); });
+
+  const contenido = document.createElement('div');
+  contenido.innerHTML = `
+    <div class="card">
+      <div class="card-head"><h3>Pagos por clasificar</h3></div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Salidas de dinero registradas sin una contrapartida definitiva (Banco/Efectivo) y/o sin proveedor/factura identificado todavía. Contablemente ya están reflejadas en la cuenta puente correspondiente — no afectan Balanza de forma incorrecta mientras esperan su clasificación.</p>
+      <div class="table-wrap">
+        <table class="tabla-operativa">
+          <thead><tr><th>Fecha</th><th>Monto</th><th>Proveedor tentativo</th><th>Facturas aplicadas</th><th></th></tr></thead>
+          <tbody>
+            ${(pendientes||[]).length ? (pendientes||[]).map(p => {
+              const aplicadas = aplicadasPorId[p.id] || [];
+              return `<tr>
+                <td>${fechaCorta(p.fecha)}</td>
+                <td class="num">${fmt(p.monto)} ${p.moneda!=='MXN'?p.moneda:''}</td>
+                <td>${p.proveedor_tentativo || '<span style="color:var(--muted);">—</span>'}</td>
+                <td>${aplicadas.length ? `${aplicadas.length} factura(s) aplicada(s)` : '<span style="color:var(--gold);">Sin asignar todavía</span>'}</td>
+                <td style="display:flex;gap:6px;">
+                  ${!aplicadas.length ? `<button class="btn btn-ghost btn-sm ppc-asignar" data-id="${p.id}" style="font-size:11px;">Asignar proveedor/factura</button>` : ''}
+                  <button class="btn btn-gold btn-sm ppc-clasificar" data-id="${p.id}" style="font-size:11px;">Clasificar</button>
+                </td>
+              </tr>`;
+            }).join('') : `<tr><td colspan="5" class="empty">No hay pagos pendientes de clasificar.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  el.appendChild(contenido);
+
+  contenido.querySelectorAll('.ppc-asignar').forEach(btn => btn.addEventListener('click', async () => {
+    const p = (pendientes||[]).find(x=>x.id===btn.dataset.id);
+    const nombreProv = prompt('¿A qué proveedor corresponde este pago? (nombre exacto como aparece en Proveedores)', p.proveedor_tentativo || '');
+    if (!nombreProv) return;
+    const { data: facturasProv } = await sb.from('fz_proveedores').select('*').eq('business_id', b.id).ilike('proveedor', nombreProv).neq('estatus', 'Pagado').order('fecha');
+    if (!facturasProv || !facturasProv.length) { toast('No se encontraron facturas pendientes para ese proveedor.', 'error'); return; }
+    const listado = facturasProv.map((f,i) => `${i+1}. ${fechaCorta(f.fecha)} · ${f.factura||'s/f'} · saldo ${fmt(Number(f.importe)-Number(f.importe_pagado||0))}`).join('\n');
+    const elegidos = prompt(`Facturas pendientes de "${nombreProv}":\n\n${listado}\n\nEscribe los números separados por coma (ej. 1,3):`);
+    if (!elegidos) return;
+    const idsSeleccionados = elegidos.split(',').map(s => Number(s.trim())-1).filter(i => facturasProv[i]).map(i => facturasProv[i].id);
+    if (!idsSeleccionados.length) { toast('No se reconoció ninguna factura válida.', 'error'); return; }
+    const r = await asignarProveedorFacturasAPagoPendiente(p.id, b.id, idsSeleccionados);
+    if (!r.ok) { toast(r.mensaje, 'error'); return; }
+    toast(`Asignado a ${r.idsAfectados.length} factura(s)${r.creadoCredito?' · se generó crédito a favor':''}.`);
+    renderPagosPorClasificar();
+  }));
+
+  contenido.querySelectorAll('.ppc-clasificar').forEach(btn => btn.addEventListener('click', async () => {
+    const p = (pendientes||[]).find(x=>x.id===btn.dataset.id);
+    const [cuentasBancoQ, monedasQ, subcuentas, mayores] = await Promise.all([
+      sb.from('fz_bancos_cuentas').select('*').eq('business_id', b.id).eq('activo', true),
+      sb.from('fz_efectivo_monedas').select('*').eq('business_id', b.id).eq('activo', true),
+      loadSubcuentas(b.id), loadCuentasMayor(b.id),
+    ]);
+    const opciones = [
+      ...(cuentasBancoQ.data||[]).map(c => ({ value: `banco:${c.id}`, label: `Banco — ${c.nombre}` })),
+      ...(monedasQ.data||[]).map(m => ({ value: `efectivo:${m.id}`, label: `Efectivo — ${m.nombre}` })),
+      ...subcuentas.map(s => ({ value: `subcuenta:${s.id}`, label: `Cuenta — ${rutaSubcuenta(s, subcuentas, mayores)}` })),
+    ];
+    const elegido = prompt(`Clasificar pago de ${fmt(p.monto)} (${fechaCorta(p.fecha)}) hacia:\n\n` + opciones.map((o,i)=>`${i+1}. ${o.label}`).join('\n') + `\n\nEscribe el número de la opción:`);
+    const idx = Number(elegido) - 1;
+    if (!opciones[idx]) return;
+    const [tipoDestino, refId] = opciones[idx].value.split(':');
+    const usuarioNombre = STATE.currentUserEmail || STATE.usuarioActual?.nombre || null;
+    const r = await clasificarPagoPendiente(p.id, b.id, { tipo: tipoDestino, refId, subcuentaId: tipoDestino==='subcuenta'?refId:null, usuarioNombre });
+    if (!r.ok) { toast(r.mensaje, 'error'); return; }
+    toast('Pago clasificado correctamente.');
+    renderPagosPorClasificar();
+  }));
+}
+
 async function renderActivosFijos() {
   const el = document.getElementById('sec-activosfijos');
   const b = biz();
@@ -11096,6 +11180,7 @@ async function renderConfiguracion() {
       ${tarjetaConfigHtml('cfgCatalogo', 'Catálogo de Cuentas', b ? `Cuenta mayor, subcuentas y su estructura contable para ${b.name}.` : 'Selecciona un negocio para configurar su catálogo.')}
       ${tarjetaConfigHtml('cfgCierre', 'Cierre de periodo', b ? `Bloquea la captura de meses ya cerrados en ${b.name}.` : 'Selecciona un negocio para gestionar sus cierres.')}
       ${tarjetaConfigHtml('cfgActivosFijos', 'Activos Fijos', b ? `Equipo, mobiliario y su depreciación mensual automática en ${b.name}.` : 'Selecciona un negocio para gestionar sus activos.')}
+      ${tarjetaConfigHtml('cfgPagosClasificar', 'Pagos por clasificar', b ? `Salidas de dinero pendientes de asignar a proveedor/factura y/o de clasificar hacia Banco/Efectivo en ${b.name}.` : 'Selecciona un negocio.')}
     `)}
     <p style="font-size:13px;font-weight:700;color:var(--navy-1);margin-bottom:10px;">Fiscal</p>
     <p style="font-size:11.5px;color:var(--muted);margin:-4px 0 10px;">INPC, recargos y el calendario de días inhábiles se movieron a <a href="#" id="cfgIrParametrosFiscales" class="pt-editar-link" style="display:inline;">Parámetros Fiscales</a>, en el menú principal.</p>
@@ -11121,6 +11206,7 @@ async function renderConfiguracion() {
   const cierreBtn = document.getElementById('cfgCierre');
   if (cierreBtn) cierreBtn.addEventListener('click', () => { if (b) abrirModalCierrePeriodo(b.id); else toast('Selecciona un negocio primero.', 'error'); });
   ir('cfgActivosFijos', 'activosfijos');
+  ir('cfgPagosClasificar', 'pagosclasificar');
   ir('cfgComparativo', 'comparativo');
   ir('cfgFuentesFiscales', 'fuentesfiscales');
   const irParamFiscales = document.getElementById('cfgIrParametrosFiscales');
@@ -12469,6 +12555,99 @@ async function aplicarPagoFacturas(idsSeleccionados, montoDisponibleInicial, fec
     }
   }
   return { idsAfectados, creadoCredito, sobrante: disponible };
+}
+
+// ============================================================
+// PAGOS POR CLASIFICAR — puente contable. Reutiliza aplicarPagoFacturas tal
+// cual (nunca se modifica) y el mecanismo de reconstrucción contable de
+// Bancos/Efectivo una vez clasificado. Solo agrega un origen alternativo
+// mientras no se conoce la contrapartida real y/o el proveedor/factura.
+// ============================================================
+
+// Crea la salida "por clasificar". Si ya se conoce el proveedor/factura(s), aplica de una vez
+// (mismo motor aplicarPagoFacturas, sin duplicar lógica). Si no, queda pendiente de asignar.
+async function crearPagoPorClasificar(businessId, { fecha, monto, moneda, tipoCambio, proveedorTentativo, descripcion, idsFacturas }) {
+  const { data: nuevo, error } = await sb.from('fz_pagos_por_clasificar').insert({
+    business_id: businessId, fecha, monto, moneda: moneda || 'MXN', tipo_cambio: tipoCambio || 1,
+    proveedor_tentativo: proveedorTentativo || null, descripcion: descripcion || null, estado: 'pendiente',
+  }).select().single();
+  if (error) return { ok: false, mensaje: 'Error creando el pago por clasificar: ' + error.message };
+  let resultadoAplicacion = null;
+  if (idsFacturas && idsFacturas.length) {
+    resultadoAplicacion = await aplicarPagoFacturas(idsFacturas, monto, fecha, businessId, {
+      origen_tabla: 'fz_pagos_por_clasificar', origen_id: nuevo.id, tipo_cambio_pago: tipoCambio || 1,
+    });
+  }
+  registrarAuditoria(businessId, 'crear', 'Proveedores', `Pago por clasificar registrado: ${fmt(monto)} · ${fecha}${proveedorTentativo ? ' · Proveedor tentativo: ' + proveedorTentativo : ''}${resultadoAplicacion?.idsAfectados?.length ? ' · Aplicado a ' + resultadoAplicacion.idsAfectados.length + ' factura(s) de inmediato' : ' · Sin proveedor/factura identificado todavía'}`);
+  return { ok: true, id: nuevo.id, resultadoAplicacion };
+}
+
+// Asigna proveedor/factura(s) por PRIMERA VEZ a un pago que nació sin identificar. Llama a
+// aplicarPagoFacturas una sola vez — si ya tenía facturas aplicadas antes, esta función se niega
+// a correr de nuevo (evita reaplicar/duplicar el efecto sobre la factura).
+async function asignarProveedorFacturasAPagoPendiente(pagoId, businessId, idsFacturas) {
+  const { data: pago } = await sb.from('fz_pagos_por_clasificar').select('*').eq('id', pagoId).single();
+  if (!pago) return { ok: false, mensaje: 'No se encontró el pago por clasificar.' };
+  if (pago.estado === 'clasificado') return { ok: false, mensaje: 'Este pago ya fue clasificado — no se puede reasignar desde aquí.' };
+  const { data: yaAplicado } = await sb.from('fz_pagos_aplicados').select('id').eq('origen_tabla', 'fz_pagos_por_clasificar').eq('origen_id', pagoId).limit(1);
+  if (yaAplicado && yaAplicado.length) return { ok: false, mensaje: 'Este pago ya tiene facturas aplicadas — no se puede volver a aplicar (evita duplicar el efecto). Si necesitas cambiar las facturas, primero revierte con la reversión de pagos habitual.' };
+  const resultado = await aplicarPagoFacturas(idsFacturas, Number(pago.monto), pago.fecha, businessId, {
+    origen_tabla: 'fz_pagos_por_clasificar', origen_id: pagoId, tipo_cambio_pago: Number(pago.tipo_cambio) || 1,
+  });
+  if (resultado.idsAfectados.length) {
+    registrarAuditoria(businessId, 'editar', 'Proveedores', `Pago por clasificar (${fmt(pago.monto)} · ${pago.fecha}) asignado a ${resultado.idsAfectados.length} factura(s)${resultado.creadoCredito ? ' · se generó crédito a favor' : ''}.`);
+  }
+  return { ok: true, ...resultado };
+}
+
+// Clasifica un pago pendiente hacia su contrapartida definitiva. NO vuelve a llamar a
+// aplicarPagoFacturas — solo transfiere el origen de las fz_pagos_aplicados YA existentes (si las
+// hay) hacia el movimiento/cuenta real, para que el mecanismo normal de Bancos/Efectivo (o una
+// póliza directa) lo recoja de aquí en adelante. Idempotente: si ya está clasificado, se niega.
+async function clasificarPagoPendiente(pagoId, businessId, { tipo, refId, subcuentaId, usuarioNombre }) {
+  const { data: pago } = await sb.from('fz_pagos_por_clasificar').select('*').eq('id', pagoId).single();
+  if (!pago) return { ok: false, mensaje: 'No se encontró el pago por clasificar.' };
+  if (pago.estado === 'clasificado') return { ok: false, mensaje: 'Este pago ya fue clasificado anteriormente (idempotente — no se vuelve a procesar).' };
+  if (await periodoEstaCerrado(businessId, pago.fecha)) return { ok: false, mensaje: `El periodo de ${pago.fecha} está cerrado. Reábrelo antes de clasificar este pago.` };
+
+  let destinoTabla, destinoId;
+  if (tipo === 'banco' || tipo === 'efectivo') {
+    const tabla = tipo === 'banco' ? 'fz_bancos_mov' : 'fz_efectivo_mov';
+    const payloadBase = tipo === 'banco'
+      ? { business_id: businessId, cuenta_id: refId, fecha: pago.fecha, concepto: 'Pago a proveedor (clasificado)', proveedor: pago.proveedor_tentativo || '', descripcion: pago.descripcion || '', cargos: Number(pago.monto), depositos: 0, tipo_salida: 'proveedor' }
+      : { business_id: businessId, moneda_id: refId, fecha: pago.fecha, proveedor: pago.proveedor_tentativo || '', descripcion: pago.descripcion || '', cargos: Number(pago.monto), depositos: 0, tipo_salida: 'proveedor' };
+    const { data: nuevoMov, error: errMov } = await sb.from(tabla).insert(payloadBase).select().single();
+    if (errMov) return { ok: false, mensaje: 'Error creando el movimiento: ' + errMov.message };
+    destinoTabla = tabla; destinoId = nuevoMov.id;
+    // Transferir el origen de las aplicaciones YA existentes (si las hay) — nunca se reaplica.
+    const { data: aplicaciones } = await sb.from('fz_pagos_aplicados').select('id,factura_id').eq('origen_tabla', 'fz_pagos_por_clasificar').eq('origen_id', pagoId);
+    if (aplicaciones && aplicaciones.length) {
+      await sb.from('fz_pagos_aplicados').update({ origen_tabla: destinoTabla, origen_id: destinoId }).eq('origen_tabla', 'fz_pagos_por_clasificar').eq('origen_id', pagoId);
+      await sb.from(destinoTabla).update({ proveedor_factura_ids: aplicaciones.map(a => a.factura_id) }).eq('id', destinoId);
+    }
+  } else if (tipo === 'subcuenta') {
+    // Sin movimiento bancario real — se cierra el puente directo contra la subcuenta elegida con
+    // una póliza manual (Debe "Pagos por clasificar" / Haber subcuenta elegida).
+    const subPuente = await obtenerOCrearSubcuentaPorNombre(businessId, 'Pagos por clasificar', 'activo');
+    const { data: nuevaPoliza, error: errPoliza } = await sb.from('fz_polizas').insert({
+      business_id: businessId, fecha: pago.fecha, concepto: `Clasificación de pago por clasificar — ${pago.fecha}`,
+    }).select().single();
+    if (errPoliza) return { ok: false, mensaje: 'Error creando la póliza de clasificación: ' + errPoliza.message };
+    await sb.from('fz_polizas_lineas').insert([
+      { poliza_id: nuevaPoliza.id, business_id: businessId, cuenta_tipo: 'subcuenta', subcuenta_id: subPuente, cargo: Number(pago.monto), abono: 0, descripcion: 'Cierre de Pagos por clasificar', orden: 0 },
+      { poliza_id: nuevaPoliza.id, business_id: businessId, cuenta_tipo: 'subcuenta', subcuenta_id: subcuentaId, cargo: 0, abono: Number(pago.monto), descripcion: 'Contrapartida definitiva', orden: 1 },
+    ]);
+    destinoTabla = 'subcuenta'; destinoId = nuevaPoliza.id;
+  } else {
+    return { ok: false, mensaje: 'Tipo de destino no reconocido.' };
+  }
+
+  await sb.from('fz_pagos_por_clasificar').update({
+    estado: 'clasificado', destino_tabla: destinoTabla, destino_id: destinoId,
+    clasificado_en: new Date().toISOString(), clasificado_por: usuarioNombre || null,
+  }).eq('id', pagoId);
+  registrarAuditoria(businessId, 'editar', 'Proveedores', `Pago por clasificar (${fmt(pago.monto)} · ${pago.fecha}) clasificado hacia ${tipo}${usuarioNombre ? ' por ' + usuarioNombre : ''}.`);
+  return { ok: true };
 }
 
 async function aplicarCobroFacturas(idsSeleccionados, montoDisponibleInicial, fecha, businessId, origenInfo) {
@@ -15401,7 +15580,7 @@ async function abrirElegirFacturaPago(businessId, proveedorPreseleccionado) {
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
   ]);
   const selCuenta = document.getElementById('elegirFacturaPagoCuenta');
-  selCuenta.innerHTML = `<option value="manual">Salida directa (sin registrar en Banco/Efectivo)</option>`
+  selCuenta.innerHTML = `<option value="manual">Pago por clasificar (contrapartida Banco/Efectivo por definir después)</option>`
     + (cuentasBancoQ.data||[]).map(c => `<option value="banco:${c.id}">Banco — ${c.nombre}</option>`).join('')
     + (monedasQ.data||[]).map(m => `<option value="efectivo:${m.id}">Efectivo — ${m.nombre}</option>`).join('');
   document.getElementById('elegirFacturaPagoFecha').value = todayStr();
@@ -15539,8 +15718,22 @@ document.getElementById('aplicarElegirFacturaPago').addEventListener('click', as
   const nombreTerceroPago = checksMarcadosPago[0]?.dataset.tercero || '';
   let bancoMetodoDescr = 'Manual (sin cuenta)';
 
+  if (destino === 'manual') {
+    const resultado = await crearPagoPorClasificar(b.id, {
+      fecha, monto, moneda: monedaDocumento, tipoCambio: tipoCambioEfp,
+      proveedorTentativo: nombreTerceroPago, descripcion: `Pago a ${nombreTerceroPago || 'proveedor'}`,
+      idsFacturas: idsSeleccionados,
+    });
+    if (!resultado.ok) { toast(resultado.mensaje, 'error'); return; }
+    if (resultado.resultadoAplicacion?.idsAfectados?.length) {
+      toast(`${resultado.resultadoAplicacion.idsAfectados.length} factura(s) actualizada(s) — pago registrado como "Pago por clasificar" (clasifícalo después desde esa pantalla).`);
+    }
+    document.getElementById('modalElegirFacturaPago').classList.remove('show');
+    return;
+  }
+
   let origen_tabla = 'manual', origen_id = null;
-  if (destino !== 'manual') {
+  {
     const [tipo, refId] = destino.split(':');
     const tabla = tipo === 'banco' ? 'fz_bancos_mov' : 'fz_efectivo_mov';
     const { data: cuentaRow } = tipo === 'banco'
@@ -17401,6 +17594,37 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
       else push({ ...base, cuenta: `Retención IVA — ${cat}` }, 'ret_iva:'+cat, 'pasivo', 0, (Number(f.retencion_iva_monto)) * tc);
     }
     push({ ...base, cuenta: 'Proveedores' }, 'proveedores', 'pasivo', 0, (Number(f.importe)||0) * tc);
+  }
+
+  // 2b. Pagos por clasificar — puente contable para salidas cuya contrapartida real y/o cuyo
+  // proveedor/factura todavía no se conocen. Solo los PENDIENTES entran aquí — los ya
+  // "clasificado" los recoge el bloque normal de Bancos/Efectivo (su origen ya apunta ahí).
+  const { data: pagosPorClasificarPend } = await conDesde(sb.from('fz_pagos_por_clasificar').select('*').eq('business_id', businessId).eq('estado', 'pendiente').lte('fecha', hastaFecha));
+  for (const p of (pagosPorClasificarPend || [])) {
+    const basePpc = { modulo: 'Pago por clasificar', tipoOrigen: 'pago_por_clasificar', id: p.id, fecha: p.fecha, referencia: `Pendiente de clasificar${p.proveedor_tentativo ? ' — ' + p.proveedor_tentativo : ''}`, detalle: p.descripcion || '' };
+    const { data: aplicacionesPpc } = await sb.from('fz_pagos_aplicados').select('*').eq('origen_tabla', 'fz_pagos_por_clasificar').eq('origen_id', p.id);
+    if (aplicacionesPpc && aplicacionesPpc.length) {
+      // Ya se sabe a qué proveedor/factura corresponde — mismo patrón exacto que el bloque de
+      // pagos a proveedores vía Bancos (ganancia/pérdida cambiaria incluida), sin duplicar código.
+      aplicacionesPpc.forEach(ap => {
+        const fProv = facturasProvMapGlobal[ap.factura_id];
+        const tcOriginal = fProv ? (Number(fProv.tipo_cambio)||1) : 1;
+        const tcReal = Number(ap.tipo_cambio) || tcOriginal;
+        const montoOriginal = Number(ap.monto)||0;
+        push({ ...basePpc, cuenta: 'Proveedores' }, 'proveedores', 'pasivo', montoOriginal * tcOriginal, 0);
+        const diferencia = montoOriginal * (tcReal - tcOriginal);
+        if (Math.abs(diferencia) > 0.004) {
+          if (diferencia > 0) push({ ...basePpc, cuenta: 'Pérdida Cambiaria' }, 'perdida_cambiaria', 'gasto', diferencia, 0);
+          else push({ ...basePpc, cuenta: 'Ganancia Cambiaria' }, 'ganancia_cambiaria', 'ingreso', 0, -diferencia);
+        }
+      });
+    } else {
+      // Todavía no se sabe ni el proveedor — se refleja contra una cuenta neutra, nunca contra
+      // Proveedores (no hay a quién identificarle la deuda todavía).
+      const idSalidas = await subRealizacion('Salidas por clasificar', 'activo');
+      push({ ...basePpc, cuenta: 'Salidas por clasificar' }, 'sub:'+idSalidas, 'activo', (Number(p.monto)||0) * (Number(p.tipo_cambio)||1), 0);
+    }
+    push({ ...basePpc, cuenta: 'Pagos por clasificar' }, 'pagos_por_clasificar', 'activo', 0, (Number(p.monto)||0) * (Number(p.tipo_cambio)||1));
   }
 
   // 3. Facturas de Clientes — Dr Clientes, Cr [líneas] + Cr IVA Trasladado.
