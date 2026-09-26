@@ -5775,9 +5775,6 @@ const CONCEPTOS_DEFAULT_IVA = [
   { clave: 'iva_trasladado_0', nombre: 'IVA trasladado — tasa 0%', agregacion: 'suma', formato: 'moneda' },
   { clave: 'iva_trasladado_exento', nombre: 'IVA trasladado — exento', agregacion: 'suma', formato: 'moneda' },
   { clave: 'iva_trasladado_no_objeto', nombre: 'IVA trasladado — no objeto', agregacion: 'suma', formato: 'moneda' },
-  { clave: 'iva_acreditable_compras', nombre: 'IVA acreditable — compras/gastos', agregacion: 'suma', formato: 'moneda' },
-  { clave: 'iva_acreditable_servicios', nombre: 'IVA acreditable — servicios', agregacion: 'suma', formato: 'moneda' },
-  { clave: 'iva_acreditable_inversiones', nombre: 'IVA acreditable — inversiones', agregacion: 'suma', formato: 'moneda' },
   { clave: 'iva_ajustes', nombre: 'Ajustes', agregacion: 'suma', formato: 'moneda' },
   { clave: 'iva_saldo_favor_anterior', nombre: 'Saldo a favor de periodos anteriores', agregacion: 'ultimo', formato: 'saldo' },
   { clave: 'iva_compensaciones', nombre: 'Compensaciones', agregacion: 'suma', formato: 'moneda' },
@@ -5829,6 +5826,15 @@ function etiquetaOrigen(origen) {
 // ya existentes, nunca una segunda captura: si se modifica un mes, esta función simplemente
 // vuelve a leerlo la próxima vez que se llame.
 async function construirMatrizAnual(businessId, tipoPapel, ejercicio, conceptosDefault) {
+  // Clasificación fiscal de IVA acreditable — una sola pasada por año, reutilizada tanto para el
+  // total mostrado como para el cálculo interno de "IVA a cargo del periodo" más abajo.
+  const clasifIvaPorMes = tipoPapel === 'iva' ? await obtenerClasificacionIvaAcreditableAnual(businessId, ejercicio) : null;
+  const totalAcreditableClasifPorMes = (mm) => {
+    if (!clasifIvaPorMes) return 0;
+    const c = clasifIvaPorMes[mm];
+    return redondearMoneda(c.bienes + c.servicios + c.uso_goce + c.inversiones + c.sin_clasificar);
+  };
+
   const { data: papelesDelAnio } = await sb.from('fz_papeles_trabajo').select('*').eq('business_id', businessId).eq('tipo_papel', tipoPapel).eq('ejercicio', ejercicio).eq('periodicidad', 'mensual');
   const papelPorMes = {}; // 'MM' -> papel
   (papelesDelAnio||[]).forEach(p => { if (p.periodo) papelPorMes[p.periodo.slice(5,7)] = p; });
@@ -5987,14 +5993,15 @@ async function construirMatrizAnual(businessId, tipoPapel, ejercicio, conceptosD
       if (tipoPapel === 'iva') {
         // Misma fórmula EXACTA que usa renderCedulaGenerica (opciones.resumenIVA) — copiada
         // literalmente, nunca reinventada. "—" solo si NINGÚN insumo tiene valor este mes.
+        // El acreditable ahora sale de la clasificación fiscal (bienes+servicios+uso_goce+
+        // inversiones+sin_clasificar), que reemplaza a los 3 conceptos removidos.
         const gruposTrasladado = ['iva_trasladado_16','iva_trasladado_0','iva_trasladado_exento','iva_trasladado_no_objeto'];
-        const gruposAcreditable = ['iva_acreditable_compras','iva_acreditable_servicios','iva_acreditable_inversiones'];
         const otras = ['iva_ajustes','iva_saldo_favor_anterior','iva_compensaciones'];
-        const todasLasClaves = [...gruposTrasladado, ...gruposAcreditable, ...otras];
-        const hayAlgunInsumo = todasLasClaves.some(cl => valorMes(cl, mm) !== null);
+        const todasLasClaves = [...gruposTrasladado, ...otras];
+        const hayAlgunInsumo = todasLasClaves.some(cl => valorMes(cl, mm) !== null) || totalAcreditableClasifPorMes(mm) > 0;
         if (hayAlgunInsumo) {
           const totalTrasladado = gruposTrasladado.reduce((s,cl)=>s+(valorMes(cl,mm)??0),0);
-          const totalAcreditable = gruposAcreditable.reduce((s,cl)=>s+(valorMes(cl,mm)??0),0);
+          const totalAcreditable = totalAcreditableClasifPorMes(mm);
           const antesAjustes = totalTrasladado - totalAcreditable;
           const ajustes = valorMes('iva_ajustes',mm) ?? 0, saldoAnterior = valorMes('iva_saldo_favor_anterior',mm) ?? 0, compensaciones = valorMes('iva_compensaciones',mm) ?? 0;
           const resultado = antesAjustes + ajustes - saldoAnterior - compensaciones;
@@ -6064,7 +6071,7 @@ async function construirMatrizAnual(businessId, tipoPapel, ejercicio, conceptosD
   const estadosPorMes = {};
   for (let m = 1; m <= 12; m++) { const mm = String(m).padStart(2,'0'); estadosPorMes[mm] = papelPorMes[mm] ? papelPorMes[mm].estado : 'sin_iniciar'; }
 
-  return { filas, estadosPorMes, papelPorMes };
+  return { filas, estadosPorMes, papelPorMes, clasifIvaPorMes };
 }
 
 const ESTADO_PAPEL_LABEL = { sin_iniciar: 'Sin iniciar', pendiente: 'Sin iniciar', en_trabajo: 'En trabajo', guardado: 'Guardado', revisado: 'Revisado' };
@@ -6083,7 +6090,7 @@ async function renderCedulaAnual(b, elId, tipoPapel, titulo, conceptosDefault, t
   const { data: regimenes } = await sb.from('fz_regimenes_fiscales_negocio').select('clave_regimen').eq('business_id', b.id).is('vigente_hasta', null).order('vigente_desde', { ascending: false }).limit(1);
   const regimenTexto = regimenes && regimenes.length ? regimenes[0].clave_regimen : 'Sin régimen registrado';
 
-  const { filas, estadosPorMes } = await construirMatrizAnual(b.id, tipoPapel, ejercicio, conceptosDefault);
+  const { filas, estadosPorMes, clasifIvaPorMes } = await construirMatrizAnual(b.id, tipoPapel, ejercicio, conceptosDefault);
   const mesesCols = Array.from({length:12}, (_,i) => String(i+1).padStart(2,'0'));
 
   if (tipoPapel === 'isr_pm') {
@@ -6143,13 +6150,13 @@ async function renderCedulaAnual(b, elId, tipoPapel, titulo, conceptosDefault, t
   }
 
   // Filas derivadas de IVA (nunca guardadas — se calculan al leer, misma fuente que el detalle mensual).
-  let filasDerivadasIVA = '';
+  let filaTotalTrasladadoHtml = '', filaTotalAcreditableHtml = '', filasCierreIVA = '', filasDesgloseAcreditableHtml = '';
   if (tipoPapel === 'iva') {
-    const sumaFila = (clave) => { const f = filas.find(x=>x.clave===clave); return f ? mesesCols.reduce((acc,mm)=>({...acc,[mm]:(f.porMes[mm].valor||0)}),{}) : {}; };
     const trasladadoPorMes = {}, acreditablePorMes = {};
     mesesCols.forEach(mm => {
       trasladadoPorMes[mm] = ['iva_trasladado_16','iva_trasladado_0','iva_trasladado_exento','iva_trasladado_no_objeto'].reduce((s,cl)=>{ const f=filas.find(x=>x.clave===cl); return s + (f&&f.porMes[mm].valor!==null?f.porMes[mm].valor:0); },0);
-      acreditablePorMes[mm] = ['iva_acreditable_compras','iva_acreditable_servicios','iva_acreditable_inversiones'].reduce((s,cl)=>{ const f=filas.find(x=>x.clave===cl); return s + (f&&f.porMes[mm].valor!==null?f.porMes[mm].valor:0); },0);
+      const c = clasifIvaPorMes[mm];
+      acreditablePorMes[mm] = redondearMoneda(c.bienes + c.servicios + c.uso_goce + c.inversiones + c.sin_clasificar);
     });
     const filaDe = (clave) => filas.find(x=>x.clave===clave);
     const antesAjustesPorMes = {}, aCargoPorMes = {};
@@ -6159,9 +6166,23 @@ async function renderCedulaAnual(b, elId, tipoPapel, titulo, conceptosDefault, t
       aCargoPorMes[mm] = antesAjustesPorMes[mm] + ajustes - saldoAnt - comp;
     });
     const sumaTotal = obj => Object.values(obj).reduce((s,v)=>s+v,0);
-    filasDerivadasIVA = `
-      <tr style="font-weight:700;background:#f7f9fc;border-top:1px solid var(--navy-3);"><td style="position:sticky;left:0;background:#f7f9fc;">TOTAL IVA TRASLADADO</td>${mesesCols.map(mm=>`<td class="num">${fmt(trasladadoPorMes[mm])}</td>`).join('')}<td class="num">${fmt(sumaTotal(trasladadoPorMes))}</td></tr>
-      <tr style="font-weight:700;background:#f7f9fc;"><td style="position:sticky;left:0;background:#f7f9fc;">TOTAL IVA ACREDITABLE</td>${mesesCols.map(mm=>`<td class="num">${fmt(acreditablePorMes[mm])}</td>`).join('')}<td class="num">${fmt(sumaTotal(acreditablePorMes))}</td></tr>
+    // Desglose fiscal — cada renglón, sumando exactamente sus 12 meses. La categoría se muestra
+    // siempre, incluso en $0, para que quede visible que "Sin clasificar" es parte del cuadre.
+    const CATEGORIAS_ACREDITABLE = [
+      { clave: 'bienes', nombre: 'IVA acreditable — bienes/compras' },
+      { clave: 'servicios', nombre: 'IVA acreditable — servicios' },
+      { clave: 'uso_goce', nombre: 'IVA acreditable — uso o goce temporal' },
+      { clave: 'inversiones', nombre: 'IVA acreditable — inversiones' },
+      { clave: 'sin_clasificar', nombre: 'IVA acreditable — sin clasificar' },
+    ];
+    filasDesgloseAcreditableHtml = CATEGORIAS_ACREDITABLE.map(cat => {
+      const porMesCat = {}; mesesCols.forEach(mm => { porMesCat[mm] = clasifIvaPorMes[mm][cat.clave]; });
+      const destacar = cat.clave === 'sin_clasificar';
+      return `<tr${destacar?' style="color:var(--gold);"':''}><td style="position:sticky;left:0;background:#fff;">${cat.nombre}</td>${mesesCols.map(mm=>`<td class="num">${fmt(porMesCat[mm])}</td>`).join('')}<td class="num">${fmt(sumaTotal(porMesCat))}</td></tr>`;
+    }).join('');
+    filaTotalTrasladadoHtml = `<tr style="font-weight:700;background:#f7f9fc;border-top:1px solid var(--navy-3);"><td style="position:sticky;left:0;background:#f7f9fc;">TOTAL IVA TRASLADADO</td>${mesesCols.map(mm=>`<td class="num">${fmt(trasladadoPorMes[mm])}</td>`).join('')}<td class="num">${fmt(sumaTotal(trasladadoPorMes))}</td></tr>`;
+    filaTotalAcreditableHtml = `<tr style="font-weight:700;background:#f7f9fc;border-top:1px solid var(--navy-3);"><td style="position:sticky;left:0;background:#f7f9fc;">TOTAL IVA ACREDITABLE</td>${mesesCols.map(mm=>`<td class="num">${fmt(acreditablePorMes[mm])}</td>`).join('')}<td class="num">${fmt(sumaTotal(acreditablePorMes))}</td></tr>`;
+    filasCierreIVA = `
       <tr style="background:#f7f9fc;"><td style="position:sticky;left:0;background:#f7f9fc;">IVA antes de ajustes</td>${mesesCols.map(mm=>`<td class="num">${fmt(antesAjustesPorMes[mm])}</td>`).join('')}<td class="num">${fmt(sumaTotal(antesAjustesPorMes))}</td></tr>
       <tr class="pt-fila-cierre"><td style="position:sticky;left:0;background:#eef2f8;">IVA A CARGO / SALDO A FAVOR</td>${mesesCols.map(mm=>`<td class="num">${fmt(Math.abs(aCargoPorMes[mm]))}</td>`).join('')}<td class="num">${fmt(Math.abs(sumaTotal(aCargoPorMes)))}</td></tr>
     `;
@@ -6197,7 +6218,8 @@ async function renderCedulaAnual(b, elId, tipoPapel, titulo, conceptosDefault, t
             <th class="num">${'Total'}</th>
           </tr></thead>
           <tbody>
-            ${filas.map(fila => `<tr${fila.clave==='resultado_determinado'?' class="pt-fila-cierre"':''}>
+            ${(() => {
+              const filaRowHtml = (fila) => `<tr${fila.clave==='resultado_determinado'?' class="pt-fila-cierre"':''}>
               <td style="position:sticky;left:0;background:${fila.clave==='resultado_determinado'?'#eef2f8':'#fff'};">${fila.nombre}</td>
               ${mesesCols.map(mm => {
                 const celda = fila.porMes[mm];
@@ -6206,8 +6228,22 @@ async function renderCedulaAnual(b, elId, tipoPapel, titulo, conceptosDefault, t
               <td class="num">${fila.total!==null?formatearValorConcepto(fila.total, fila.formato):(fila.clave==='ptu_aplicable'?'—':(fila.agregacion==='no_aplica'?'N/A':'—'))}</td>
             </tr>${opciones.accesorios ? `<tr class="ca-fila-accesorios" data-clave="${fila.clave||fila.nombre}" style="display:none;background:#f7f7f7;"><td colspan="${mesesCols.length+2}" style="padding:8px 12px;font-size:11px;">
               <strong>Accesorios — ${fila.nombre}:</strong> ${mesesCols.map(mm=>{ const a=fila.porMes[mm].accesorios; return a?`${MESES_LARGO[Number(mm)-1].slice(0,3)}: Princ.${fmt(fila.porMes[mm].valor||0)}+Act.${fmt(a.importe_actualizacion_aplicado)}+Rec.${fmt(a.importe_recargos_aplicado)}+Red.${fmt(a.monto_redondeo)}=${fmt(a.importe_final)}`:'';}).filter(Boolean).join(' · ') || 'Sin accesorios calculados todavía en ningún mes.'}
-            </td></tr>${opciones.accesorios?`<tr><td colspan="${mesesCols.length+2}" style="padding:0 0 6px 0;"><a href="#" class="pt-editar-link ca-toggle-accesorios" data-clave="${fila.clave||fila.nombre}" style="margin-left:4px;">Ver accesorios</a></td></tr>`:''}` : ''}`).join('')}
-            ${filasDerivadasIVA}
+            </td></tr>${opciones.accesorios?`<tr><td colspan="${mesesCols.length+2}" style="padding:0 0 6px 0;"><a href="#" class="pt-editar-link ca-toggle-accesorios" data-clave="${fila.clave||fila.nombre}" style="margin-left:4px;">Ver accesorios</a></td></tr>`:''}` : ''}`;
+
+              if (tipoPapel !== 'iva') return filas.map(filaRowHtml).join('');
+
+              // IVA — orden pedido: grupo trasladado + su TOTAL, grupo acreditable + su TOTAL,
+              // y el resto (ajustes/saldo a favor/compensaciones) exactamente donde ya estaba,
+              // seguido del cierre (IVA antes de ajustes / A CARGO). Ningún cálculo cambia aquí —
+              // solo el orden en que se concatenan los mismos strings de fila ya generados.
+              const clavesTrasladado = ['iva_trasladado_16','iva_trasladado_0','iva_trasladado_exento','iva_trasladado_no_objeto'];
+              const filasTrasladado = filas.filter(f => clavesTrasladado.includes(f.clave));
+              const filasResto = filas.filter(f => !clavesTrasladado.includes(f.clave));
+              return filasTrasladado.map(filaRowHtml).join('') + filaTotalTrasladadoHtml
+                   + filasDesgloseAcreditableHtml + filaTotalAcreditableHtml
+                   + filasResto.map(filaRowHtml).join('');
+            })()}
+            ${tipoPapel === 'iva' ? filasCierreIVA : ''}
           </tbody>
         </table>
       </div>
@@ -11647,6 +11683,13 @@ async function renderCatalogoCuentas() {
       ${editando ? `
         <input class="cell cc-sub-nombre" type="text" value="${s.nombre}" data-id="${s.id}" style="flex:1;min-width:120px;">
         <select class="cell cc-sub-padre" data-id="${s.id}" style="min-width:200px;">${opcionesMoverSubcuenta(s, subcuentas)}</select>
+        <select class="cell cc-sub-clasif-iva" data-id="${s.id}" style="min-width:180px;" title="Clasificación fiscal de IVA acreditable — solo aplica a subcuentas de gasto/costo con IVA">
+          <option value="" ${!s.clasificacion_iva_acreditable?'selected':''}>IVA acreditable: sin clasificar</option>
+          <option value="bienes" ${s.clasificacion_iva_acreditable==='bienes'?'selected':''}>IVA acreditable: Bienes/compras</option>
+          <option value="servicios" ${s.clasificacion_iva_acreditable==='servicios'?'selected':''}>IVA acreditable: Servicios</option>
+          <option value="uso_goce" ${s.clasificacion_iva_acreditable==='uso_goce'?'selected':''}>IVA acreditable: Uso o goce temporal</option>
+          <option value="inversiones" ${s.clasificacion_iva_acreditable==='inversiones'?'selected':''}>IVA acreditable: Inversiones</option>
+        </select>
         <button class="btn btn-ghost btn-sm cc-sub-save" data-id="${s.id}">Guardar</button>
       ` : `
         <span style="flex:1;min-width:0;">${s.nombre}</span>
@@ -11789,9 +11832,11 @@ async function renderCatalogoCuentas() {
   el.querySelectorAll('.cc-sub-save').forEach(btn => btn.addEventListener('click', async () => {
     const inp = el.querySelector(`.cc-sub-nombre[data-id="${btn.dataset.id}"]`);
     const selPadre = el.querySelector(`.cc-sub-padre[data-id="${btn.dataset.id}"]`);
+    const selClasifIva = el.querySelector(`.cc-sub-clasif-iva[data-id="${btn.dataset.id}"]`);
     const nuevoPadreId = selPadre ? (selPadre.value || null) : undefined;
     const payload = { nombre: inp.value.trim() };
     if (nuevoPadreId !== undefined) payload.subcuenta_padre_id = nuevoPadreId;
+    if (selClasifIva) payload.clasificacion_iva_acreditable = selClasifIva.value || null;
     const { error } = await sb.from('fz_subcuentas').update(payload).eq('id', btn.dataset.id);
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     STATE_ccEditando.delete(btn.dataset.id);
@@ -11948,6 +11993,120 @@ function desgloseLineas(desglose) {
   if (Array.isArray(desglose)) return desglose;
   // formato antiguo: objeto { subcuenta_id: monto } — se sigue leyendo, ya no se escribe así
   return Object.entries(desglose).filter(([,v]) => Number(v)).map(([subcuenta_id, monto]) => ({ subcuenta_id, monto: Number(monto), descripcion: null }));
+}
+
+// ============================================================
+// CLASIFICACIÓN FISCAL DE IVA ACREDITABLE — puras, sin acceso a BD. Reciben los datos ya
+// cargados y devuelven cómo se reparte el IVA de ESA operación entre las 5 categorías. Nunca
+// tocan el motor contable ni la realización — son una lectura adicional sobre los mismos datos.
+// El prorrateo se ancla SIEMPRE al propio desglose (nunca a subtotal, que no está garantizado
+// que coincida). El ajuste de redondeo se asigna de forma determinística a la ÚLTIMA línea.
+function clasificarIvaAcreditableDeFactura(factura, subcuentaClasifMap) {
+  const resultado = { bienes: 0, servicios: 0, uso_goce: 0, inversiones: 0, sin_clasificar: 0 };
+  const ivaMonto = Number(factura.iva_monto) || 0;
+  if (!ivaMonto) return resultado;
+  // activo_fijo_id: única automatización obligatoria — nunca depende de retencion_categoria.
+  if (factura.activo_fijo_id) { resultado.inversiones = redondearMoneda(ivaMonto); return resultado; }
+  const lineas = desgloseLineas(factura.desglose);
+  const sumaDesglose = redondearMoneda(lineas.reduce((s, l) => s + (Number(l.monto) || 0), 0));
+  if (!lineas.length || sumaDesglose <= 0) { resultado.sin_clasificar = redondearMoneda(ivaMonto); return resultado; }
+  let acumulado = 0;
+  lineas.forEach((linea, idx) => {
+    const clave = subcuentaClasifMap[linea.subcuenta_id] || 'sin_clasificar';
+    let montoLinea;
+    if (idx === lineas.length - 1) {
+      montoLinea = redondearMoneda(ivaMonto - acumulado); // cierre exacto al centavo, en la última línea
+    } else {
+      const proporcion = (Number(linea.monto) || 0) / sumaDesglose;
+      montoLinea = redondearMoneda(ivaMonto * proporcion);
+      acumulado = redondearMoneda(acumulado + montoLinea);
+    }
+    resultado[clave] = redondearMoneda((resultado[clave] || 0) + montoLinea);
+  });
+  return resultado;
+}
+
+// Gasto directo de Bancos/Efectivo (una sola subcuenta, sin desglose) — sin prorrateo necesario.
+function clasificarIvaAcreditableDeGasto(mov, subcuentaClasifMap) {
+  const resultado = { bienes: 0, servicios: 0, uso_goce: 0, inversiones: 0, sin_clasificar: 0 };
+  const ivaMonto = Number(mov.iva_monto) || 0;
+  if (!ivaMonto) return resultado;
+  const clave = subcuentaClasifMap[mov.subcuenta_id] || 'sin_clasificar';
+  resultado[clave] = redondearMoneda(ivaMonto);
+  return resultado;
+}
+
+// Batch anual — UNA sola pasada, mismo patrón que obtenerPropuestasAnualesPorConcepto. Aplica a
+// cada categoría la MISMA proporción de realización que ya usa sincronizarRealizacionFactura
+// (fz_pagos_aplicados / importe, con el mismo corte esRealizacionActiva) — nunca un segundo
+// criterio de "efectivamente pagado". Devuelve, por cada mes, cuánto de CADA categoría se
+// reconoció ESE mes específico (no acumulado).
+async function obtenerClasificacionIvaAcreditableAnual(businessId, ejercicio) {
+  const vacioPorMes = () => { const o = {}; for (let m=1;m<=12;m++) o[String(m).padStart(2,'0')] = { bienes:0, servicios:0, uso_goce:0, inversiones:0, sin_clasificar:0 }; return o; };
+  const resultado = vacioPorMes();
+  const desde = `${ejercicio}-01-01`, hasta = `${ejercicio}-12-31`;
+
+  const [subQ, negocioRow] = await Promise.all([
+    sb.from('fz_subcuentas').select('id, clasificacion_iva_acreditable').eq('business_id', businessId),
+    sb.from('businesses').select('iva_realizacion_desde').eq('id', businessId).maybeSingle(),
+  ]);
+  const subcuentaClasifMap = Object.fromEntries((subQ.data||[]).filter(s=>s.clasificacion_iva_acreditable).map(s=>[s.id, s.clasificacion_iva_acreditable]));
+  const fechaCorteRealizacion = negocioRow.data?.iva_realizacion_desde || null;
+  const esRealizacionActiva = (fecha) => fechaCorteRealizacion && fecha >= fechaCorteRealizacion;
+
+  // --- Facturas de proveedor con IVA en el ejercicio ---
+  const { data: facturas } = await sb.from('fz_proveedores').select('id, fecha, importe, iva_monto, aplica_iva, activo_fijo_id, desglose')
+    .eq('business_id', businessId).eq('aplica_iva', true).gt('iva_monto', 0).gte('fecha', desde).lte('fecha', hasta);
+  const facturaIds = (facturas||[]).map(f=>f.id);
+  const { data: pagosAplicados } = facturaIds.length
+    ? await sb.from('fz_pagos_aplicados').select('factura_id, monto, fecha').in('factura_id', facturaIds)
+    : { data: [] };
+  const pagosPorFactura = {};
+  (pagosAplicados||[]).forEach(p => { (pagosPorFactura[p.factura_id] ||= []).push(p); });
+
+  for (const f of (facturas||[])) {
+    const splitTotal = clasificarIvaAcreditableDeFactura(f, subcuentaClasifMap);
+    const mesFactura = f.fecha.slice(5,7);
+    if (!esRealizacionActiva(f.fecha)) {
+      // Sin realización activa para esta factura: se reconoce íntegro en el mes de la factura —
+      // mismo criterio exacto que ya usa el motor contable (push directo, sin "Pendiente de pago").
+      Object.keys(splitTotal).forEach(cat => { resultado[mesFactura][cat] = redondearMoneda(resultado[mesFactura][cat] + splitTotal[cat]); });
+      continue;
+    }
+    // Con realización activa: proporción acumulada mes a mes, idéntica fórmula que
+    // sincronizarRealizacionFactura (totalAplicado/importe, tope 1). Se aplica la MISMA
+    // proporción a cada categoría del split, y se toma el delta vs. el mes anterior.
+    const importeTotal = Number(f.importe) || 0;
+    if (!importeTotal) continue;
+    const pagos = (pagosPorFactura[f.id] || []).slice().sort((a,b)=>a.fecha.localeCompare(b.fecha));
+    let proporcionPrevia = 0;
+    for (let m = Number(mesFactura); m <= 12; m++) {
+      const mm = String(m).padStart(2,'0');
+      const finDeMes = `${ejercicio}-${mm}-31`;
+      const totalAplicadoHastaMes = pagos.filter(p=>p.fecha <= finDeMes).reduce((s,p)=>s+(Number(p.monto)||0),0);
+      const proporcionAcumulada = Math.min(1, totalAplicadoHastaMes / importeTotal);
+      const deltaProporcion = redondearMoneda(proporcionAcumulada - proporcionPrevia);
+      if (deltaProporcion > 0) {
+        Object.keys(splitTotal).forEach(cat => { resultado[mm][cat] = redondearMoneda(resultado[mm][cat] + redondearMoneda(splitTotal[cat] * deltaProporcion)); });
+      }
+      proporcionPrevia = proporcionAcumulada;
+      if (proporcionAcumulada >= 1) break;
+    }
+  }
+
+  // --- Gastos directos de Bancos/Efectivo con IVA en el ejercicio (sin desglose, sin realización
+  // parcial — se reconocen al momento del movimiento, igual que ya hace el motor contable) ---
+  const [bmQ, emQ] = await Promise.all([
+    sb.from('fz_bancos_mov').select('fecha, subcuenta_id, iva_monto').eq('business_id', businessId).eq('tipo_salida', 'gasto').eq('aplica_iva', true).gt('iva_monto', 0).gte('fecha', desde).lte('fecha', hasta),
+    sb.from('fz_efectivo_mov').select('fecha, subcuenta_id, iva_monto').eq('business_id', businessId).eq('tipo_salida', 'gasto').eq('aplica_iva', true).gt('iva_monto', 0).gte('fecha', desde).lte('fecha', hasta),
+  ]);
+  [...(bmQ.data||[]), ...(emQ.data||[])].forEach(mov => {
+    const split = clasificarIvaAcreditableDeGasto(mov, subcuentaClasifMap);
+    const mm = mov.fecha.slice(5,7);
+    Object.keys(split).forEach(cat => { resultado[mm][cat] = redondearMoneda(resultado[mm][cat] + split[cat]); });
+  });
+
+  return resultado;
 }
 
 let STATE_desgloseEditandoIdx = null;
