@@ -6014,16 +6014,29 @@ async function construirMatrizAnual(businessId, tipoPapel, ejercicio, conceptosD
   // Recalcular el total de cada fila CALCULADA de ISR PM afectada por el post-procesamiento
   // (incluye coeficiente_utilidad, cuyo porMes se rellenó con el arrastre entre meses).
   if (tipoPapel === 'isr_pm') {
+    // IMPORTANTE: Object.values(porMes) NO respeta el orden cronológico real de las claves '01'..'12'
+    // — JavaScript trata '10','11','12' como índices numéricos canónicos y los enumera ANTES que
+    // '01'..'09' (que sí son claves de cadena regulares). Object.values(f.porMes).length-1 terminaba
+    // devolviendo septiembre en vez de diciembre. Se extrae explícitamente mes por mes, 01→12.
+    const valoresEnOrden = (f) => {
+      const arr = [];
+      for (let m = 1; m <= 12; m++) {
+        const v = f.porMes[String(m).padStart(2,'0')]?.valor;
+        if (v !== null && v !== undefined) arr.push(v);
+      }
+      return arr;
+    };
     ['coeficiente_utilidad','ingresos_nominales_acum','utilidad_fiscal','base','isr_determinado','pagos_provisionales_anteriores','resultado_determinado'].forEach(clave => {
       const f = filaPorClave[clave]; if (!f) return;
-      const valoresNoNulos = Object.values(f.porMes).map(x=>x.valor).filter(v=>v!==null);
+      const valoresNoNulos = valoresEnOrden(f);
       if (f.agregacion === 'suma') f.total = valoresNoNulos.reduce((s,v)=>s+v, 0);
       else if (f.agregacion === 'ultimo') f.total = valoresNoNulos.length ? valoresNoNulos[valoresNoNulos.length-1] : null;
     });
     // perdidas_aplicables: máximo del año, no "último" ni "suma". Es una cifra acumulada que solo
     // crece cuando el mes correspondiente se procesa; un mes posterior aún sin procesar mostraría
     // $0.00 y "último" ocultaría pérdida real ya consumida en meses anteriores. En un año
-    // completamente procesado, máximo === último (la secuencia nunca decrece).
+    // completamente procesado, máximo === último (la secuencia nunca decrece). Math.max no depende
+    // del orden del arreglo, así que no está afectado por el bug anterior — se deja tal cual.
     if (filaPorClave['perdidas_aplicables']) {
       const f = filaPorClave['perdidas_aplicables'];
       const valoresNoNulos = Object.values(f.porMes).map(x=>x.valor).filter(v=>v!==null);
