@@ -2235,28 +2235,112 @@ async function renderPagosPorClasificar() {
     renderPagosPorClasificar();
   }));
 
-  contenido.querySelectorAll('.ppc-clasificar').forEach(btn => btn.addEventListener('click', async () => {
+  contenido.querySelectorAll('.ppc-clasificar').forEach(btn => btn.addEventListener('click', () => {
     const p = (pendientes||[]).find(x=>x.id===btn.dataset.id);
-    const [cuentasBancoQ, monedasQ, subcuentas, mayores] = await Promise.all([
-      sb.from('fz_bancos_cuentas').select('*').eq('business_id', b.id).eq('activo', true),
-      sb.from('fz_efectivo_monedas').select('*').eq('business_id', b.id).eq('activo', true),
-      loadSubcuentas(b.id), loadCuentasMayor(b.id),
-    ]);
-    const opciones = [
-      ...(cuentasBancoQ.data||[]).map(c => ({ value: `banco:${c.id}`, label: `Banco — ${c.nombre}` })),
-      ...(monedasQ.data||[]).map(m => ({ value: `efectivo:${m.id}`, label: `Efectivo — ${m.nombre}` })),
-      ...subcuentas.map(s => ({ value: `subcuenta:${s.id}`, label: `Cuenta — ${rutaSubcuenta(s, subcuentas, mayores)}` })),
-    ];
-    const elegido = prompt(`Clasificar pago de ${fmt(p.monto)} (${fechaCorta(p.fecha)}) hacia:\n\n` + opciones.map((o,i)=>`${i+1}. ${o.label}`).join('\n') + `\n\nEscribe el número de la opción:`);
-    const idx = Number(elegido) - 1;
-    if (!opciones[idx]) return;
-    const [tipoDestino, refId] = opciones[idx].value.split(':');
-    const usuarioNombre = STATE.currentUserEmail || STATE.usuarioActual?.nombre || null;
-    const r = await clasificarPagoPendiente(p.id, b.id, { tipo: tipoDestino, refId, subcuentaId: tipoDestino==='subcuenta'?refId:null, usuarioNombre });
-    if (!r.ok) { toast(r.mensaje, 'error'); return; }
-    toast('Pago clasificado correctamente.');
-    renderPagosPorClasificar();
+    abrirModalClasificarPago(b.id, p, () => renderPagosPorClasificar());
   }));
+}
+
+async function abrirModalClasificarPago(businessId, pago, onDone) {
+  const modal = document.getElementById('modalClasificarPago');
+  document.getElementById('clasificarPagoResumen').textContent = `${fmt(pago.monto)} · ${fechaCorta(pago.fecha)}${pago.proveedor_tentativo ? ' · ' + pago.proveedor_tentativo : ''}`;
+  const btnAplicar = document.getElementById('aplicarClasificarPago');
+  const wrapCuenta = document.getElementById('cpDestinoCuentaWrap');
+  const selCuenta = document.getElementById('cpDestinoCuentaSelect');
+  const buscador = document.getElementById('cpDestinoCuentaBuscador');
+  const resultados = document.getElementById('cpDestinoCuentaResultados');
+  const wrapConfirmacion = document.getElementById('cpConfirmacionWrap');
+  const spanConfirmacion = document.getElementById('cpConfirmacionCuenta');
+  let tipoElegido = null, destinoElegido = null, labelElegido = null;
+
+  const [cuentasBancoQ, monedasQ, subcuentas, mayores] = await Promise.all([
+    sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
+    sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
+    loadSubcuentas(businessId), loadCuentasMayor(businessId),
+  ]);
+  const subcuentasConRuta = subcuentas.map(s => ({ id: s.id, ruta: rutaSubcuenta(s, subcuentas, mayores) }));
+
+  const actualizarConfirmacion = () => {
+    if (destinoElegido) {
+      wrapConfirmacion.style.display = '';
+      spanConfirmacion.textContent = labelElegido;
+      btnAplicar.disabled = false;
+    } else {
+      wrapConfirmacion.style.display = 'none';
+      btnAplicar.disabled = true;
+    }
+  };
+
+  const mostrarTipo = (tipo) => {
+    tipoElegido = tipo; destinoElegido = null; labelElegido = null;
+    document.querySelectorAll('.cp-tipo-btn').forEach(b => b.classList.toggle('mf-btn-principal', b.dataset.tipo === tipo));
+    document.querySelectorAll('.cp-tipo-btn').forEach(b => b.classList.toggle('mf-btn-secundario', b.dataset.tipo !== tipo));
+    wrapCuenta.style.display = '';
+    selCuenta.style.display = tipo === 'subcuenta' ? 'none' : '';
+    buscador.style.display = tipo === 'subcuenta' ? '' : 'none';
+    resultados.style.display = 'none';
+    buscador.value = '';
+    if (tipo === 'banco') {
+      document.getElementById('cpDestinoCuentaLabel').textContent = 'Cuenta bancaria';
+      selCuenta.innerHTML = `<option value="">— elegir —</option>` + (cuentasBancoQ.data||[]).map(c => `<option value="${c.id}">${c.nombre} · ${c.moneda||'MXN'}</option>`).join('');
+      if (!(cuentasBancoQ.data||[]).length) selCuenta.innerHTML = `<option value="">— no hay cuentas bancarias activas —</option>`;
+    } else if (tipo === 'efectivo') {
+      document.getElementById('cpDestinoCuentaLabel').textContent = 'Caja de efectivo';
+      selCuenta.innerHTML = `<option value="">— elegir —</option>` + (monedasQ.data||[]).map(m => `<option value="${m.id}">${m.nombre}</option>`).join('');
+      if (!(monedasQ.data||[]).length) selCuenta.innerHTML = `<option value="">— no hay cajas de efectivo activas —</option>`;
+    } else {
+      document.getElementById('cpDestinoCuentaLabel').textContent = 'Cuenta contable';
+    }
+    actualizarConfirmacion();
+  };
+
+  selCuenta.onchange = () => {
+    const opt = selCuenta.selectedOptions[0];
+    if (selCuenta.value) { destinoElegido = selCuenta.value; labelElegido = `${tipoElegido === 'banco' ? 'Banco' : 'Efectivo'} — ${opt.textContent}`; }
+    else { destinoElegido = null; labelElegido = null; }
+    actualizarConfirmacion();
+  };
+  buscador.oninput = () => {
+    const texto = buscador.value.trim().toLowerCase();
+    if (!texto) { resultados.style.display = 'none'; return; }
+    const coincidencias = subcuentasConRuta.filter(s => s.ruta.toLowerCase().includes(texto)).slice(0, 15);
+    resultados.style.display = '';
+    resultados.innerHTML = coincidencias.length
+      ? coincidencias.map(s => `<div class="cp-resultado-sub" data-id="${s.id}" data-ruta="${s.ruta.replace(/"/g,'&quot;')}" style="padding:9px 12px;cursor:pointer;border-bottom:1px solid var(--line);font-size:13px;">${s.ruta}</div>`).join('')
+      : `<div style="padding:9px 12px;color:var(--muted);font-size:13px;">Sin coincidencias.</div>`;
+    resultados.querySelectorAll('.cp-resultado-sub').forEach(div => div.addEventListener('click', () => {
+      destinoElegido = div.dataset.id; labelElegido = `Cuenta — ${div.dataset.ruta}`;
+      buscador.value = div.dataset.ruta;
+      resultados.style.display = 'none';
+      actualizarConfirmacion();
+    }));
+  };
+
+  document.querySelectorAll('.cp-tipo-btn').forEach(b => b.onclick = () => mostrarTipo(b.dataset.tipo));
+  wrapCuenta.style.display = 'none';
+  wrapConfirmacion.style.display = 'none';
+  btnAplicar.disabled = true;
+  document.querySelectorAll('.cp-tipo-btn').forEach(b => { b.classList.remove('mf-btn-principal'); b.classList.add('mf-btn-secundario'); });
+
+  const cerrar = () => modal.classList.remove('show');
+  document.getElementById('closeClasificarPago').onclick = cerrar;
+  document.getElementById('closeClasificarPagoX').onclick = cerrar;
+  document.getElementById('aplicarClasificarPago').onclick = async (ev) => {
+    const btn = ev.currentTarget;
+    if (btn.disabled) return;
+    btn.disabled = true;
+    try {
+      const usuarioNombre = STATE.currentUserEmail || STATE.usuarioActual?.nombre || null;
+      const r = await clasificarPagoPendiente(pago.id, businessId, { tipo: tipoElegido, refId: destinoElegido, subcuentaId: tipoElegido==='subcuenta'?destinoElegido:null, usuarioNombre });
+      if (!r.ok) { toast(r.mensaje, 'error'); btn.disabled = false; return; }
+      toast('Pago clasificado correctamente.');
+      cerrar();
+      onDone();
+    } catch (e) {
+      btn.disabled = false;
+    }
+  };
+  modal.classList.add('show');
 }
 
 async function renderActivosFijos() {

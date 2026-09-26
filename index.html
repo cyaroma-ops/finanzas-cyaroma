@@ -2611,6 +2611,42 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   </div>
 </div>
 
+<!-- Modal: Clasificar pago (Pagos por clasificar) -->
+<div class="mf-overlay" id="modalClasificarPago">
+  <div class="mf-modal" style="max-width:640px;">
+    <div class="mf-header">
+      <div class="mf-header-row">
+        <div>
+          <div class="mf-titulo">Clasificar pago</div>
+          <div class="mf-subtitulo" id="clasificarPagoResumen">—</div>
+        </div>
+        <button class="mf-close" id="closeClasificarPagoX">✕</button>
+      </div>
+    </div>
+    <div class="mf-body" style="grid-template-columns:1fr;">
+      <div class="mf-panel-label">Destino de este pago</div>
+      <div style="display:flex;gap:10px;margin-bottom:16px;">
+        <button type="button" class="mf-btn mf-btn-secundario cp-tipo-btn" data-tipo="banco" style="flex:1;">🏦 Banco</button>
+        <button type="button" class="mf-btn mf-btn-secundario cp-tipo-btn" data-tipo="efectivo" style="flex:1;">💵 Efectivo</button>
+        <button type="button" class="mf-btn mf-btn-secundario cp-tipo-btn" data-tipo="subcuenta" style="flex:1;">📗 Cuenta contable</button>
+      </div>
+      <div class="mf-campo" id="cpDestinoCuentaWrap" style="display:none;">
+        <label id="cpDestinoCuentaLabel">Cuenta</label>
+        <select id="cpDestinoCuentaSelect" style="display:none;"></select>
+        <input type="text" id="cpDestinoCuentaBuscador" placeholder="Buscar cuenta contable por nombre..." style="display:none;">
+        <div id="cpDestinoCuentaResultados" style="display:none;max-height:220px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;margin-top:6px;"></div>
+      </div>
+      <div class="mf-resumen-panel" id="cpConfirmacionWrap" style="display:none;margin-top:14px;">
+        <div class="mf-resumen-linea"><span class="mf-label">Se clasificará hacia</span><span class="mf-valor" id="cpConfirmacionCuenta">—</span></div>
+      </div>
+    </div>
+    <div class="mf-footer">
+      <button class="mf-btn mf-btn-secundario" id="closeClasificarPago">Cancelar</button>
+      <button class="mf-btn mf-btn-principal" id="aplicarClasificarPago" disabled>Clasificar</button>
+    </div>
+  </div>
+</div>
+
 <!-- Modal: Orden de venta -->
 <div class="modal-bg" id="modalOrden">
   <div class="modal" style="width:min(920px,97vw);max-height:92vh;overflow-y:auto;">
