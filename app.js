@@ -14832,7 +14832,7 @@ async function renderProveedorDetalle(el, b) {
       </div>
       <div class="table-wrap scroll-sticky">
         <table>
-          <thead><tr><th>Fecha</th><th>Tipo</th><th>Referencia</th><th>Monto</th><th>Saldo</th><th>Saldo acumulado</th><th></th></tr></thead>
+          <thead><tr><th>Fecha</th><th>Tipo</th><th>Referencia</th><th class="num">Monto</th><th class="num">Saldo</th><th class="num">Saldo acumulado</th><th></th></tr></thead>
           <tbody>
             ${transacciones.length ? transacciones.map(t => `<tr>
               <td>${fechaCorta(t.fecha)}</td>
@@ -15077,9 +15077,9 @@ async function renderClienteDetalle(el, b) {
         <table>
           <thead><tr>
             <th>Fecha</th><th>Folio</th><th>No. Factura</th>
-            <th>Moneda</th><th>TC</th>
-            <th>Total</th><th>Pagado</th><th>Saldo</th>
-            <th>Vencimiento</th><th>Días retraso</th>
+            <th>Moneda</th><th class="num">TC</th>
+            <th class="num">Total</th><th class="num">Pagado</th><th class="num">Saldo</th>
+            <th>Vencimiento</th><th class="num">Días retraso</th>
             <th>Estatus</th><th>Fiscal</th><th></th>
           </tr></thead>
           <tbody>
@@ -15097,7 +15097,7 @@ async function renderClienteDetalle(el, b) {
                 <td class="num">${prefijoMoneda(f.moneda)} ${fmt(f.importe_pagado||0)}</td>
                 <td class="num" style="${saldo>0.004?'color:var(--gold);font-weight:600;':''}">${prefijoMoneda(f.moneda)} ${fmt(saldo)}</td>
                 <td>${f.fecha_vencimiento ? fechaCorta(f.fecha_vencimiento) : '—'}</td>
-                <td style="${typeof diasRetraso==='number' && diasRetraso>0?'color:var(--red);font-weight:700;':''}">${diasRetraso}</td>
+                <td class="num" style="${typeof diasRetraso==='number' && diasRetraso>0?'color:var(--red);font-weight:700;':''}">${diasRetraso}</td>
                 <td><span class="badge ${f.estatus==='Pagado'?'pag':'pend'}">${f.estatus}</span></td>
                 <td>${ESTATUS_FISCAL_BADGE[f.estatus_fiscal] || ESTATUS_FISCAL_BADGE.no_aplica}</td>
                 ${facturaMenuHtml(f.id)}
