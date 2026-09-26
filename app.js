@@ -45,6 +45,31 @@ const monthBounds = (ym) => {
   return { start, end };
 };
 const todayStr = () => new Date().toISOString().slice(0, 10);
+
+// Validación central de fechas operativas (movimientos, cobros, pagos) — se llama SIEMPRE antes
+// de cualquier INSERT/UPDATE, nunca se confía solo en los atributos min/max del <input> HTML
+// (el usuario puede tenerlos deshabilitados, o el navegador puede no aplicarlos consistentemente).
+// Piso: 100 años antes del año actual — dinámico, se recalcula solo, nunca un año fijo tipo 2000
+// que quedaría obsoleto o que podría rechazar historia legítima de negocios más antiguos.
+// Techo: hasta mañana — no existía ninguna regla de fecha futura previa en la app; esta es nueva.
+function validarFechaOperativa(fecha) {
+  if (!fecha || typeof fecha !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
+    return { valido: false, mensaje: 'La fecha capturada no tiene un formato válido.' };
+  }
+  const anio = Number(fecha.slice(0, 4));
+  const anioActual = Number(todayStr().slice(0, 4));
+  const anioMinimo = anioActual - 100;
+  if (anio < anioMinimo) {
+    return { valido: false, mensaje: `La fecha ${fecha} no parece válida (año ${fecha.slice(0,4)}). Revisa que no falte o sobre un dígito antes de guardar.` };
+  }
+  const manana = new Date(); manana.setUTCDate(manana.getUTCDate() + 1);
+  const fechaLimiteFutura = manana.toISOString().slice(0, 10);
+  if (fecha > fechaLimiteFutura) {
+    return { valido: false, mensaje: `La fecha ${fecha} está en el futuro. Revisa que la hayas capturado correctamente.` };
+  }
+  return { valido: true };
+}
+
 // Días de retraso — SIEMPRE calculado en vivo, nunca almacenado (cambia con el tiempo). Reutilizado
 // tal cual por Facturas de clientes y de proveedores.
 function calcularDiasRetraso(fechaVencimiento, saldoPendiente) {
@@ -13761,6 +13786,8 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     btnGuardarMov.disabled = true; btnGuardarMov.textContent = 'Guardando…';
     try {
     const fecha = document.getElementById('movFecha').value || todayStr();
+    const validacionFecha = validarFechaOperativa(fecha);
+    if (!validacionFecha.valido) { toast(validacionFecha.mensaje, 'error'); return; }
     if (await bloqueadoPorCierre(contexto.businessId, fecha)) return;
     const cargos = Number(document.getElementById('movCargos').value) || 0;
     const depositos = Number(document.getElementById('movDepositos').value) || 0;
@@ -15885,6 +15912,8 @@ document.getElementById('aplicarElegirFacturaCobro').addEventListener('click', a
   const monto = leerMonto(document.getElementById('elegirFacturaCobroMonto').value);
   if (!monto || monto <= 0) { toast('Escribe el monto a aplicar.', 'error'); return; }
   const fecha = document.getElementById('elegirFacturaCobroFecha').value || todayStr();
+  const validacionFechaCobro = validarFechaOperativa(fecha);
+  if (!validacionFechaCobro.valido) { toast(validacionFechaCobro.mensaje, 'error'); return; }
   if (await bloqueadoPorCierre(b.id, fecha)) return;
   const destino = document.getElementById('elegirFacturaCobroCuenta').value;
   const tcWrapVisibleEfc = document.getElementById('elegirFacturaCobroTcWrap').style.display !== 'none';
@@ -16070,6 +16099,8 @@ document.getElementById('aplicarElegirFacturaPago').addEventListener('click', as
   const monto = leerMonto(document.getElementById('elegirFacturaPagoMonto').value);
   if (!monto || monto <= 0) { toast('Escribe el monto a aplicar.', 'error'); return; }
   const fecha = document.getElementById('elegirFacturaPagoFecha').value || todayStr();
+  const validacionFechaPago = validarFechaOperativa(fecha);
+  if (!validacionFechaPago.valido) { toast(validacionFechaPago.mensaje, 'error'); return; }
   if (await bloqueadoPorCierre(b.id, fecha)) return;
   const destino = document.getElementById('elegirFacturaPagoCuenta').value;
   const tcWrapVisibleEfp = document.getElementById('elegirFacturaPagoTcWrap').style.display !== 'none';
