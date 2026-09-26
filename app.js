@@ -4627,13 +4627,20 @@ async function previsualizarProvisionesIsr(businessId, anio) {
    redondeados por separado), y se ajusta solo la diferencia — funciona
    igual si el pago se creó, se modificó o se eliminó.
    ============================================================ */
-async function sincronizarRealizacionFactura(facturaId, tipoFactura, businessId, fechaEvento) {
+async function sincronizarRealizacionFactura(facturaId, tipoFactura, businessId, fechaEvento, fechaCorteCompartida, cacheSubcuentas) {
   const tabla = tipoFactura === 'proveedor' ? 'fz_proveedores' : 'fz_facturas_clientes';
   const { data: f } = await sb.from(tabla).select('*').eq('id', facturaId).maybeSingle();
   if (!f) return; // la factura ya no existe (se eliminó) — no hay nada que reclasificar
 
-  const { data: negocioRow } = await sb.from('businesses').select('iva_realizacion_desde').eq('id', businessId).maybeSingle();
-  const fechaCorte = negocioRow?.iva_realizacion_desde;
+  // fechaCorteCompartida: optimización — quien llama a esta función muchas veces seguidas para el
+  // MISMO negocio (ej. un cobro con varias facturas) puede pasar el corte ya consultado una sola
+  // vez, en vez de repetir la misma consulta a businesses por cada factura. Si no se pasa, se
+  // consulta aquí como siempre (compatibilidad total con todos los llamadores existentes).
+  let fechaCorte = fechaCorteCompartida;
+  if (fechaCorte === undefined) {
+    const { data: negocioRow } = await sb.from('businesses').select('iva_realizacion_desde').eq('id', businessId).maybeSingle();
+    fechaCorte = negocioRow?.iva_realizacion_desde || null;
+  }
   if (!fechaCorte || f.fecha < fechaCorte) return; // fuera del alcance de esta arquitectura — histórico intacto
 
   const importeTotal = Number(tipoFactura === 'proveedor' ? f.importe : f.total) || 0;
@@ -4674,8 +4681,39 @@ async function sincronizarRealizacionFactura(facturaId, tipoFactura, businessId,
     const fechaPoliza = fechaEvento || todayStr();
     if (await periodoEstaCerrado(businessId, fechaPoliza)) continue; // periodo cerrado — no se toca, queda pendiente de revisión manual
 
-    const subPendiente = await obtenerOCrearSubcuentaPorNombre(businessId, item.pendiente, item.naturaleza);
-    const subRealizado = await obtenerOCrearSubcuentaPorNombre(businessId, item.realizado, item.naturaleza);
+    // IDEMPOTENCIA: se reclama el cambio en fz_iva_realizaciones ANTES de crear nada más. Si dos
+    // ejecuciones concurrentes llegan aquí con el mismo estado leído, solo UNA puede ganar la
+    // carrera (UPDATE condicionado al valor leído, o INSERT protegido por la restricción única
+    // existente) — la otra pierde y aborta sin crear póliza ni tocar nada. Esto no sustituye una
+    // transacción real (no existe esa capacidad desde este cliente) pero impide el síntoma
+    // concreto que causó las pólizas duplicadas: dos ejecuciones creando, cada una, su propia
+    // póliza a partir del mismo estado desactualizado.
+    let idRealizacionReclamado;
+    if (existente) {
+      const { data: reclamado } = await sb.from('fz_iva_realizaciones')
+        .update({ monto_realizado_acumulado: montoDebeSer, fecha: fechaPoliza, updated_at: new Date().toISOString() })
+        .eq('id', existente.id)
+        .eq('updated_at', existente.updated_at) // optimistic lock — solo si nadie más lo tocó desde la lectura de arriba
+        .select();
+      if (!reclamado || !reclamado.length) continue; // otra ejecución concurrente ya lo procesó — no duplicar
+      idRealizacionReclamado = existente.id;
+    } else {
+      const { data: insertado, error: errInsert } = await sb.from('fz_iva_realizaciones').insert({
+        business_id: businessId, factura_tabla: tabla, factura_id: facturaId, tipo: item.tipo, categoria: item.categoria,
+        monto_realizado_acumulado: montoDebeSer, poliza_id: null, fecha: fechaPoliza,
+      }).select().maybeSingle();
+      if (errInsert || !insertado) continue; // choque contra la restricción única (23505) = alguien más ganó la carrera concurrente
+      idRealizacionReclamado = insertado.id;
+    }
+
+    const resolverConCache = async (nombre, naturaleza) => {
+      if (cacheSubcuentas && cacheSubcuentas.has(nombre)) return cacheSubcuentas.get(nombre);
+      const id = await obtenerOCrearSubcuentaPorNombre(businessId, nombre, naturaleza);
+      if (cacheSubcuentas) cacheSubcuentas.set(nombre, id);
+      return id;
+    };
+    const subPendiente = await resolverConCache(item.pendiente, item.naturaleza);
+    const subRealizado = await resolverConCache(item.realizado, item.naturaleza);
     const esAumento = diff > 0;
     const monto = Math.abs(diff);
     // Activo (IVA Acreditable): aumentar Realizado = Debe; disminuir = Debe Pendiente.
@@ -4692,19 +4730,17 @@ async function sincronizarRealizacionFactura(facturaId, tipoFactura, businessId,
     }
     const concepto = `[Auto] Realización fiscal — ${item.tipo}${item.categoria?' — '+item.categoria:''} — ${tipoFactura === 'proveedor' ? f.factura||'s/f' : 'Folio #'+f.folio}`;
     const { data: nuevaPoliza, error } = await sb.from('fz_polizas').insert({ business_id: businessId, fecha: fechaPoliza, concepto }).select().single();
-    if (error) continue;
+    if (error) continue; // el estado ya quedó reclamado en fz_iva_realizaciones aunque la póliza falle — caso raro, se revisa manualmente vía el poliza_id null
     await sb.from('fz_polizas_lineas').insert(lineas.map((l,i) => ({ ...l, business_id: businessId, poliza_id: nuevaPoliza.id, cuenta_tipo: 'subcuenta', descripcion: concepto, orden: i })));
-    // Se actualiza el registro existente por su id (si lo hay) en vez de confiar en el upsert
-    // por restricción única — más seguro, ya no depende de cómo Postgres trate columnas vacías.
-    if (existente) {
-      await sb.from('fz_iva_realizaciones').update({ monto_realizado_acumulado: montoDebeSer, poliza_id: nuevaPoliza.id, fecha: fechaPoliza, updated_at: new Date().toISOString() }).eq('id', existente.id);
-    } else {
-      await sb.from('fz_iva_realizaciones').insert({
-        business_id: businessId, factura_tabla: tabla, factura_id: facturaId, tipo: item.tipo, categoria: item.categoria,
-        monto_realizado_acumulado: montoDebeSer, poliza_id: nuevaPoliza.id, fecha: fechaPoliza,
-      });
-    }
+    await sb.from('fz_iva_realizaciones').update({ poliza_id: nuevaPoliza.id }).eq('id', idRealizacionReclamado);
   }
+}
+
+// Consulta el corte de realización UNA sola vez, para pasarlo a sincronizarRealizacionFactura en
+// lotes (cobro/pago con varias facturas) y evitar repetir la misma consulta por cada una.
+async function obtenerFechaCorteRealizacion(businessId) {
+  const { data: negocioRow } = await sb.from('businesses').select('iva_realizacion_desde').eq('id', businessId).maybeSingle();
+  return negocioRow?.iva_realizacion_desde || null;
 }
 
 // Detecta facturas con MÁS de un registro de realización para el mismo tipo (el rastro del bug de
@@ -5102,16 +5138,25 @@ async function ejecutarReinicioFiscal(businessId, desde, hasta, usuarioEmail) {
 
   // Regenerar desde cero: toda factura de proveedor/cliente con IVA o retención, dentro del alcance
   // de la fecha de corte — si no tiene pagos reales, sincronizarRealizacionFactura no crea nada.
-  const [{ data: negocioRow }, { data: facturasProv }, { data: facturasCli }] = await Promise.all([
+  const [{ data: negocioRow }, { data: facturasProv }, { data: facturasCli }, { data: todosPagos }, { data: todosCobros }] = await Promise.all([
     sb.from('businesses').select('iva_realizacion_desde').eq('id', businessId).maybeSingle(),
     sb.from('fz_proveedores').select('id,fecha').eq('business_id', businessId),
     sb.from('fz_facturas_clientes').select('id,fecha').eq('business_id', businessId),
+    sb.from('fz_pagos_aplicados').select('factura_id,fecha').eq('business_id', businessId),
+    sb.from('fz_cobros_aplicados').select('factura_id,fecha').eq('business_id', businessId),
   ]);
+  // Fecha REAL de referencia por factura = la del último pago/cobro efectivamente aplicado —
+  // nunca todayStr(). Si no tiene ningún pago/cobro real, se usa la fecha de la propia factura
+  // (sincronizarRealizacionFactura de cualquier forma no genera nada si no hay aplicaciones).
+  const ultimaFechaPorFacturaProv = {};
+  (todosPagos||[]).forEach(p => { if (!ultimaFechaPorFacturaProv[p.factura_id] || p.fecha > ultimaFechaPorFacturaProv[p.factura_id]) ultimaFechaPorFacturaProv[p.factura_id] = p.fecha; });
+  const ultimaFechaPorFacturaCli = {};
+  (todosCobros||[]).forEach(c => { if (!ultimaFechaPorFacturaCli[c.factura_id] || c.fecha > ultimaFechaPorFacturaCli[c.factura_id]) ultimaFechaPorFacturaCli[c.factura_id] = c.fecha; });
   const fechaCorte = negocioRow?.iva_realizacion_desde;
   let regeneradas = 0;
   if (fechaCorte) {
-    for (const f of (facturasProv||[])) { if (f.fecha >= fechaCorte) { await sincronizarRealizacionFactura(f.id, 'proveedor', businessId, todayStr()); regeneradas++; } }
-    for (const f of (facturasCli||[])) { if (f.fecha >= fechaCorte) { await sincronizarRealizacionFactura(f.id, 'cliente', businessId, todayStr()); regeneradas++; } }
+    for (const f of (facturasProv||[])) { if (f.fecha >= fechaCorte) { await sincronizarRealizacionFactura(f.id, 'proveedor', businessId, ultimaFechaPorFacturaProv[f.id] || f.fecha, fechaCorte); regeneradas++; } }
+    for (const f of (facturasCli||[])) { if (f.fecha >= fechaCorte) { await sincronizarRealizacionFactura(f.id, 'cliente', businessId, ultimaFechaPorFacturaCli[f.id] || f.fecha, fechaCorte); regeneradas++; } }
   }
   // Regenerar también la Determinación IVA del/los mes(es) en el rango.
   const { data: pagosIvaEnRango } = await sb.from('fz_pagos_impuestos').select('*').eq('business_id', businessId).eq('tipo_impuesto', 'iva').gte('periodo', desde.slice(0,7)).lte('periodo', hasta.slice(0,7));
@@ -12670,8 +12715,13 @@ async function revertirPagoAFacturas(idsAfectados, montoMovimiento, businessId, 
   // El registro de "pago aplicado" ligado a este movimiento debe desaparecer con él — si no se
   // borra, queda huérfano y el motor de realización fiscal seguiría contándolo de más.
   if (businessId && origenTabla && origenId) {
+    // Se captura la fecha real de cada aplicación ANTES de borrarla — la reversión debe quedar
+    // fechada en el periodo fiscal real del pago que se deshace, nunca en el día de ejecución.
+    const { data: aplicadosOrigen } = await sb.from('fz_pagos_aplicados').select('factura_id, fecha').eq('origen_tabla', origenTabla).eq('origen_id', origenId);
+    const fechaPorFactura = Object.fromEntries((aplicadosOrigen||[]).map(a => [a.factura_id, a.fecha]));
     await sb.from('fz_pagos_aplicados').delete().eq('origen_tabla', origenTabla).eq('origen_id', origenId);
-    for (const f of facturas) await sincronizarRealizacionFactura(f.id, 'proveedor', businessId, todayStr());
+    const fechaCorte = await obtenerFechaCorteRealizacion(businessId);
+    for (const f of facturas) await sincronizarRealizacionFactura(f.id, 'proveedor', businessId, fechaPorFactura[f.id] || todayStr(), fechaCorte);
   }
 }
 
@@ -12738,10 +12788,23 @@ async function revertirCobroPorOrigen(origenTabla, origenId, businessId) {
     }
   }
   await sb.from('fz_cobros_aplicados').delete().eq('origen_tabla', origenTabla).eq('origen_id', origenId);
-  if (businessId) for (const cobro of (cobros || [])) await sincronizarRealizacionFactura(cobro.factura_id, 'cliente', businessId, todayStr());
+  // La reversión debe quedar fechada en el periodo FISCAL REAL del cobro que se deshace — nunca
+  // en el día de hoy (ejecución), o contamina el mes en que se hizo la edición/eliminación.
+  if (businessId) {
+    const fechaCorte = await obtenerFechaCorteRealizacion(businessId);
+    for (const cobro of (cobros || [])) await sincronizarRealizacionFactura(cobro.factura_id, 'cliente', businessId, cobro.fecha, fechaCorte);
+  }
 }
 
 async function aplicarPagoFacturas(idsSeleccionados, montoDisponibleInicial, fechaMov, businessId, origenInfo) {
+  // Corte de realización consultado UNA sola vez para todo este lote — evita repetir la misma
+  // consulta a businesses por cada factura dentro de esta operación (optimización, sin cambiar
+  // ninguna fórmula ni validación).
+  const fechaCorte = await obtenerFechaCorteRealizacion(businessId);
+  // Cache de subcuentas resueltas — evita repetir la misma búsqueda de "IVA Acreditable —
+  // Pendiente/Pagado" (o Retención X) una vez por cada factura de este mismo lote.
+  const cacheSubcuentas = new Map();
+
   // Si este movimiento ya tenía un desglose guardado (se está editando qué facturas cubre),
   // primero revertimos esos montos exactos, para no duplicar ni dejar basura de la vez anterior.
   if (origenInfo.origen_tabla && origenInfo.origen_id) {
@@ -12755,7 +12818,10 @@ async function aplicarPagoFacturas(idsSeleccionados, montoDisponibleInicial, fec
       }
     }
     await sb.from('fz_pagos_aplicados').delete().eq('origen_tabla', origenInfo.origen_tabla).eq('origen_id', origenInfo.origen_id);
-    for (const prev of (previos || [])) await sincronizarRealizacionFactura(prev.factura_id, 'proveedor', businessId, fechaMov);
+    // La reversión de cada aplicación previa debe quedar fechada en SU PROPIO periodo fiscal
+    // real (prev.fecha) — nunca en fechaMov, que es la fecha de ESTA operación nueva, no la de
+    // lo que se está deshaciendo. Esto es lo que evita contaminar un mes distinto al histórico.
+    for (const prev of (previos || [])) await sincronizarRealizacionFactura(prev.factura_id, 'proveedor', businessId, prev.fecha, fechaCorte, cacheSubcuentas);
   }
 
   if (!idsSeleccionados.length) return { idsAfectados: [], creadoCredito: false, sobrante: 0 };
@@ -12770,7 +12836,7 @@ async function aplicarPagoFacturas(idsSeleccionados, montoDisponibleInicial, fec
   const registrarPago = async (facturaId, monto) => {
     if (!origenInfo.origen_tabla || !origenInfo.origen_id || !monto) return;
     await sb.from('fz_pagos_aplicados').insert({ business_id: businessId, factura_id: facturaId, monto, origen_tabla: origenInfo.origen_tabla, origen_id: origenInfo.origen_id, fecha: fechaMov, tipo_cambio: origenInfo.tipo_cambio_pago ?? null });
-    await sincronizarRealizacionFactura(facturaId, 'proveedor', businessId, fechaMov);
+    await sincronizarRealizacionFactura(facturaId, 'proveedor', businessId, fechaMov, fechaCorte, cacheSubcuentas);
   };
 
   for (const c of creditos) {
@@ -12907,6 +12973,12 @@ async function clasificarPagoPendiente(pagoId, businessId, { tipo, refId, subcue
 }
 
 async function aplicarCobroFacturas(idsSeleccionados, montoDisponibleInicial, fecha, businessId, origenInfo) {
+  // Corte de realización consultado UNA sola vez para todo este lote (optimización).
+  const fechaCorte = await obtenerFechaCorteRealizacion(businessId);
+  // Cache de subcuentas resueltas — evita repetir la búsqueda de "IVA Trasladado —
+  // Pendiente/Cobrado" una vez por cada factura de este mismo cobro.
+  const cacheSubcuentas = new Map();
+
   // Si este movimiento ya tenía un desglose de cobro guardado (se está editando la selección),
   // primero revertimos esos montos exactos.
   if (origenInfo.origen_tabla && origenInfo.origen_id) {
@@ -12920,7 +12992,9 @@ async function aplicarCobroFacturas(idsSeleccionados, montoDisponibleInicial, fe
       }
     }
     await sb.from('fz_cobros_aplicados').delete().eq('origen_tabla', origenInfo.origen_tabla).eq('origen_id', origenInfo.origen_id);
-    for (const prev of (previos || [])) await sincronizarRealizacionFactura(prev.factura_id, 'cliente', businessId, fecha);
+    // Cada reversión queda fechada en SU PROPIO periodo fiscal real (prev.fecha) — nunca en
+    // "fecha" (la de esta operación nueva), evitando contaminar un mes distinto al histórico.
+    for (const prev of (previos || [])) await sincronizarRealizacionFactura(prev.factura_id, 'cliente', businessId, prev.fecha, fechaCorte, cacheSubcuentas);
   }
 
   if (!idsSeleccionados.length) return { idsAfectados: [] };
@@ -12943,7 +13017,7 @@ async function aplicarCobroFacturas(idsSeleccionados, montoDisponibleInicial, fe
     if (origenInfo.origen_tabla && origenInfo.origen_id) {
       const tcReal = f.moneda && f.moneda !== 'MXN' ? (origenInfo.tipo_cambio_real || f.tipo_cambio) : null;
       await sb.from('fz_cobros_aplicados').insert({ business_id: businessId, factura_id: f.id, monto: aplicar, origen_tabla: origenInfo.origen_tabla, origen_id: origenInfo.origen_id, fecha, tipo_cambio: tcReal });
-      await sincronizarRealizacionFactura(f.id, 'cliente', businessId, fecha);
+      await sincronizarRealizacionFactura(f.id, 'cliente', businessId, fecha, fechaCorte, cacheSubcuentas);
     }
   }
   return { idsAfectados, sobrante: disponible };
@@ -13072,19 +13146,27 @@ function openFacturasCobroModal(rowId, table, facturasClientesPend, onDone) {
     document.getElementById('modalFacturasPago').classList.add('show');
     document.getElementById('closeFacturasPago').onclick = () => document.getElementById('modalFacturasPago').classList.remove('show');
     document.getElementById('closeFacturasPagoX').onclick = () => document.getElementById('modalFacturasPago').classList.remove('show');
-    document.getElementById('applyFacturasPago').onclick = async () => {
-      const idsSeleccionados = Array.from(box.querySelectorAll('.factura-check:checked')).map(c => c.value);
-      const tcWrapVisible = document.getElementById('facturasPagoTcCampo').style.display !== 'none';
-      const tipoCambioReal = tcWrapVisible ? (leerMonto(document.getElementById('facturasPagoTc').value) || 1) : 1;
-      const { idsAfectados } = await aplicarCobroFacturas(idsSeleccionados, montoMovimiento, row?.fecha || todayStr(), row.business_id, {
-        origen_tabla: table, origen_id: rowId,
-        tipo_cambio_real: tipoCambioReal,
-      });
-      const { error: e1 } = await sb.from(table).update({ cliente_factura_ids: idsAfectados, cliente_factura_id: idsAfectados[0] || null }).eq('id', rowId);
-      if (e1) { toast('Error al guardar: ' + e1.message, 'error'); return; }
-      if (idsAfectados.length) toast(`${idsAfectados.length} factura(s) actualizada(s).`);
-      document.getElementById('modalFacturasPago').classList.remove('show');
-      onDone();
+    document.getElementById('applyFacturasPago').onclick = async (ev) => {
+      const btn = ev.currentTarget;
+      if (btn.disabled) return; // evita doble ejecución por doble clic/reenvío
+      const textoOriginal = btn.textContent;
+      btn.disabled = true; btn.textContent = 'Guardando…';
+      try {
+        const idsSeleccionados = Array.from(box.querySelectorAll('.factura-check:checked')).map(c => c.value);
+        const tcWrapVisible = document.getElementById('facturasPagoTcCampo').style.display !== 'none';
+        const tipoCambioReal = tcWrapVisible ? (leerMonto(document.getElementById('facturasPagoTc').value) || 1) : 1;
+        const { idsAfectados } = await aplicarCobroFacturas(idsSeleccionados, montoMovimiento, row?.fecha || todayStr(), row.business_id, {
+          origen_tabla: table, origen_id: rowId,
+          tipo_cambio_real: tipoCambioReal,
+        });
+        const { error: e1 } = await sb.from(table).update({ cliente_factura_ids: idsAfectados, cliente_factura_id: idsAfectados[0] || null }).eq('id', rowId);
+        if (e1) { toast('Error al guardar: ' + e1.message, 'error'); return; }
+        if (idsAfectados.length) toast(`${idsAfectados.length} factura(s) actualizada(s).`);
+        document.getElementById('modalFacturasPago').classList.remove('show');
+        onDone();
+      } finally {
+        btn.disabled = false; btn.textContent = textoOriginal;
+      }
     };
   })();
 }
@@ -13216,7 +13298,8 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
     document.getElementById('applyFacturasPago').onclick = async (ev) => {
       const btn = ev.currentTarget;
       if (btn.disabled) return; // ya se está procesando — evita doble ejecución por doble clic/reenvío
-      btn.disabled = true;
+      const textoOriginalBtn = btn.textContent;
+      btn.disabled = true; btn.textContent = 'Guardando…';
       try {
         const idsSeleccionados = Array.from(box.querySelectorAll('.factura-check:checked')).map(c => c.value);
         const tcWrapVisible = document.getElementById('facturasPagoTcCampo').style.display !== 'none';
@@ -13241,7 +13324,7 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
         document.getElementById('modalFacturasPago').classList.remove('show');
         onDone();
       } finally {
-        btn.disabled = false;
+        btn.disabled = false; btn.textContent = textoOriginalBtn;
       }
     };
   })();
@@ -13674,7 +13757,8 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   document.getElementById('saveMovimiento').onclick = async (ev) => {
     const btnGuardarMov = ev.currentTarget;
     if (btnGuardarMov.disabled) return; // ya se está procesando — evita doble ejecución
-    btnGuardarMov.disabled = true;
+    const textoOriginalMov = btnGuardarMov.textContent;
+    btnGuardarMov.disabled = true; btnGuardarMov.textContent = 'Guardando…';
     try {
     const fecha = document.getElementById('movFecha').value || todayStr();
     if (await bloqueadoPorCierre(contexto.businessId, fecha)) return;
@@ -13817,7 +13901,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     toast(movId ? 'Movimiento actualizado.' : 'Movimiento agregado.');
     if (contexto.onDone) contexto.onDone();
     } finally {
-      btnGuardarMov.disabled = false;
+      btnGuardarMov.disabled = false; btnGuardarMov.textContent = textoOriginalMov;
     }
   };
   document.getElementById('deleteMovimiento').onclick = async () => {
@@ -15783,7 +15867,12 @@ async function abrirElegirFacturaCobro(businessId) {
   renderLista();
   document.getElementById('modalElegirFacturaCobro').classList.add('show');
 }
-document.getElementById('aplicarElegirFacturaCobro').addEventListener('click', async () => {
+document.getElementById('aplicarElegirFacturaCobro').addEventListener('click', async (ev) => {
+  const btnCobro = ev.currentTarget;
+  if (btnCobro.disabled) return; // evita doble ejecución por doble clic/reenvío
+  const textoOriginalCobro = btnCobro.textContent;
+  btnCobro.disabled = true; btnCobro.textContent = 'Guardando…';
+  try {
   const b = biz();
   if (!b) return;
   const checksMarcados = Array.from(document.querySelectorAll('.efc-check:checked'));
@@ -15828,6 +15917,9 @@ document.getElementById('aplicarElegirFacturaCobro').addEventListener('click', a
   if (origen_id) await sb.from(origen_tabla).update({ cliente_factura_ids: resultado.idsAfectados, cliente_factura_id: resultado.idsAfectados[0] || null }).eq('id', origen_id);
   if (resultado.idsAfectados.length) toast(`${resultado.idsAfectados.length} factura(s) actualizada(s).`);
   document.getElementById('modalElegirFacturaCobro').classList.remove('show');
+  } finally {
+    btnCobro.disabled = false; btnCobro.textContent = textoOriginalCobro;
+  }
 });
 document.getElementById('closeElegirFacturaCobro').addEventListener('click', () => {
   document.getElementById('modalElegirFacturaCobro').classList.remove('show');
@@ -15963,7 +16055,8 @@ async function abrirElegirFacturaPago(businessId, proveedorPreseleccionado) {
 document.getElementById('aplicarElegirFacturaPago').addEventListener('click', async (ev) => {
   const btnPago = ev.currentTarget;
   if (btnPago.disabled) return; // ya se está procesando — evita doble ejecución por doble clic/reenvío
-  btnPago.disabled = true;
+  const textoOriginalPago = btnPago.textContent;
+  btnPago.disabled = true; btnPago.textContent = 'Guardando…';
   try {
   const b = biz();
   if (!b) return;
@@ -16034,7 +16127,7 @@ document.getElementById('aplicarElegirFacturaPago').addEventListener('click', as
   }
   document.getElementById('modalElegirFacturaPago').classList.remove('show');
   } finally {
-    btnPago.disabled = false;
+    btnPago.disabled = false; btnPago.textContent = textoOriginalPago;
   }
 });
 document.getElementById('closeElegirFacturaPago').addEventListener('click', () => {
@@ -16633,7 +16726,7 @@ async function eliminarCobro(businessId, cobroId, facturaId) {
     const nuevoEstatus = nuevoPagado <= 0.004 ? 'Pendiente' : (nuevoPagado >= Number(f.total) - 0.01 ? 'Pagado' : 'Parcial');
     await sb.from('fz_facturas_clientes').update({ importe_pagado: nuevoPagado, estatus: nuevoEstatus }).eq('id', facturaId);
   }
-  await sincronizarRealizacionFactura(facturaId, 'cliente', businessId, todayStr());
+  await sincronizarRealizacionFactura(facturaId, 'cliente', businessId, cobro.fecha);
 }
 
 document.getElementById('registrarCobroBtn').addEventListener('click', async () => {
