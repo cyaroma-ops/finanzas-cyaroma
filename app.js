@@ -14744,6 +14744,14 @@ async function renderDirectorioProveedores(el, b) {
 async function getTransaccionesProveedor(businessId, facturas) {
   const facturaIds = facturas.map(f => f.id);
   const transacciones = [];
+  // Todas las facturas de este detalle pertenecen al mismo proveedor — se reutiliza el nombre ya
+  // conocido, sin volver a consultarlo ni inventarlo.
+  const nombreProveedor = facturas[0]?.proveedor || '';
+  const prefijoTercero = nombreProveedor ? `Pago a proveedor — ${nombreProveedor}` : '';
+  const componerReferencia = (refOriginal) => {
+    const partes = [prefijoTercero, refOriginal && refOriginal !== '—' ? refOriginal : null].filter(Boolean);
+    return partes.length ? partes.join(' · ') : '—';
+  };
 
   facturas.forEach(f => {
     transacciones.push({
@@ -14764,7 +14772,7 @@ async function getTransaccionesProveedor(businessId, facturas) {
     if (!p) return;
     if (!(Number(l.cargo) > 0.004)) return; // sin cargo real no es un pago (ej. la línea de abono que originó la provisión)
     transacciones.push({
-      fecha: p.fecha, tipo: 'Pago — Póliza de diario', numero: `#${p.numero ?? ''}`, monto: -(Number(l.cargo) || 0),
+      fecha: p.fecha, tipo: 'Pago — Póliza de diario', numero: componerReferencia(`#${p.numero ?? ''}`), monto: -(Number(l.cargo) || 0),
       origen: { tipo: 'poliza', id: p.id, fecha: p.fecha },
     });
   });
@@ -14776,14 +14784,14 @@ async function getTransaccionesProveedor(businessId, facturas) {
   (bmQ.data || []).forEach(m => {
     if (!facturaIdsDe(m).some(id => facturaIds.includes(id))) return;
     transacciones.push({
-      fecha: m.fecha, tipo: 'Pago — Banco', numero: m.concepto || m.descripcion || '—', monto: -(Number(m.cargos) || 0),
+      fecha: m.fecha, tipo: 'Pago — Banco', numero: componerReferencia(m.concepto || m.descripcion), monto: -(Number(m.cargos) || 0),
       origen: { tipo: 'bancos', id: m.id, cuentaId: m.cuenta_id, fecha: m.fecha },
     });
   });
   (emQ.data || []).forEach(m => {
     if (!facturaIdsDe(m).some(id => facturaIds.includes(id))) return;
     transacciones.push({
-      fecha: m.fecha, tipo: 'Pago — Efectivo', numero: m.descripcion || m.proveedor || '—', monto: -(Number(m.cargos) || 0),
+      fecha: m.fecha, tipo: 'Pago — Efectivo', numero: componerReferencia(m.descripcion || m.proveedor), monto: -(Number(m.cargos) || 0),
       origen: { tipo: 'efectivo', id: m.id, monedaId: m.moneda_id, fecha: m.fecha },
     });
   });
