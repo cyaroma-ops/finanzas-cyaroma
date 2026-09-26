@@ -14748,6 +14748,7 @@ async function getTransaccionesProveedor(businessId, facturas) {
   facturas.forEach(f => {
     transacciones.push({
       fecha: f.fecha, tipo: 'Factura', numero: f.factura || 's/f', monto: Number(f.importe) || 0,
+      saldo: redondearMoneda(Number(f.importe||0) - Number(f.importe_pagado||0)),
       origen: { tipo: 'proveedor', id: f.id, fecha: f.fecha },
     });
   });
@@ -14831,16 +14832,17 @@ async function renderProveedorDetalle(el, b) {
       </div>
       <div class="table-wrap scroll-sticky">
         <table>
-          <thead><tr><th>Fecha</th><th>Tipo</th><th>Referencia</th><th>Monto</th><th>Saldo acumulado</th><th></th></tr></thead>
+          <thead><tr><th>Fecha</th><th>Tipo</th><th>Referencia</th><th>Monto</th><th>Saldo</th><th>Saldo acumulado</th><th></th></tr></thead>
           <tbody>
             ${transacciones.length ? transacciones.map(t => `<tr>
               <td>${fechaCorta(t.fecha)}</td>
               <td>${t.tipo}</td>
               <td>${t.numero}</td>
               <td class="num ${t.monto<0?'red':''}">${t.monto<0?'-':''}${fmt(Math.abs(t.monto))}</td>
+              <td class="num" style="${t.saldo!=null && Math.abs(t.saldo)>0.004?'color:var(--gold);font-weight:600;':''}">${t.saldo!=null ? fmtNeg(t.saldo) : '—'}</td>
               <td class="num" style="font-weight:600;">${fmtNeg(t.saldoAcumulado)}</td>
               <td><button class="btn btn-ghost btn-sm ${t.origen.tipo==='proveedor'?'ver-factura-btn':(t.origen.tipo==='bancos'||t.origen.tipo==='efectivo'?'ver-desglose-pago-btn':'abrir-origen-btn')}" data-origen='${JSON.stringify(t.origen).replace(/'/g,'&apos;')}' style="font-size:11px;padding:3px 8px;">Ver / Editar</button></td>
-            </tr>`).join('') : `<tr><td colspan="6" class="empty">Sin transacciones.</td></tr>`}
+            </tr>`).join('') : `<tr><td colspan="7" class="empty">Sin transacciones.</td></tr>`}
           </tbody>
         </table>
       </div>
