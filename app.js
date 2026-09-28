@@ -2004,6 +2004,18 @@ async function loadSubcuentas(businessId) {
   return data || [];
 }
 
+// IDs de subcuenta realmente referenciados en el desglose de alguna factura de proveedor —
+// soporta ambos formatos de desglose (arreglo nuevo, objeto viejo). Solo lectura, no toca nada.
+async function loadSubcuentasUsadasEnDesglose(businessId) {
+  const { data } = await sb.from('fz_proveedores').select('desglose').eq('business_id', businessId).not('desglose', 'is', null);
+  const usadas = new Set();
+  (data || []).forEach(f => {
+    if (Array.isArray(f.desglose)) f.desglose.forEach(l => { if (l && l.subcuenta_id) usadas.add(l.subcuenta_id); });
+    else if (f.desglose && typeof f.desglose === 'object') Object.keys(f.desglose).forEach(id => usadas.add(id));
+  });
+  return usadas;
+}
+
 /* ---------- Jerarquía de cuentas: Mayor > Subcuenta > Sub-subcuenta ---------- */
 function subcuentasRaiz(mayorId, subcuentas) {
   return subcuentas.filter(s => s.cuenta_mayor_id === mayorId && !s.subcuenta_padre_id);
@@ -2060,6 +2072,7 @@ function opcionesSubcuentaHtml(subcuentas, mayores, selectedId) {
    CATÁLOGO DE CUENTAS — página completa (menú)
    ============================================================ */
 let STATE_ccEditando = new Set();
+let STATE_ccSoloPendientes = false;
 /* ============================================================
    AUDITORÍA — bitácora de quién crea/edita/elimina qué
    ============================================================ */
@@ -11648,11 +11661,12 @@ async function renderCatalogoCuentas() {
   const b = biz();
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
   const scrollY = window.scrollY;
-  const [mayores, subcuentas, cuentasBancoQ, monedasQ, conceptosVenta] = await Promise.all([
+  const [mayores, subcuentas, cuentasBancoQ, monedasQ, conceptosVenta, subcuentasActivoUsadas] = await Promise.all([
     loadCuentasMayor(b.id), loadSubcuentas(b.id),
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', b.id).order('nombre'),
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', b.id).order('orden'),
     loadConceptosVenta(b.id),
+    loadSubcuentasUsadasEnDesglose(b.id),
   ]);
   const cuentasBanco = cuentasBancoQ.data || [];
   const monedasEfectivo = monedasQ.data || [];
@@ -11717,6 +11731,54 @@ async function renderCatalogoCuentas() {
       </div>
       <button class="btn btn-gold btn-sm" id="ccSaveSub">+ Agregar subcuenta</button>
       <p style="font-size:11.5px;color:var(--muted);margin-top:10px;">Ejemplo de 3 niveles: Gastos de Operación › Mantenimiento y conservación › Reparación de freidoras.</p>
+    </div>
+
+    <div class="card" style="margin-bottom:14px;background:#fffaf0;border:1px solid #e6c674;">
+      <div class="card-head" style="display:flex;justify-content:space-between;align-items:center;">
+        <h3 style="margin:0;">Clasificación de IVA acreditable</h3>
+        <button class="btn btn-ghost btn-sm" id="ccTogglePendientesIva">${STATE_ccSoloPendientes ? 'Ver catálogo completo' : 'Ver solo pendientes'}</button>
+      </div>
+      ${(() => {
+        const idsUsadosActivo = subcuentasActivoUsadas;
+        const esCandidata = (s) => {
+          const mayor = mayores.find(m => m.id === s.cuenta_mayor_id);
+          if (!mayor) return false;
+          if (mayor.tipo === 'costo' || mayor.tipo === 'gasto') return true;
+          if (mayor.tipo === 'activo' && idsUsadosActivo.has(s.id)) return true;
+          return false;
+        };
+        const candidatas = subcuentas.filter(esCandidata);
+        const pendientes = candidatas.filter(s => !s.clasificacion_iva_acreditable);
+        window.__ccPendientesIvaIds = pendientes.map(p => p.id); // usado solo para el toggle de vista, no persiste
+        return `
+          <p style="font-size:12px;color:var(--navy-1);margin:6px 0 10px;">
+            <strong>${pendientes.length}</strong> de ${candidatas.length} cuenta(s) de Costo/Gasto (y Activo con uso real en compras) sin clasificar todavía. Mientras una cuenta quede sin clasificar, su IVA cae en "Sin clasificar" en la Cédula Fiscal.
+          </p>
+          ${STATE_ccSoloPendientes ? (pendientes.length ? `
+            <div class="table-wrap">
+              <table class="tabla-operativa">
+                <thead><tr><th>Cuenta mayor</th><th>Subcuenta</th><th>Clasificación</th></tr></thead>
+                <tbody>
+                  ${pendientes.map(s => {
+                    const mayor = mayores.find(m => m.id === s.cuenta_mayor_id);
+                    return `<tr>
+                      <td>${mayor ? mayor.nombre : '—'}</td>
+                      <td>${s.nombre}</td>
+                      <td><select class="cc-pend-clasif-iva" data-id="${s.id}" style="min-width:200px;">
+                        <option value="">— elegir —</option>
+                        <option value="bienes">Bienes/compras</option>
+                        <option value="servicios">Servicios</option>
+                        <option value="uso_goce">Uso o goce temporal</option>
+                        <option value="inversiones">Inversiones</option>
+                      </select></td>
+                    </tr>`;
+                  }).join('')}
+                </tbody>
+              </table>
+            </div>
+          ` : `<div class="empty">Todo clasificado — no queda ninguna cuenta pendiente.</div>`) : ''}
+        `;
+      })()}
     </div>
 
     <div class="card">
@@ -11835,6 +11897,18 @@ async function renderCatalogoCuentas() {
     toast(`Catálogo sugerido cargado: ${creadosMayor} cuenta(s) mayor y ${creadosSub} subcuenta(s) nueva(s).`);
     renderCatalogoCuentas();
   });
+  document.getElementById('ccTogglePendientesIva').addEventListener('click', () => {
+    STATE_ccSoloPendientes = !STATE_ccSoloPendientes;
+    renderCatalogoCuentas();
+  });
+  document.querySelectorAll('.cc-pend-clasif-iva').forEach(sel => sel.addEventListener('change', async () => {
+    const valor = sel.value || null;
+    const { error } = await sb.from('fz_subcuentas').update({ clasificacion_iva_acreditable: valor }).eq('id', sel.dataset.id);
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    toast('Clasificación guardada.');
+    renderCatalogoCuentas(); // única autoridad: se relee todo el catálogo, el contador y ambas vistas quedan al día
+  }));
+
   document.getElementById('ccSaveMayor').addEventListener('click', async () => {
     const nombre = document.getElementById('ccNuevaMayorNombre').value.trim();
     const tipo = document.getElementById('ccNuevaMayorTipo').value;
