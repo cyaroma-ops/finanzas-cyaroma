@@ -20196,7 +20196,54 @@ function polizaEsBorradorVacio(borrador) {
   );
 }
 
+async function abrirModalPolizaSoloLectura(poliza) {
+  const wrap = document.getElementById('modalPolizaBody');
+  const [{ data: lineas }, { data: subcuentasData }] = await Promise.all([
+    sb.from('fz_polizas_lineas').select('*').eq('poliza_id', poliza.id).order('orden'),
+    sb.from('fz_subcuentas').select('id,nombre').eq('business_id', biz()?.id),
+  ]);
+  const nombreSubcuenta = Object.fromEntries((subcuentasData||[]).map(s => [s.id, s.nombre]));
+  const totalCargo = (lineas||[]).reduce((s,l)=>s+(Number(l.cargo)||0),0);
+  wrap.innerHTML = `
+    <div class="card" style="background:#fbfcfe;border:1.5px solid var(--line);margin-bottom:16px;position:relative;">
+      <button class="poliza-solo-lectura-cerrar" title="Cerrar" style="position:absolute;top:10px;right:14px;background:none;border:none;font-size:20px;color:var(--muted);cursor:pointer;line-height:1;">✕</button>
+      <div class="card-head" style="margin-bottom:10px;">
+        <strong style="color:var(--navy-1);">Póliza #${poliza.numero ?? '—'} · ${fechaCorta(poliza.fecha)}</strong>
+      </div>
+      <div style="background:#fff8e6;border:1px solid #e6c674;border-radius:8px;padding:12px 14px;margin-bottom:14px;font-size:12.5px;line-height:1.5;">
+        Esta póliza fue generada automáticamente por el sistema y se muestra aquí solo de lectura. Para corregirla, edita o revierte el <strong>cobro o pago</strong> que la originó — el sistema la ajustará o regenerará automáticamente a partir de ahí.
+      </div>
+      <p style="font-size:12.5px;color:var(--muted);margin-bottom:10px;">${poliza.concepto || ''}</p>
+      <div class="table-wrap">
+        <table class="tabla-operativa">
+          <thead><tr><th>Cuenta</th><th class="num">Cargo</th><th class="num">Abono</th></tr></thead>
+          <tbody>
+            ${(lineas||[]).map(l => `<tr><td>${nombreSubcuenta[l.subcuenta_id] || '—'}</td><td class="num">${Number(l.cargo)?fmt(l.cargo):''}</td><td class="num">${Number(l.abono)?fmt(l.abono):''}</td></tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div style="text-align:right;margin-top:10px;font-weight:700;">Total: ${fmt(totalCargo)}</div>
+    </div>
+  `;
+  wrap.querySelectorAll('.poliza-solo-lectura-cerrar').forEach(btn => btn.addEventListener('click', () => {
+    document.getElementById('modalPoliza').classList.remove('show');
+  }));
+  document.getElementById('modalPoliza').classList.add('show');
+}
+
 async function openPolizaModal(polizaId, businessId, baseOverride) {
+  // Pólizas generadas automáticamente por el sistema (ej. "[Auto] Realización fiscal") son de
+  // solo lectura aquí — su corrección es siempre revertir/regenerar desde el movimiento de
+  // cobro/pago que las originó, nunca editarlas a mano (eso rompería la sincronización con
+  // fz_iva_realizaciones sin que nada lo detecte). Se revisa ANTES de construir el borrador
+  // editable, así el formulario normal ni siquiera se arma para estos casos.
+  if (polizaId && !baseOverride) {
+    const { data: polizaCheck } = await sb.from('fz_polizas').select('id,numero,fecha,concepto').eq('id', polizaId).maybeSingle();
+    if (polizaCheck && (polizaCheck.concepto || '').startsWith('[Auto]')) {
+      abrirModalPolizaSoloLectura(polizaCheck);
+      return;
+    }
+  }
   const [subcuentas, mayores, cuentasBancoQ, monedasQ, proveedoresCatalogoQ] = await Promise.all([
     loadSubcuentas(businessId), loadCuentasMayor(businessId),
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
