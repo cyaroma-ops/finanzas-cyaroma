@@ -12073,7 +12073,10 @@ function desgloseLineas(desglose) {
 // que coincida). El ajuste de redondeo se asigna de forma determinística a la ÚLTIMA línea.
 function clasificarIvaAcreditableDeFactura(factura, subcuentaClasifMap) {
   const resultado = { bienes: 0, servicios: 0, uso_goce: 0, inversiones: 0, sin_clasificar: 0 };
-  const ivaMonto = Number(factura.iva_monto) || 0;
+  // Mismo patrón exacto que sincronizarRealizacionFactura: el IVA se captura en la moneda propia
+  // del documento, pero la clasificación fiscal (igual que la contable) siempre se expresa en MXN.
+  const tc = Number(factura.tipo_cambio) || 1;
+  const ivaMonto = redondearMoneda((Number(factura.iva_monto) || 0) * tc);
   if (!ivaMonto) return resultado;
   // activo_fijo_id: única automatización obligatoria — nunca depende de retencion_categoria.
   if (factura.activo_fijo_id) { resultado.inversiones = redondearMoneda(ivaMonto); return resultado; }
@@ -12125,7 +12128,7 @@ async function obtenerClasificacionIvaAcreditableAnual(businessId, ejercicio) {
   const esRealizacionActiva = (fecha) => fechaCorteRealizacion && fecha >= fechaCorteRealizacion;
 
   // --- Facturas de proveedor con IVA en el ejercicio ---
-  const { data: facturas } = await sb.from('fz_proveedores').select('id, fecha, importe, iva_monto, aplica_iva, activo_fijo_id, desglose')
+  const { data: facturas } = await sb.from('fz_proveedores').select('id, fecha, importe, iva_monto, aplica_iva, activo_fijo_id, desglose, tipo_cambio')
     .eq('business_id', businessId).eq('aplica_iva', true).gt('iva_monto', 0).gte('fecha', desde).lte('fecha', hasta);
   const facturaIds = (facturas||[]).map(f=>f.id);
   const { data: pagosAplicados } = facturaIds.length
