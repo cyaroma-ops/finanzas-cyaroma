@@ -11679,6 +11679,17 @@ async function renderCatalogoCuentas() {
         <button class="btn btn-ghost btn-sm" id="ccDescargarBtn">Descargar catálogo (Excel)</button>
         <button class="btn btn-ghost btn-sm" id="ccSubirBtn">Subir catálogo (Excel)</button>
         <button class="btn btn-ghost btn-sm" id="ccCargarSugeridoBtn">Cargar catálogo sugerido</button>
+        ${(() => {
+          const esCandidataResumen = (s) => {
+            const mayor = mayores.find(m => m.id === s.cuenta_mayor_id);
+            if (!mayor) return false;
+            if (mayor.tipo === 'costo' || mayor.tipo === 'gasto') return true;
+            if (mayor.tipo === 'activo' && subcuentasActivoUsadas.has(s.id)) return true;
+            return false;
+          };
+          const pendientesResumen = subcuentas.filter(s => esCandidataResumen(s) && !s.clasificacion_iva_acreditable).length;
+          return `<button class="btn btn-ghost btn-sm" id="ccTogglePendientesIva" style="${pendientesResumen ? 'border-color:#e6c674;color:#8a6d1a;' : ''}">IVA acreditable · ${pendientesResumen} pendiente${pendientesResumen===1?'':'s'}</button>`;
+        })()}
       </div>
     </div>
     <div class="card">
@@ -11733,28 +11744,22 @@ async function renderCatalogoCuentas() {
       <p style="font-size:11.5px;color:var(--muted);margin-top:10px;">Ejemplo de 3 niveles: Gastos de Operación › Mantenimiento y conservación › Reparación de freidoras.</p>
     </div>
 
-    <div class="card" style="margin-bottom:14px;background:#fffaf0;border:1px solid #e6c674;">
-      <div class="card-head" style="display:flex;justify-content:space-between;align-items:center;">
-        <h3 style="margin:0;">Clasificación de IVA acreditable</h3>
-        <button class="btn btn-ghost btn-sm" id="ccTogglePendientesIva">${STATE_ccSoloPendientes ? 'Ver catálogo completo' : 'Ver solo pendientes'}</button>
-      </div>
-      ${(() => {
-        const idsUsadosActivo = subcuentasActivoUsadas;
-        const esCandidata = (s) => {
-          const mayor = mayores.find(m => m.id === s.cuenta_mayor_id);
-          if (!mayor) return false;
-          if (mayor.tipo === 'costo' || mayor.tipo === 'gasto') return true;
-          if (mayor.tipo === 'activo' && idsUsadosActivo.has(s.id)) return true;
-          return false;
-        };
-        const candidatas = subcuentas.filter(esCandidata);
-        const pendientes = candidatas.filter(s => !s.clasificacion_iva_acreditable);
-        window.__ccPendientesIvaIds = pendientes.map(p => p.id); // usado solo para el toggle de vista, no persiste
-        return `
-          <p style="font-size:12px;color:var(--navy-1);margin:6px 0 10px;">
-            <strong>${pendientes.length}</strong> de ${candidatas.length} cuenta(s) de Costo/Gasto (y Activo con uso real en compras) sin clasificar todavía. Mientras una cuenta quede sin clasificar, su IVA cae en "Sin clasificar" en la Cédula Fiscal.
-          </p>
-          ${STATE_ccSoloPendientes ? (pendientes.length ? `
+    ${STATE_ccSoloPendientes ? (() => {
+      const esCandidata = (s) => {
+        const mayor = mayores.find(m => m.id === s.cuenta_mayor_id);
+        if (!mayor) return false;
+        if (mayor.tipo === 'costo' || mayor.tipo === 'gasto') return true;
+        if (mayor.tipo === 'activo' && subcuentasActivoUsadas.has(s.id)) return true;
+        return false;
+      };
+      const pendientes = subcuentas.filter(s => esCandidata(s) && !s.clasificacion_iva_acreditable);
+      return `
+        <div class="card" style="margin-bottom:14px;background:#fffaf0;border:1px solid #e6c674;">
+          <div class="card-head" style="display:flex;justify-content:space-between;align-items:center;">
+            <h3 style="margin:0;">IVA acreditable — cuentas pendientes de clasificar</h3>
+            <button class="btn btn-ghost btn-sm" id="ccCerrarPendientesIva">Cerrar</button>
+          </div>
+          ${pendientes.length ? `
             <div class="table-wrap">
               <table class="tabla-operativa">
                 <thead><tr><th>Cuenta mayor</th><th>Subcuenta</th><th>Clasificación</th></tr></thead>
@@ -11776,10 +11781,10 @@ async function renderCatalogoCuentas() {
                 </tbody>
               </table>
             </div>
-          ` : `<div class="empty">Todo clasificado — no queda ninguna cuenta pendiente.</div>`) : ''}
-        `;
-      })()}
-    </div>
+          ` : `<div class="empty">Todo clasificado — no queda ninguna cuenta pendiente.</div>`}
+        </div>
+      `;
+    })() : ''}
 
     <div class="card">
       <div class="card-head"><h3>Bancos y Efectivo</h3><span class="hint">Se administran en sus propios módulos</span></div>
@@ -11899,6 +11904,11 @@ async function renderCatalogoCuentas() {
   });
   document.getElementById('ccTogglePendientesIva').addEventListener('click', () => {
     STATE_ccSoloPendientes = !STATE_ccSoloPendientes;
+    renderCatalogoCuentas();
+  });
+  const btnCerrarPend = document.getElementById('ccCerrarPendientesIva');
+  if (btnCerrarPend) btnCerrarPend.addEventListener('click', () => {
+    STATE_ccSoloPendientes = false;
     renderCatalogoCuentas();
   });
   document.querySelectorAll('.cc-pend-clasif-iva').forEach(sel => sel.addEventListener('change', async () => {
