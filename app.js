@@ -18074,6 +18074,13 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   // que se queda sin aplicación al revertir una de sus aplicaciones NUNCA entra a resultados,
   // porque el dinero sí salió del banco — se queda "por aclarar" hasta que se reasigne.
   subcuentaObligacionCache[CUENTA_PAGOS_POR_ACLARAR] = await subRealizacion(CUENTA_PAGOS_POR_ACLARAR, 'activo');
+  // Gasto pagado de contado directo desde Bancos/Efectivo: su IVA está 100% efectivamente pagado
+  // desde el instante del registro (no existe, para este tipo de operación, ningún estado
+  // "pendiente" — a diferencia de una factura de proveedor a crédito). Va directo a la MISMA
+  // subcuenta real que usa sincronizarRealizacionFactura para el IVA ya realizado, nunca a la
+  // etiqueta virtual genérica. Se resuelve aquí, antes del bucle de movimientos (más abajo es un
+  // .forEach síncrono, no admite await dentro).
+  const subIvaAcreditablePagadoGasto = await subRealizacion('IVA Acreditable — Pagado', 'activo');
 
   const procesarMovimientos = (movs, esBanco, tipoOrigenTag, moduloTag, tablaOrigenNombre) => {
     (movs||[]).forEach(m => {
@@ -18157,7 +18164,7 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
         else if (m.tipo_salida === 'cliente') { cuentaContraria = 'Clientes'; claveContraria = 'clientes'; tipoContraria = 'activo'; }
         else if (m.tipo_salida === 'traspaso') { cuentaContraria = 'Traspasos entre cuentas'; claveContraria = 'traspasos'; tipoContraria = 'activo'; }
         push({ ...base, cuenta: cuentaContraria }, claveContraria, tipoContraria, subtotalContraria, 0);
-        if (m.tipo_salida === 'gasto' && m.aplica_iva && Number(m.iva_monto)) push({ ...base, cuenta: 'IVA Acreditable' }, 'iva_acreditable', 'activo', Number(m.iva_monto), 0);
+        if (m.tipo_salida === 'gasto' && m.aplica_iva && Number(m.iva_monto)) push({ ...base, cuenta: 'IVA Acreditable — Pagado' }, 'sub:'+subIvaAcreditablePagadoGasto, 'activo', Number(m.iva_monto), 0);
         push({ ...base, cuenta: nombreOrigenCuenta }, claveOrigenCuenta, 'activo', 0, Number(m.cargos));
       }
       if (Number(m.depositos)) {
