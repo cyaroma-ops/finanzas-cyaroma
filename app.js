@@ -12928,8 +12928,8 @@ function openImportExcelModal(tipo, businessId, onDone, extra) {
             traspaso_id: traspasoId,
           });
           if (esTraspaso && cargos && destino) {
-            const leg = { business_id: businessId, fecha: parseFechaExcel(buscarColumna(r, ['fecha'])), descripcion: String(buscarColumna(r, ['descripcion', 'descripción']) || '').trim() || null, concepto: 'Traspaso', cargos: 0, depositos: cargos, tipo_salida: 'traspaso', tipo_entrada: 'traspaso', traspaso_id: traspasoId };
-            legsDestino.push(destino.tipo === 'banco' ? { tabla: 'fz_bancos_mov', row: { ...leg, cuenta_id: destino.id } } : { tabla: 'fz_efectivo_mov', row: { ...leg, moneda_id: destino.id, proveedor: 'Traspaso' } });
+            const leg = { business_id: businessId, fecha: parseFechaExcel(buscarColumna(r, ['fecha'])), descripcion: String(buscarColumna(r, ['descripcion', 'descripción']) || '').trim() || null, cargos: 0, depositos: cargos, tipo_salida: 'traspaso', tipo_entrada: 'traspaso', traspaso_id: traspasoId };
+            legsDestino.push(destino.tipo === 'banco' ? { tabla: 'fz_bancos_mov', row: { ...leg, cuenta_id: destino.id, concepto: 'Traspaso' } } : { tabla: 'fz_efectivo_mov', row: { ...leg, moneda_id: destino.id, proveedor: 'Traspaso' } });
           }
         });
         if (!payload.length) { toast('No se encontraron filas válidas (revisa las columnas Depósitos/Cargos).', 'error'); return; }
@@ -12977,8 +12977,8 @@ function openImportExcelModal(tipo, businessId, onDone, extra) {
             traspaso_id: traspasoId,
           });
           if (esTraspaso && cargos && destino) {
-            const leg = { business_id: businessId, fecha: parseFechaExcel(buscarColumna(r, ['fecha'])), descripcion: String(buscarColumna(r, ['descripcion', 'descripción']) || '').trim() || null, concepto: 'Traspaso', cargos: 0, depositos: cargos, tipo_salida: 'traspaso', tipo_entrada: 'traspaso', traspaso_id: traspasoId };
-            legsDestino.push(destino.tipo === 'banco' ? { tabla: 'fz_bancos_mov', row: { ...leg, cuenta_id: destino.id } } : { tabla: 'fz_efectivo_mov', row: { ...leg, moneda_id: destino.id, proveedor: 'Traspaso' } });
+            const leg = { business_id: businessId, fecha: parseFechaExcel(buscarColumna(r, ['fecha'])), descripcion: String(buscarColumna(r, ['descripcion', 'descripción']) || '').trim() || null, cargos: 0, depositos: cargos, tipo_salida: 'traspaso', tipo_entrada: 'traspaso', traspaso_id: traspasoId };
+            legsDestino.push(destino.tipo === 'banco' ? { tabla: 'fz_bancos_mov', row: { ...leg, cuenta_id: destino.id, concepto: 'Traspaso' } } : { tabla: 'fz_efectivo_mov', row: { ...leg, moneda_id: destino.id, proveedor: 'Traspaso' } });
           }
         });
         if (!payload.length) { toast('No se encontraron filas válidas (revisa las columnas Depósitos/Cargos).', 'error'); return; }
@@ -14300,10 +14300,10 @@ async function openMovimientoModal(contexto, movimientoExistente) {
       const legPayload = {
         business_id: contexto.businessId, fecha, tipo_salida: 'traspaso', tipo_entrada: 'traspaso', traspaso_id: traspasoIdNuevo,
         cargos: esSalida ? 0 : monto, depositos: esSalida ? monto : 0,
-        descripcion: `Traspaso ${esSalida ? 'a' : 'desde'} ${origenCorto}`, concepto: 'Traspaso',
+        descripcion: `Traspaso ${esSalida ? 'a' : 'desde'} ${origenCorto}`,
       };
       legDestino = tipoElegido === 'traspaso_banco'
-        ? { tabla: 'fz_bancos_mov', row: legPayload, extra: { cuenta_id: destinoId } }
+        ? { tabla: 'fz_bancos_mov', row: legPayload, extra: { cuenta_id: destinoId, concepto: 'Traspaso' } }
         : { tabla: 'fz_efectivo_mov', row: legPayload, extra: { moneda_id: destinoId, proveedor: 'Traspaso' } };
     }
     const tipoSalida = esClasifCliente ? 'otro' : (esTraspaso ? 'traspaso' : tipoElegido);
