@@ -18495,7 +18495,7 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   // leyendo fz_ventas directo, sin ningún cambio aquí) — es exclusivamente el lado de Balance
   // General: cuánto de lo vendido en tarjeta/efectivo todavía no se refleja como depósito real.
   const subVentasPendientesDepositar = await subRealizacion('Ventas pendientes de depositar', 'activo');
-  const { data: conceptosVentaBanco } = await sb.from('fz_conceptos_venta').select('id,nombre,banco_cuenta_id,moneda_id').eq('business_id', businessId).or('banco_cuenta_id.not.is.null,moneda_id.not.is.null');
+  const { data: conceptosVentaBanco } = await sb.from('fz_conceptos').select('id,nombre,banco_cuenta_id,moneda_id').eq('business_id', businessId).or('banco_cuenta_id.not.is.null,moneda_id.not.is.null');
   if (conceptosVentaBanco && conceptosVentaBanco.length) {
     const idsConceptos = conceptosVentaBanco.map(c=>c.id);
     const { data: ventasConDatos } = await conDesde(sb.from('fz_ventas').select('id,fecha,venta_data').eq('business_id', businessId).lte('fecha', hastaFecha));
