@@ -14178,9 +14178,19 @@ async function openMovimientoModal(contexto, movimientoExistente) {
 
   // El tipo disponible depende de si se capturó Cargo (sale) o Depósito (entra) —
   // "Gasto"/"Pago a proveedor" solo aplican a cargos; "Cobro de cliente" solo a depósitos.
-  const tipoInicial = movimientoExistente
+  let tipoInicial = movimientoExistente
     ? (movimientoExistente.tipo_entrada === 'cliente' ? 'cliente' : (movimientoExistente.tipo_salida || 'otro'))
     : 'otro';
+  if (tipoInicial === 'traspaso' && movimientoExistente?.traspaso_id) {
+    // El valor guardado siempre es el genérico 'traspaso' — el menú solo tiene 'traspaso_banco'/
+    // 'traspaso_efectivo' como opciones reales. Se busca la OTRA pierna (misma traspaso_id, en
+    // cualquiera de las 2 tablas, excluyendo esta misma fila) para saber cuál mostrar.
+    const [otraEnBanco, otraEnEfectivo] = await Promise.all([
+      sb.from('fz_bancos_mov').select('id').eq('traspaso_id', movimientoExistente.traspaso_id).neq('id', movimientoExistente.id).limit(1).maybeSingle(),
+      sb.from('fz_efectivo_mov').select('id').eq('traspaso_id', movimientoExistente.traspaso_id).neq('id', movimientoExistente.id).limit(1).maybeSingle(),
+    ]);
+    tipoInicial = otraEnBanco.data ? 'traspaso_banco' : (otraEnEfectivo.data ? 'traspaso_efectivo' : 'otro');
+  }
   document.getElementById('movTipoSalida').value = tipoInicial;
   const actualizarOpcionesTipo = () => {
     const esDeposito = (Number(document.getElementById('movDepositos').value) || 0) > (Number(document.getElementById('movCargos').value) || 0);
@@ -14195,6 +14205,11 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   document.getElementById('movCargos').addEventListener('input', actualizarOpcionesTipo);
   document.getElementById('movDepositos').addEventListener('input', actualizarOpcionesTipo);
   actualizarOpcionesTipo();
+  // Re-aplicar tipoInicial una vez que ya existen las opciones reales — actualizarOpcionesTipo()
+  // reconstruye innerHTML y solo entonces sel.value puede coincidir con una opción real.
+  if (Array.from(document.getElementById('movTipoSalida').options).some(o=>o.value===tipoInicial)) {
+    document.getElementById('movTipoSalida').value = tipoInicial;
+  }
 
   const esFiscalContableMov = biz()?.modo === 'fiscal_contable';
   const actualizarVisibilidadDetalle = () => {
@@ -14460,7 +14475,7 @@ async function openTraspasoModal(businessId, onDone) {
     const insertLeg = (tipo, id, esOrigen) => {
       const monto = esOrigen ? montoOrigen : montoDestino;
       const payload = {
-        business_id: businessId, fecha, tipo_salida: 'traspaso', traspaso_id: traspasoId,
+        business_id: businessId, fecha, tipo_salida: 'traspaso', tipo_entrada: 'traspaso', traspaso_id: traspasoId,
         cargos: esOrigen ? monto : 0, depositos: esOrigen ? 0 : monto,
       };
       if (tipo === 'banco') return sb.from('fz_bancos_mov').insert({ ...payload, cuenta_id: id, descripcion, concepto: 'Traspaso' });
