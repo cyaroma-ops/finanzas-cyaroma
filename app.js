@@ -1203,15 +1203,18 @@ function conceptosParaMoneda(moneda, conceptosEfectivo) {
 
 async function computeMonedaSaldo(businessId, moneda, conceptosEfectivo, hastaFecha) {
   const concepts = conceptosParaMoneda(moneda, conceptosEfectivo);
-  const [ventasQ, movsQ, polizaLineas] = await Promise.all([
-    concepts.length ? sb.from('fz_ventas').select('recon_data,fecha').eq('business_id', businessId) : Promise.resolve({ data: [] }),
+  const [ventasQ, movsQ, polizaLineas, materializadosQ] = await Promise.all([
+    concepts.length ? sb.from('fz_ventas').select('id,recon_data,fecha').eq('business_id', businessId) : Promise.resolve({ data: [] }),
     sb.from('fz_efectivo_mov').select('depositos,cargos,fecha').eq('moneda_id', moneda.id),
     getPolizaLineasParaCuenta(businessId, 'efectivo', moneda.id, hastaFecha),
+    sb.from('fz_efectivo_mov').select('venta_id,concepto_venta_id').eq('moneda_id', moneda.id).not('venta_id', 'is', null),
   ]);
+  const yaMaterializados = new Set((materializadosQ.data||[]).map(m => m.venta_id+':'+m.concepto_venta_id));
   let autoDepositos = 0;
   const ventasCuentanAqui = ventasAfectaFueraDeSuRegistro(businessId);
   (ventasCuentanAqui ? (ventasQ.data || []) : []).filter(v => !hastaFecha || v.fecha <= hastaFecha).forEach(v => {
     concepts.forEach(concepto => {
+      if (yaMaterializados.has(v.id+':'+concepto.id)) return; // ya existe como movimiento real — no contar también la fila virtual
       const entry = (v.recon_data || {})[concepto.id];
       if (entry) autoDepositos += Number(entry.monto) || 0; // valor en la moneda tal cual, sin convertir
     });
@@ -1249,14 +1252,17 @@ function conceptosParaBanco(cuenta, conceptosTarjetas) {
 }
 async function computeBancoSaldo(businessId, cuenta, conceptosTarjetas, hastaFecha) {
   const concepts = conceptosParaBanco(cuenta, conceptosTarjetas);
-  const [ventasQ, movsQ, polizaLineas] = await Promise.all([
-    concepts.length ? sb.from('fz_ventas').select('recon_data,fecha').eq('business_id', businessId) : Promise.resolve({ data: [] }),
+  const [ventasQ, movsQ, polizaLineas, materializadosQ] = await Promise.all([
+    concepts.length ? sb.from('fz_ventas').select('id,recon_data,fecha').eq('business_id', businessId) : Promise.resolve({ data: [] }),
     sb.from('fz_bancos_mov').select('depositos,cargos,fecha').eq('cuenta_id', cuenta.id),
     getPolizaLineasParaCuenta(businessId, 'banco', cuenta.id, hastaFecha),
+    sb.from('fz_bancos_mov').select('venta_id,concepto_venta_id').eq('cuenta_id', cuenta.id).not('venta_id', 'is', null),
   ]);
+  const yaMaterializados = new Set((materializadosQ.data||[]).map(m => m.venta_id+':'+m.concepto_venta_id));
   let autoDepositos = 0;
   (ventasAfectaFueraDeSuRegistro(businessId) ? (ventasQ.data || []) : []).filter(v => !hastaFecha || v.fecha <= hastaFecha).forEach(v => {
     concepts.forEach(concepto => {
+      if (yaMaterializados.has(v.id+':'+concepto.id)) return;
       const entry = (v.recon_data || {})[concepto.id];
       if (entry) autoDepositos += Number(entry.monto) || 0;
     });
@@ -1269,9 +1275,14 @@ async function getBancoLedgerRows(businessId, cuenta, conceptosTarjetas, mesFilt
   const concepts = conceptosParaBanco(cuenta, conceptosTarjetas);
   const autoRows = [];
   if (concepts.length && ventasAfectaFueraDeSuRegistro(businessId)) {
-    const { data: ventas } = await sb.from('fz_ventas').select('id,fecha,recon_data').eq('business_id', businessId).order('fecha');
+    const [{ data: ventas }, { data: materializados }] = await Promise.all([
+      sb.from('fz_ventas').select('id,fecha,recon_data').eq('business_id', businessId).order('fecha'),
+      sb.from('fz_bancos_mov').select('venta_id,concepto_venta_id').eq('cuenta_id', cuenta.id).not('venta_id', 'is', null),
+    ]);
+    const yaMaterializados = new Set((materializados||[]).map(m => m.venta_id+':'+m.concepto_venta_id));
     (ventas || []).forEach(v => {
       concepts.forEach(concepto => {
+        if (yaMaterializados.has(v.id+':'+concepto.id)) return; // ya existe como movimiento real más abajo — no duplicar la fila virtual
         const entry = (v.recon_data || {})[concepto.id];
         if (entry && Number(entry.monto)) {
           autoRows.push({ id: 'auto-' + v.id + '-' + concepto.id, fecha: v.fecha, descripcion: `Tarjetas conciliadas en Ventas (${concepto.nombre})`, concepto: 'Corte de caja', cargos: 0, depositos: Number(entry.monto) || 0, auto: true });
@@ -14611,9 +14622,14 @@ async function getMonedaLedgerRows(businessId, moneda, conceptosEfectivo, mesFil
   const concepts = conceptosParaMoneda(moneda, conceptosEfectivo);
   const autoRows = [];
   if (concepts.length && ventasAfectaFueraDeSuRegistro(businessId)) {
-    const { data: ventas } = await sb.from('fz_ventas').select('id,fecha,recon_data').eq('business_id', businessId).order('fecha');
+    const [{ data: ventas }, { data: materializados }] = await Promise.all([
+      sb.from('fz_ventas').select('id,fecha,recon_data').eq('business_id', businessId).order('fecha'),
+      sb.from('fz_efectivo_mov').select('venta_id,concepto_venta_id').eq('moneda_id', moneda.id).not('venta_id', 'is', null),
+    ]);
+    const yaMaterializados = new Set((materializados||[]).map(m => m.venta_id+':'+m.concepto_venta_id));
     (ventas || []).forEach(v => {
       concepts.forEach(concepto => {
+        if (yaMaterializados.has(v.id+':'+concepto.id)) return;
         const entry = (v.recon_data || {})[concepto.id];
         if (entry && Number(entry.monto)) {
           autoRows.push({ id: 'auto-' + v.id + '-' + concepto.id, fecha: v.fecha, proveedor: 'Corte de caja', descripcion: `Efectivo conciliado en Ventas (${concepto.nombre})`, factura: '', cargos: 0, depositos: Number(entry.monto) || 0, auto: true });
