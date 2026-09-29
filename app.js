@@ -18490,18 +18490,19 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
     push({ ...basePpc, cuenta: 'Pagos por clasificar' }, 'pagos_por_clasificar', 'activo', 0, (Number(p.monto)||0) * (Number(p.tipo_cambio)||1));
   }
 
-  // 2c. Ventas — solo el "derecho a cobrar" de tarjetas/efectivo vinculados a una cuenta bancaria.
+  // 2c. Ventas — reconoce, para cada conciliación (recon_data) de un concepto vinculado a una
+  // cuenta bancaria/efectivo, el mismo monto que la materialización acredita del otro lado — así
+  // la cuenta puente siempre cierra en $0 exacto, sin depender de venta_data (que en la práctica
+  // no se captura bajo estos conceptos específicos, confirmado con datos reales del negocio).
   // Nunca toca la subcuenta de Ventas/Ingreso (eso lo sigue reconociendo el Estado de Resultados
-  // leyendo fz_ventas directo, sin ningún cambio aquí) — es exclusivamente el lado de Balance
-  // General: cuánto de lo vendido en tarjeta/efectivo todavía no se refleja como depósito real.
+  // leyendo fz_ventas directo, sin ningún cambio aquí).
   const subVentasPendientesDepositar = await subRealizacion('Ventas pendientes de depositar', 'activo');
   const { data: conceptosVentaBanco } = await sb.from('fz_conceptos').select('id,nombre,banco_cuenta_id,moneda_id').eq('business_id', businessId).or('banco_cuenta_id.not.is.null,moneda_id.not.is.null');
   if (conceptosVentaBanco && conceptosVentaBanco.length) {
-    const idsConceptos = conceptosVentaBanco.map(c=>c.id);
-    const { data: ventasConDatos } = await conDesde(sb.from('fz_ventas').select('id,fecha,venta_data').eq('business_id', businessId).lte('fecha', hastaFecha));
+    const { data: ventasConDatos } = await conDesde(sb.from('fz_ventas').select('id,fecha,recon_data').eq('business_id', businessId).lte('fecha', hastaFecha));
     (ventasConDatos||[]).forEach(v => {
       conceptosVentaBanco.forEach(cv => {
-        const monto = Number((v.venta_data||{})[cv.id]) || 0;
+        const monto = Number((v.recon_data||{})[cv.id]?.monto) || 0;
         if (monto) push({ modulo: 'Ventas', tipoOrigen: 'venta_recibido', id: v.id+':'+cv.id, fecha: v.fecha, referencia: `Venta ${v.fecha} — ${cv.nombre}`, detalle: '', cuenta: 'Ventas pendientes de depositar' }, 'sub:'+subVentasPendientesDepositar, 'activo', monto, 0);
       });
     });
