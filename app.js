@@ -18344,6 +18344,22 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
     filas.push({ ...origen, clave, tipo, cargo: Number(cargo)||0, abono: Number(abono)||0 });
   };
   const conDesde = (q) => desdeFecha ? q.gte('fecha', desdeFecha) : q;
+  // Supabase/PostgREST limita cualquier select a 1000 filas por defecto, SIN avisar — se necesita
+  // range() explícito para traer todo. Confirmado con datos reales: fz_bancos_mov de un negocio ya
+  // superó las 1000 filas, dejando fuera silenciosamente los movimientos más recientes de Balance
+  // General y Auxiliares (nunca un error visible, solo datos faltantes).
+  const fetchTodasLasPaginas = async (queryBuilderFn) => {
+    const PAGE = 1000;
+    let desde = 0, todas = [], sigue = true;
+    while (sigue) {
+      const { data, error } = await queryBuilderFn().range(desde, desde + PAGE - 1);
+      if (error) return { data: todas, error };
+      todas = todas.concat(data || []);
+      sigue = (data || []).length === PAGE;
+      desde += PAGE;
+    }
+    return { data: todas, error: null };
+  };
 
   const [subcuentas, mayores, cuentasBanco, monedas, clientes] = await Promise.all([
     loadSubcuentas(businessId), loadCuentasMayor(businessId),
@@ -18712,8 +18728,8 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
     });
   };
   const [bancosMovQ, efvoMovQ] = await Promise.all([
-    conDesde(sb.from('fz_bancos_mov').select('*').eq('business_id', businessId).lte('fecha', hastaFecha)),
-    conDesde(sb.from('fz_efectivo_mov').select('*').eq('business_id', businessId).lte('fecha', hastaFecha)),
+    fetchTodasLasPaginas(() => conDesde(sb.from('fz_bancos_mov').select('*').eq('business_id', businessId).lte('fecha', hastaFecha)).order('id')),
+    fetchTodasLasPaginas(() => conDesde(sb.from('fz_efectivo_mov').select('*').eq('business_id', businessId).lte('fecha', hastaFecha)).order('id')),
   ]);
   procesarMovimientos(bancosMovQ.data, true, 'banco_mov', 'Movimiento de Banco', 'fz_bancos_mov');
   procesarMovimientos(efvoMovQ.data, false, 'efectivo_mov', 'Movimiento de Efectivo', 'fz_efectivo_mov');
