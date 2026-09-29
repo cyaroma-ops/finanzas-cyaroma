@@ -7404,16 +7404,26 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
   let determinacionHtml = '', totalPeriodoConcepto = null;
   if (opciones.resumenIVA) {
     const gruposTrasladado = ['iva_trasladado_16','iva_trasladado_0','iva_trasladado_exento','iva_trasladado_no_objeto'];
-    const gruposAcreditable = ['iva_acreditable_compras','iva_acreditable_servicios','iva_acreditable_inversiones'];
-    const valsTrasladado = gruposTrasladado.map(valorDe), valsAcreditable = gruposAcreditable.map(valorDe);
+    const valsTrasladado = gruposTrasladado.map(valorDe);
     const totalTrasladado = valsTrasladado.some(v=>v!==null) ? valsTrasladado.reduce((s,v)=>s+(v??0),0) : null;
-    const totalAcreditable = valsAcreditable.some(v=>v!==null) ? valsAcreditable.reduce((s,v)=>s+(v??0),0) : null;
+    // IVA acreditable: autoridad única — misma clasificación exacta que usa la Cédula anual
+    // (obtenerClasificacionIvaAcreditableAnual), nunca captura manual aparte. Solo lectura aquí.
+    const clasifIvaMes = tipoPapel === 'iva' ? (await obtenerClasificacionIvaAcreditableAnual(b.id, ejercicio))[String(mesNum).padStart(2,'0')] : null;
+    const categoriasAcreditable = [
+      { clave: 'bienes', nombre: 'IVA acreditable — bienes/compras' },
+      { clave: 'servicios', nombre: 'IVA acreditable — servicios' },
+      { clave: 'uso_goce', nombre: 'IVA acreditable — uso o goce temporal' },
+      { clave: 'inversiones', nombre: 'IVA acreditable — inversiones' },
+      { clave: 'sin_clasificar', nombre: 'IVA acreditable — sin clasificar' },
+    ];
+    const totalAcreditable = clasifIvaMes ? redondearMoneda(categoriasAcreditable.reduce((s,cat)=>s+(clasifIvaMes[cat.clave]||0),0)) : null;
     const antesAjustes = (totalTrasladado!==null || totalAcreditable!==null) ? (totalTrasladado??0) - (totalAcreditable??0) : null;
     const ajustes = valorDe('iva_ajustes'), saldoAnterior = valorDe('iva_saldo_favor_anterior'), compensaciones = valorDe('iva_compensaciones');
     const hayAlgunInsumo = antesAjustes!==null || ajustes!==null || saldoAnterior!==null || compensaciones!==null;
     const resultado = hayAlgunInsumo ? (antesAjustes??0) + (ajustes??0) - (saldoAnterior??0) - (compensaciones??0) : null;
     const filaGrupo = (clave) => { const c = conceptos.find(x=>x.clave_concepto===clave); return c ? `<tr><td style="padding-left:16px;">${c.concepto}</td><td class="num">${fmtN(valorDe(clave))}</td></tr>` : ''; };
-    const clavesConocidas = new Set([...gruposTrasladado, ...gruposAcreditable, 'iva_ajustes','iva_saldo_favor_anterior','iva_compensaciones','iva_resultado_periodo']);
+    const filaAcreditable = (cat) => `<tr><td style="padding-left:16px;">${cat.nombre}</td><td class="num">${clasifIvaMes ? fmt(clasifIvaMes[cat.clave]||0) : '—'}</td></tr>`;
+    const clavesConocidas = new Set([...gruposTrasladado, 'iva_ajustes','iva_saldo_favor_anterior','iva_compensaciones','iva_resultado_periodo']);
     const conceptosExtra = conceptos.filter(c => !clavesConocidas.has(c.clave_concepto));
     const filaExtra = (c) => `<tr><td style="padding-left:16px;">${c.concepto}</td><td class="num">${fmt(c.valor_aplicado)}</td></tr>`;
     determinacionHtml = `
@@ -7426,8 +7436,9 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
     </div>
     <div class="pt-card">
       <h3>2. IVA acreditable</h3>
+      <p style="font-size:10.5px;color:var(--muted);margin-bottom:6px;">Clasificación de solo lectura — se define desde Catálogo de Cuentas, no se edita aquí.</p>
       <div class="table-wrap"><table><tbody>
-        ${gruposAcreditable.map(filaGrupo).join('')}
+        ${categoriasAcreditable.map(filaAcreditable).join('')}
         <tr class="pt-fila-resultado"><td>TOTAL IVA ACREDITABLE</td><td class="num">${fmtN(totalAcreditable)}</td></tr>
       </tbody></table></div>
     </div>
