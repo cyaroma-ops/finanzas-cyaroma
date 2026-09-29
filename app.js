@@ -18337,6 +18337,25 @@ async function getLibroPartidaDoble(businessId, hastaFecha) {
    exactamente qué documento (o par de traspaso) no cuadra internamente.
    Es de solo lectura — nunca modifica nada, nunca corrige nada.
    ============================================================ */
+// Supabase/PostgREST limita cualquier select a 1000 filas por defecto, SIN avisar — un negocio con
+// suficiente volumen histórico se queda con datos recientes faltantes en silencio (confirmado con
+// un caso real: fz_bancos_mov superó las 1000 filas y septiembre completo desapareció de Balance
+// General/Auxiliares sin ningún error visible). Usar esta función para CUALQUIER consulta a una
+// tabla que pueda crecer sin límite (movimientos, líneas de póliza, facturas, ventas) en vez de
+// sb.from(...).select(...) directo. Uso: fetchTodasLasPaginas(() => sb.from('tabla').select('*').eq(...))
+async function fetchTodasLasPaginas(queryBuilderFn) {
+  const PAGE = 1000;
+  let desde = 0, todas = [], sigue = true;
+  while (sigue) {
+    const { data, error } = await queryBuilderFn().range(desde, desde + PAGE - 1);
+    if (error) return { data: todas, error };
+    todas = todas.concat(data || []);
+    sigue = (data || []).length === PAGE;
+    desde += PAGE;
+  }
+  return { data: todas, error: null };
+}
+
 async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha = null) {
   const filas = [];
   const push = (origen, clave, tipo, cargo, abono) => {
@@ -18344,22 +18363,6 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
     filas.push({ ...origen, clave, tipo, cargo: Number(cargo)||0, abono: Number(abono)||0 });
   };
   const conDesde = (q) => desdeFecha ? q.gte('fecha', desdeFecha) : q;
-  // Supabase/PostgREST limita cualquier select a 1000 filas por defecto, SIN avisar — se necesita
-  // range() explícito para traer todo. Confirmado con datos reales: fz_bancos_mov de un negocio ya
-  // superó las 1000 filas, dejando fuera silenciosamente los movimientos más recientes de Balance
-  // General y Auxiliares (nunca un error visible, solo datos faltantes).
-  const fetchTodasLasPaginas = async (queryBuilderFn) => {
-    const PAGE = 1000;
-    let desde = 0, todas = [], sigue = true;
-    while (sigue) {
-      const { data, error } = await queryBuilderFn().range(desde, desde + PAGE - 1);
-      if (error) return { data: todas, error };
-      todas = todas.concat(data || []);
-      sigue = (data || []).length === PAGE;
-      desde += PAGE;
-    }
-    return { data: todas, error: null };
-  };
 
   const [subcuentas, mayores, cuentasBanco, monedas, clientes] = await Promise.all([
     loadSubcuentas(businessId), loadCuentasMayor(businessId),
