@@ -1023,7 +1023,7 @@ const SECTION_META = {
 };
 // Estas viven "dentro" de Configuración: ya no tienen su propio ítem en el menú principal,
 // pero conservan su sección y su función de render tal cual, solo cambia cómo se llega ahí.
-const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos', 'pagosclasificar', 'comparativo'];
+const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos', 'pagosclasificar', 'saldosfavoriva', 'comparativo'];
 function marcarNavActivo(seccion) {
   document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
   const seccionNav = SECCIONES_EN_CONFIGURACION.includes(seccion) ? 'configuracion' : seccion;
@@ -1154,6 +1154,7 @@ async function renderCurrentSection() {
   if (s === 'clientes') return renderClientes();
   if (s === 'activosfijos') return renderActivosFijos();
   if (s === 'pagosclasificar') return renderPagosPorClasificar();
+  if (s === 'saldosfavoriva') return renderControlSaldosFavorIVA();
   if (s === 'ivafiscal') return renderIvaFiscal();
   if (s === 'impuestos') return renderImpuestos();
   if (s === 'papelestrabajo') return renderPapelesTrabajo();
@@ -2214,6 +2215,156 @@ async function eliminarActivoFijoCompleto(activoId, businessId) {
 
 const STATE_activosDepreciacionRevisada = new Set();
 let STATE_afDetalleAbierto = null;
+async function renderControlSaldosFavorIVA() {
+  const el = document.getElementById('sec-saldosfavoriva');
+  const b = biz();
+  if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
+  el.innerHTML = `<div class="empty">Cargando…</div>`;
+  agregarBotonVolverConfig(el);
+
+  const { data: saldos } = await sb.from('fz_iva_saldos_favor').select('*').eq('business_id', b.id).order('periodo_origen', { ascending: false });
+  const saldosConDatos = await Promise.all((saldos||[]).map(async s => {
+    const remanente = await remanenteSaldoFavor(s.id);
+    const { data: movimientos } = await sb.from('fz_iva_saldos_favor_movimientos').select('*').eq('saldo_id', s.id).order('fecha');
+    const { data: devoluciones } = await sb.from('fz_iva_saldos_favor_devoluciones').select('*').eq('saldo_id', s.id).order('created_at', { ascending: false });
+    const yaAcreditado = (movimientos||[]).some(m => m.tipo === 'acreditamiento' && !m.cancelado);
+    const devolucionActiva = (devoluciones||[]).find(d => d.estado === 'solicitada' || d.estado === 'autorizada');
+    return { ...s, remanente, movimientos: movimientos||[], devoluciones: devoluciones||[], yaAcreditado, devolucionActiva };
+  }));
+
+  const contenido = document.createElement('div');
+  contenido.innerHTML = `
+    <div class="card">
+      <div class="card-head"><h3>Control de saldos a favor de IVA</h3></div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Un saldo a favor calculado por el papel de trabajo es solo una determinación — no existe aquí ni afecta ningún periodo hasta que lo confirmes con lo efectivamente declarado.</p>
+      <div class="table-wrap">
+        <table class="tabla-operativa">
+          <thead><tr><th>Origen</th><th class="num">Determinado</th><th class="num">Declarado</th><th class="num">Diferencia</th><th class="num">Remanente</th><th>Estado</th><th></th></tr></thead>
+          <tbody>
+            ${saldosConDatos.length ? saldosConDatos.map(s => `
+              <tr>
+                <td>${s.periodo_origen}</td>
+                <td class="num">${fmt(s.monto_determinado)}</td>
+                <td class="num">${fmt(s.monto_declarado)}</td>
+                <td class="num" style="${Number(s.diferencia)!==0?'color:var(--gold);':''}">${fmt(s.diferencia)}${s.motivo_diferencia?` <span title="${s.motivo_diferencia}">ⓘ</span>`:''}</td>
+                <td class="num" style="font-weight:700;">${fmt(s.remanente)}</td>
+                <td>${s.estado==='cancelado'?'Cancelado':(s.remanente<=0.004?'Agotado':(s.devolucionActiva?'Devolución en trámite':'Disponible'))}</td>
+                <td style="display:flex;gap:6px;flex-wrap:wrap;">
+                  ${s.estado==='confirmado' && s.remanente>0.004 && !s.devolucionActiva ? `<button class="btn btn-ghost btn-sm sf-aplicar" data-id="${s.id}" style="font-size:11px;">Aplicar a periodo</button>` : ''}
+                  ${s.estado==='confirmado' && !s.yaAcreditado && !s.devolucionActiva ? `<button class="btn btn-ghost btn-sm sf-devolucion" data-id="${s.id}" style="font-size:11px;">Solicitar devolución</button>` : ''}
+                  <button class="btn btn-ghost btn-sm sf-detalle" data-id="${s.id}" style="font-size:11px;">Detalle</button>
+                </td>
+              </tr>
+              <tr class="sf-fila-detalle" data-id="${s.id}" style="display:none;"><td colspan="7" style="background:#f7f9fc;padding:10px 14px;">
+                <strong style="font-size:11.5px;">Movimientos:</strong>
+                ${s.movimientos.length ? `<ul style="margin:6px 0 10px;padding-left:18px;font-size:11.5px;">${s.movimientos.map(m=>`<li>${m.cancelado?'<s>':''}${fechaCorta(m.fecha)} · ${m.tipo==='acreditamiento'?'Acreditamiento a '+m.periodo_aplicacion:'Devolución'} · ${fmt(m.monto)} · ${m.registrado_por}${m.cancelado?'</s> (cancelado: '+m.motivo_cancelacion+')':` <a href="#" class="sf-cancelar-mov" data-id="${m.id}">cancelar</a>`}</li>`).join('')}</ul>` : `<p style="font-size:11px;color:var(--muted);">Sin movimientos todavía.</p>`}
+                <strong style="font-size:11.5px;">Solicitudes de devolución:</strong>
+                ${s.devoluciones.length ? `<ul style="margin:6px 0;padding-left:18px;font-size:11.5px;">${s.devoluciones.map(d=>`<li>${fechaCorta(d.fecha_solicitud)} · ${fmt(d.monto_solicitado)} · ${d.estado}${d.estado==='solicitada'?` — <a href="#" class="sf-autorizar-dev" data-id="${d.id}" data-monto="${d.monto_solicitado}">autorizar</a> / <a href="#" class="sf-rechazar-dev" data-id="${d.id}">rechazar</a> / <a href="#" class="sf-cancelar-dev" data-id="${d.id}">cancelar</a>`:''}${d.motivo_rechazo?' — '+d.motivo_rechazo:''}</li>`).join('')}</ul>` : `<p style="font-size:11px;color:var(--muted);">Sin solicitudes.</p>`}
+              </td></tr>
+            `).join('') : `<tr><td colspan="7" class="empty">No hay saldos confirmados todavía. Se confirman desde el papel de trabajo mensual de IVA, cuando el periodo determina saldo a favor.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>Activar Control de saldos para un periodo destino</h3></div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Antes de poder acreditar un saldo hacia un mes específico, ese mes debe activarse explícitamente aquí. Si ese mes ya tenía un valor capturado manualmente como "Saldo a favor de periodos anteriores", se te mostrará para conciliar antes de continuar — ese valor legado nunca se borra ni se modifica.</p>
+      <button class="btn btn-gold btn-sm" id="sfActivarPeriodoBtn">Activar periodo…</button>
+    </div>
+  `;
+  el.appendChild(contenido);
+
+  contenido.querySelectorAll('.sf-detalle').forEach(btn => btn.addEventListener('click', () => {
+    const fila = contenido.querySelector(`.sf-fila-detalle[data-id="${btn.dataset.id}"]`);
+    fila.style.display = fila.style.display === 'none' ? '' : 'none';
+  }));
+
+  contenido.querySelectorAll('.sf-aplicar').forEach(btn => btn.addEventListener('click', async () => {
+    const s = saldosConDatos.find(x=>x.id===btn.dataset.id);
+    const periodo = prompt(`¿A qué periodo (YYYY-MM) quieres acreditar este saldo?\nRemanente disponible: ${fmt(s.remanente)}\n\nEl periodo debe estar activado primero (ver botón "Activar periodo…" abajo).`);
+    if (!periodo || !/^\d{4}-\d{2}$/.test(periodo)) { toast('Formato de periodo inválido — usa YYYY-MM.', 'error'); return; }
+    const monto = Number(prompt(`Monto a acreditar (máximo ${fmt(s.remanente)}):`, s.remanente));
+    if (!monto || monto <= 0) return;
+    const r = await aplicarSaldoFavor(s.id, periodo, monto);
+    if (!r.ok) { toast(r.mensaje, 'error'); return; }
+    toast('Saldo acreditado correctamente.');
+    renderControlSaldosFavorIVA();
+  }));
+
+  contenido.querySelectorAll('.sf-devolucion').forEach(btn => btn.addEventListener('click', async () => {
+    const s = saldosConDatos.find(x=>x.id===btn.dataset.id);
+    const referencia = prompt(`Solicitar devolución por el monto fiscalmente procedente: ${fmt(s.monto_declarado)}\n\nReferencia del trámite ante el SAT (opcional):`);
+    const r = await solicitarDevolucionSaldoFavor(s.id, todayStr(), referencia);
+    if (!r.ok) { toast(r.mensaje, 'error'); return; }
+    toast('Solicitud de devolución registrada.');
+    renderControlSaldosFavorIVA();
+  }));
+
+  contenido.querySelectorAll('.sf-cancelar-mov').forEach(a => a.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    const motivo = prompt('Motivo de la cancelación de este movimiento:');
+    if (!motivo) return;
+    const r = await cancelarMovimientoSaldoFavor(a.dataset.id, motivo);
+    if (!r.ok) { toast(r.mensaje, 'error'); return; }
+    toast('Movimiento cancelado.');
+    renderControlSaldosFavorIVA();
+  }));
+
+  contenido.querySelectorAll('.sf-autorizar-dev').forEach(a => a.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    const montoSugerido = Number(a.dataset.monto);
+    const monto = Number(prompt(`Monto autorizado por el SAT (sugerido: ${fmt(montoSugerido)}):`, montoSugerido));
+    if (!monto || monto <= 0) return;
+    const referencia = prompt('Referencia/folio de la resolución del SAT (opcional):');
+    const r = await autorizarDevolucionSaldoFavor(a.dataset.id, monto, referencia, todayStr());
+    if (!r.ok) { toast(r.mensaje, 'error'); return; }
+    toast('Devolución autorizada y registrada en el ledger.');
+    renderControlSaldosFavorIVA();
+  }));
+
+  contenido.querySelectorAll('.sf-rechazar-dev').forEach(a => a.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    const motivo = prompt('Motivo del rechazo:');
+    if (!motivo) return;
+    const r = await rechazarDevolucionSaldoFavor(a.dataset.id, motivo);
+    if (!r.ok) { toast(r.mensaje, 'error'); return; }
+    toast('Solicitud rechazada.');
+    renderControlSaldosFavorIVA();
+  }));
+
+  contenido.querySelectorAll('.sf-cancelar-dev').forEach(a => a.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    const motivo = prompt('Motivo de la cancelación de la solicitud:');
+    if (!motivo) return;
+    const r = await cancelarDevolucionSaldoFavor(a.dataset.id, motivo);
+    if (!r.ok) { toast(r.mensaje, 'error'); return; }
+    toast('Solicitud cancelada.');
+    renderControlSaldosFavorIVA();
+  }));
+
+  document.getElementById('sfActivarPeriodoBtn').addEventListener('click', async () => {
+    const periodo = prompt('¿Qué periodo (YYYY-MM) quieres activar para el Control de saldos?');
+    if (!periodo || !/^\d{4}-\d{2}$/.test(periodo)) { toast('Formato inválido — usa YYYY-MM.', 'error'); return; }
+    const { data: yaActivo } = await sb.from('fz_iva_saldo_favor_periodo_activo').select('id').eq('business_id', b.id).eq('periodo', periodo).maybeSingle();
+    if (yaActivo) { toast('Ese periodo ya está activado.', 'error'); return; }
+    const ejercicio = periodo.slice(0,4), mesNum = Number(periodo.slice(5,7));
+    const papel = await obtenerPapelTrabajoSiExiste(b.id, 'iva', ejercicio, 'mensual', periodo);
+    let valorLegado = null;
+    if (papel) {
+      const { data: concepto } = await sb.from('fz_papel_conceptos').select('valor_aplicado').eq('papel_id', papel.id).eq('clave_concepto', 'iva_saldo_favor_anterior').maybeSingle();
+      valorLegado = concepto ? Number(concepto.valor_aplicado) : null;
+    }
+    if (valorLegado) {
+      const confirmado = confirm(`El periodo ${periodo} ya tiene ${fmt(valorLegado)} capturado manualmente como "Saldo a favor de periodos anteriores".\n\nAl activar, el sistema dejará de leer ese valor ahí y usará EXCLUSIVAMENTE este Control de saldos. El valor legado queda conservado en el histórico (nunca se borra ni se modifica), pero ya no se sumará.\n\n¿Confirmas la activación?`);
+      if (!confirmado) return;
+    }
+    const r = await activarPeriodoSaldoFavor(b.id, periodo, valorLegado);
+    if (!r.ok) { toast(r.mensaje, 'error'); return; }
+    toast(`Periodo ${periodo} activado.`);
+    renderControlSaldosFavorIVA();
+  });
+}
+
 async function renderPagosPorClasificar() {
   const el = document.getElementById('sec-pagosclasificar');
   const b = biz();
@@ -4781,6 +4932,125 @@ async function obtenerFechaCorteRealizacion(businessId) {
   return negocioRow?.iva_realizacion_desde || null;
 }
 
+// ============================================================
+// CONTROL DE SALDOS A FAVOR DE IVA — toda escritura pasa exclusivamente por las
+// funciones RPC (fn_...), nunca por INSERT/UPDATE directo desde aquí. Las tablas
+// no tienen política RLS de insert/update para el cliente normal — solo lectura
+// y, en movimientos, un update acotado a "cancelado=true" para cancelaciones.
+// ============================================================
+
+function usuarioActualEmail() { return STATE.currentUserEmail || STATE.user?.email || STATE.usuarioActual?.email || 'desconocido'; }
+
+// Confirma explícitamente el saldo declarado — nunca ocurre solo por calcular el papel.
+async function confirmarSaldoFavor(businessId, periodoOrigen, montoDeterminado, montoDeclarado, { motivoDiferencia, referenciaDeclaracion, fechaDeclaracion } = {}) {
+  const usuario = usuarioActualEmail();
+  const { data, error } = await sb.rpc('fn_confirmar_saldo_favor', {
+    p_business_id: businessId, p_periodo_origen: periodoOrigen,
+    p_monto_determinado: montoDeterminado, p_monto_declarado: montoDeclarado,
+    p_motivo_diferencia: motivoDiferencia || null, p_referencia_declaracion: referenciaDeclaracion || null,
+    p_fecha_declaracion: fechaDeclaracion || null, p_usuario: usuario,
+  });
+  if (error) return { ok: false, mensaje: error.message };
+  registrarAuditoria(businessId, 'crear', 'Impuestos', `Saldo a favor de IVA confirmado — periodo origen ${periodoOrigen}: determinado ${fmt(montoDeterminado)}, declarado ${fmt(montoDeclarado)}${montoDeterminado!==montoDeclarado?' (diferencia: '+motivoDiferencia+')':''}.`);
+  return { ok: true, id: data };
+}
+
+// Activa explícitamente un periodo destino para que el ledger (no el legado) mande ahí.
+async function activarPeriodoSaldoFavor(businessId, periodo, valorLegado) {
+  const usuario = usuarioActualEmail();
+  const { data, error } = await sb.rpc('fn_activar_periodo_saldo_favor', {
+    p_business_id: businessId, p_periodo: periodo, p_valor_legado: valorLegado ?? null, p_usuario: usuario,
+  });
+  if (error) return { ok: false, mensaje: error.message };
+  registrarAuditoria(businessId, 'crear', 'Impuestos', `Control de saldos a favor activado para el periodo ${periodo}${valorLegado ? ' (valor legado conciliado: '+fmt(valorLegado)+')' : ''}.`);
+  return { ok: true, id: data };
+}
+
+async function remanenteSaldoFavor(saldoId) {
+  const { data, error } = await sb.rpc('fn_remanente_saldo_favor', { p_saldo_id: saldoId });
+  if (error) return null;
+  return Number(data) || 0;
+}
+
+// Lista los saldos confirmados (no cancelados) de un negocio, con su remanente calculado en vivo.
+async function listarSaldosFavorDisponibles(businessId, antesDePeriodo) {
+  const { data: saldos } = await sb.from('fz_iva_saldos_favor').select('*').eq('business_id', businessId).eq('estado', 'confirmado').order('periodo_origen');
+  const conRemanente = await Promise.all((saldos||[]).map(async s => ({ ...s, remanente: await remanenteSaldoFavor(s.id) })));
+  return conRemanente.filter(s => (!antesDePeriodo || s.periodo_origen < antesDePeriodo) && s.remanente > 0.004);
+}
+
+async function aplicarSaldoFavor(saldoId, periodoAplicacion, monto, { destinoTabla, destinoId } = {}) {
+  const usuario = usuarioActualEmail();
+  const { data: saldo } = await sb.from('fz_iva_saldos_favor').select('business_id,periodo_origen').eq('id', saldoId).maybeSingle();
+  const { data, error } = await sb.rpc('fn_aplicar_saldo_favor', {
+    p_saldo_id: saldoId, p_periodo_aplicacion: periodoAplicacion, p_monto: monto, p_usuario: usuario,
+    p_destino_tabla: destinoTabla || null, p_destino_id: destinoId || null,
+  });
+  if (error) return { ok: false, mensaje: error.message };
+  if (saldo) registrarAuditoria(saldo.business_id, 'crear', 'Impuestos', `Saldo a favor de IVA (origen ${saldo.periodo_origen}) acreditado por ${fmt(monto)} al periodo ${periodoAplicacion}.`);
+  return { ok: true, id: data };
+}
+
+async function solicitarDevolucionSaldoFavor(saldoId, fechaSolicitud, referencia) {
+  const usuario = usuarioActualEmail();
+  const { data: saldo } = await sb.from('fz_iva_saldos_favor').select('business_id,periodo_origen').eq('id', saldoId).maybeSingle();
+  const { data, error } = await sb.rpc('fn_solicitar_devolucion_saldo_favor', {
+    p_saldo_id: saldoId, p_fecha_solicitud: fechaSolicitud, p_referencia: referencia || null, p_usuario: usuario,
+  });
+  if (error) return { ok: false, mensaje: error.message };
+  if (saldo) registrarAuditoria(saldo.business_id, 'crear', 'Impuestos', `Devolución solicitada para saldo a favor de IVA (origen ${saldo.periodo_origen}).`);
+  return { ok: true, id: data };
+}
+
+async function autorizarDevolucionSaldoFavor(devolucionId, montoAutorizado, referenciaResolucion, fechaResolucion) {
+  const usuario = usuarioActualEmail();
+  const { data: dev } = await sb.from('fz_iva_saldos_favor_devoluciones').select('business_id').eq('id', devolucionId).maybeSingle();
+  const { data, error } = await sb.rpc('fn_autorizar_devolucion_saldo_favor', {
+    p_devolucion_id: devolucionId, p_monto_autorizado: montoAutorizado,
+    p_referencia_resolucion: referenciaResolucion || null, p_fecha_resolucion: fechaResolucion, p_usuario: usuario,
+  });
+  if (error) return { ok: false, mensaje: error.message };
+  if (dev) registrarAuditoria(dev.business_id, 'editar', 'Impuestos', `Devolución de saldo a favor de IVA autorizada por ${fmt(montoAutorizado)}.`);
+  return { ok: true, id: data };
+}
+
+async function rechazarDevolucionSaldoFavor(devolucionId, motivo) {
+  const usuario = usuarioActualEmail();
+  const { data: dev } = await sb.from('fz_iva_saldos_favor_devoluciones').select('business_id').eq('id', devolucionId).maybeSingle();
+  const { error } = await sb.rpc('fn_rechazar_devolucion_saldo_favor', { p_devolucion_id: devolucionId, p_motivo_rechazo: motivo, p_usuario: usuario });
+  if (error) return { ok: false, mensaje: error.message };
+  if (dev) registrarAuditoria(dev.business_id, 'editar', 'Impuestos', `Devolución de saldo a favor de IVA rechazada: ${motivo}`);
+  return { ok: true };
+}
+
+async function cancelarDevolucionSaldoFavor(devolucionId, motivo) {
+  const usuario = usuarioActualEmail();
+  const { data: dev } = await sb.from('fz_iva_saldos_favor_devoluciones').select('business_id').eq('id', devolucionId).maybeSingle();
+  const { error } = await sb.rpc('fn_cancelar_devolucion_saldo_favor', { p_devolucion_id: devolucionId, p_motivo: motivo, p_usuario: usuario });
+  if (error) return { ok: false, mensaje: error.message };
+  if (dev) registrarAuditoria(dev.business_id, 'editar', 'Impuestos', `Solicitud de devolución de saldo a favor de IVA cancelada: ${motivo}`);
+  return { ok: true };
+}
+
+async function cancelarMovimientoSaldoFavor(movimientoId, motivo) {
+  const usuario = usuarioActualEmail();
+  const { data: mov } = await sb.from('fz_iva_saldos_favor_movimientos').select('business_id').eq('id', movimientoId).maybeSingle();
+  const { error } = await sb.rpc('fn_cancelar_movimiento_saldo_favor', { p_movimiento_id: movimientoId, p_motivo: motivo, p_usuario: usuario });
+  if (error) return { ok: false, mensaje: error.message };
+  if (mov) registrarAuditoria(mov.business_id, 'editar', 'Impuestos', `Movimiento de saldo a favor de IVA cancelado: ${motivo}`);
+  return { ok: true };
+}
+
+// Autoridad única de lectura para un periodo DESTINO — nunca suma legado + ledger.
+// Si el periodo no está activado, devuelve null (quien llama sigue leyendo el legado
+// fz_papel_conceptos exactamente como hoy, sin ningún cambio ahí).
+async function obtenerSaldoAFavorAplicadoEnPeriodo(businessId, periodo) {
+  const { data: activo } = await sb.from('fz_iva_saldo_favor_periodo_activo').select('id').eq('business_id', businessId).eq('periodo', periodo).maybeSingle();
+  if (!activo) return null;
+  const { data: movs } = await sb.from('fz_iva_saldos_favor_movimientos').select('monto').eq('business_id', businessId).eq('periodo_aplicacion', periodo).eq('cancelado', false);
+  return redondearMoneda((movs||[]).reduce((s,m)=>s+Number(m.monto), 0));
+}
+
 // Detecta facturas con MÁS de un registro de realización para el mismo tipo (el rastro del bug de
 // categoría null: cada pago aplicado generaba una póliza nueva en vez de ajustar la existente).
 // Es de solo detección — no corrige nada hasta que el usuario confirme cada caso.
@@ -6086,7 +6356,8 @@ async function construirMatrizAnual(businessId, tipoPapel, ejercicio, conceptosD
           const totalTrasladado = gruposTrasladado.reduce((s,cl)=>s+(valorMes(cl,mm)??0),0);
           const totalAcreditable = totalAcreditableClasifPorMes(mm);
           const antesAjustes = totalTrasladado - totalAcreditable;
-          const ajustes = valorMes('iva_ajustes',mm) ?? 0, saldoAnterior = valorMes('iva_saldo_favor_anterior',mm) ?? 0, compensaciones = valorMes('iva_compensaciones',mm) ?? 0;
+          const saldoNuevoControlIRP = tipoPapel === 'iva' ? await obtenerSaldoAFavorAplicadoEnPeriodo(businessId, `${ejercicio}-${mm}`) : null;
+          const ajustes = valorMes('iva_ajustes',mm) ?? 0, saldoAnterior = saldoNuevoControlIRP !== null ? saldoNuevoControlIRP : (valorMes('iva_saldo_favor_anterior',mm) ?? 0), compensaciones = valorMes('iva_compensaciones',mm) ?? 0;
           const resultado = antesAjustes + ajustes - saldoAnterior - compensaciones;
           valor = redondearMoneda(Math.max(0, resultado));
         }
@@ -6242,9 +6513,13 @@ async function renderCedulaAnual(b, elId, tipoPapel, titulo, conceptosDefault, t
       acreditablePorMes[mm] = redondearMoneda(c.bienes + c.servicios + c.uso_goce + c.inversiones + c.sin_clasificar);
     });
     const filaDe = (clave) => filas.find(x=>x.clave===clave);
+    const saldoNuevoControlPorMesCierre = {};
+    for (const mm of mesesCols) saldoNuevoControlPorMesCierre[mm] = tipoPapel === 'iva' ? await obtenerSaldoAFavorAplicadoEnPeriodo(b.id, `${ejercicio}-${mm}`) : null;
     const antesAjustesPorMes = {}, aCargoPorMes = {};
     mesesCols.forEach(mm => {
-      const ajustes = (filaDe('iva_ajustes')?.porMes[mm].valor)||0, saldoAnt = (filaDe('iva_saldo_favor_anterior')?.porMes[mm].valor)||0, comp = (filaDe('iva_compensaciones')?.porMes[mm].valor)||0;
+      const ajustes = (filaDe('iva_ajustes')?.porMes[mm].valor)||0;
+      const saldoAnt = saldoNuevoControlPorMesCierre[mm] !== null ? saldoNuevoControlPorMesCierre[mm] : ((filaDe('iva_saldo_favor_anterior')?.porMes[mm].valor)||0);
+      const comp = (filaDe('iva_compensaciones')?.porMes[mm].valor)||0;
       antesAjustesPorMes[mm] = trasladadoPorMes[mm] - acreditablePorMes[mm];
       aCargoPorMes[mm] = antesAjustesPorMes[mm] + ajustes - saldoAnt - comp;
     });
@@ -7418,7 +7693,8 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
     ];
     const totalAcreditable = clasifIvaMes ? redondearMoneda(categoriasAcreditable.reduce((s,cat)=>s+(clasifIvaMes[cat.clave]||0),0)) : null;
     const antesAjustes = (totalTrasladado!==null || totalAcreditable!==null) ? (totalTrasladado??0) - (totalAcreditable??0) : null;
-    const ajustes = valorDe('iva_ajustes'), saldoAnterior = valorDe('iva_saldo_favor_anterior'), compensaciones = valorDe('iva_compensaciones');
+    const saldoAnteriorNuevoControl = tipoPapel === 'iva' ? await obtenerSaldoAFavorAplicadoEnPeriodo(b.id, periodo) : null;
+    const ajustes = valorDe('iva_ajustes'), saldoAnterior = saldoAnteriorNuevoControl !== null ? saldoAnteriorNuevoControl : valorDe('iva_saldo_favor_anterior'), compensaciones = valorDe('iva_compensaciones');
     const hayAlgunInsumo = antesAjustes!==null || ajustes!==null || saldoAnterior!==null || compensaciones!==null;
     const resultado = hayAlgunInsumo ? (antesAjustes??0) + (ajustes??0) - (saldoAnterior??0) - (compensaciones??0) : null;
     const filaGrupo = (clave) => { const c = conceptos.find(x=>x.clave_concepto===clave); return c ? `<tr><td style="padding-left:16px;">${c.concepto}</td><td class="num">${fmtN(valorDe(clave))}</td></tr>` : ''; };
@@ -7458,6 +7734,7 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
         <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>(–) Compensaciones</span><span class="pt-value">${fmtN(compensaciones)}</span></div>
       </div>
       <div class="pt-banda-cierre"><span>${resultado===null?'SIN INSUMOS SUFICIENTES':(resultado>0.004?'IVA A CARGO':resultado<-0.004?'SALDO A FAVOR':'SIN IVA A CARGO NI SALDO A FAVOR')}</span><span>${resultado===null?'—':fmt(Math.abs(resultado))}</span></div>
+      ${(tipoPapel==='iva' && resultado!==null && resultado<-0.004) ? `<div id="sfConfirmarWrap" style="margin-top:10px;"></div>` : ''}
       <button class="btn btn-ghost btn-sm cg-agregar-concepto" style="margin-top:10px;">+ Agregar concepto</button>
     </div>`;
     totalPeriodoConcepto = (conceptosReales||[]).find(c=>c.clave_concepto==='iva_resultado_periodo') || { id: null, clave_concepto: 'iva_resultado_periodo', concepto: 'IVA a cargo del periodo', valor_aplicado: resultado!==null?Math.max(0, resultado):null, valor_original: resultado!==null?Math.max(0, resultado):null };
@@ -7620,6 +7897,35 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
       await renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault, stateKey, opciones);
     });
   });
+
+  const sfWrap = el.querySelector('#sfConfirmarWrap');
+  if (sfWrap && tipoPapel === 'iva') {
+    const montoDeterminadoActual = redondearMoneda(Math.abs(resultado));
+    const { data: saldoExistente } = await sb.from('fz_iva_saldos_favor').select('*').eq('business_id', b.id).eq('periodo_origen', periodo).maybeSingle();
+    if (!saldoExistente) {
+      sfWrap.innerHTML = `<button class="btn btn-gold btn-sm" id="sfConfirmarBtn">Confirmar saldo a favor declarado</button>`;
+      document.getElementById('sfConfirmarBtn').addEventListener('click', async () => {
+        const montoDeclarado = Number(prompt(`El papel determina un saldo a favor de ${fmt(montoDeterminadoActual)}.\n\n¿Cuánto se declaró efectivamente ante el SAT?`, montoDeterminadoActual));
+        if (isNaN(montoDeclarado) || montoDeclarado < 0) return;
+        let motivo = null;
+        if (redondearMoneda(montoDeclarado) !== montoDeterminadoActual) {
+          motivo = prompt('El monto declarado difiere del determinado — indica el motivo:');
+          if (!motivo) { toast('Debes indicar el motivo de la diferencia.', 'error'); return; }
+        }
+        const referencia = prompt('Referencia/folio de la declaración (opcional):');
+        const r = await confirmarSaldoFavor(b.id, periodo, montoDeterminadoActual, montoDeclarado, { motivoDiferencia: motivo, referenciaDeclaracion: referencia, fechaDeclaracion: todayStr() });
+        if (!r.ok) { toast(r.mensaje, 'error'); return; }
+        toast('Saldo a favor confirmado — ya disponible en Control de saldos a favor IVA.');
+        renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault, stateKey, opciones);
+      });
+    } else if (redondearMoneda(Number(saldoExistente.monto_determinado)) !== montoDeterminadoActual) {
+      sfWrap.innerHTML = `<div style="background:#fff8e6;border:1px solid #e6c674;border-radius:8px;padding:10px 12px;font-size:11.5px;">
+        ⚠ El papel ahora determina ${fmt(montoDeterminadoActual)}, pero el saldo confirmado el ${fechaCorta(saldoExistente.confirmado_en?.slice(0,10))} fue ${fmt(saldoExistente.monto_determinado)} (declarado: ${fmt(saldoExistente.monto_declarado)}). El saldo ya confirmado no se modifica automáticamente — revisa manualmente si corresponde una corrección.
+      </div>`;
+    } else {
+      sfWrap.innerHTML = `<div style="font-size:11px;color:var(--muted);">Saldo ya confirmado el ${fechaCorta(saldoExistente.confirmado_en?.slice(0,10))} — ver en "Control de saldos a favor IVA".</div>`;
+    }
+  }
 
   el.querySelectorAll('.cg-editar').forEach(btn => btn.addEventListener('click', (e) => {
     e.preventDefault();
@@ -11408,6 +11714,7 @@ async function renderConfiguracion() {
       ${tarjetaConfigHtml('cfgCierre', 'Cierre de periodo', b ? `Bloquea la captura de meses ya cerrados en ${b.name}.` : 'Selecciona un negocio para gestionar sus cierres.')}
       ${tarjetaConfigHtml('cfgActivosFijos', 'Activos Fijos', b ? `Equipo, mobiliario y su depreciación mensual automática en ${b.name}.` : 'Selecciona un negocio para gestionar sus activos.')}
       ${tarjetaConfigHtml('cfgPagosClasificar', 'Pagos por clasificar', b ? `Salidas de dinero pendientes de asignar a proveedor/factura y/o de clasificar hacia Banco/Efectivo en ${b.name}.` : 'Selecciona un negocio.')}
+      ${tarjetaConfigHtml('cfgSaldosFavorIVA', 'Control de saldos a favor IVA', b ? `Confirmar, acreditar y solicitar devolución de saldos a favor de IVA declarados en ${b.name}.` : 'Selecciona un negocio.')}
     `)}
     <p style="font-size:13px;font-weight:700;color:var(--navy-1);margin-bottom:10px;">Fiscal</p>
     <p style="font-size:11.5px;color:var(--muted);margin:-4px 0 10px;">INPC, recargos y el calendario de días inhábiles se movieron a <a href="#" id="cfgIrParametrosFiscales" class="pt-editar-link" style="display:inline;">Parámetros Fiscales</a>, en el menú principal.</p>
@@ -11434,6 +11741,7 @@ async function renderConfiguracion() {
   if (cierreBtn) cierreBtn.addEventListener('click', () => { if (b) abrirModalCierrePeriodo(b.id); else toast('Selecciona un negocio primero.', 'error'); });
   ir('cfgActivosFijos', 'activosfijos');
   ir('cfgPagosClasificar', 'pagosclasificar');
+  ir('cfgSaldosFavorIVA', 'saldosfavoriva');
   ir('cfgComparativo', 'comparativo');
   ir('cfgFuentesFiscales', 'fuentesfiscales');
   const irParamFiscales = document.getElementById('cfgIrParametrosFiscales');
