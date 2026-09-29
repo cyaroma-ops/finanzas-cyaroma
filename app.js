@@ -7676,7 +7676,7 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
   const valorDe = clave => { const c = conceptos.find(x=>x.clave_concepto===clave); if (!c) return null; return (c.valor_aplicado===null||c.valor_aplicado===undefined) ? null : Number(c.valor_aplicado); };
   const fmtN = v => v!==null ? fmt(v) : '—';
 
-  let determinacionHtml = '', totalPeriodoConcepto = null;
+  let determinacionHtml = '', totalPeriodoConcepto = null, resultado = null;
   if (opciones.resumenIVA) {
     const gruposTrasladado = ['iva_trasladado_16','iva_trasladado_0','iva_trasladado_exento','iva_trasladado_no_objeto'];
     const valsTrasladado = gruposTrasladado.map(valorDe);
@@ -7696,7 +7696,7 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
     const saldoAnteriorNuevoControl = tipoPapel === 'iva' ? await obtenerSaldoAFavorAplicadoEnPeriodo(b.id, periodo) : null;
     const ajustes = valorDe('iva_ajustes'), saldoAnterior = saldoAnteriorNuevoControl !== null ? saldoAnteriorNuevoControl : valorDe('iva_saldo_favor_anterior'), compensaciones = valorDe('iva_compensaciones');
     const hayAlgunInsumo = antesAjustes!==null || ajustes!==null || saldoAnterior!==null || compensaciones!==null;
-    const resultado = hayAlgunInsumo ? (antesAjustes??0) + (ajustes??0) - (saldoAnterior??0) - (compensaciones??0) : null;
+    resultado = hayAlgunInsumo ? (antesAjustes??0) + (ajustes??0) - (saldoAnterior??0) - (compensaciones??0) : null;
     const filaGrupo = (clave) => { const c = conceptos.find(x=>x.clave_concepto===clave); return c ? `<tr><td style="padding-left:16px;">${c.concepto}</td><td class="num">${fmtN(valorDe(clave))}</td></tr>` : ''; };
     const filaAcreditable = (cat) => `<tr><td style="padding-left:16px;">${cat.nombre}</td><td class="num">${clasifIvaMes ? fmt(clasifIvaMes[cat.clave]||0) : '—'}</td></tr>`;
     const clavesConocidas = new Set([...gruposTrasladado, 'iva_ajustes','iva_saldo_favor_anterior','iva_compensaciones','iva_resultado_periodo']);
