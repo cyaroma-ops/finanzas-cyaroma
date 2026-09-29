@@ -1222,6 +1222,28 @@ async function computeMonedaSaldo(businessId, moneda, conceptosEfectivo, hastaFe
 }
 
 /* ---------- Vinculación Tarjetas (Ventas) → Cuenta bancaria ---------- */
+// Convierte una conciliación de venta (tarjeta/efectivo) en un movimiento REAL de Bancos/Efectivo
+// — antes solo se calculaba en pantalla ("· auto"), nunca se guardaba, por eso Balance General y
+// Auxiliares nunca lo veían. Idempotente: el índice único (venta_id, concepto_venta_id) impide
+// crear el mismo depósito dos veces, aunque esta función se llame varias veces para la misma venta.
+async function materializarDepositoVentaSiCorresponde(businessId, ventaId, fecha, concepto, monto) {
+  if (!monto || Number(monto) <= 0) return;
+  const base = {
+    business_id: businessId, fecha, depositos: Number(monto), cargos: 0,
+    tipo_entrada: 'venta_conciliada', tipo_salida: 'otro', // valor nuevo, nunca 'cliente' — no toca CxC
+    venta_id: ventaId, concepto_venta_id: concepto.id,
+  };
+  let error;
+  if (concepto.banco_cuenta_id) {
+    ({ error } = await sb.from('fz_bancos_mov').insert({ ...base, cuenta_id: concepto.banco_cuenta_id, concepto: 'Corte de caja', descripcion: `Tarjetas conciliadas en Ventas (${concepto.nombre})` }));
+  } else if (concepto.moneda_id) {
+    ({ error } = await sb.from('fz_efectivo_mov').insert({ ...base, moneda_id: concepto.moneda_id, proveedor: 'Corte de caja', descripcion: `Efectivo conciliado en Ventas (${concepto.nombre})` }));
+  } else {
+    return; // concepto sin cuenta vinculada — nada que materializar todavía
+  }
+  if (error && error.code !== '23505') throw error; // 23505 = ya existía este (venta, concepto) — idempotente, se ignora
+}
+
 function conceptosParaBanco(cuenta, conceptosTarjetas) {
   return conceptosTarjetas.filter(c => c.banco_cuenta_id === cuenta.id);
 }
@@ -1578,6 +1600,7 @@ async function renderVentas() {
           <button class="btn btn-ghost btn-sm" id="openConceptosBtn">${iconoConfigurar()}Conceptos de recibido</button>
           <button class="btn btn-ghost btn-sm" id="descargarPlantillaBtn">Descargar plantilla</button>
           <button class="btn btn-ghost btn-sm" id="importVentasBtn">Importar ventas (Excel)</button>
+          <button class="btn btn-ghost btn-sm" id="materializarHistoricoVentasBtn">Materializar depósitos ya conciliados</button>
           <button class="btn btn-gold btn-sm" id="addVentaRow">+ Agregar día</button>
         </div>
       </div>
@@ -1633,6 +1656,31 @@ async function renderVentas() {
   document.getElementById('openSistemaConceptosBtn').addEventListener('click', () => openSistemaConceptosModal(b.id));
   document.getElementById('descargarPlantillaBtn').addEventListener('click', () => descargarPlantillaVentas(b.id));
   document.getElementById('importVentasBtn').addEventListener('click', () => openImportExcelModal('ventas', b.id, renderVentas));
+  document.getElementById('materializarHistoricoVentasBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('materializarHistoricoVentasBtn');
+    const ok = confirm('Esto revisa todas las ventas ya conciliadas (tarjetas/efectivo vinculados a una cuenta) y crea, para cada una, el movimiento real correspondiente en Bancos/Efectivo — necesario para que Balance General y Auxiliares los reflejen correctamente.\n\nEs seguro repetirlo: nunca duplica algo que ya se haya materializado antes.\n\n¿Continuar?');
+    if (!ok) return;
+    btn.disabled = true; btn.textContent = 'Materializando…';
+    try {
+      const conceptosConCuenta = conceptos.filter(c => c.banco_cuenta_id || c.moneda_id);
+      if (!conceptosConCuenta.length) { toast('No hay conceptos de recibido vinculados a una cuenta todavía.', 'error'); return; }
+      const { data: todasLasVentas } = await sb.from('fz_ventas').select('id,fecha,recon_data').eq('business_id', b.id);
+      let materializados = 0;
+      for (const v of (todasLasVentas || [])) {
+        for (const concepto of conceptosConCuenta) {
+          const entry = (v.recon_data || {})[concepto.id];
+          const monto = Number(entry?.monto) || 0;
+          if (!monto) continue;
+          await materializarDepositoVentaSiCorresponde(b.id, v.id, v.fecha, concepto, monto);
+          materializados++;
+        }
+      }
+      toast(`Revisión completa — ${materializados} conciliación(es) procesadas (las que ya existían se ignoraron automáticamente).`);
+      renderVentas();
+    } finally {
+      btn.disabled = false; btn.textContent = 'Materializar depósitos ya conciliados';
+    }
+  });
 
   el.querySelectorAll('.ventas-cell').forEach(inp => {
     inp.addEventListener('change', async () => {
@@ -1691,6 +1739,9 @@ async function renderVentas() {
         const concepto = conceptos.find(c => c.id === conceptoId);
         if (concepto && concepto.categoria === 'propinas') {
           await provisionarPropina(b.id, ventaId, concepto, montoVal, row.fecha);
+        }
+        if (concepto && (concepto.banco_cuenta_id || concepto.moneda_id)) {
+          await materializarDepositoVentaSiCorresponde(b.id, ventaId, row.fecha, concepto, montoVal);
         }
       }
       renderVentas();
@@ -18423,6 +18474,23 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
     push({ ...basePpc, cuenta: 'Pagos por clasificar' }, 'pagos_por_clasificar', 'activo', 0, (Number(p.monto)||0) * (Number(p.tipo_cambio)||1));
   }
 
+  // 2c. Ventas — solo el "derecho a cobrar" de tarjetas/efectivo vinculados a una cuenta bancaria.
+  // Nunca toca la subcuenta de Ventas/Ingreso (eso lo sigue reconociendo el Estado de Resultados
+  // leyendo fz_ventas directo, sin ningún cambio aquí) — es exclusivamente el lado de Balance
+  // General: cuánto de lo vendido en tarjeta/efectivo todavía no se refleja como depósito real.
+  const subVentasPendientesDepositar = await subRealizacion('Ventas pendientes de depositar', 'activo');
+  const { data: conceptosVentaBanco } = await sb.from('fz_conceptos_venta').select('id,nombre,banco_cuenta_id,moneda_id').eq('business_id', businessId).or('banco_cuenta_id.not.is.null,moneda_id.not.is.null');
+  if (conceptosVentaBanco && conceptosVentaBanco.length) {
+    const idsConceptos = conceptosVentaBanco.map(c=>c.id);
+    const { data: ventasConDatos } = await conDesde(sb.from('fz_ventas').select('id,fecha,venta_data').eq('business_id', businessId));
+    (ventasConDatos||[]).forEach(v => {
+      conceptosVentaBanco.forEach(cv => {
+        const monto = Number((v.venta_data||{})[cv.id]) || 0;
+        if (monto) push({ modulo: 'Ventas', tipoOrigen: 'venta_recibido', id: v.id+':'+cv.id, fecha: v.fecha, referencia: `Venta ${v.fecha} — ${cv.nombre}`, detalle: '', cuenta: 'Ventas pendientes de depositar' }, 'sub:'+subVentasPendientesDepositar, 'activo', monto, 0);
+      });
+    });
+  }
+
   // 3. Facturas de Clientes — Dr Clientes, Cr [líneas] + Cr IVA Trasladado.
   // Moneda extranjera: el reconocimiento contable siempre es en MXN (moneda funcional), usando
   // el tipo de cambio de reconocimiento — el importe/moneda original se conserva en la propia
@@ -18618,6 +18686,8 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
           }
         } else if (m.tipo_entrada === 'traspaso') {
           push({ ...base, cuenta: 'Traspasos entre cuentas' }, 'traspasos', 'activo', 0, Number(m.depositos));
+        } else if (m.tipo_entrada === 'venta_conciliada') {
+          push({ ...base, cuenta: 'Ventas pendientes de depositar' }, 'sub:'+subVentasPendientesDepositar, 'activo', 0, Number(m.depositos));
         } else {
           push({ ...base, cuenta: 'Sin clasificar (revisar)' }, 'sin_clasificar', 'gasto', 0, Number(m.depositos));
         }
