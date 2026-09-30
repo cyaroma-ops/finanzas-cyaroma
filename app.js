@@ -18633,12 +18633,38 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   // .forEach síncrono, no admite await dentro).
   const subIvaAcreditablePagadoGasto = await subRealizacion('IVA Acreditable — Pagado', 'activo');
 
-  // TC de reporte por moneda de Efectivo — necesario para "Traspasos entre cuentas": esta cuenta
-  // puente debe expresar ambos lados de un par en la MISMA unidad (MXN) para poder cancelarse. La
-  // cuenta propia de cada caja (ej. "Dolares") sigue mostrándose en su moneda original sin tocar —
-  // esta conversión aplica únicamente a la contribución hacia la cuenta puente.
-  const { data: monedasParaTcQ } = await sb.from('fz_efectivo_monedas').select('id,tc_reporte').eq('business_id', businessId);
-  const tcPorMonedaId = new Map((monedasParaTcQ||[]).map(m => [m.id, Number(m.tc_reporte)||1]));
+  // Para "Traspasos entre cuentas": NUNCA se usa un tipo de cambio configurado (puede cambiar
+  // después y desajustar algo que ya cuadraba). En vez de eso, se identifica cuál de las 2 piernas
+  // de cada traspaso es la que ya está en pesos (un banco, siempre MXN en este sistema; o la moneda
+  // de efectivo llamada MXN/Pesos) y se usa ESE monto para AMBAS piernas — cargo y abono quedan
+  // idénticos y cierran exacto, sin ninguna conversión ni TC de por medio.
+  const { data: nombresMonedaQ } = await sb.from('fz_efectivo_monedas').select('id,nombre').eq('business_id', businessId);
+  const esMonedaPesos = (monedaId) => {
+    const m = (nombresMonedaQ||[]).find(x => x.id === monedaId);
+    const n = (m?.nombre||'').trim().toLowerCase();
+    return n.includes('mxn') || n.includes('peso');
+  };
+  const montoPesosPorId = new Map(); // id del movimiento -> monto en pesos histórico de SU PAR (el mismo para ambas piernas)
+  const registrarParaPareja = (rows) => {
+    const porTraspasoId = new Map();
+    rows.forEach(m => {
+      if (!m.traspaso_id) return;
+      if (!porTraspasoId.has(m.traspaso_id)) porTraspasoId.set(m.traspaso_id, []);
+      porTraspasoId.get(m.traspaso_id).push(m);
+    });
+    porTraspasoId.forEach(piernas => {
+      if (piernas.length !== 2) return; // par incompleto o duplicado — no se adivina, se deja como venía
+      const [a, b] = piernas;
+      const esPesosA = ('cuenta_id' in a) || esMonedaPesos(a.moneda_id); // fila de banco siempre MXN
+      const esPesosB = ('cuenta_id' in b) || esMonedaPesos(b.moneda_id);
+      const piernaPesos = esPesosA ? a : (esPesosB ? b : null);
+      if (!piernaPesos) return; // ninguna de las 2 se identifica como pesos — no se adivina, se deja como venía
+      const montoPesos = Number(piernaPesos.cargos) || Number(piernaPesos.depositos) || 0;
+      montoPesosPorId.set(a.id, montoPesos);
+      montoPesosPorId.set(b.id, montoPesos);
+    });
+  };
+  registrarParaPareja([...(bancosMovQ.data||[]), ...(efvoMovQ.data||[])]);
 
   const procesarMovimientos = (movs, esBanco, tipoOrigenTag, moduloTag, tablaOrigenNombre) => {
     (movs||[]).forEach(m => {
@@ -18722,7 +18748,7 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
         else if (m.tipo_salida === 'cliente') { cuentaContraria = 'Clientes'; claveContraria = 'clientes'; tipoContraria = 'activo'; }
         else if (m.tipo_salida === 'traspaso') {
           cuentaContraria = 'Traspasos entre cuentas'; claveContraria = 'traspasos'; tipoContraria = 'activo';
-          if (!esBanco) subtotalContraria = Number(m.cargos) * (tcPorMonedaId.get(m.moneda_id) || 1);
+          if (!esBanco) subtotalContraria = montoPesosPorId.get(m.id) ?? Number(m.cargos);
         }
         push({ ...base, cuenta: cuentaContraria }, claveContraria, tipoContraria, subtotalContraria, 0);
         if (m.tipo_salida === 'gasto' && m.aplica_iva && Number(m.iva_monto)) push({ ...base, cuenta: 'IVA Acreditable — Pagado' }, 'sub:'+subIvaAcreditablePagadoGasto, 'activo', Number(m.iva_monto), 0);
@@ -18772,7 +18798,7 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
             push({ ...base, cuenta: 'Clientes' }, 'clientes', 'activo', 0, Number(m.depositos));
           }
         } else if (m.tipo_entrada === 'traspaso') {
-          const montoTraspasoEntrada = esBanco ? Number(m.depositos) : Number(m.depositos) * (tcPorMonedaId.get(m.moneda_id) || 1);
+          const montoTraspasoEntrada = esBanco ? Number(m.depositos) : (montoPesosPorId.get(m.id) ?? Number(m.depositos));
           push({ ...base, cuenta: 'Traspasos entre cuentas' }, 'traspasos', 'activo', 0, montoTraspasoEntrada);
         } else if (m.tipo_entrada === 'venta_conciliada') {
           push({ ...base, cuenta: 'Ventas pendientes de depositar' }, 'sub:'+subVentasPendientesDepositar, 'activo', 0, Number(m.depositos));
