@@ -18664,7 +18664,6 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
       montoPesosPorId.set(b.id, montoPesos);
     });
   };
-  registrarParaPareja([...(bancosMovQ.data||[]), ...(efvoMovQ.data||[])]);
 
   const procesarMovimientos = (movs, esBanco, tipoOrigenTag, moduloTag, tablaOrigenNombre) => {
     (movs||[]).forEach(m => {
@@ -18812,6 +18811,7 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
     fetchTodasLasPaginas(() => conDesde(sb.from('fz_bancos_mov').select('*').eq('business_id', businessId).lte('fecha', hastaFecha)).order('id')),
     fetchTodasLasPaginas(() => conDesde(sb.from('fz_efectivo_mov').select('*').eq('business_id', businessId).lte('fecha', hastaFecha)).order('id')),
   ]);
+  registrarParaPareja([...(bancosMovQ.data||[]), ...(efvoMovQ.data||[])]);
   procesarMovimientos(bancosMovQ.data, true, 'banco_mov', 'Movimiento de Banco', 'fz_bancos_mov');
   procesarMovimientos(efvoMovQ.data, false, 'efectivo_mov', 'Movimiento de Efectivo', 'fz_efectivo_mov');
 
