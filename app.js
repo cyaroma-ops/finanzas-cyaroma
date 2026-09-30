@@ -18633,6 +18633,13 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   // .forEach síncrono, no admite await dentro).
   const subIvaAcreditablePagadoGasto = await subRealizacion('IVA Acreditable — Pagado', 'activo');
 
+  // TC de reporte por moneda de Efectivo — necesario para "Traspasos entre cuentas": esta cuenta
+  // puente debe expresar ambos lados de un par en la MISMA unidad (MXN) para poder cancelarse. La
+  // cuenta propia de cada caja (ej. "Dolares") sigue mostrándose en su moneda original sin tocar —
+  // esta conversión aplica únicamente a la contribución hacia la cuenta puente.
+  const { data: monedasParaTcQ } = await sb.from('fz_efectivo_monedas').select('id,tc_reporte').eq('business_id', businessId);
+  const tcPorMonedaId = new Map((monedasParaTcQ||[]).map(m => [m.id, Number(m.tc_reporte)||1]));
+
   const procesarMovimientos = (movs, esBanco, tipoOrigenTag, moduloTag, tablaOrigenNombre) => {
     (movs||[]).forEach(m => {
       const claveOrigenCuenta = esBanco ? 'banco:'+m.cuenta_id : 'efectivo:'+m.moneda_id;
@@ -18713,7 +18720,10 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
           subtotalContraria = m.aplica_iva ? (Number(m.subtotal)||0) : Number(m.cargos);
         }
         else if (m.tipo_salida === 'cliente') { cuentaContraria = 'Clientes'; claveContraria = 'clientes'; tipoContraria = 'activo'; }
-        else if (m.tipo_salida === 'traspaso') { cuentaContraria = 'Traspasos entre cuentas'; claveContraria = 'traspasos'; tipoContraria = 'activo'; }
+        else if (m.tipo_salida === 'traspaso') {
+          cuentaContraria = 'Traspasos entre cuentas'; claveContraria = 'traspasos'; tipoContraria = 'activo';
+          if (!esBanco) subtotalContraria = Number(m.cargos) * (tcPorMonedaId.get(m.moneda_id) || 1);
+        }
         push({ ...base, cuenta: cuentaContraria }, claveContraria, tipoContraria, subtotalContraria, 0);
         if (m.tipo_salida === 'gasto' && m.aplica_iva && Number(m.iva_monto)) push({ ...base, cuenta: 'IVA Acreditable — Pagado' }, 'sub:'+subIvaAcreditablePagadoGasto, 'activo', Number(m.iva_monto), 0);
         push({ ...base, cuenta: nombreOrigenCuenta }, claveOrigenCuenta, 'activo', 0, Number(m.cargos));
@@ -18762,7 +18772,8 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
             push({ ...base, cuenta: 'Clientes' }, 'clientes', 'activo', 0, Number(m.depositos));
           }
         } else if (m.tipo_entrada === 'traspaso') {
-          push({ ...base, cuenta: 'Traspasos entre cuentas' }, 'traspasos', 'activo', 0, Number(m.depositos));
+          const montoTraspasoEntrada = esBanco ? Number(m.depositos) : Number(m.depositos) * (tcPorMonedaId.get(m.moneda_id) || 1);
+          push({ ...base, cuenta: 'Traspasos entre cuentas' }, 'traspasos', 'activo', 0, montoTraspasoEntrada);
         } else if (m.tipo_entrada === 'venta_conciliada') {
           push({ ...base, cuenta: 'Ventas pendientes de depositar' }, 'sub:'+subVentasPendientesDepositar, 'activo', 0, Number(m.depositos));
         } else {
