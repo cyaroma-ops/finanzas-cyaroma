@@ -13223,6 +13223,22 @@ async function confirmarYEliminarMovimiento(table, row, onDone) {
   const idsAfectados = facturaIdsDe(row);
   const idsAfectadosCliente = facturaIdsClienteDe(row);
 
+  // Traspasos: cada operación vive en 2 filas (una por cuenta), ligadas por traspaso_id. Borrar
+  // solo una deja la otra huérfana — igual que el bug que ya diagnosticamos en Balance General.
+  let parejaTraspaso = null;
+  if ((row.tipo_salida === 'traspaso' || row.tipo_entrada === 'traspaso') && row.traspaso_id) {
+    const [enBanco, enEfectivo] = await Promise.all([
+      sb.from('fz_bancos_mov').select('*').eq('traspaso_id', row.traspaso_id).neq('id', row.id).limit(1).maybeSingle(),
+      sb.from('fz_efectivo_mov').select('*').eq('traspaso_id', row.traspaso_id).neq('id', row.id).limit(1).maybeSingle(),
+    ]);
+    const pareja = enBanco.data ? { tabla: 'fz_bancos_mov', fila: enBanco.data } : (enEfectivo.data ? { tabla: 'fz_efectivo_mov', fila: enEfectivo.data } : null);
+    if (pareja) {
+      const ok = confirm(`Este movimiento es parte de un traspaso — su otra mitad (${fmt(Number(pareja.fila.cargos)||Number(pareja.fila.depositos)||0)}, ${pareja.fila.fecha}) se eliminará junto con este. ¿Continuar?`);
+      if (!ok) return;
+      parejaTraspaso = pareja;
+    }
+  }
+
   // Punto C: si este movimiento generó un crédito a favor (sobrante de pago) y ese crédito YA fue
   // utilizado en otra operación posterior, bloquear la eliminación completa — borrarlo rompería
   // esa otra operación. Se revisa ANTES de pedir cualquier otra confirmación.
@@ -13264,9 +13280,12 @@ async function confirmarYEliminarMovimiento(table, row, onDone) {
     await revertirPagoFiscalPorOrigen(table, row.id);
   }
   await sb.from(table).delete().eq('id', row.id);
+  if (parejaTraspaso) {
+    await sb.from(parejaTraspaso.tabla).delete().eq('id', parejaTraspaso.fila.id);
+  }
   const modulo = table === 'fz_bancos_mov' ? 'Bancos' : 'Efectivo';
   const monto = Number(row.cargos) > 0 ? Number(row.cargos) : Number(row.depositos) || 0;
-  registrarAuditoria(row.business_id, 'eliminar', modulo, `Movimiento ${row.fecha} · ${row.descripcion||row.proveedor||''} · ${fmt(monto)}${idsAfectados.length?' (revirtió '+idsAfectados.length+' factura(s) de proveedor)':''}${idsAfectadosCliente.length?' (revirtió '+idsAfectadosCliente.length+' factura(s) de cliente)':''}${creditoLigado?' (eliminó crédito a favor por '+fmt(-creditoLigado.importe)+' generado por este mismo movimiento)':''}`);
+  registrarAuditoria(row.business_id, 'eliminar', modulo, `Movimiento ${row.fecha} · ${row.descripcion||row.proveedor||''} · ${fmt(monto)}${idsAfectados.length?' (revirtió '+idsAfectados.length+' factura(s) de proveedor)':''}${idsAfectadosCliente.length?' (revirtió '+idsAfectadosCliente.length+' factura(s) de cliente)':''}${creditoLigado?' (eliminó crédito a favor por '+fmt(-creditoLigado.importe)+' generado por este mismo movimiento)':''}${parejaTraspaso?' (eliminó también la otra mitad del traspaso)':''}`);
   onDone();
 }
 
@@ -13991,6 +14010,9 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     } else if (tipoVal === 'traspaso_efectivo') {
       destSel.innerHTML = (monedasEfvoMov.data||[]).filter(m => !(contexto.tipo==='efectivo' && m.id===contexto.refId)).map(m => `<option value="${m.id}">${m.nombre}</option>`).join('');
     }
+    if (destinoRealExistente && Array.from(destSel.options).some(o => o.value === destinoRealExistente)) {
+      destSel.value = destinoRealExistente;
+    }
   };
 
   document.getElementById('movSubcuenta').innerHTML = `<option value="">— elegir subcuenta —</option>` +
@@ -14181,15 +14203,19 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   let tipoInicial = movimientoExistente
     ? (movimientoExistente.tipo_entrada === 'cliente' ? 'cliente' : (movimientoExistente.tipo_salida || 'otro'))
     : 'otro';
+  let destinoRealExistente = null; // cuenta_id o moneda_id de la OTRA pierna, para preseleccionar el destino correcto al reabrir
   if (tipoInicial === 'traspaso' && movimientoExistente?.traspaso_id) {
     // El valor guardado siempre es el genérico 'traspaso' — el menú solo tiene 'traspaso_banco'/
     // 'traspaso_efectivo' como opciones reales. Se busca la OTRA pierna (misma traspaso_id, en
-    // cualquiera de las 2 tablas, excluyendo esta misma fila) para saber cuál mostrar.
+    // cualquiera de las 2 tablas, excluyendo esta misma fila) para saber cuál mostrar y a qué
+    // cuenta/moneda específica corresponde, para preseleccionarla también.
     const [otraEnBanco, otraEnEfectivo] = await Promise.all([
-      sb.from('fz_bancos_mov').select('id').eq('traspaso_id', movimientoExistente.traspaso_id).neq('id', movimientoExistente.id).limit(1).maybeSingle(),
-      sb.from('fz_efectivo_mov').select('id').eq('traspaso_id', movimientoExistente.traspaso_id).neq('id', movimientoExistente.id).limit(1).maybeSingle(),
+      sb.from('fz_bancos_mov').select('id,cuenta_id').eq('traspaso_id', movimientoExistente.traspaso_id).neq('id', movimientoExistente.id).limit(1).maybeSingle(),
+      sb.from('fz_efectivo_mov').select('id,moneda_id').eq('traspaso_id', movimientoExistente.traspaso_id).neq('id', movimientoExistente.id).limit(1).maybeSingle(),
     ]);
-    tipoInicial = otraEnBanco.data ? 'traspaso_banco' : (otraEnEfectivo.data ? 'traspaso_efectivo' : 'otro');
+    if (otraEnBanco.data) { tipoInicial = 'traspaso_banco'; destinoRealExistente = otraEnBanco.data.cuenta_id; }
+    else if (otraEnEfectivo.data) { tipoInicial = 'traspaso_efectivo'; destinoRealExistente = otraEnEfectivo.data.moneda_id; }
+    else tipoInicial = 'otro';
   }
   document.getElementById('movTipoSalida').value = tipoInicial;
   const actualizarOpcionesTipo = () => {
