@@ -1231,6 +1231,7 @@ async function computeMonedaSaldo(businessId, moneda, conceptosEfectivo, hastaFe
 // crear el mismo depósito dos veces, aunque esta función se llame varias veces para la misma venta.
 async function materializarDepositoVentaSiCorresponde(businessId, ventaId, fecha, concepto, monto) {
   if (!monto || Number(monto) <= 0) return;
+  if (!ventasAfectaFueraDeSuRegistro(businessId)) return; // solo negocios financieros: en Fiscal Contable Ventas no mueve Bancos/Efectivo
   const base = {
     business_id: businessId, fecha, depositos: Number(monto), cargos: 0,
     tipo_entrada: 'venta_conciliada', tipo_salida: 'otro', // valor nuevo, nunca 'cliente' — no toca CxC
@@ -18445,6 +18446,17 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   const tipoDeSub = (id) => mayorDeSub(id)?.tipo || 'activo';
   const nombreBanco = (id) => cuentasBanco.find(c=>c.id===id)?.nombre || 'Banco';
   const nombreMoneda = (id) => monedas.find(m=>m.id===id)?.nombre || 'Efectivo';
+  // Todo lo que sigue marcado "solo financiero" NO se ejecuta en negocios Fiscal Contable: su
+  // contabilidad queda exactamente como estaba.
+  const modoFinanciero = ventasAfectaFueraDeSuRegistro(businessId);
+  const esMonedaPesos = (monedaId) => {
+    const n = (monedas.find(x => x.id === monedaId)?.nombre || '').trim().toLowerCase();
+    return n.includes('mxn') || n.includes('peso');
+  };
+  // Efectivo en divisas (solo financiero): valor en pesos de cada movimiento, a costo promedio.
+  const valuacionEfectivo = new Map();        // id de movimiento -> { mxn, fx? }
+  const unidadesEfectivoPorMoneda = {};       // moneda_id -> unidades en su propia moneda (para mostrarlas en el Balance)
+  const fxSub = { ganancia: null, perdida: null };
   const nombreCliente = (id) => { const c = clientes.find(x=>x.id===id); return c ? (c.razon_social || c.nombre_comercial) : '(cliente eliminado)'; };
   const { data: negocioRow } = await sb.from('businesses').select('iva_realizacion_desde').eq('id', businessId).maybeSingle();
   const fechaCorteRealizacion = negocioRow?.iva_realizacion_desde || null;
@@ -18571,7 +18583,7 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
     // en la Balanza, en vez de dejar el documento con un solo lado. Una factura totalmente desglosada
     // no cambia (la diferencia es 0). Las provisiones de propina (origen_venta_id) se excluyen: no son
     // un gasto, su contrapartida se trata aparte.
-    if (!f.origen_venta_id) {
+    if (!f.origen_venta_id && modoFinanciero) {
       const drFactura = desgloseLineas(f.desglose).reduce((a, l) => a + (Number(l.monto)||0) * tc, 0)
         + ((f.aplica_iva && Number(f.iva_monto)) ? Number(f.iva_monto) * tc : 0);
       const crFactura = ((f.aplica_retencion && Number(f.retencion_isr_monto)) ? Number(f.retencion_isr_monto) * tc : 0)
@@ -18621,13 +18633,22 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   // no se captura bajo estos conceptos específicos, confirmado con datos reales del negocio).
   // Nunca toca la subcuenta de Ventas/Ingreso (eso lo sigue reconociendo el Estado de Resultados
   // leyendo fz_ventas directo, sin ningún cambio aquí).
-  const subVentasPendientesDepositar = await subRealizacion('Ventas pendientes de depositar', 'activo');
-  const { data: conceptosVentaBanco } = await sb.from('fz_conceptos').select('id,nombre,banco_cuenta_id,moneda_id').eq('business_id', businessId).or('banco_cuenta_id.not.is.null,moneda_id.not.is.null');
+  const subVentasPendientesDepositar = modoFinanciero ? await subRealizacion('Ventas pendientes de depositar', 'activo') : null;
+  const { data: conceptosVentaBanco } = modoFinanciero
+    ? await sb.from('fz_conceptos').select('id,nombre,banco_cuenta_id,moneda_id').eq('business_id', businessId).or('banco_cuenta_id.not.is.null,moneda_id.not.is.null')
+    : { data: [] };
   if (conceptosVentaBanco && conceptosVentaBanco.length) {
     const { data: ventasConDatos } = await conDesde(sb.from('fz_ventas').select('id,fecha,recon_data').eq('business_id', businessId).lte('fecha', hastaFecha));
     (ventasConDatos||[]).forEach(v => {
       conceptosVentaBanco.forEach(cv => {
-        const monto = Number((v.recon_data||{})[cv.id]?.monto) || 0;
+        const entradaRecon = (v.recon_data||{})[cv.id];
+        let monto = Number(entradaRecon?.monto) || 0;
+        // Divisas: se valúan en pesos con el tipo de cambio del día guardado en la conciliación (si falta,
+        // el de reporte) — la MISMA regla con la que se valúa el depósito, para que la cuenta puente cierre.
+        if (monto && cv.moneda_id && !esMonedaPesos(cv.moneda_id)) {
+          const tcDia = Number(entradaRecon?.tc) || 0;
+          monto = redondearMoneda(monto * (tcDia > 0 ? tcDia : (Number(monedas.find(x=>x.id===cv.moneda_id)?.tc_reporte)||1)));
+        }
         if (monto) push({ modulo: 'Ventas', tipoOrigen: 'venta_recibido', id: v.id+':'+cv.id, fecha: v.fecha, referencia: `Venta ${v.fecha} — ${cv.nombre}`, detalle: '', cuenta: 'Ventas pendientes de depositar' }, 'sub:'+subVentasPendientesDepositar, 'activo', monto, 0);
       });
     });
@@ -18703,12 +18724,6 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   // de cada traspaso es la que ya está en pesos (un banco, siempre MXN en este sistema; o la moneda
   // de efectivo llamada MXN/Pesos) y se usa ESE monto para AMBAS piernas — cargo y abono quedan
   // idénticos y cierran exacto, sin ninguna conversión ni TC de por medio.
-  const { data: nombresMonedaQ } = await sb.from('fz_efectivo_monedas').select('id,nombre').eq('business_id', businessId);
-  const esMonedaPesos = (monedaId) => {
-    const m = (nombresMonedaQ||[]).find(x => x.id === monedaId);
-    const n = (m?.nombre||'').trim().toLowerCase();
-    return n.includes('mxn') || n.includes('peso');
-  };
   const montoPesosPorId = new Map(); // id del movimiento -> monto en pesos histórico de SU PAR (el mismo para ambas piernas)
   const registrarParaPareja = (rows) => {
     const porTraspasoId = new Map();
@@ -18803,20 +18818,24 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
           push({ ...base, cuenta: nombreOrigenCuenta }, claveOrigenCuenta, 'activo', 0, (m.equivalente_mxn_historico!==null && m.equivalente_mxn_historico!==undefined) ? Number(m.equivalente_mxn_historico) : Number(m.cargos));
           return;
         }
+        const valCargo = (!esBanco) ? valuacionEfectivo.get(m.id) : null;
         let cuentaContraria = 'Sin clasificar (revisar)', claveContraria = 'sin_clasificar', tipoContraria = 'gasto';
-        let subtotalContraria = Number(m.cargos);
+        let subtotalContraria = valCargo && m.tipo_salida !== 'traspaso' ? valCargo.mxn : Number(m.cargos);
         if (m.tipo_salida === 'gasto') {
           cuentaContraria = nombreSub(m.subcuenta_id); claveContraria = 'sub:'+m.subcuenta_id; tipoContraria = tipoDeSub(m.subcuenta_id);
-          subtotalContraria = m.aplica_iva ? (Number(m.subtotal)||0) : Number(m.cargos);
+          subtotalContraria = valCargo ? valCargo.mxn : (m.aplica_iva ? (Number(m.subtotal)||0) : Number(m.cargos));
         }
         else if (m.tipo_salida === 'cliente') { cuentaContraria = 'Clientes'; claveContraria = 'clientes'; tipoContraria = 'activo'; }
         else if (m.tipo_salida === 'traspaso') {
           cuentaContraria = 'Traspasos entre cuentas'; claveContraria = 'traspasos'; tipoContraria = 'activo';
-          if (!esBanco) subtotalContraria = montoPesosPorId.get(m.id) ?? Number(m.cargos);
+          if (!esBanco && modoFinanciero) subtotalContraria = montoPesosPorId.get(m.id) ?? (valCargo ? valCargo.mxn : Number(m.cargos));
         }
         push({ ...base, cuenta: cuentaContraria }, claveContraria, tipoContraria, subtotalContraria, 0);
         if (m.tipo_salida === 'gasto' && m.aplica_iva && Number(m.iva_monto)) push({ ...base, cuenta: 'IVA Acreditable — Pagado' }, 'sub:'+subIvaAcreditablePagadoGasto, 'activo', Number(m.iva_monto), 0);
-        push({ ...base, cuenta: nombreOrigenCuenta }, claveOrigenCuenta, 'activo', 0, Number(m.cargos));
+        push({ ...base, cuenta: nombreOrigenCuenta }, claveOrigenCuenta, 'activo', 0, valCargo ? valCargo.mxn : Number(m.cargos));
+        // Cambio de divisas: lo recibido en pesos contra el costo de los dólares que salieron.
+        if (valCargo && valCargo.fx > 0.004 && fxSub.ganancia) push({ ...base, cuenta: 'Ganancia cambiaria — divisas' }, 'sub:'+fxSub.ganancia, 'ingreso', 0, valCargo.fx);
+        else if (valCargo && valCargo.fx < -0.004 && fxSub.perdida) push({ ...base, cuenta: 'Pérdida cambiaria — divisas' }, 'sub:'+fxSub.perdida, 'gasto', -valCargo.fx, 0);
       }
       if (Number(m.depositos)) {
         // El Banco se contabiliza en MXN real. Si el movimiento ya tiene su snapshot histórico
@@ -18838,6 +18857,8 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
             }, 0);
           }
         }
+        const valDep = (!esBanco) ? valuacionEfectivo.get(m.id) : null;
+        if (valDep && (m.equivalente_mxn_historico === null || m.equivalente_mxn_historico === undefined)) montoBancoMxn = valDep.mxn;
         push({ ...base, cuenta: nombreOrigenCuenta }, claveOrigenCuenta, 'activo', montoBancoMxn, 0);
         if (m.tipo_entrada === 'cliente') {
           const cobros = cobrosPorOrigen[`${tablaOrigenNombre}|${m.id}`] || [];
@@ -18862,12 +18883,12 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
             push({ ...base, cuenta: 'Clientes' }, 'clientes', 'activo', 0, Number(m.depositos));
           }
         } else if (m.tipo_entrada === 'traspaso') {
-          const montoTraspasoEntrada = esBanco ? Number(m.depositos) : (montoPesosPorId.get(m.id) ?? Number(m.depositos));
+          const montoTraspasoEntrada = esBanco ? Number(m.depositos) : (valDep ? valDep.mxn : (modoFinanciero ? (montoPesosPorId.get(m.id) ?? Number(m.depositos)) : Number(m.depositos)));
           push({ ...base, cuenta: 'Traspasos entre cuentas' }, 'traspasos', 'activo', 0, montoTraspasoEntrada);
-        } else if (m.tipo_entrada === 'venta_conciliada') {
-          push({ ...base, cuenta: 'Ventas pendientes de depositar' }, 'sub:'+subVentasPendientesDepositar, 'activo', 0, Number(m.depositos));
+        } else if (m.tipo_entrada === 'venta_conciliada' && subVentasPendientesDepositar) {
+          push({ ...base, cuenta: 'Ventas pendientes de depositar' }, 'sub:'+subVentasPendientesDepositar, 'activo', 0, valDep ? valDep.mxn : Number(m.depositos));
         } else {
-          push({ ...base, cuenta: 'Sin clasificar (revisar)' }, 'sin_clasificar', 'gasto', 0, Number(m.depositos));
+          push({ ...base, cuenta: 'Sin clasificar (revisar)' }, 'sin_clasificar', 'gasto', 0, valDep ? valDep.mxn : Number(m.depositos));
         }
       }
     });
@@ -18877,6 +18898,69 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
     fetchTodasLasPaginas(() => conDesde(sb.from('fz_efectivo_mov').select('*').eq('business_id', businessId).lte('fecha', hastaFecha)).order('id')),
   ]);
   registrarParaPareja([...(bancosMovQ.data||[]), ...(efvoMovQ.data||[])]);
+
+  if (modoFinanciero) {
+    // --- Efectivo en divisas: valor en pesos de cada movimiento, a COSTO PROMEDIO ---------------------
+    // Entradas: al tipo de cambio guardado en su conciliación de Ventas (o, si es traspaso, al monto en
+    // pesos de su pareja; si no hay dato, al de reporte). Salidas: al costo promedio de lo que se tiene;
+    // si se cambiaron por pesos, la diferencia contra lo recibido es ganancia o pérdida cambiaria.
+    const monedasForaneas = monedas.filter(m => !esMonedaPesos(m.id));
+    const movsForaneos = (efvoMovQ.data||[]).filter(m => monedasForaneas.some(x => x.id === m.moneda_id));
+    const idsVentasDivisas = [...new Set(movsForaneos.filter(m => m.venta_id).map(m => m.venta_id))];
+    const reconPorVenta = {};
+    for (let i = 0; i < idsVentasDivisas.length; i += 100) {
+      const { data: vs } = await sb.from('fz_ventas').select('id,recon_data').in('id', idsVentasDivisas.slice(i, i + 100));
+      (vs||[]).forEach(v => { reconPorVenta[v.id] = v.recon_data || {}; });
+    }
+    for (const mon of monedasForaneas) {
+      const tcRep = Number(mon.tc_reporte) || 1;
+      let unidades = Number(mon.saldo_inicial) || 0;
+      let costo = unidades * tcRep;
+      movsForaneos.filter(m => m.moneda_id === mon.id)
+        .sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)) || String(a.created_at||'').localeCompare(String(b.created_at||'')) || String(a.id).localeCompare(String(b.id)))
+        .forEach(m => {
+          const dep = Number(m.depositos) || 0, car = Number(m.cargos) || 0;
+          if (dep) {
+            let mxn;
+            if (m.tipo_entrada === 'venta_conciliada' && m.venta_id) {
+              const tcDia = Number(reconPorVenta[m.venta_id]?.[m.concepto_venta_id]?.tc) || 0;
+              mxn = dep * (tcDia > 0 ? tcDia : tcRep);
+            } else if (m.tipo_entrada === 'traspaso' && montoPesosPorId.has(m.id)) mxn = montoPesosPorId.get(m.id);
+            else mxn = dep * tcRep;
+            mxn = redondearMoneda(mxn);
+            unidades += dep; costo += mxn;
+            if (['venta_conciliada', 'traspaso', 'otro'].includes(m.tipo_entrada || 'otro')) valuacionEfectivo.set(m.id, { mxn });
+          }
+          if (car) {
+            const promedio = unidades > 1e-7 ? costo / unidades : tcRep;
+            const costoSale = redondearMoneda(car * promedio);
+            unidades -= car; costo -= costoSale;
+            if (['traspaso', 'gasto', 'otro'].includes(m.tipo_salida || 'otro')) {
+              const v = { mxn: costoSale };
+              if (m.tipo_salida === 'traspaso' && montoPesosPorId.has(m.id)) v.fx = redondearMoneda(montoPesosPorId.get(m.id) - costoSale);
+              valuacionEfectivo.set(m.id, v);
+            }
+          }
+        });
+      unidadesEfectivoPorMoneda[mon.id] = Math.round(unidades * 100) / 100;
+    }
+    const valsFx = [...valuacionEfectivo.values()];
+    if (valsFx.some(v => (v.fx||0) > 0.004)) fxSub.ganancia = await subRealizacion('Ganancia cambiaria — divisas', 'ingreso');
+    if (valsFx.some(v => (v.fx||0) < -0.004)) fxSub.perdida = await subRealizacion('Pérdida cambiaria — divisas', 'gasto');
+
+    // --- Saldos iniciales de cuentas de banco y cajas de efectivo, con su contrapartida en Capital ------
+    // (hasta hoy el Balance los ignoraba y por eso el Efectivo no coincidía con la pantalla de Efectivo).
+    // Las divisas se valúan a su tipo de cambio de reporte, el mismo con el que se capturaron.
+    const empujarApertura = (clave, nombre, monto) => {
+      monto = redondearMoneda(monto);
+      if (Math.abs(monto) < 0.004) return;
+      const b0 = { modulo: 'Saldo inicial', tipoOrigen: 'saldo_inicial', id: 'saldo-inicial-' + clave, fecha: '1900-01-01', referencia: 'Saldo inicial', detalle: nombre };
+      if (monto > 0) { push({ ...b0, cuenta: nombre }, clave, 'activo', monto, 0); push({ ...b0, cuenta: 'Saldos iniciales' }, 'saldos_iniciales', 'capital', 0, monto); }
+      else { push({ ...b0, cuenta: nombre }, clave, 'activo', 0, -monto); push({ ...b0, cuenta: 'Saldos iniciales' }, 'saldos_iniciales', 'capital', -monto, 0); }
+    };
+    cuentasBanco.forEach(c => empujarApertura('banco:' + c.id, `Banco: ${c.nombre}`, Number(c.saldo_inicial) || 0));
+    monedas.forEach(mn => empujarApertura('efectivo:' + mn.id, `Efectivo: ${mn.nombre}`, (Number(mn.saldo_inicial) || 0) * (esMonedaPesos(mn.id) ? 1 : (Number(mn.tc_reporte) || 1))));
+  }
   procesarMovimientos(bancosMovQ.data, true, 'banco_mov', 'Movimiento de Banco', 'fz_bancos_mov');
   procesarMovimientos(efvoMovQ.data, false, 'efectivo_mov', 'Movimiento de Efectivo', 'fz_efectivo_mov');
 
@@ -18889,7 +18973,7 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   const traspasoGrupos = {};
   traspasos.forEach(m => { (traspasoGrupos[m.traspaso_id] = traspasoGrupos[m.traspaso_id] || []).push(m); });
 
-  return { filas, traspasoGrupos, polizas: polizaMap, mayores, subcuentas };
+  return { filas, traspasoGrupos, polizas: polizaMap, mayores, subcuentas, unidadesEfectivoPorMoneda };
 }
 
 // Agrupa por documento de origen y busca cuáles no cuadran internamente (Cargo ≠ Abono dentro
@@ -19435,7 +19519,7 @@ async function renderBalanceGeneral() {
   // Única fuente contable: el mismo motor consolidado que usan Libro Diario, Auxiliares y
   // Balanza. Balance General ya NO reconstruye nada por su cuenta desde facturas, bancos,
   // efectivo, proveedores o clientes — solo clasifica y presenta lo que el motor ya calculó.
-  const { filas } = await getLibroPartidaDobleConOrigen(b.id, hastaFecha);
+  const { filas, unidadesEfectivoPorMoneda: unidadesEfectivoBg } = await getLibroPartidaDobleConOrigen(b.id, hastaFecha);
   // Solo para PRESENTAR agrupado por cuenta mayor (con su árbol de subcuentas) — ningún total
   // del Balance depende de estas dos listas.
   const [subcuentasBg, mayoresBg] = await Promise.all([loadSubcuentas(b.id), loadCuentasMayor(b.id)]);
@@ -19457,7 +19541,11 @@ async function renderBalanceGeneral() {
 
   const cuentasActivo = cuentas.filter(c => c.tipo === 'activo');
   const detalleBancos = cuentasActivo.filter(esBanco).map(c => ({ clave: c.clave, nombre: nombreCorto(c), monto: c.saldoNeto }));
-  const detalleEfectivo = cuentasActivo.filter(esEfectivo).map(c => ({ clave: c.clave, nombre: nombreCorto(c), monto: c.saldoNeto }));
+  const detalleEfectivo = cuentasActivo.filter(esEfectivo).map(c => {
+    const u = (unidadesEfectivoBg || {})[c.clave.slice(9)];
+    const sufijo = (u !== undefined && u !== null) ? ` (${Number(u).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} en su moneda)` : '';
+    return { clave: c.clave, nombre: nombreCorto(c) + sufijo, monto: c.saldoNeto };
+  });
   const totalBancos = detalleBancos.reduce((s,x)=>s+x.monto,0);
   const totalEfectivo = detalleEfectivo.reduce((s,x)=>s+x.monto,0);
   const cuentasPorCobrar = cuentasActivo.find(c => c.clave === 'clientes')?.saldoNeto || 0;
@@ -19476,7 +19564,7 @@ async function renderBalanceGeneral() {
   // El Resultado del ejercicio sigue viniendo del rollup de Estado de Resultados — es un concepto
   // de P&L, no una cuenta de mayor del Balance, y Balanza ya valida que ambos coincidan exacto.
   const utilidadAcumulada = await computeUtilidadAcumulada(b.id, hastaYm);
-  const resultadoEjerciciosAnteriores = await computeResultadoEjerciciosAnteriores(b.id, hastaYm);
+  const resultadoEjerciciosAnteriores = ventasAfectaFueraDeSuRegistro(b.id) ? await computeResultadoEjerciciosAnteriores(b.id, hastaYm) : 0;
   const totalCapital = totalCapitalCuentas + utilidadAcumulada + resultadoEjerciciosAnteriores;
 
   const totalPasivoCapital = totalPasivo + totalCapital;
