@@ -18450,6 +18450,10 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   // Todo lo que sigue marcado "solo financiero" NO se ejecuta en negocios Fiscal Contable: su
   // contabilidad queda exactamente como estaba.
   const modoFinanciero = ventasAfectaFueraDeSuRegistro(businessId);
+  // Crédito a favor que NACE de un pago en exceso (su contrapartida ya es la salida del banco/caja): se
+  // reconoce por estar ligado a su pago o por su leyenda. Las notas de crédito de proveedor sí son
+  // distintas: bajan lo que se debe y deben reducir el gasto aunque no estén desglosadas.
+  const esCreditoPorPagoExceso = (f) => !!f.origen_id || String(f.factura || '').startsWith('Crédito a favor (pago del');
   const esMonedaPesos = (monedaId) => {
     const n = (monedas.find(x => x.id === monedaId)?.nombre || '').trim().toLowerCase();
     return n.includes('mxn') || n.includes('peso');
@@ -18584,7 +18588,7 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
     // en la Balanza, en vez de dejar el documento con un solo lado. Una factura totalmente desglosada
     // no cambia (la diferencia es 0). Las provisiones de propina (origen_venta_id) se excluyen: no son
     // un gasto, su contrapartida se trata aparte.
-    if (!f.origen_venta_id && modoFinanciero && Number(f.importe) > 0) {
+    if (!f.origen_venta_id && modoFinanciero && !(Number(f.importe) < 0 && esCreditoPorPagoExceso(f))) {
       const drFactura = desgloseLineas(f.desglose).reduce((a, l) => a + (Number(l.monto)||0) * tc, 0)
         + ((f.aplica_iva && Number(f.iva_monto)) ? Number(f.iva_monto) * tc : 0);
       const crFactura = ((f.aplica_retencion && Number(f.retencion_isr_monto)) ? Number(f.retencion_isr_monto) * tc : 0)
