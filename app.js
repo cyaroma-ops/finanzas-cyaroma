@@ -18501,7 +18501,28 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
     // expresa en MXN multiplicando por ese TC. Para MXN, tc=1 y el resultado es idéntico a antes.
     const tc = Number(f.tipo_cambio) || 1;
     const base = { modulo: 'Factura de Proveedor', tipoOrigen: 'factura_proveedor', id: f.id, fecha: f.fecha, referencia: `${f.factura || 's/f'}${f.moneda && f.moneda!=='MXN'?` (${f.moneda} ${fmt(f.importe)} @ TC ${tc})`:''}`, detalle: f.proveedor || '' };
-    desgloseLineas(f.desglose).forEach(linea => push({ ...base, cuenta: nombreSub(linea.subcuenta_id) }, 'sub:'+linea.subcuenta_id, tipoDeSub(linea.subcuenta_id), (Number(linea.monto)||0) * tc, 0));
+    // En negocios financieros el IVA se puede desglosar en la factura (una línea a una cuenta de IVA
+    // del Activo), pero la contabilidad financiera toma el TOTAL: esa línea se suma al gasto de la
+    // misma factura, repartida proporcionalmente entre sus demás líneas — el IVA nunca queda como
+    // cuenta de Activo ni sale del gasto. Fiscal Contable no cambia (ahí el IVA acreditable sí va aparte).
+    let lineasDesglose = desgloseLineas(f.desglose);
+    if (ventasAfectaFueraDeSuRegistro(businessId)) {
+      const esLineaIva = (l) => /^\s*iva\b/i.test(nombreSub(l.subcuenta_id)) && tipoDeSub(l.subcuenta_id) === 'activo';
+      const ivaLineas = lineasDesglose.filter(esLineaIva), otrasLineas = lineasDesglose.filter(l => !esLineaIva(l));
+      const ivaTotal = ivaLineas.reduce((a, l) => a + (Number(l.monto)||0), 0);
+      const baseOtras = otrasLineas.reduce((a, l) => a + (Number(l.monto)||0), 0);
+      if (ivaLineas.length && otrasLineas.length && baseOtras > 0 && Math.abs(ivaTotal) > 0.004) {
+        let repartido = 0;
+        lineasDesglose = otrasLineas.map((l, i) => {
+          const monto = Number(l.monto) || 0;
+          const esUltima = i === otrasLineas.length - 1;
+          const extra = esUltima ? redondearMoneda(ivaTotal - repartido) : redondearMoneda(ivaTotal * monto / baseOtras);
+          if (!esUltima) repartido = redondearMoneda(repartido + extra);
+          return { ...l, monto: redondearMoneda(monto + extra) };
+        });
+      }
+    }
+    lineasDesglose.forEach(linea => push({ ...base, cuenta: nombreSub(linea.subcuenta_id) }, 'sub:'+linea.subcuenta_id, tipoDeSub(linea.subcuenta_id), (Number(linea.monto)||0) * tc, 0));
     if (f.aplica_iva && Number(f.iva_monto)) {
       if (esRealizacionActiva(f.fecha)) { const id = await subRealizacion('IVA Acreditable — Pendiente de pago', 'activo'); push({ ...base, cuenta: 'IVA Acreditable — Pendiente de pago' }, 'sub:'+id, 'activo', (Number(f.iva_monto)) * tc, 0); }
       else push({ ...base, cuenta: 'IVA Acreditable' }, 'iva_acreditable', 'activo', (Number(f.iva_monto)) * tc, 0);
