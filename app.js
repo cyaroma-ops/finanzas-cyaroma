@@ -18259,6 +18259,35 @@ async function computeSaldoCuentaMayorPolizas(businessId, cuentaMayorId, subcuen
   return { subs: raices, total: raices.reduce((s,x)=>s+x.total,0) };
 }
 
+// Resultado de los ejercicios ANTERIORES al del Balance que se está viendo y que todavía no se han
+// cerrado con póliza de cierre: el Balance suma todo el tiempo (Activo/Pasivo), así que su resultado
+// debe estar también en Capital. Un año ya cerrado se omite — su resultado ya vive en Capital por la
+// propia póliza de cierre (es_cierre_anual), y sumarlo otra vez lo duplicaría. Usa la MISMA fuente
+// del Estado de Resultados para cada año (computeUtilidadAcumulada), nunca un cálculo aparte.
+async function computeResultadoEjerciciosAnteriores(businessId, hastaYm) {
+  const anioActual = Number(hastaYm.slice(0, 4));
+  const tablas = ['fz_proveedores', 'fz_ventas', 'fz_bancos_mov', 'fz_efectivo_mov', 'fz_polizas'];
+  // Se busca la fecha más antigua DENTRO de una ventana de 10 años: una fecha mal capturada (ej. 0023)
+  // no debe ocultar los datos legítimos de años recientes ni disparar cientos de cálculos.
+  const desdeVentana = `${anioActual - 10}-01-01`;
+  const mins = await Promise.all(tablas.map(t => sb.from(t).select('fecha').eq('business_id', businessId).gte('fecha', desdeVentana).order('fecha', { ascending: true }).limit(1)));
+  const anios = mins.map(r => r.data?.[0]?.fecha).filter(Boolean).map(f => Number(String(f).slice(0, 4)));
+  if (!anios.length) return 0;
+  const primerAnio = Math.min(...anios);
+  if (primerAnio >= anioActual) return 0;
+  const { data: cierres } = await sb.from('fz_polizas').select('ejercicio_cierre').eq('business_id', businessId).eq('es_cierre_anual', true);
+  const cerrados = new Set((cierres || []).map(c => Number(c.ejercicio_cierre)));
+  let total = 0;
+  for (let y = primerAnio; y < anioActual; y++) {
+    if (cerrados.has(y)) continue;
+    // solo se calcula un año si realmente tiene información (evita correr el motor completo en vano)
+    const conteos = await Promise.all(tablas.map(t => sb.from(t).select('id', { count: 'exact', head: true }).eq('business_id', businessId).gte('fecha', `${y}-01-01`).lte('fecha', `${y}-12-31`)));
+    if (!conteos.some(r => (r.count || 0) > 0)) continue;
+    total += await computeUtilidadAcumulada(businessId, `${y}-12`);
+  }
+  return redondearMoneda(total);
+}
+
 async function computeUtilidadAcumulada(businessId, hastaYm) {
   const year = hastaYm.slice(0,4);
   const periodo = { start: `${year}-01-01`, end: monthBounds(hastaYm).end, mesStart: `${year}-01`, mesEnd: hastaYm };
@@ -19447,7 +19476,8 @@ async function renderBalanceGeneral() {
   // El Resultado del ejercicio sigue viniendo del rollup de Estado de Resultados — es un concepto
   // de P&L, no una cuenta de mayor del Balance, y Balanza ya valida que ambos coincidan exacto.
   const utilidadAcumulada = await computeUtilidadAcumulada(b.id, hastaYm);
-  const totalCapital = totalCapitalCuentas + utilidadAcumulada;
+  const resultadoEjerciciosAnteriores = await computeResultadoEjerciciosAnteriores(b.id, hastaYm);
+  const totalCapital = totalCapitalCuentas + utilidadAcumulada + resultadoEjerciciosAnteriores;
 
   const totalPasivoCapital = totalPasivo + totalCapital;
   const diferenciaCuadre = totalActivo - totalPasivoCapital;
@@ -19536,6 +19566,7 @@ async function renderBalanceGeneral() {
 
           <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">CAPITAL</td></tr>
           ${grupoBalanceHtml(cuentasCapital)}
+          ${Math.abs(resultadoEjerciciosAnteriores) > 0.004 ? `<tr><td style="padding-left:22px;">Resultados de ejercicios anteriores</td><td class="num">${fmtSigno(resultadoEjerciciosAnteriores)}</td></tr>` : ''}
           <tr><td style="padding-left:22px;">Utilidad acumulada del ejercicio ${hastaYm.slice(0,4)}</td><td class="num">${fmtSigno(utilidadAcumulada)}</td></tr>
           <tr class="total-row"><td>Total Capital</td><td class="num">${fmtSigno(totalCapital)}</td></tr>
 
