@@ -1595,7 +1595,27 @@ async function renderVentas() {
     return;
   }
 
+  // Alerta (solo informa, no cambia ningún cálculo): días donde lo vendido por categorías no coincide con lo
+  // que reportó el sistema. Esa diferencia no aparece en ninguna columna de recibido y entra al Estado de
+  // Resultados como ingreso sin dinero que lo respalde. Se avisa desde $0.50 para no alarmar por centavos
+  // de redondeo del punto de venta; los días sin dato del sistema no se comparan.
+  const diasDifCategorias = rows.map(r => {
+    const d = computeRowDiffs(r, conceptosVenta, porCat, conceptosSistema);
+    const sistema = d.sistemaEfvo + d.sistemaTarj + d.sistemaCxc;
+    return { fecha: r.fecha, sistema, dif: Math.round((d.totalVenta - sistema) * 100) / 100 };
+  }).filter(x => Math.abs(x.sistema) > 0.004 && Math.abs(x.dif) >= 0.5);
+  const alertaDifCategorias = diasDifCategorias.length ? `
+    <div class="card" style="border-left:3px solid var(--red);margin-bottom:12px;">
+      <div style="padding:10px 14px;font-size:13px;line-height:1.5;">
+        <strong style="color:var(--red);">⚠ ${diasDifCategorias.length} día${diasDifCategorias.length===1?'':'s'} con diferencia entre ventas por categoría y sistema</strong>
+        (suman ${fmt(diasDifCategorias.reduce((a,x)=>a+x.dif,0))}):
+        ${diasDifCategorias.slice(0, 8).map(x => `${fechaCorta(x.fecha)} <strong>${x.dif>0?'+':''}${fmt(x.dif)}</strong>`).join(' · ')}${diasDifCategorias.length > 8 ? ` · y ${diasDifCategorias.length - 8} más` : ''}.
+        <span style="color:var(--muted);">Revisa que las categorías coincidan con el reporte del punto de venta.</span>
+      </div>
+    </div>` : '';
+
   el.innerHTML = `
+    ${alertaDifCategorias}
     <div class="kpi-grid">
       <div class="kpi"><div class="label">Total ventas del mes</div><div class="value num">${fmt(totalGeneral)}</div></div>
       <div class="kpi"><div class="label">Gastos capturados en Ventas</div><div class="value num red">${fmt(gastosMes)}</div></div>
