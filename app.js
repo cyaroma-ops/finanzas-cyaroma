@@ -18516,6 +18516,21 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
       if (esRealizacionActiva(f.fecha)) { const id = await subRealizacion(`Retención IVA — ${cat} — Pendiente de pago`, 'pasivo'); push({ ...base, cuenta: `Retención IVA — ${cat} — Pendiente de pago` }, 'sub:'+id, 'pasivo', 0, (Number(f.retencion_iva_monto)) * tc); }
       else push({ ...base, cuenta: `Retención IVA — ${cat}` }, 'ret_iva:'+cat, 'pasivo', 0, (Number(f.retencion_iva_monto)) * tc);
     }
+    // Factura sin desglose (o desglosada a medias): lo que falta para que la factura cuadre se carga
+    // a gasto "sin clasificar" — queda visible en Resultados ("Otros gastos sin subcuenta asignada") y
+    // en la Balanza, en vez de dejar el documento con un solo lado. Una factura totalmente desglosada
+    // no cambia (la diferencia es 0). Las provisiones de propina (origen_venta_id) se excluyen: no son
+    // un gasto, su contrapartida se trata aparte.
+    if (!f.origen_venta_id) {
+      const drFactura = desgloseLineas(f.desglose).reduce((a, l) => a + (Number(l.monto)||0) * tc, 0)
+        + ((f.aplica_iva && Number(f.iva_monto)) ? Number(f.iva_monto) * tc : 0);
+      const crFactura = ((f.aplica_retencion && Number(f.retencion_isr_monto)) ? Number(f.retencion_isr_monto) * tc : 0)
+        + ((f.aplica_retencion && Number(f.retencion_iva_monto)) ? Number(f.retencion_iva_monto) * tc : 0)
+        + (Number(f.importe)||0) * tc;
+      const faltante = redondearMoneda(crFactura - drFactura);
+      if (faltante > 0.004) push({ ...base, cuenta: 'Sin clasificar (revisar)' }, 'sin_clasificar', 'gasto', faltante, 0);
+      else if (faltante < -0.004) push({ ...base, cuenta: 'Sin clasificar (revisar)' }, 'sin_clasificar', 'gasto', 0, -faltante);
+    }
     push({ ...base, cuenta: 'Proveedores' }, 'proveedores', 'pasivo', 0, (Number(f.importe)||0) * tc);
   }
 
