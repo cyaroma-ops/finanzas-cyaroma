@@ -1612,7 +1612,7 @@ async function renderVentas() {
           <button class="btn btn-ghost btn-sm" id="openConceptosBtn">${iconoConfigurar()}Conceptos de recibido</button>
           <button class="btn btn-ghost btn-sm" id="descargarPlantillaBtn">Descargar plantilla</button>
           <button class="btn btn-ghost btn-sm" id="importVentasBtn">Importar ventas (Excel)</button>
-          <button class="btn btn-ghost btn-sm" id="materializarHistoricoVentasBtn">Materializar depósitos ya conciliados</button>
+          ${ventasAfectaFueraDeSuRegistro(b.id) ? '<button class="btn btn-ghost btn-sm" id="materializarHistoricoVentasBtn">Materializar depósitos ya conciliados</button>' : ''}
           <button class="btn btn-gold btn-sm" id="addVentaRow">+ Agregar día</button>
         </div>
       </div>
@@ -1668,7 +1668,8 @@ async function renderVentas() {
   document.getElementById('openSistemaConceptosBtn').addEventListener('click', () => openSistemaConceptosModal(b.id));
   document.getElementById('descargarPlantillaBtn').addEventListener('click', () => descargarPlantillaVentas(b.id));
   document.getElementById('importVentasBtn').addEventListener('click', () => openImportExcelModal('ventas', b.id, renderVentas));
-  document.getElementById('materializarHistoricoVentasBtn').addEventListener('click', async () => {
+  const btnMaterializar = document.getElementById('materializarHistoricoVentasBtn'); // solo existe en negocios financieros
+  if (btnMaterializar) btnMaterializar.addEventListener('click', async () => {
     const btn = document.getElementById('materializarHistoricoVentasBtn');
     const ok = confirm('Esto revisa todas las ventas ya conciliadas (tarjetas/efectivo vinculados a una cuenta) y crea, para cada una, el movimiento real correspondiente en Bancos/Efectivo — necesario para que Balance General y Auxiliares los reflejen correctamente.\n\nEs seguro repetirlo: nunca duplica algo que ya se haya materializado antes.\n\n¿Continuar?');
     if (!ok) return;
@@ -18583,7 +18584,7 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
     // en la Balanza, en vez de dejar el documento con un solo lado. Una factura totalmente desglosada
     // no cambia (la diferencia es 0). Las provisiones de propina (origen_venta_id) se excluyen: no son
     // un gasto, su contrapartida se trata aparte.
-    if (!f.origen_venta_id && modoFinanciero) {
+    if (!f.origen_venta_id && modoFinanciero && Number(f.importe) > 0) {
       const drFactura = desgloseLineas(f.desglose).reduce((a, l) => a + (Number(l.monto)||0) * tc, 0)
         + ((f.aplica_iva && Number(f.iva_monto)) ? Number(f.iva_monto) * tc : 0);
       const crFactura = ((f.aplica_retencion && Number(f.retencion_isr_monto)) ? Number(f.retencion_isr_monto) * tc : 0)
@@ -18745,6 +18746,31 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
     });
   };
 
+  // Pago a proveedor que salió del banco/caja por MÁS de lo aplicado a facturas (pago en exceso o nota de
+  // crédito todavía sin aplicar), sin un crédito a favor que ya lo cubra. Sin esto la salida quedaba con
+  // un solo lado y el Balance descuadrado; ahora el excedente baja el saldo de Proveedores (igual que un
+  // pago sin facturas aplicadas): la diferencia queda a favor dentro del mismo total, sin cuentas nuevas.
+  // Un crédito a favor ya creado (ligado al movimiento, o con la leyenda de ese día) se descuenta para no
+  // contar dos veces. Solo negocios financieros y solo pagos en pesos.
+  const creditosAFavorProv = (facturasProv||[]).filter(f => Number(f.importe) < 0);
+  const excesoPagoProveedor = (m, tablaNombre, esBancoMov) => {
+    if (!modoFinanciero || m.tipo_salida !== 'proveedor') return 0;
+    if (!esBancoMov && !esMonedaPesos(m.moneda_id)) return 0;
+    const pagos = pagosPorOrigen[`${tablaNombre}|${m.id}`] || [];
+    if (!pagos.length) return 0;
+    const aplicadoMxn = pagos.reduce((a, p) => {
+      const fp = facturasProvMapGlobal[p.factura_id];
+      const tcOrig = fp ? (Number(fp.tipo_cambio) || 1) : 1;
+      return a + (Number(p.monto) || 0) * (Number(p.tipo_cambio) || tcOrig);
+    }, 0);
+    const salidaCaja = (m.equivalente_mxn_historico !== null && m.equivalente_mxn_historico !== undefined) ? Number(m.equivalente_mxn_historico) : Number(m.cargos);
+    const cubierto = creditosAFavorProv
+      .filter(c => (c.origen_tabla === tablaNombre && c.origen_id === m.id) || c.factura === `Crédito a favor (pago del ${m.fecha})`)
+      .reduce((a, c) => a + Math.abs(Number(c.importe) || 0) * (Number(c.tipo_cambio) || 1), 0);
+    const exceso = redondearMoneda(salidaCaja - aplicadoMxn - cubierto);
+    return exceso > 0.004 ? exceso : 0;
+  };
+
   const procesarMovimientos = (movs, esBanco, tipoOrigenTag, moduloTag, tablaOrigenNombre) => {
     (movs||[]).forEach(m => {
       const claveOrigenCuenta = esBanco ? 'banco:'+m.cuenta_id : 'efectivo:'+m.moneda_id;
@@ -18815,6 +18841,8 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
             // seguridad se liquida tal cual, sin inventar un tipo de cambio que no existe.
             push({ ...base, cuenta: 'Proveedores' }, 'proveedores', 'pasivo', Number(m.cargos), 0);
           }
+          const excesoPago = excesoPagoProveedor(m, tablaOrigenNombre, esBanco);
+          if (excesoPago > 0) push({ ...base, cuenta: 'Proveedores' }, 'proveedores', 'pasivo', excesoPago, 0);
           push({ ...base, cuenta: nombreOrigenCuenta }, claveOrigenCuenta, 'activo', 0, (m.equivalente_mxn_historico!==null && m.equivalente_mxn_historico!==undefined) ? Number(m.equivalente_mxn_historico) : Number(m.cargos));
           return;
         }
@@ -19611,12 +19639,13 @@ async function renderBalanceGeneral() {
         .sort((a,b) => ((subcuentasBg.find(x=>x.id===a)?.orden)||0) - ((subcuentasBg.find(x=>x.id===b)?.orden)||0)).map(construir);
       propios.forEach((_, id) => { if (!usados.has(id)) raices.push(construir(id)); }); // salvaguarda: nunca se pierde un saldo
       const totalMayor = raices.reduce((a,r) => a + r.total, 0);
+      const mismaQueSuUnicaSub = raices.length === 1 && !raices[0].hijos.length && raices[0].nombre === mayor.nombre;
       html += `<tr class="bg-mayor-row" data-mayor="${mayor.id}" data-nombre="${escAttr(mayor.nombre)}" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">${mayor.nombre}${iconoAbrir()}</td><td class="num" style="font-weight:600;">${fmtNeg(totalMayor)}</td></tr>`;
       const pintar = (nodo, nivel) => {
         html += `<tr class="bg-sub-row" data-sub="${nodo.id}" data-nombre="${escAttr(nodo.nombre)}" style="cursor:pointer;"><td style="padding-left:${22 + nivel * 18}px;color:var(--muted);font-size:12.5px;">${nodo.nombre}${iconoAbrir()}</td><td class="num">${fmtNeg(nodo.total)}</td></tr>`;
         nodo.hijos.forEach(h => pintar(h, nivel + 1));
       };
-      raices.forEach(r => pintar(r, 1));
+      if (!mismaQueSuUnicaSub) raices.forEach(r => pintar(r, 1));
     });
     return html + sueltas.map(filaCuentaBalance).join('');
   };
