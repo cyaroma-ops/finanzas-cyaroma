@@ -18757,6 +18757,28 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   // Un crédito a favor ya creado (ligado al movimiento, o con la leyenda de ese día) se descuenta para no
   // contar dos veces. Solo negocios financieros y solo pagos en pesos.
   const creditosAFavorProv = (facturasProv||[]).filter(f => Number(f.importe) < 0);
+  const creditosUsados = new Set();
+  // Créditos a favor que nacen de ESTE pago: ligados a él, o con la leyenda "Crédito a favor (pago del
+  // <fecha>)" de su misma fecha (los anteriores a que se guardara la liga). Cada crédito se asigna a un
+  // solo pago. Si se conoce el excedente esperado (pago con facturas aplicadas), un crédito por leyenda
+  // solo cuenta si coincide con ese excedente (±0.02); si el pago no tiene facturas aplicadas, basta que
+  // no exceda lo pagado. Los créditos siguen bajando Proveedores por sí mismos: aquí solo se evita bajar
+  // dos veces lo mismo (una por el pago y otra por el crédito).
+  const creditosDeEstePago = (m, tablaNombre, excedenteEsperado) => {
+    let total = 0;
+    creditosAFavorProv.forEach(c => {
+      if (creditosUsados.has(c.id)) return;
+      const monto = Math.abs(Number(c.importe) || 0) * (Number(c.tipo_cambio) || 1);
+      const ligado = c.origen_tabla === tablaNombre && c.origen_id === m.id;
+      const porLeyenda = c.factura === `Crédito a favor (pago del ${m.fecha})`;
+      if (!ligado && !porLeyenda) return;
+      if (!ligado && excedenteEsperado !== null && Math.abs(monto - excedenteEsperado) > 0.02) return;
+      if (!ligado && excedenteEsperado === null && monto > Number(m.cargos) + 0.004) return;
+      creditosUsados.add(c.id);
+      total += monto;
+    });
+    return total;
+  };
   const excesoPagoProveedor = (m, tablaNombre, esBancoMov) => {
     if (!modoFinanciero || m.tipo_salida !== 'proveedor') return 0;
     if (!esBancoMov && !esMonedaPesos(m.moneda_id)) return 0;
@@ -18768,10 +18790,9 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
       return a + (Number(p.monto) || 0) * (Number(p.tipo_cambio) || tcOrig);
     }, 0);
     const salidaCaja = (m.equivalente_mxn_historico !== null && m.equivalente_mxn_historico !== undefined) ? Number(m.equivalente_mxn_historico) : Number(m.cargos);
-    const cubierto = creditosAFavorProv
-      .filter(c => (c.origen_tabla === tablaNombre && c.origen_id === m.id) || c.factura === `Crédito a favor (pago del ${m.fecha})`)
-      .reduce((a, c) => a + Math.abs(Number(c.importe) || 0) * (Number(c.tipo_cambio) || 1), 0);
-    const exceso = redondearMoneda(salidaCaja - aplicadoMxn - cubierto);
+    const excedente = redondearMoneda(salidaCaja - aplicadoMxn);
+    if (excedente <= 0.004) return 0;
+    const exceso = redondearMoneda(excedente - creditosDeEstePago(m, tablaNombre, excedente));
     return exceso > 0.004 ? exceso : 0;
   };
 
@@ -18843,7 +18864,10 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
           } else {
             // Pago sin registro en fz_pagos_aplicados — no debería pasar en el flujo normal; por
             // seguridad se liquida tal cual, sin inventar un tipo de cambio que no existe.
-            push({ ...base, cuenta: 'Proveedores' }, 'proveedores', 'pasivo', Number(m.cargos), 0);
+            // Si ese pago ya tiene su crédito a favor, el crédito baja Proveedores por sí mismo: el pago solo
+            // baja lo que el crédito no cubre, para no bajar dos veces los mismos pesos.
+            const cubiertoPorCredito = (modoFinanciero && (esBanco || esMonedaPesos(m.moneda_id))) ? creditosDeEstePago(m, tablaOrigenNombre, null) : 0;
+            push({ ...base, cuenta: 'Proveedores' }, 'proveedores', 'pasivo', Number(m.cargos) - cubiertoPorCredito, 0);
           }
           const excesoPago = excesoPagoProveedor(m, tablaOrigenNombre, esBanco);
           if (excesoPago > 0) push({ ...base, cuenta: 'Proveedores' }, 'proveedores', 'pasivo', excesoPago, 0);
