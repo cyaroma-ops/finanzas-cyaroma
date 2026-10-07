@@ -19135,16 +19135,52 @@ async function getLibroDiario(businessId, startDate, endDate) {
   return { filas, totalCargo, totalAbono };
 }
 
-async function abrirModalMovimientosCuenta(nombre, subcuentaIds, businessId, nombresPorId = {}) {
+// Movimientos de una o varias subcuentas (incluidas sus sub-subcuentas) leídos del motor único
+// getLibroPartidaDobleConOrigen — exactamente la misma fuente que Balance General. Devuelve la misma
+// forma que la función antigua getMovimientosCuenta (que solo veía pólizas y facturas de proveedor
+// y por eso ya no debe usarse): { filas, saldoInicial, saldoFinal, saldoInicialPorSubcuenta }.
+async function getMovimientosCuentaMotor(businessId, subcuentaIds, startDate, endDate) {
+  const hasta = endDate || todayStr();
+  const { filas: todas } = await getLibroPartidaDobleConOrigen(businessId, hasta);
+  const claves = new Set(subcuentaIds.map(id => 'sub:' + id));
+  const referenciaDe = (f) => {
+    if (f.tipoOrigen === 'poliza') return f.referencia;
+    if (f.tipoOrigen === 'factura_proveedor') return `Factura proveedor ${f.referencia}`;
+    if (f.tipoOrigen === 'factura_cliente') return `Factura cliente ${f.referencia}`;
+    return f.referencia;
+  };
+  const origenDe = (f) => {
+    const mapa = {
+      poliza: { tipo: 'poliza' }, factura_proveedor: { tipo: 'proveedor' }, factura_cliente: { tipo: 'factura_cliente' },
+      banco_mov: { tipo: 'bancos', cuentaId: f.cuentaId }, efectivo_mov: { tipo: 'efectivo', monedaId: f.monedaId },
+    };
+    return { ...(mapa[f.tipoOrigen] || {}), id: f.id, fecha: f.fecha };
+  };
+  const saldoInicialPorSubcuenta = {};
+  subcuentaIds.forEach(id => { saldoInicialPorSubcuenta[id] = 0; });
+  const filas = [];
+  todas.filter(f => claves.has(f.clave) && f.fecha <= hasta).forEach(f => {
+    const id = f.clave.slice(4);
+    if (startDate && f.fecha < startDate) { saldoInicialPorSubcuenta[id] += f.cargo - f.abono; return; }
+    filas.push({ fecha: f.fecha, subcuentaId: id, proveedor: referenciaDe(f) || '—', descripcion: f.detalle || referenciaDe(f) || '—', cargo: f.cargo, abono: f.abono, origen: origenDe(f) });
+  });
+  filas.sort((a, b) => a.fecha.localeCompare(b.fecha));
+  const saldoInicial = Object.values(saldoInicialPorSubcuenta).reduce((s, x) => s + x, 0);
+  let saldo = saldoInicial;
+  filas.forEach(f => { saldo += f.cargo - f.abono; f.saldo = saldo; });
+  return { filas, saldoInicial, saldoFinal: saldo, saldoInicialPorSubcuenta };
+}
+
+async function abrirModalMovimientosCuenta(nombre, subcuentaIds, businessId, nombresPorId = {}, hastaInicial = null) {
   document.getElementById('movCuentaTitulo').textContent = `Movimientos de: ${nombre}`;
   document.getElementById('movCuentaDesde').value = '';
-  document.getElementById('movCuentaHasta').value = todayStr();
+  document.getElementById('movCuentaHasta').value = hastaInicial || todayStr();
   let ultimoResultado = null;
   const buscar = async () => {
     const desde = document.getElementById('movCuentaDesde').value || null;
     const hasta = document.getElementById('movCuentaHasta').value || todayStr();
     document.getElementById('movCuentaLista').innerHTML = `<tr><td colspan="6" class="empty">Calculando…</td></tr>`;
-    const { filas, saldoInicial, saldoFinal, saldoInicialPorSubcuenta } = await getMovimientosCuenta(businessId, subcuentaIds, desde, hasta);
+    const { filas, saldoInicial, saldoFinal, saldoInicialPorSubcuenta } = await getMovimientosCuentaMotor(businessId, subcuentaIds, desde, hasta);
     ultimoResultado = { filas, saldoInicial, saldoFinal, desde, hasta, saldoInicialPorSubcuenta };
     document.getElementById('movCuentaResumen').innerHTML = `
       <div style="display:flex;justify-content:space-between;"><span>Saldo inicial${desde?' (antes de '+desde+')':''}</span><strong>${fmt(saldoInicial)}</strong></div>
@@ -19335,6 +19371,9 @@ async function renderBalanceGeneral() {
   // Balanza. Balance General ya NO reconstruye nada por su cuenta desde facturas, bancos,
   // efectivo, proveedores o clientes — solo clasifica y presenta lo que el motor ya calculó.
   const { filas } = await getLibroPartidaDobleConOrigen(b.id, hastaFecha);
+  // Solo para PRESENTAR agrupado por cuenta mayor (con su árbol de subcuentas) — ningún total
+  // del Balance depende de estas dos listas.
+  const [subcuentasBg, mayoresBg] = await Promise.all([loadSubcuentas(b.id), loadCuentasMayor(b.id)]);
   const porClave = {};
   filas.forEach(f => {
     if (!['activo','pasivo','capital'].includes(f.tipo)) return; // Ingresos/Gastos son de P&L, no de Balance General
@@ -19384,6 +19423,50 @@ async function renderBalanceGeneral() {
       <td class="num">${fmtNeg(c.saldoNeto)}</td>
     </tr>`;
 
+  // Presentación agrupada por cuenta mayor → subcuentas → sub-subcuentas. Solo reacomoda lo que ya
+  // se calculó: cada saldo aparece una sola vez, y la suma de lo mostrado es la misma de siempre.
+  const escAttr = (t) => String(t).replace(/"/g, '&quot;');
+  const grupoBalanceHtml = (lista) => {
+    const sueltas = [];
+    const propiosPorMayor = new Map(); // mayorId -> Map(subId -> saldoNeto)
+    lista.forEach(c => {
+      const id = c.clave.startsWith('sub:') ? c.clave.slice(4) : null;
+      const sub = id ? subcuentasBg.find(s => s.id === id) : null;
+      const mayor = sub ? mayoresBg.find(m => m.id === sub.cuenta_mayor_id) : null;
+      if (!sub || !mayor) { sueltas.push(c); return; }
+      if (!propiosPorMayor.has(mayor.id)) propiosPorMayor.set(mayor.id, new Map());
+      propiosPorMayor.get(mayor.id).set(sub.id, (propiosPorMayor.get(mayor.id).get(sub.id) || 0) + c.saldoNeto);
+    });
+    let html = '';
+    mayoresBg.filter(m => propiosPorMayor.has(m.id)).forEach(mayor => {
+      const propios = propiosPorMayor.get(mayor.id);
+      const mostrar = new Set(propios.keys());
+      propios.forEach((_, id) => { // incluir ancestros aunque no tengan saldo propio
+        const vis = new Set(); let cur = subcuentasBg.find(s => s.id === id);
+        while (cur && cur.subcuenta_padre_id && !vis.has(cur.id)) { vis.add(cur.id); mostrar.add(cur.subcuenta_padre_id); cur = subcuentasBg.find(s => s.id === cur.subcuenta_padre_id); }
+      });
+      const usados = new Set();
+      const construir = (id) => {
+        usados.add(id);
+        const s = subcuentasBg.find(x => x.id === id);
+        const hijos = subcuentasBg.filter(h => h.subcuenta_padre_id === id && mostrar.has(h.id) && !usados.has(h.id)).sort((a,b) => (a.orden||0)-(b.orden||0)).map(h => construir(h.id));
+        const propio = propios.get(id) || 0;
+        return { id, nombre: s.nombre, total: propio + hijos.reduce((a,h) => a + h.total, 0), hijos };
+      };
+      const raices = [...mostrar].filter(id => { const s = subcuentasBg.find(x => x.id === id); return s && (!s.subcuenta_padre_id || !mostrar.has(s.subcuenta_padre_id)); })
+        .sort((a,b) => ((subcuentasBg.find(x=>x.id===a)?.orden)||0) - ((subcuentasBg.find(x=>x.id===b)?.orden)||0)).map(construir);
+      propios.forEach((_, id) => { if (!usados.has(id)) raices.push(construir(id)); }); // salvaguarda: nunca se pierde un saldo
+      const totalMayor = raices.reduce((a,r) => a + r.total, 0);
+      html += `<tr class="bg-mayor-row" data-mayor="${mayor.id}" data-nombre="${escAttr(mayor.nombre)}" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">${mayor.nombre}${iconoAbrir()}</td><td class="num" style="font-weight:600;">${fmtNeg(totalMayor)}</td></tr>`;
+      const pintar = (nodo, nivel) => {
+        html += `<tr class="bg-sub-row" data-sub="${nodo.id}" data-nombre="${escAttr(nodo.nombre)}" style="cursor:pointer;"><td style="padding-left:${22 + nivel * 18}px;color:var(--muted);font-size:12.5px;">${nodo.nombre}${iconoAbrir()}</td><td class="num">${fmtNeg(nodo.total)}</td></tr>`;
+        nodo.hijos.forEach(h => pintar(h, nivel + 1));
+      };
+      raices.forEach(r => pintar(r, 1));
+    });
+    return html + sueltas.map(filaCuentaBalance).join('');
+  };
+
   el.innerHTML = `
     <div style="display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px;">
       <label style="font-size:12px;color:var(--muted);font-weight:600;letter-spacing:.3px;margin:0;white-space:nowrap;">Ver balance al cierre de</label>
@@ -19407,16 +19490,16 @@ async function renderBalanceGeneral() {
           <tr><td style="padding-left:22px;font-weight:600;">Bancos</td><td class="num" style="font-weight:600;">${fmtNeg(totalBancos)}</td></tr>
           ${detalleBancos.map(d => `<tr class="balance-cuenta-row" data-clave="${d.clave}" style="cursor:pointer;"><td style="padding-left:40px;color:var(--muted);font-size:12.5px;">${d.nombre}${iconoAbrir()}</td><td class="num">${fmtNeg(d.monto)}</td></tr>`).join('')}
           <tr class="balance-cuenta-row" data-clave="clientes" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">Cuentas por cobrar (Clientes)${iconoAbrir()}</td><td class="num" style="font-weight:600;">${fmtNeg(cuentasPorCobrar)}</td></tr>
-          ${otrosActivos.map(filaCuentaBalance).join('')}
+          ${grupoBalanceHtml(otrosActivos)}
           <tr class="total-row"><td>Total Activo</td><td class="num">${fmtNeg(totalActivo)}</td></tr>
 
           <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">PASIVO</td></tr>
           <tr class="balance-cuenta-row" data-clave="proveedores" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">Proveedores por pagar${iconoAbrir()}</td><td class="num" style="font-weight:600;">${fmtNeg(proveedoresPendiente)}</td></tr>
-          ${otrosPasivos.map(filaCuentaBalance).join('')}
+          ${grupoBalanceHtml(otrosPasivos)}
           <tr class="total-row"><td>Total Pasivo</td><td class="num">${fmtNeg(totalPasivo)}</td></tr>
 
           <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">CAPITAL</td></tr>
-          ${cuentasCapital.map(filaCuentaBalance).join('')}
+          ${grupoBalanceHtml(cuentasCapital)}
           <tr><td style="padding-left:22px;">Utilidad acumulada del ejercicio ${hastaYm.slice(0,4)}</td><td class="num">${fmtSigno(utilidadAcumulada)}</td></tr>
           <tr class="total-row"><td>Total Capital</td><td class="num">${fmtSigno(totalCapital)}</td></tr>
 
@@ -19433,6 +19516,17 @@ async function renderBalanceGeneral() {
   el.querySelectorAll('.balance-cuenta-row').forEach(tr => tr.addEventListener('click', () => {
     STATE_auxiliarClave = tr.dataset.clave;
     irASeccion('auxiliares');
+  }));
+  // Cuentas mayor y subcuentas del catálogo: abren todos sus movimientos (incluidas sub-subcuentas),
+  // con Desde/Hasta a elección (Desde vacío = todo el histórico), leídos del mismo motor del Balance.
+  const nombresSubPorId = Object.fromEntries(subcuentasBg.map(s => [s.id, s.nombre]));
+  const hastaModal = esHoy ? todayStr() : hastaFecha;
+  el.querySelectorAll('.bg-sub-row').forEach(tr => tr.addEventListener('click', () => {
+    abrirModalMovimientosCuenta(tr.dataset.nombre, recolectarSubcuentaIds(tr.dataset.sub, subcuentasBg), b.id, nombresSubPorId, hastaModal);
+  }));
+  el.querySelectorAll('.bg-mayor-row').forEach(tr => tr.addEventListener('click', () => {
+    const ids = subcuentasRaiz(tr.dataset.mayor, subcuentasBg).flatMap(s => recolectarSubcuentaIds(s.id, subcuentasBg));
+    abrirModalMovimientosCuenta(tr.dataset.nombre, ids, b.id, nombresSubPorId, hastaModal);
   }));
   window.scrollTo(0, scrollY);
 }
