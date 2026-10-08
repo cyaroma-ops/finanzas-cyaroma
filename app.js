@@ -1025,6 +1025,18 @@ const SECTION_META = {
 // Estas viven "dentro" de Configuración: ya no tienen su propio ítem en el menú principal,
 // pero conservan su sección y su función de render tal cual, solo cambia cómo se llega ahí.
 const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos', 'pagosclasificar', 'saldosfavoriva', 'comparativo'];
+// Pantallas que SOLO aplican a negocios Fiscal Contable. En un negocio Financiero se quitan los accesos (menú y
+// Configuración): no les corresponden, y la Balanza de Comprobación solo se calcula en Fiscal Contable. Solo se ocultan
+// accesos — no se borra ni se cambia ningún dato, y al volver a un negocio fiscal todo reaparece igual.
+const SECCIONES_SOLO_FISCAL = ['balanza', 'impuestos', 'papelestrabajo', 'cedulasmaestras', 'parametrosfiscales', 'fuentesfiscales', 'saldosfavoriva', 'ivafiscal'];
+const esNegocioFinanciero = (neg) => !!neg && neg.modo !== 'fiscal_contable';
+function actualizarMenuPorModo() {
+  const ocultar = esNegocioFinanciero(biz());
+  SECCIONES_SOLO_FISCAL.forEach(sec => {
+    const item = document.querySelector(`.nav-item[data-section="${sec}"]`);
+    if (item) item.style.display = ocultar ? 'none' : '';
+  });
+}
 function marcarNavActivo(seccion) {
   document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
   const seccionNav = SECCIONES_EN_CONFIGURACION.includes(seccion) ? 'configuracion' : seccion;
@@ -1083,6 +1095,7 @@ function updateTopbar() {
   document.getElementById('pageTitle').textContent = titulo;
   const navVentasLabel = document.getElementById('navVentasLabel');
   if (navVentasLabel) navVentasLabel.textContent = b?.modo === 'fiscal_contable' ? 'Auditoría de Ventas' : 'Ventas';
+  actualizarMenuPorModo();
   document.getElementById('pageSub').textContent = STATE.currentSection === 'dashboard'
     ? (STATE.esAdministrador ? 'Vista consolidada de todos los negocios' : (STATE.businesses.length > 1 ? 'Vista consolidada de tus negocios' : 'Tu negocio'))
     : meta.sub;
@@ -1145,6 +1158,15 @@ window.addEventListener('resize', actualizarAlturaTopbar);
 actualizarAlturaTopbar();
 
 async function renderCurrentSection() {
+  if (esNegocioFinanciero(biz()) && SECCIONES_SOLO_FISCAL.includes(STATE.currentSection)) {
+    const origen = STATE.currentSection;
+    STATE.currentSection = 'balance';
+    localStorage.setItem('finanzas_ultima_seccion', 'balance');
+    marcarNavActivo('balance');
+    document.querySelectorAll('.section').forEach(sec => sec.classList.remove('active'));
+    document.getElementById('sec-balance').classList.add('active');
+    toast(`"${SECTION_META[origen]?.title || origen}" es solo para negocios Fiscal Contable. Te llevé al Balance General.`);
+  }
   updateTopbar();
   const s = STATE.currentSection;
   if (s === 'dashboard') return renderDashboard();
@@ -11790,6 +11812,7 @@ async function renderBalanza() {
 }
 
 async function renderConfiguracion() {
+  const esFin = esNegocioFinanciero(biz()); // en financiero se omiten las tarjetas fiscales
   const el = document.getElementById('sec-configuracion');
   const b = biz();
   const grid = (html) => `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;margin-bottom:24px;">${html}</div>`;
@@ -11800,13 +11823,15 @@ async function renderConfiguracion() {
       ${tarjetaConfigHtml('cfgCierre', 'Cierre de periodo', b ? `Bloquea la captura de meses ya cerrados en ${b.name}.` : 'Selecciona un negocio para gestionar sus cierres.')}
       ${tarjetaConfigHtml('cfgActivosFijos', 'Activos Fijos', b ? `Equipo, mobiliario y su depreciación mensual automática en ${b.name}.` : 'Selecciona un negocio para gestionar sus activos.')}
       ${tarjetaConfigHtml('cfgPagosClasificar', 'Pagos por clasificar', b ? `Salidas de dinero pendientes de asignar a proveedor/factura y/o de clasificar hacia Banco/Efectivo en ${b.name}.` : 'Selecciona un negocio.')}
-      ${tarjetaConfigHtml('cfgSaldosFavorIVA', 'Control de saldos a favor IVA', b ? `Confirmar, acreditar y solicitar devolución de saldos a favor de IVA declarados en ${b.name}.` : 'Selecciona un negocio.')}
+      ${esFin ? '' : tarjetaConfigHtml('cfgSaldosFavorIVA', 'Control de saldos a favor IVA', b ? `Confirmar, acreditar y solicitar devolución de saldos a favor de IVA declarados en ${b.name}.` : 'Selecciona un negocio.')}
     `)}
+    ${esFin ? '' : `
     <p style="font-size:13px;font-weight:700;color:var(--navy-1);margin-bottom:10px;">Fiscal</p>
     <p style="font-size:11.5px;color:var(--muted);margin:-4px 0 10px;">INPC, recargos y el calendario de días inhábiles se movieron a <a href="#" id="cfgIrParametrosFiscales" class="pt-editar-link" style="display:inline;">Parámetros Fiscales</a>, en el menú principal.</p>
     ${grid(`
       ${tarjetaConfigHtml('cfgFuentesFiscales', 'Fuentes Fiscales', b ? `Qué subcuentas contables proponen automáticamente cada concepto de los Papeles de Trabajo en ${b.name}.` : 'Selecciona un negocio para configurar sus fuentes fiscales.')}
     `)}
+    `}
     <p style="font-size:13px;font-weight:700;color:var(--navy-1);margin-bottom:10px;">Administración</p>
     ${grid(`
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgNegocios', 'Negocios (todos)', 'Alta, edición y respaldo de cada negocio del grupo.') : ''}
