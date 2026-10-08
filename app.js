@@ -13068,6 +13068,15 @@ function openImportExcelModal(tipo, businessId, onDone, extra) {
             }
           }
         }
+        // Depósitos reales de lo conciliado, igual que al capturar celda por celda (la función solo actúa en
+        // negocios financieros y no duplica lo que ya existe).
+        const conceptosConDeposito = cRecon.filter(c => c.banco_cuenta_id || c.moneda_id);
+        for (const v of (nuevasVentas || [])) {
+          for (const c of conceptosConDeposito) {
+            const monto = Number((v.recon_data || {})[c.id]?.monto) || 0;
+            if (monto) await materializarDepositoVentaSiCorresponde(businessId, v.id, v.fecha, c, monto);
+          }
+        }
         toast(`${payload.length} días de ventas importados.`);
 
       } else if (tipo === 'polizas') {
@@ -13190,6 +13199,11 @@ async function openVentaDiaModal(businessId, onDone) {
     for (const c of porCat.propinas) {
       const monto = Number(recon_data[c.id]?.monto) || 0;
       if (monto) await provisionarPropina(businessId, nuevaVenta.id, c, monto, fecha);
+    }
+    // Depósitos reales de lo conciliado (solo negocios financieros; no duplica lo existente).
+    for (const c of Object.values(porCat).flat().filter(c => c.banco_cuenta_id || c.moneda_id)) {
+      const monto = Number(recon_data[c.id]?.monto) || 0;
+      if (monto) await materializarDepositoVentaSiCorresponde(businessId, nuevaVenta.id, fecha, c, monto);
     }
     document.getElementById('modalVentaDia').classList.remove('show');
     toast('Día de ventas agregado.');
