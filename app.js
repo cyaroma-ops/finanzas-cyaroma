@@ -13734,8 +13734,9 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
     }
     const opciones = facturasPend.filter(f => f.estatus !== 'Pagado' || idsActuales.has(f.id));
     const porProveedor = {};
+    const GRUPO_APLICADAS = '★ Aplicadas a este pago';
     opciones.forEach(f => {
-      const key = f.proveedor || '(sin proveedor)';
+      const key = idsActuales.has(f.id) ? GRUPO_APLICADAS : (f.proveedor || '(sin proveedor)');
       (porProveedor[key] = porProveedor[key] || []).push(f);
     });
     Object.values(porProveedor).forEach(lista => lista.sort((a,b) => a.fecha.localeCompare(b.fecha)));
@@ -13744,7 +13745,7 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
     document.getElementById('facturasPagoSubtitulo').textContent = 'Selecciona las facturas que incluye este pago. El monto se distribuirá automáticamente si marcas varias.';
     document.getElementById('facturasPagoResumenLabel').textContent = 'Resumen del pago';
     document.getElementById('facturasPagoBuscarProv').placeholder = 'Buscar proveedor, folio o número de factura...';
-    const nombresProveedor = Object.keys(porProveedor).sort((a,b)=>a.localeCompare(b));
+    const nombresProveedor = Object.keys(porProveedor).sort((a,b) => a === GRUPO_APLICADAS ? -1 : (b === GRUPO_APLICADAS ? 1 : a.localeCompare(b)));
 
     const selectProv = document.getElementById('facturasPagoSelectProv');
     const buscarProv = document.getElementById('facturasPagoBuscarProv');
@@ -14073,9 +14074,10 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   }
   const pendientes = facturasPend.filter(f => f.estatus !== 'Pagado' || idsProvYaVinculados.includes(f.id));
   const porProveedor = {};
-  pendientes.forEach(f => { const key = f.proveedor || '(sin proveedor)'; (porProveedor[key] = porProveedor[key] || []).push(f); });
+  const GRUPO_APLICADAS_MOV = '★ Aplicadas a este pago';
+  pendientes.forEach(f => { const key = idsProvYaVinculados.includes(f.id) ? GRUPO_APLICADAS_MOV : (f.proveedor || '(sin proveedor)'); (porProveedor[key] = porProveedor[key] || []).push(f); });
   Object.values(porProveedor).forEach(lista => lista.sort((a,b) => a.fecha.localeCompare(b.fecha)));
-  const nombresProveedorMov = Object.keys(porProveedor).sort((a,b)=>a.localeCompare(b));
+  const nombresProveedorMov = Object.keys(porProveedor).sort((a,b) => a === GRUPO_APLICADAS_MOV ? -1 : (b === GRUPO_APLICADAS_MOV ? 1 : a.localeCompare(b)));
   const movFacturasBox = document.getElementById('movFacturasList');
   movFacturasBox.innerHTML = nombresProveedorMov.map(prov => `
     <div class="mf-grupo factura-provgroup" data-prov="${prov.toLowerCase()}" style="margin-bottom:8px;">
@@ -14090,7 +14092,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
             <td>${fechaCorta(f.fecha)}</td>
             <td>${f.factura||'—'}</td>
             <td><span class="mf-badge-moneda">${f.moneda||'MXN'}</span></td>
-            <td class="mf-num" style="${esCredito?'color:var(--green);':''}">${esCredito?'crédito ':''}${fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}</td>
+            <td class="mf-num" style="${esCredito?'color:var(--green);':''}">${esCredito?'crédito ':''}${fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}${yaAplicadoPorFactura[f.id] ? `<div style="font-size:10px;color:var(--muted);">este pago aplicó ${fmt(yaAplicadoPorFactura[f.id])}</div>` : ''}</td>
           </tr>`;
         }).join('')}
         </tbody>
@@ -15339,6 +15341,7 @@ async function renderProveedores() {
   document.getElementById('addProvBtn').addEventListener('click', async () => {
     await openModalFacturaProveedor(null, b.id, catalogo, opcionesPagoDesde);
   });
+  el.querySelectorAll('.prov-ver-pagos').forEach(btn => btn.addEventListener('click', () => verPagosDeFactura(btn.dataset.id, b.id)));
   document.getElementById('openProveedoresCatBtn').addEventListener('click', () => openProveedoresCatModal(b.id, renderProveedores));
   document.getElementById('openCuentasBtnProv').addEventListener('click', () => openCuentasModal(b.id, renderProveedores));
   document.getElementById('importFacturasBtn').addEventListener('click', () => openImportExcelModal('facturas', b.id, renderProveedores));
@@ -15427,6 +15430,82 @@ async function renderProveedores() {
   wireAdjuntosHandlers(el, 'fz_proveedores', b.id, renderProveedores);
   wireProvTabs(el);
   window.scrollTo(0, scrollY);
+}
+
+// ---------- Pagos aplicados a una factura de proveedor (factura → pagos) ----------
+// Junta, para una factura: (a) las aplicaciones guardadas (fz_pagos_aplicados) y (b) los movimientos que la tienen
+// ligada por el método anterior (proveedor_factura_id[s]) sin aplicación registrada. Solo lee.
+async function obtenerPagosDeFactura(facturaId, businessId) {
+  const [appsQ, cuentasQ, monedasQ, factQ] = await Promise.all([
+    sb.from('fz_pagos_aplicados').select('*').eq('factura_id', facturaId).order('fecha'),
+    sb.from('fz_bancos_cuentas').select('id,nombre').eq('business_id', businessId),
+    sb.from('fz_efectivo_monedas').select('id,nombre').eq('business_id', businessId),
+    sb.from('fz_proveedores').select('*').eq('id', facturaId).single(),
+  ]);
+  const apps = appsQ.data || [];
+  const nombreCuenta = (t, m) => t === 'fz_bancos_mov'
+    ? 'Banco — ' + ((cuentasQ.data || []).find(c => c.id === m.cuenta_id)?.nombre || '?')
+    : 'Efectivo — ' + ((monedasQ.data || []).find(c => c.id === m.moneda_id)?.nombre || '?');
+  const movs = new Map(); // `${tabla}|${id}` -> movimiento
+  for (const tabla of ['fz_bancos_mov', 'fz_efectivo_mov']) {
+    const ids = apps.filter(a => a.origen_tabla === tabla).map(a => a.origen_id);
+    if (ids.length) { const { data } = await sb.from(tabla).select('*').in('id', ids); (data || []).forEach(m => movs.set(tabla + '|' + m.id, m)); }
+    // movimientos ligados a la factura por el método anterior (sin aplicación registrada)
+    const r1 = await sb.from(tabla).select('*').eq('business_id', businessId).eq('proveedor_factura_id', facturaId);
+    (r1.data || []).forEach(m => { if (!movs.has(tabla + '|' + m.id)) movs.set(tabla + '|' + m.id, { ...m, _soloLiga: true }); });
+    const r2 = await sb.from(tabla).select('*').eq('business_id', businessId).contains('proveedor_factura_ids', [facturaId]);
+    if (!r2.error) (r2.data || []).forEach(m => { if (!movs.has(tabla + '|' + m.id)) movs.set(tabla + '|' + m.id, { ...m, _soloLiga: true }); });
+  }
+  const entradas = [];
+  apps.forEach(a => {
+    const m = movs.get(a.origen_tabla + '|' + a.origen_id);
+    entradas.push({ fecha: a.fecha, monto: Number(a.monto) || 0, tabla: a.origen_tabla, movId: a.origen_id,
+      cuenta: m ? nombreCuenta(a.origen_tabla, m) : (a.origen_tabla === 'fz_pagos_por_clasificar' ? 'Pago por clasificar' : '(movimiento eliminado)'),
+      referencia: m ? (m.descripcion || m.concepto || m.proveedor || '') : '', editable: !!m, sinAplicacion: false });
+  });
+  movs.forEach((m, k) => {
+    if (!m._soloLiga) return;
+    const tabla = k.split('|')[0];
+    if (apps.some(a => a.origen_tabla === tabla && a.origen_id === m.id)) return;
+    entradas.push({ fecha: m.fecha, monto: Number(m.cargos) || 0, tabla, movId: m.id, cuenta: nombreCuenta(tabla, m),
+      referencia: m.descripcion || m.concepto || m.proveedor || '', editable: true, sinAplicacion: true });
+  });
+  entradas.sort((a, z) => String(a.fecha).localeCompare(String(z.fecha)));
+  return { factura: factQ.data, entradas };
+}
+function pagosDeFacturaHtml(datos) {
+  const f = datos.factura || {}; const e = datos.entradas;
+  if (!e.length) return `<div style="color:var(--muted);">Esta factura no tiene pagos aplicados ni movimientos ligados.</div>`;
+  const aplicado = e.filter(x => !x.sinAplicacion).reduce((s, x) => s + x.monto, 0);
+  const saldo = (Number(f.importe) || 0) - (Number(f.importe_pagado) || 0);
+  return `
+    <div style="margin-bottom:6px;"><strong>${e.length} pago${e.length === 1 ? '' : 's'}</strong> · aplicado ${fmt(aplicado)} de ${fmt(f.importe || 0)} · saldo ${fmt(saldo)}</div>
+    ${e.some(x => x.sinAplicacion) ? `<div style="margin-bottom:6px;color:var(--gold);">${e.filter(x => x.sinAplicacion).length} pago(s) están ligados a esta factura pero no tienen la aplicación registrada; la factura figura pagada porque se marcó así desde Proveedores. En Revisión de consistencia puedes registrarla.</div>` : ''}
+    <table style="width:100%;font-size:12px;border-collapse:collapse;">
+      <thead><tr style="text-align:left;color:var(--muted);"><th>Fecha</th><th>Pagado desde</th><th>Referencia</th><th class="num" style="text-align:right;">Monto</th><th></th></tr></thead>
+      <tbody>${e.map(x => `<tr style="border-top:1px solid var(--line);">
+        <td>${fechaCorta(x.fecha)}</td><td>${x.cuenta}</td><td>${x.referencia || '—'}${x.sinAplicacion ? ' <span style="color:var(--gold);" title="Está ligado a la factura pero no tiene la aplicación registrada. En Revisión de consistencia puedes registrarla.">· sin aplicación registrada</span>' : ''}</td>
+        <td class="num" style="text-align:right;">${fmt(x.monto)}</td>
+        <td style="text-align:right;">${x.editable ? `<button type="button" class="btn btn-ghost btn-sm pdf-editar-mov" data-tabla="${x.tabla}" data-id="${x.movId}" style="font-size:11px;padding:2px 8px;">Ver / Editar</button>` : ''}</td>
+      </tr>`).join('')}</tbody>
+    </table>`;
+}
+function wirePagosDeFactura(container, businessId, alAbrir) {
+  container.querySelectorAll('.pdf-editar-mov').forEach(btn => btn.addEventListener('click', () => {
+    if (alAbrir) alAbrir();
+    editarMovimientoDesdeProveedor(btn.dataset.tabla, btn.dataset.id, businessId, () => renderProveedores());
+  }));
+}
+async function verPagosDeFactura(facturaId, businessId) {
+  document.getElementById('modalPagosFactura').classList.add('show');
+  document.getElementById('pagosFacturaTitulo').textContent = 'Pagos aplicados a la factura';
+  const info = document.getElementById('pagosFacturaInfo'); const list = document.getElementById('pagosFacturaList');
+  info.innerHTML = ''; list.innerHTML = '<p class="empty">Cargando…</p>';
+  const datos = await obtenerPagosDeFactura(facturaId, businessId);
+  const f = datos.factura || {};
+  info.innerHTML = `${f.proveedor || ''} · factura ${f.factura || 's/f'} · ${fechaCorta(f.fecha || '')}`;
+  list.innerHTML = pagosDeFacturaHtml(datos);
+  wirePagosDeFactura(list, businessId, () => document.getElementById('modalPagosFactura').classList.remove('show'));
 }
 
 // Abre DIRECTO el editor de un movimiento de Banco o Efectivo (el mismo que usa Bancos/Efectivo), sin cambiar de
@@ -17875,6 +17954,16 @@ async function openModalFacturaProveedor(factura, businessId, catalogo, opciones
     catalogo.map(c => `<option value="${c.id}" ${proveedorAPreseleccionar===c.id?'selected':''}>${c.razon_social ? c.razon_social + ' — ' : ''}${c.nombre_comercial || c.nombre}</option>`).join('');
   document.getElementById('fpFactura').value = factura?.factura || '';
   document.getElementById('fpFecha').value = factura?.fecha || todayStr();
+  {
+    const wrapPagos = document.getElementById('fpPagosAplicadosWrap'); const boxPagos = document.getElementById('fpPagosAplicadosBox');
+    if (factura && (Number(factura.importe_pagado) > 0.004 || factura.estatus !== 'Pendiente')) {
+      wrapPagos.style.display = ''; boxPagos.innerHTML = '<span style="color:var(--muted);">Cargando…</span>';
+      obtenerPagosDeFactura(factura.id, businessId).then(datos => {
+        boxPagos.innerHTML = pagosDeFacturaHtml(datos);
+        wirePagosDeFactura(boxPagos, businessId, () => document.getElementById('modalFacturaProveedor').classList.remove('show'));
+      });
+    } else { wrapPagos.style.display = 'none'; boxPagos.innerHTML = ''; }
+  }
   document.getElementById('fpVencimiento').value = factura?.fecha_vencimiento || '';
   const selMonedaFp = document.getElementById('fpMoneda');
   const inputTcFp = document.getElementById('fpTipoCambio');
@@ -18263,7 +18352,7 @@ function provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntos, todasFactur
       <input class="cell prov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(p.importe)}" data-id="${p.id}" data-field="importe">
       ${esCredito ? `<div style="font-size:10.5px;color:var(--green);margin-top:2px;">crédito a favor</div>` : ''}
     </td>
-    <td class="num" data-rol="meta">${prefijoMoneda(p.moneda)} ${fmt(p.importe_pagado||0)}</td>
+    <td class="num" data-rol="meta">${Number(p.importe_pagado) > 0.004 ? `<button type="button" class="prov-ver-pagos" data-id="${p.id}" title="Ver qué pagos se aplicaron a esta factura" style="background:none;border:none;padding:0;font:inherit;color:var(--gold);text-decoration:underline;cursor:pointer;">${prefijoMoneda(p.moneda)} ${fmt(p.importe_pagado||0)}</button>` : `${prefijoMoneda(p.moneda)} ${fmt(p.importe_pagado||0)}`}</td>
     <td class="num" data-rol="meta" style="${saldoPendiente>0.004?'color:var(--gold);font-weight:600;':''}">${prefijoMoneda(p.moneda)} ${fmt(saldoPendiente)}</td>
     <td data-rol="meta">${p.fecha_vencimiento ? fechaCorta(p.fecha_vencimiento) : '—'}</td>
     <td data-rol="meta" style="${(() => { const d = calcularDiasRetraso(p.fecha_vencimiento, saldoPendiente); return typeof d==='number' && d>0 ? 'color:var(--red);font-weight:700;' : ''; })()}">${calcularDiasRetraso(p.fecha_vencimiento, saldoPendiente)}</td>
