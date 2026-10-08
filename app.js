@@ -13732,6 +13732,7 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
       const { data: appsMov } = await sb.from('fz_pagos_aplicados').select('factura_id,monto').eq('origen_tabla', table).eq('origen_id', rowId);
       (appsMov || []).forEach(a => { yaAplicadoPorFactura[a.factura_id] = (yaAplicadoPorFactura[a.factura_id] || 0) + (Number(a.monto) || 0); });
     }
+    const catalogoNombresProv = await cargarCatalogoProveedoresNombres(row?.business_id);
     const opciones = facturasPend.filter(f => f.estatus !== 'Pagado' || idsActuales.has(f.id));
     const porProveedor = {};
     const GRUPO_APLICADAS = '★ Aplicadas a este pago';
@@ -13822,7 +13823,7 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
             <td><input type="checkbox" class="factura-check" value="${f.id}" data-importe="${saldo}" ${idsActuales.has(f.id)?'checked':''}></td>
             <td>${fechaCorta(f.fecha)}</td>
             <td>${f.folio ? '#'+f.folio : '—'}</td>
-            <td>${f.factura || '—'}${prov === GRUPO_APLICADAS ? `<div style="font-size:10.5px;color:var(--muted);">${f.proveedor || '(sin proveedor)'}</div>` : ''}</td>
+            <td>${f.factura || '—'}${prov === GRUPO_APLICADAS ? `<div style="font-size:10.5px;color:var(--muted);">${nombreProveedorMostrado(f, catalogoNombresProv)}</div>` : ''}</td>
             <td><span class="mf-badge-moneda">${f.moneda||'MXN'}</span></td>
             <td class="mf-num" style="${esCredito?'color:var(--green);':''}">${esCredito?'crédito ':''}${fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}${yaAplicadoPorFactura[f.id] ? `<div style="font-size:10px;color:var(--muted);">este pago aplicó ${fmt(yaAplicadoPorFactura[f.id])}</div>` : ''}</td>
             <td>${f.fecha_vencimiento ? fechaCorta(f.fecha_vencimiento) : '—'}</td>
@@ -14072,6 +14073,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     const { data: appsMov } = await sb.from('fz_pagos_aplicados').select('factura_id,monto').eq('origen_tabla', contexto.tipo === 'banco' ? 'fz_bancos_mov' : 'fz_efectivo_mov').eq('origen_id', movimientoExistente.id);
     (appsMov || []).forEach(a => { yaAplicadoPorFactura[a.factura_id] = (yaAplicadoPorFactura[a.factura_id] || 0) + (Number(a.monto) || 0); });
   }
+  const catalogoNombresProv = await cargarCatalogoProveedoresNombres(contexto.businessId);
   const pendientes = facturasPend.filter(f => f.estatus !== 'Pagado' || idsProvYaVinculados.includes(f.id));
   const porProveedor = {};
   const GRUPO_APLICADAS_MOV = '★ Aplicadas a este pago';
@@ -14090,7 +14092,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
           return `<tr>
             <td style="width:20px;"><input type="checkbox" class="mov-factura-check" value="${f.id}" data-importe="${saldo}" ${idsProvYaVinculados.includes(f.id)?'checked':''}></td>
             <td>${fechaCorta(f.fecha)}</td>
-            <td>${f.factura||'—'}${prov === GRUPO_APLICADAS_MOV ? `<div style="font-size:10.5px;color:var(--muted);">${f.proveedor || '(sin proveedor)'}${f.folio ? ' · #' + f.folio : ''}</div>` : ''}</td>
+            <td>${f.factura||'—'}${prov === GRUPO_APLICADAS_MOV ? `<div style="font-size:10.5px;color:var(--muted);">${nombreProveedorMostrado(f, catalogoNombresProv)}${f.folio ? ' · #' + f.folio : ''}</div>` : ''}</td>
             <td><span class="mf-badge-moneda">${f.moneda||'MXN'}</span></td>
             <td class="mf-num" style="${esCredito?'color:var(--green);':''}">${esCredito?'crédito ':''}${fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}${yaAplicadoPorFactura[f.id] ? `<div style="font-size:10px;color:var(--muted);">este pago aplicó ${fmt(yaAplicadoPorFactura[f.id])}</div>` : ''}</td>
           </tr>`;
@@ -15432,6 +15434,19 @@ async function renderProveedores() {
   window.scrollTo(0, scrollY);
 }
 
+// Nombre del proveedor tal como lo muestra la tabla de Facturas: "Razón social — Nombre comercial" desde el catálogo
+// (incluye proveedores dados de baja, porque una factura vieja puede ser de uno). Sin catálogo, el texto de la factura.
+async function cargarCatalogoProveedoresNombres(businessId) {
+  if (!businessId) return [];
+  const { data } = await sb.from('fz_proveedores_catalogo').select('id,nombre,razon_social,nombre_comercial').eq('business_id', businessId);
+  return data || [];
+}
+function nombreProveedorMostrado(f, catalogo) {
+  const c = f && f.proveedor_id ? (catalogo || []).find(x => x.id === f.proveedor_id) : null;
+  if (!c) return (f && f.proveedor) || '(sin proveedor)';
+  return c.razon_social ? `${c.razon_social}${c.nombre_comercial ? ' — ' + c.nombre_comercial : ''}` : (c.nombre_comercial || c.nombre || (f && f.proveedor) || '(sin proveedor)');
+}
+
 // ---------- Pagos aplicados a una factura de proveedor (factura → pagos) ----------
 // Junta, para una factura: (a) las aplicaciones guardadas (fz_pagos_aplicados) y (b) los movimientos que la tienen
 // ligada por el método anterior (proveedor_factura_id[s]) sin aplicación registrada. Solo lee.
@@ -15501,9 +15516,9 @@ async function verPagosDeFactura(facturaId, businessId) {
   document.getElementById('pagosFacturaTitulo').textContent = 'Pagos aplicados a la factura';
   const info = document.getElementById('pagosFacturaInfo'); const list = document.getElementById('pagosFacturaList');
   info.innerHTML = ''; list.innerHTML = '<p class="empty">Cargando…</p>';
-  const datos = await obtenerPagosDeFactura(facturaId, businessId);
+  const [datos, catalogoNombres] = await Promise.all([obtenerPagosDeFactura(facturaId, businessId), cargarCatalogoProveedoresNombres(businessId)]);
   const f = datos.factura || {};
-  info.innerHTML = `${f.proveedor || ''} · factura ${f.factura || 's/f'} · ${fechaCorta(f.fecha || '')}`;
+  info.innerHTML = `${nombreProveedorMostrado(f, catalogoNombres)} · factura ${f.factura || 's/f'} · ${fechaCorta(f.fecha || '')}`;
   list.innerHTML = pagosDeFacturaHtml(datos);
   wirePagosDeFactura(list, businessId, () => document.getElementById('modalPagosFactura').classList.remove('show'));
 }
