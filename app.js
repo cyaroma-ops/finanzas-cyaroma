@@ -13731,6 +13731,7 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
     {
       const { data: appsMov } = await sb.from('fz_pagos_aplicados').select('factura_id,monto').eq('origen_tabla', table).eq('origen_id', rowId);
       (appsMov || []).forEach(a => { yaAplicadoPorFactura[a.factura_id] = (yaAplicadoPorFactura[a.factura_id] || 0) + (Number(a.monto) || 0); });
+      Object.keys(yaAplicadoPorFactura).forEach(id => idsActuales.add(id)); // aplicadas a este pago, aunque se haya perdido el vínculo
     }
     const catalogoNombresProv = await cargarCatalogoProveedoresNombres(row?.business_id);
     const opciones = facturasPend.filter(f => f.estatus !== 'Pagado' || idsActuales.has(f.id));
@@ -14064,7 +14065,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   document.getElementById('movSubcuenta').innerHTML = `<option value="">— elegir subcuenta —</option>` +
     opcionesSubcuentaHtml(subcuentas, mayores, movimientoExistente?.subcuenta_id || null);
 
-  const idsProvYaVinculados = movimientoExistente ? facturaIdsDe(movimientoExistente) : [];
+  const idsProvYaVinculados = movimientoExistente ? [...facturaIdsDe(movimientoExistente)] : []; // copia: no se modifica el movimiento
   // Lo que ESTE movimiento ya aplicó a cada factura: al guardar se revierte y se vuelve a aplicar, así que para
   // este resumen vuelve a estar disponible. Sin esto, una factura ya pagada por este mismo pago salía en $0 y el
   // modal decía "Sobrará como crédito a favor" aunque el pago estuviera perfectamente aplicado.
@@ -14072,6 +14073,9 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   if (movimientoExistente) {
     const { data: appsMov } = await sb.from('fz_pagos_aplicados').select('factura_id,monto').eq('origen_tabla', contexto.tipo === 'banco' ? 'fz_bancos_mov' : 'fz_efectivo_mov').eq('origen_id', movimientoExistente.id);
     (appsMov || []).forEach(a => { yaAplicadoPorFactura[a.factura_id] = (yaAplicadoPorFactura[a.factura_id] || 0) + (Number(a.monto) || 0); });
+    // Una factura con la aplicación de ESTE pago cuenta como suya aunque el movimiento haya perdido el vínculo
+    // (por ejemplo, al cambiar el tipo de salida desde la tabla).
+    Object.keys(yaAplicadoPorFactura).forEach(id => { if (!idsProvYaVinculados.includes(id)) idsProvYaVinculados.push(id); });
   }
   const catalogoNombresProv = await cargarCatalogoProveedoresNombres(contexto.businessId);
   const pendientes = facturasPend.filter(f => f.estatus !== 'Pagado' || idsProvYaVinculados.includes(f.id));
@@ -14620,6 +14624,24 @@ function facturaIdsDe(r) {
   return [];
 }
 
+// Cambiar el tipo de salida de un pago a proveedor borra su vínculo con las facturas. Si ese pago tiene facturas
+// APLICADAS, esas aplicaciones se deshacen igual que al borrar el movimiento (las facturas vuelven a Pendiente o
+// Parcial); antes quedaban sueltas: la factura seguía "Pagada" sin ningún pago que la respaldara.
+// Devuelve true si se puede continuar con el cambio.
+async function prepararCambioTipoSalidaPago(tabla, movId, nuevoTipo) {
+  const { data: fila } = await sb.from(tabla).select('business_id,fecha,tipo_salida,proveedor_factura_id,proveedor_factura_ids').eq('id', movId).single();
+  if (!fila || fila.tipo_salida !== 'proveedor' || nuevoTipo === 'proveedor') return true;
+  const { data: apps } = await sb.from('fz_pagos_aplicados').select('id').eq('origen_tabla', tabla).eq('origen_id', movId).limit(1);
+  const tieneApps = (apps || []).length > 0;
+  if (!tieneApps && !facturaIdsDe(fila).length) return true;
+  const ok = confirm(tieneApps
+    ? 'Este pago tiene facturas aplicadas. Si cambias el tipo de salida, esas aplicaciones se deshacen y las facturas vuelven a quedar pendientes (o parciales).\n\n¿Continuar?'
+    : 'Este pago está ligado a una factura. Si cambias el tipo de salida se pierde ese vínculo y la factura seguirá figurando como pagada en Proveedores; tendrás que corregir su estatus allá.\n\n¿Continuar?');
+  if (!ok) return false;
+  if (tieneApps) await aplicarPagoFacturas([], 0, fila.fecha, fila.business_id, { origen_tabla: tabla, origen_id: movId });
+  return true;
+}
+
 function wireSalidaCellHandlers(container, table, onChange, traspasoCtx, facturasPend, subcuentas, mayores, ledger, prefix, actualizarResumen) {
   const reemplazarCeldasDeFila = (rowId) => {
     if (!ledger) { onChange(); return; }
@@ -14641,6 +14663,7 @@ function wireSalidaCellHandlers(container, table, onChange, traspasoCtx, factura
     if (foco) foco.focus();
   };
   container.querySelectorAll('.salida-tipo').forEach(sel => sel.addEventListener('change', async () => {
+    if (!(await prepararCambioTipoSalidaPago(table, sel.dataset.id, sel.value))) { reemplazarCeldasDeFila(sel.dataset.id); return; } // canceló: se restaura lo mostrado
     const { error } = await sb.from(table).update({ tipo_salida: sel.value, subcuenta_id: null, proveedor_factura_id: null, proveedor_factura_ids: [] }).eq('id', sel.dataset.id);
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     if (ledger) {
@@ -22042,6 +22065,44 @@ function revPagosProveedor(ctx) {
   return r;
 }
 
+function revVinculosPagoFactura(ctx) {
+  const { bancosMov, efectivoMov, pagosAplicados, proveedores, b } = ctx;
+  const movs = new Map();
+  bancosMov.forEach(m => movs.set('fz_bancos_mov|' + m.id, m)); efectivoMov.forEach(m => movs.set('fz_efectivo_mov|' + m.id, m));
+  const facturaPorId = Object.fromEntries(proveedores.map(f => [f.id, f]));
+  const porOrigen = {};
+  pagosAplicados.filter(p => p.origen_tabla === 'fz_bancos_mov' || p.origen_tabla === 'fz_efectivo_mov').forEach(p => { (porOrigen[p.origen_tabla + '|' + p.origen_id] = porOrigen[p.origen_tabla + '|' + p.origen_id] || []).push(p); });
+  const reparables = []; const huerfanas = [];
+  Object.entries(porOrigen).forEach(([k, apps]) => {
+    const m = movs.get(k); const t = k.split('|')[0];
+    const total = revRedondeo(apps.reduce((a, x) => a + (Number(x.monto) || 0), 0));
+    const idsApp = [...new Set(apps.map(a => a.factura_id))];
+    const nombresFact = idsApp.map(id => facturaPorId[id]?.factura || 's/f').join(', ');
+    if (!m || m.tipo_salida !== 'proveedor') {
+      huerfanas.push({ fecha: m?.fecha || apps[0].fecha, texto: `${fechaCorta(m?.fecha || apps[0].fecha)} · factura ${nombresFact}: tiene una aplicación pero ${m ? 'su movimiento ya no es un pago a proveedor' : 'su movimiento ya no existe'}`, monto: total });
+      return;
+    }
+    const ligados = facturaIdsDe(m);
+    if (idsApp.every(id => ligados.includes(id))) return;
+    reparables.push({ fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${m.proveedor || m.descripcion || 'Pago a proveedor'}: tiene aplicado ${fmt(total)} a la factura ${nombresFact}, pero el movimiento perdió el vínculo con ella`, monto: total, t, m, idsApp });
+  });
+  const items = [...reparables, ...huerfanas].sort((a, z) => a.fecha.localeCompare(z.fecha));
+  const r = { id: 'vinculos_pago', titulo: 'Pagos con facturas aplicadas pero sin vínculo, o aplicaciones sin pago',
+    ayuda: 'Cambiar el tipo de salida desde la tabla borraba el vínculo del pago con sus facturas sin deshacer las aplicaciones. Si solo se perdió el vínculo, el botón lo restaura. Si el movimiento ya no es un pago a proveedor (o no existe), la factura figura pagada sin un pago que la respalde: regresa el movimiento a "Pago a proveedor" o corrige el estatus de la factura.', items };
+  if (reparables.length) r.accion = {
+    etiqueta: `Restaurar el vínculo de ${reparables.length} pago${reparables.length === 1 ? '' : 's'}`,
+    confirmar: `Se restaurará, en ${reparables.length} movimiento(s), el vínculo con la(s) factura(s) que ya tienen aplicada. No cambia ningún saldo, estatus ni importe. ¿Continuar?`,
+    ejecutar: async () => {
+      for (const x of reparables) {
+        const { error } = await sb.from(x.t).update({ proveedor_factura_ids: x.idsApp, proveedor_factura_id: x.idsApp[0] || null }).eq('id', x.m.id);
+        if (error) throw error;
+      }
+      return `${reparables.length} vínculo(s) restaurado(s).`;
+    },
+  };
+  return r;
+}
+
 function revFacturasSinDesglose(ctx) {
   const items = [];
   ctx.proveedores.filter(f => !f.origen_venta_id && !f.origen_poliza_id && Number(f.importe) > 0).forEach(f => {
@@ -22098,7 +22159,7 @@ function revSalidasSinClasificar(ctx) {
 
 async function ejecutarRevisionConsistencia(b) {
   const ctx = await cargarContextoRevision(b);
-  const checks = [revVentasCategorias, revPropinas, revDepositosVentas, revPagosProveedor, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar];
+  const checks = [revVentasCategorias, revPropinas, revDepositosVentas, revPagosProveedor, revVinculosPagoFactura, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar];
   const out = [];
   for (const fn of checks) {
     try { const r = fn(ctx); if (r) out.push(r); }
