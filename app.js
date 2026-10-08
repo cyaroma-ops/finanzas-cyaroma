@@ -18537,15 +18537,15 @@ async function computeResultadoEjerciciosAnteriores(businessId, hastaYm) {
   if (primerAnio >= anioActual) return 0;
   const { data: cierres } = await sb.from('fz_polizas').select('ejercicio_cierre').eq('business_id', businessId).eq('es_cierre_anual', true);
   const cerrados = new Set((cierres || []).map(c => Number(c.ejercicio_cierre)));
-  let total = 0;
-  for (let y = primerAnio; y < anioActual; y++) {
-    if (cerrados.has(y)) continue;
-    // solo se calcula un año si realmente tiene información (evita correr el motor completo en vano)
+  const aniosAbiertos = [];
+  for (let y = primerAnio; y < anioActual; y++) { if (!cerrados.has(y)) aniosAbiertos.push(y); }
+  // los años se calculan a la vez (antes, uno tras otro); solo se calcula un año si realmente tiene información
+  const resultados = await Promise.all(aniosAbiertos.map(async (y) => {
     const conteos = await Promise.all(tablas.map(t => sb.from(t).select('id', { count: 'exact', head: true }).eq('business_id', businessId).gte('fecha', `${y}-01-01`).lte('fecha', `${y}-12-31`)));
-    if (!conteos.some(r => (r.count || 0) > 0)) continue;
-    total += await computeUtilidadAcumulada(businessId, `${y}-12`);
-  }
-  return redondearMoneda(total);
+    if (!conteos.some(r => (r.count || 0) > 0)) return 0;
+    return computeUtilidadAcumulada(businessId, `${y}-12`);
+  }));
+  return redondearMoneda(resultados.reduce((a, x) => a + x, 0));
 }
 
 async function computeUtilidadAcumulada(businessId, hastaYm) {
@@ -18571,12 +18571,15 @@ async function computeUtilidadAcumulada(businessId, hastaYm) {
     computeGastosClasificados(businessId, periodo, subcuentas, mayores, 'gasto', false, datosGC1),
     computeGastosClasificados(businessId, periodo, subcuentas, mayores, 'costo', false, datosGC1),
   ]);
-  const iPoliza = await computeIngresosPoliza(businessId, periodo, subcuentas, mayores);
+  const iPoliza = await computeIngresosPoliza(businessId, periodo, subcuentas, mayores, false, datosGC1.filasMotor); // mismos renglones: no se vuelve a correr el motor
   const gananciaCambiaria = await computeGananciaCambiaria(businessId, periodo);
   const totalIngresosFinal = totalIngresosVentas + sobranteCaja + iPoliza.total + gananciaCambiaria;
   const gastosTotales = gastosOperativos + gClas.totalClasificado + gClas.sinClasificar + gCostos.totalClasificado + faltanteCaja;
   return totalIngresosFinal - gastosTotales;
 }
+
+const renderBalanceGeneral = envolverRenderPesado('sec-balance', 'Calculando el Balance General… puede tardar unos segundos.', renderBalanceGeneralCuerpo);
+const renderPL = envolverRenderPesado('sec-pl', 'Calculando el Estado de Resultados… puede tardar unos segundos.', renderPLCuerpo);
 
 function fmtNeg(n) {
   return Number(n) < 0 ? `<span style="color:var(--red);">${fmt(n)}</span>` : fmt(n);
@@ -19820,7 +19823,48 @@ async function getDetallePolizasSubcuenta(businessId, subcuentaId, hastaFecha) {
   return filas.sort((a,b) => a.fecha.localeCompare(b.fecha));
 }
 
-async function renderBalanceGeneral() {
+// Aviso de "calculando" + un solo cálculo a la vez por pantalla. Antes, si dabas clic en otra vista mientras la anterior
+// seguía calculando, no había ninguna señal y la respuesta más lenta podía pintarse al último, encima de la que pediste.
+// Ahora se muestra un aviso, un clic nuevo no lanza otro cálculo en paralelo y al terminar se dibuja lo ÚLTIMO que
+// elegiste. El tiempo de cada pantalla queda en la consola del navegador ([rendimiento]).
+const _renderEnCurso = {};
+function mostrarCargandoSeccion(idSeccion, texto) {
+  const el = document.getElementById(idSeccion);
+  if (!el) return;
+  el.style.opacity = '0.6';
+  let aviso = document.getElementById('cargando-' + idSeccion);
+  if (!aviso) {
+    aviso = document.createElement('div');
+    aviso.id = 'cargando-' + idSeccion;
+    aviso.style.cssText = 'position:sticky;top:0;z-index:6;background:#fff8ec;border:1px solid #f0d9a8;border-radius:8px;padding:8px 12px;font-size:13px;margin-bottom:8px;';
+    el.insertAdjacentElement('afterbegin', aviso);
+  }
+  aviso.textContent = '⏳ ' + texto;
+}
+function quitarCargandoSeccion(idSeccion) {
+  const el = document.getElementById(idSeccion);
+  if (el) el.style.opacity = '';
+  const aviso = document.getElementById('cargando-' + idSeccion);
+  if (aviso) aviso.remove();
+}
+function envolverRenderPesado(idSeccion, texto, cuerpo) {
+  return async function () {
+    const estado = _renderEnCurso[idSeccion] || (_renderEnCurso[idSeccion] = { corriendo: false, repetir: false });
+    if (estado.corriendo) { estado.repetir = true; mostrarCargandoSeccion(idSeccion, texto + ' (se actualizará con lo último que elegiste)'); return; }
+    estado.corriendo = true;
+    mostrarCargandoSeccion(idSeccion, texto);
+    const t0 = performance.now();
+    try {
+      do { estado.repetir = false; await cuerpo(); } while (estado.repetir);
+    } finally {
+      estado.corriendo = false;
+      quitarCargandoSeccion(idSeccion);
+      console.info(`[rendimiento] ${idSeccion}: ${((performance.now() - t0) / 1000).toFixed(1)} s`);
+    }
+  };
+}
+
+async function renderBalanceGeneralCuerpo() {
   const el = document.getElementById('sec-balance');
   const b = biz();
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
@@ -19833,6 +19877,11 @@ async function renderBalanceGeneral() {
   // Única fuente contable: el mismo motor consolidado que usan Libro Diario, Auxiliares y
   // Balanza. Balance General ya NO reconstruye nada por su cuenta desde facturas, bancos,
   // efectivo, proveedores o clientes — solo clasifica y presenta lo que el motor ya calculó.
+  // Los cálculos independientes arrancan juntos (antes iban uno tras otro): el motor del Balance, la utilidad del
+  // ejercicio y el resultado de ejercicios anteriores. Cada uno se espera más abajo, igual que antes.
+  const pUtilidad = computeUtilidadAcumulada(b.id, hastaYm);
+  const pAnteriores = ventasAfectaFueraDeSuRegistro(b.id) ? computeResultadoEjerciciosAnteriores(b.id, hastaYm) : Promise.resolve(0);
+  pUtilidad.catch(() => {}); pAnteriores.catch(() => {}); // si algo falla antes, no quedan errores sin atender (el await de abajo los vuelve a lanzar)
   const { filas, unidadesEfectivoPorMoneda: unidadesEfectivoBg } = await getLibroPartidaDobleConOrigen(b.id, hastaFecha);
   // Solo para PRESENTAR agrupado por cuenta mayor (con su árbol de subcuentas) — ningún total
   // del Balance depende de estas dos listas.
@@ -19877,8 +19926,8 @@ async function renderBalanceGeneral() {
   const totalCapitalCuentas = cuentasCapital.reduce((s,x)=>s+x.saldoNeto,0);
   // El Resultado del ejercicio sigue viniendo del rollup de Estado de Resultados — es un concepto
   // de P&L, no una cuenta de mayor del Balance, y Balanza ya valida que ambos coincidan exacto.
-  const utilidadAcumulada = await computeUtilidadAcumulada(b.id, hastaYm);
-  const resultadoEjerciciosAnteriores = ventasAfectaFueraDeSuRegistro(b.id) ? await computeResultadoEjerciciosAnteriores(b.id, hastaYm) : 0;
+  const utilidadAcumulada = await pUtilidad;
+  const resultadoEjerciciosAnteriores = await pAnteriores;
   const totalCapital = totalCapitalCuentas + utilidadAcumulada + resultadoEjerciciosAnteriores;
 
   const totalPasivoCapital = totalPasivo + totalCapital;
@@ -20016,21 +20065,36 @@ async function fetchDatosGastosCostos(businessId, periodo) {
 // directo del motor consolidado, filtrado únicamente por su clasificación real (tipo), nunca
 // por nombre de cuenta ni por el módulo que originó el movimiento. Así cualquier cuenta nueva
 // de gasto/costo (presente o futura) llega sola, sin tocar este código.
+// Renglón del motor contable → fila del desglose de gastos (misma forma que usa el detalle de cualquier subcuenta).
+function filaDetalleSinClasificarDesdeMotor(f, neto) {
+  const origenes = {
+    factura_proveedor: { tipo: 'proveedor' }, poliza: { tipo: 'poliza' }, factura_cliente: { tipo: 'factura_cliente' },
+    banco_mov: { tipo: 'bancos', cuentaId: f.cuentaId }, efectivo_mov: { tipo: 'efectivo', monedaId: f.monedaId },
+  };
+  const pagos = { factura_proveedor: 'Factura sin desglosar', banco_mov: 'Salida de Banco sin tipo', efectivo_mov: 'Salida de Efectivo sin tipo', poliza: 'Póliza de diario' };
+  const origen = origenes[f.tipoOrigen] ? { ...origenes[f.tipoOrigen], id: f.id, fecha: f.fecha } : { tipo: 'ajuste' };
+  return { fecha: f.fecha, proveedor: f.detalle || f.modulo || '(sin proveedor)', concepto: f.referencia || '—', importe: neto, pago: pagos[f.tipoOrigen] || f.modulo || '—', origen };
+}
+
 async function computeGastosClasificados(businessId, periodo, subcuentas, mayores, tipoFiltro = 'gasto', incluirSinMovimiento = false, datosCompartidos = null) {
   const porSubcuenta = {}; // subcuenta_id -> monto
   let sinClasificar = 0;
+  const detalleSinClasificar = []; // de qué está hecho "sin clasificar": mismas filas que lo suman, para poder verlas y clasificarlas
 
   const { plGastosQ, filasMotor } = datosCompartidos || await fetchDatosGastosCostos(businessId, periodo);
 
   const gastosManuales = plGastosQ.data || [];
   gastosManuales.forEach(g => {
     if (g.subcuenta_id) porSubcuenta[g.subcuenta_id] = (porSubcuenta[g.subcuenta_id] || 0) + (Number(g.monto) || 0);
-    else if (tipoFiltro === 'gasto') sinClasificar += Number(g.monto) || 0;
+    else if (tipoFiltro === 'gasto') {
+      sinClasificar += Number(g.monto) || 0;
+      detalleSinClasificar.push({ fecha: g.mes + '-01', proveedor: 'Ajuste manual', concepto: g.descripcion || '—', importe: Number(g.monto) || 0, pago: 'Ajuste manual', origen: { tipo: 'ajuste' } });
+    }
   });
 
   filasMotor.filter(f => f.tipo === tipoFiltro).forEach(f => {
     const neto = f.cargo - f.abono; // naturaleza deudora, como cualquier gasto/costo
-    if (f.clave === 'sin_clasificar') { if (tipoFiltro === 'gasto') sinClasificar += neto; return; }
+    if (f.clave === 'sin_clasificar') { if (tipoFiltro === 'gasto') { sinClasificar += neto; detalleSinClasificar.push(filaDetalleSinClasificarDesdeMotor(f, neto)); } return; }
     if (f.clave.startsWith('sub:')) {
       const subId = f.clave.slice(4);
       porSubcuenta[subId] = (porSubcuenta[subId] || 0) + neto;
@@ -20045,7 +20109,7 @@ async function computeGastosClasificados(businessId, periodo, subcuentas, mayore
   }).filter(m => incluirSinMovimiento || m.subtotal);
 
   const totalClasificado = porMayor.reduce((s,m)=>s+m.subtotal,0);
-  return { porMayor, sinClasificar: tipoFiltro==='gasto' ? sinClasificar : 0, totalClasificado, gastosManuales: tipoFiltro==='gasto' ? gastosManuales : [] };
+  return { porMayor, sinClasificar: tipoFiltro==='gasto' ? sinClasificar : 0, totalClasificado, gastosManuales: tipoFiltro==='gasto' ? gastosManuales : [], detalleSinClasificar: tipoFiltro==='gasto' ? detalleSinClasificar : [] };
 }
 
 // Ganancia/pérdida cambiaria: automática, sin póliza manual — compara el tipo de cambio de
@@ -20552,6 +20616,29 @@ function wirePLTags(el) {
   if (comparacionSel) comparacionSel.addEventListener('change', () => { STATE_plComparacion = comparacionSel.value; renderPL(); });
 }
 
+// Una sola corrida del motor contable para TODO el rango de "Todos los meses"; cada mes toma sus renglones por su
+// propia fecha. Antes se corría el motor completo una vez por mes (hasta 12 a la vez, cada una releyendo las mismas
+// tablas). El motor usa la fecha de inicio solo para tomar los documentos de su rango y cada renglón conserva la fecha
+// de su documento, así que repartir por fecha da lo mismo que calcular mes por mes.
+async function cargarDatosMotorPorMes(businessId, mesesYm) {
+  const primero = periodoPL(mesesYm[0], 'mensual'), ultimo = periodoPL(mesesYm[mesesYm.length - 1], 'mensual');
+  const [plQ, motor, ventasQ] = await Promise.all([
+    sb.from('fz_pl_gastos').select('*').eq('business_id', businessId).gte('mes', mesesYm[0]).lte('mes', mesesYm[mesesYm.length - 1]),
+    getLibroPartidaDobleConOrigen(businessId, ultimo.end, primero.start),
+    sb.from('fz_ventas').select('*').eq('business_id', businessId).gte('fecha', primero.start).lte('fecha', ultimo.end),
+  ]);
+  const porMes = {};
+  mesesYm.forEach(ym => {
+    const per = periodoPL(ym, 'mensual');
+    porMes[ym] = {
+      periodo: per,
+      datos: { plGastosQ: { data: (plQ.data || []).filter(g => g.mes === ym) }, filasMotor: motor.filas.filter(f => f.fecha >= per.start && f.fecha <= per.end) },
+      ventas: (ventasQ.data || []).filter(r => r.fecha >= per.start && r.fecha <= per.end),
+    };
+  });
+  return porMes;
+}
+
 async function renderPLAnual(el, b) {
   el.innerHTML = plTagsHtml() + `<div class="empty">Calculando el año completo…</div>`;
   wirePLTags(el);
@@ -20576,10 +20663,10 @@ async function renderPLAnual(el, b) {
   }
   const mesesLabel = mesesYm.map(ym => `${MESES_LARGO[Number(ym.slice(5,7))-1].slice(0,3)} ${ym.slice(2,4)}`);
 
+  const datosPorMes = await cargarDatosMotorPorMes(b.id, mesesYm);
   const datos = await Promise.all(mesesYm.map(async (ym) => {
-    const periodo = periodoPL(ym, 'mensual');
-    const { data: v } = await sb.from('fz_ventas').select('*').eq('business_id', b.id).gte('fecha', periodo.start).lte('fecha', periodo.end);
-    const ventas = ventasAfectaFueraDeSuRegistro(b.id) ? (v || []) : [];
+    const { periodo, datos: datosGC2, ventas: v } = datosPorMes[ym];
+    const ventas = ventasAfectaFueraDeSuRegistro(b.id) ? v : [];
     const ingresosPorConcepto = conceptosVenta.map(c => ventas.reduce((s,r)=>s+(Number((r.venta_data||{})[c.id])||0),0));
     const totalIngresosVentas = conceptosVenta.reduce((s,c,idx)=>s+(c.tipo==='resta'?-ingresosPorConcepto[idx]:ingresosPorConcepto[idx]),0);
     const gastosOperativos = ventas.reduce((s,r)=>s+(Number(r.gastos)||0),0);
@@ -20587,7 +20674,6 @@ async function renderPLAnual(el, b) {
     ventas.forEach(r => { diffPeriodo += computeRowDiffs(r, conceptosVenta, porCatPL, conceptosSistema).difTotal; });
     const faltanteCaja = diffPeriodo>0?diffPeriodo:0;
     const sobranteCaja = diffPeriodo<0?-diffPeriodo:0;
-    const datosGC2 = await fetchDatosGastosCostos(b.id, periodo);
     const [gClas, gCostos] = await Promise.all([
       computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'gasto', false, datosGC2),
       computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'costo', false, datosGC2),
@@ -20783,7 +20869,7 @@ async function computeEstadoResultadosPeriodo(b, periodo) {
     computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'gasto', false, datosGC3),
     computeGastosClasificados(b.id, periodo, subcuentas, mayores, 'costo', false, datosGC3),
   ]);
-  const iPolizaOriginal = await computeIngresosPoliza(b.id, periodo, subcuentas, mayores, false);
+  const iPolizaOriginal = await computeIngresosPoliza(b.id, periodo, subcuentas, mayores, false, datosGC3.filasMotor); // mismos renglones: no se vuelve a correr el motor
   const { ganancia: gananciaCambiaria, perdida: perdidaCambiaria } = await computeGananciaPerdidaCambiariaER(b.id, periodo);
 
   const RE_CAMBIARIA = /p[ée]rdida cambiaria|ganancia cambiaria/i;
@@ -20849,7 +20935,8 @@ function periodoComparativo(periodo, modo) {
   return { start: fmtIso(nuevoStart), end: fmtIso(nuevoEnd) };
 }
 
-async function renderPL() {
+let STATE_plSinClasAbierto = false; // desglose de "Otros gastos sin subcuenta asignada" abierto o cerrado
+async function renderPLCuerpo() {
   const el = document.getElementById('sec-pl');
   const b = biz();
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
@@ -21008,7 +21095,7 @@ async function renderPL() {
             ${m.subs.map(s => filaArbolSubcuentaHtml(s, true, 0, detalleGastoHtml)).join('')}
             <tr><td style="padding-left:22px;font-style:italic;color:var(--muted);">Subtotal ${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.subtotal)}</td><td class="td-vacia-reporte"></td></tr>
           `).join('')}
-          ${gClasOperacion.sinClasificar ? `<tr><td>Otros gastos sin subcuenta asignada</td><td class="num">${fmtNeg(gClasOperacion.sinClasificar)}</td><td class="td-vacia-reporte"></td></tr>` : ''}
+          ${gClasOperacion.sinClasificar ? `<tr class="pl-sinclas-fila" style="cursor:pointer;" title="Ver de qué está hecho y clasificarlo"><td>Otros gastos sin subcuenta asignada <span style="color:var(--gold);font-size:12px;">${STATE_plSinClasAbierto ? '▾ ocultar detalle' : '▸ ver detalle'}</span></td><td class="num">${fmtNeg(gClasOperacion.sinClasificar)}</td><td class="td-vacia-reporte"></td></tr>${STATE_plSinClasAbierto ? detalleSubcuentaHtml(gClasOperacion.detalleSinClasificar || [], 3) : ''}` : ''}
           <tr class="total-row"><td>Total gastos de operación</td><td class="num">${fmtNeg(gastosTotales)}</td><td class="td-vacia-reporte"></td></tr>
           <tr class="total-row" style="border-top:2px solid var(--navy-1);"><td>Resultado de Operación</td><td class="num" style="color:${resultadoOperacion>=0?'var(--green)':'var(--red)'};">${fmt(resultadoOperacion)}</td><td class="td-vacia-reporte"></td></tr>
         </tbody>
@@ -21082,6 +21169,7 @@ async function renderPL() {
     const origen = JSON.parse(btn.dataset.origen.replace(/&apos;/g, "'"));
     abrirOrigenDesdeDetalle(origen, b.id);
   }));
+  el.querySelectorAll('.pl-sinclas-fila').forEach(tr => tr.addEventListener('click', () => { STATE_plSinClasAbierto = !STATE_plSinClasAbierto; renderPL(); }));
   document.getElementById('addGastoBtn').addEventListener('click', async () => {
     await sb.from('fz_pl_gastos').insert({ business_id: b.id, mes: STATE.currentMonth, monto: 0 });
     renderPL();
