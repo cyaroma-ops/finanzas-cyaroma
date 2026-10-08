@@ -22072,12 +22072,17 @@ function revVinculosPagoFactura(ctx) {
   const facturaPorId = Object.fromEntries(proveedores.map(f => [f.id, f]));
   const porOrigen = {};
   pagosAplicados.filter(p => p.origen_tabla === 'fz_bancos_mov' || p.origen_tabla === 'fz_efectivo_mov').forEach(p => { (porOrigen[p.origen_tabla + '|' + p.origen_id] = porOrigen[p.origen_tabla + '|' + p.origen_id] || []).push(p); });
-  const reparables = []; const huerfanas = [];
+  const reparables = []; const huerfanas = []; const rotas = [];
   Object.entries(porOrigen).forEach(([k, apps]) => {
     const m = movs.get(k); const t = k.split('|')[0];
     const total = revRedondeo(apps.reduce((a, x) => a + (Number(x.monto) || 0), 0));
     const idsApp = [...new Set(apps.map(a => a.factura_id))];
     const nombresFact = idsApp.map(id => facturaPorId[id]?.factura || 's/f').join(', ');
+    const idsRotos = idsApp.filter(id => !facturaPorId[id]);
+    if (m && m.tipo_salida === 'proveedor' && idsRotos.length) {
+      rotas.push({ fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${m.proveedor || m.descripcion || 'Pago a proveedor'}: ${idsRotos.length === idsApp.length ? 'su aplicación apunta' : 'parte de su aplicación apunta'} a una factura que ya no existe (se borró o se volvió a crear)`, monto: total });
+      return;
+    }
     if (!m || m.tipo_salida !== 'proveedor') {
       huerfanas.push({ fecha: m?.fecha || apps[0].fecha, texto: `${fechaCorta(m?.fecha || apps[0].fecha)} · factura ${nombresFact}: tiene una aplicación pero ${m ? 'su movimiento ya no es un pago a proveedor' : 'su movimiento ya no existe'}`, monto: total });
       return;
@@ -22086,9 +22091,14 @@ function revVinculosPagoFactura(ctx) {
     if (idsApp.every(id => ligados.includes(id))) return;
     reparables.push({ fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${m.proveedor || m.descripcion || 'Pago a proveedor'}: tiene aplicado ${fmt(total)} a la factura ${nombresFact}, pero el movimiento perdió el vínculo con ella`, monto: total, t, m, idsApp });
   });
-  const items = [...reparables, ...huerfanas].sort((a, z) => a.fecha.localeCompare(z.fecha));
+  [...bancosMov.map(m => ['fz_bancos_mov', m]), ...efectivoMov.map(m => ['fz_efectivo_mov', m])].forEach(([t, m]) => {
+    if (m.tipo_salida !== 'proveedor' || porOrigen[t + '|' + m.id]) return; // los que tienen aplicación ya se revisaron arriba
+    const ids = facturaIdsDe(m);
+    if (ids.length && ids.some(id => !facturaPorId[id])) rotas.push({ fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${m.proveedor || m.descripcion || 'Pago a proveedor'}: está ligado a una factura que ya no existe`, monto: revRedondeo(m.cargos) });
+  });
+  const items = [...rotas, ...reparables, ...huerfanas].sort((a, z) => a.fecha.localeCompare(z.fecha));
   const r = { id: 'vinculos_pago', titulo: 'Pagos con facturas aplicadas pero sin vínculo, o aplicaciones sin pago',
-    ayuda: 'Cambiar el tipo de salida desde la tabla borraba el vínculo del pago con sus facturas sin deshacer las aplicaciones. Si solo se perdió el vínculo, el botón lo restaura. Si el movimiento ya no es un pago a proveedor (o no existe), la factura figura pagada sin un pago que la respalde: regresa el movimiento a "Pago a proveedor" o corrige el estatus de la factura.', items };
+    ayuda: 'Cambiar el tipo de salida desde la tabla borraba el vínculo del pago con sus facturas sin deshacer las aplicaciones. Si solo se perdió el vínculo, el botón lo restaura. Si el movimiento ya no es un pago a proveedor (o no existe), la factura figura pagada sin un pago que la respalde: regresa el movimiento a "Pago a proveedor" o corrige el estatus de la factura. Si la factura a la que apunta ya no existe, abre el pago y vuelve a aplicarlo a la factura correcta.', items };
   if (reparables.length) r.accion = {
     etiqueta: `Restaurar el vínculo de ${reparables.length} pago${reparables.length === 1 ? '' : 's'}`,
     confirmar: `Se restaurará, en ${reparables.length} movimiento(s), el vínculo con la(s) factura(s) que ya tienen aplicada. No cambia ningún saldo, estatus ni importe. ¿Continuar?`,
