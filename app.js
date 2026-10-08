@@ -1715,7 +1715,7 @@ async function renderVentas() {
   const btnMaterializar = document.getElementById('materializarHistoricoVentasBtn'); // solo existe en negocios financieros
   if (btnMaterializar) btnMaterializar.addEventListener('click', async () => {
     const btn = document.getElementById('materializarHistoricoVentasBtn');
-    const ok = confirm('Esto revisa todas las ventas ya conciliadas (tarjetas/efectivo vinculados a una cuenta) y crea, para cada una, el movimiento real correspondiente en Bancos/Efectivo — necesario para que Balance General y Auxiliares los reflejen correctamente.\n\nEs seguro repetirlo: nunca duplica algo que ya se haya materializado antes.\n\n¿Continuar?');
+    const ok = confirm('Esto revisa todas las ventas ya conciliadas (tarjetas/efectivo vinculados a una cuenta) y deja el movimiento real de Bancos/Efectivo igual a la conciliación: crea los que faltan y corrige los que ya no coinciden. No toca depósitos que ya cambiaste de tipo ni borra los que tienen archivos adjuntos.\n\nEs seguro repetirlo: nunca duplica nada.\n\n¿Continuar?');
     if (!ok) return;
     btn.disabled = true; btn.textContent = 'Materializando…';
     try {
@@ -1728,11 +1728,11 @@ async function renderVentas() {
           const entry = (v.recon_data || {})[concepto.id];
           const monto = Number(entry?.monto) || 0;
           if (!monto) continue;
-          await materializarDepositoVentaSiCorresponde(b.id, v.id, v.fecha, concepto, monto);
+          await sincronizarDepositoVenta(b.id, v.id, v.fecha, concepto, monto);
           materializados++;
         }
       }
-      toast(`Revisión completa — ${materializados} conciliación(es) procesadas (las que ya existían se ignoraron automáticamente).`);
+      toast(`Revisión completa — ${materializados} conciliación(es) revisadas; se crearon los depósitos que faltaban y se corrigieron los que ya no coincidían.`);
       renderVentas();
     } finally {
       btn.disabled = false; btn.textContent = 'Materializar depósitos ya conciliados';
@@ -1798,7 +1798,11 @@ async function renderVentas() {
           await provisionarPropina(b.id, ventaId, concepto, montoVal, row.fecha);
         }
         if (concepto && (concepto.banco_cuenta_id || concepto.moneda_id)) {
-          await materializarDepositoVentaSiCorresponde(b.id, ventaId, row.fecha, concepto, montoVal);
+          const r = await sincronizarDepositoVenta(b.id, ventaId, row.fecha, concepto, montoVal);
+          if (r.accion === 'actualizado') toast(`El depósito en ${concepto.banco_cuenta_id ? 'Bancos' : 'Efectivo'} se actualizó de ${fmt(r.antes)} a ${fmt(r.despues)}.`);
+          else if (r.accion === 'eliminado') toast(`Se quitó el depósito automático de ${fmt(r.antes)} (la conciliación quedó vacía).`);
+          else if (r.accion === 'conservado_con_adjuntos') toast('La conciliación quedó vacía, pero el depósito tiene archivos adjuntos y NO se borró: revísalo en Bancos/Efectivo.', 'error');
+          else if (r.accion === 'manual') toast('Ese depósito ya no es el automático (lo cambiaste de tipo), así que no se modificó: ajústalo en Bancos/Efectivo.', 'error');
         }
       }
       renderVentas();
@@ -1806,6 +1810,39 @@ async function renderVentas() {
   });
   wireInputsMoneda(el);
   window.scrollTo(0, scrollY);
+}
+
+// Sincroniza el depósito real de UNA conciliación (venta + concepto) con lo que dice la conciliación ahora:
+//  · monto > 0 y no hay depósito → lo crea;  · monto distinto → actualiza el depósito;  · monto vacío o 0 → quita el
+//    depósito automático.
+// Protecciones: solo toca depósitos que SIGUEN siendo automáticos (tipo_entrada 'venta_conciliada'); si ya lo convertiste
+// a otro tipo (por ejemplo un traspaso) no se toca; y no borra un depósito que tenga archivos adjuntos. Solo financieros.
+async function sincronizarDepositoVenta(businessId, ventaId, fecha, concepto, monto) {
+  if (!ventasAfectaFueraDeSuRegistro(businessId)) return { accion: 'nada' };
+  const tabla = concepto.banco_cuenta_id ? 'fz_bancos_mov' : (concepto.moneda_id ? 'fz_efectivo_mov' : null);
+  if (!tabla) return { accion: 'nada' };
+  const nuevo = Number(monto) > 0 ? Number(monto) : 0;
+  const { data: existentes } = await sb.from(tabla).select('id,depositos,tipo_entrada').eq('venta_id', ventaId).eq('concepto_venta_id', concepto.id);
+  const mov = (existentes || [])[0];
+  if (!mov) {
+    if (nuevo <= 0) return { accion: 'nada' };
+    await materializarDepositoVentaSiCorresponde(businessId, ventaId, fecha, concepto, nuevo);
+    return { accion: 'creado' };
+  }
+  if (mov.tipo_entrada !== 'venta_conciliada') return { accion: 'manual' }; // ya no es el depósito automático: no se toca
+  if (nuevo > 0) {
+    const antes = Number(mov.depositos);
+    if (Math.abs(antes - nuevo) <= 0.004) return { accion: 'igual' };
+    const { error } = await sb.from(tabla).update({ depositos: nuevo }).eq('id', mov.id);
+    if (error) throw error;
+    return { accion: 'actualizado', antes, despues: nuevo };
+  }
+  const { data: adjuntos } = await sb.from('fz_adjuntos').select('id').eq('tabla', tabla).eq('registro_id', mov.id).limit(1);
+  if ((adjuntos || []).length) return { accion: 'conservado_con_adjuntos' };
+  const antesEliminado = Number(mov.depositos);
+  const { error } = await sb.from(tabla).delete().eq('id', mov.id);
+  if (error) throw error;
+  return { accion: 'eliminado', antes: antesEliminado };
 }
 
 /* ---------- Provisión automática de propinas como cuenta por pagar ---------- */
@@ -11216,13 +11253,22 @@ async function renderDiariosPolizasWrapper() {
 
 /* ---------- Auxiliares ---------- */
 let STATE_auxiliarClave = null;
+// Rango de fechas del Auxiliar: por defecto es el mes seleccionado arriba; con "Desde" y "Hasta" se elige cualquier
+// periodo. Al cambiar el mes del selector general, el rango vuelve a ser ese mes.
+let STATE_auxiliarRango = { mes: '', desde: '', hasta: '' };
 async function renderAuxiliares() {
   const el = document.getElementById('sec-auxiliares');
   const b = biz();
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
   el.innerHTML = `<div class="empty">Cargando…</div>`;
 
-  const { start, end } = monthBounds(STATE.currentMonth);
+  const mesAux = monthBounds(STATE.currentMonth);
+  if (STATE_auxiliarRango.mes !== STATE.currentMonth) STATE_auxiliarRango = { mes: STATE.currentMonth, desde: '', hasta: '' };
+  const usaRango = !!(STATE_auxiliarRango.desde && STATE_auxiliarRango.hasta && STATE_auxiliarRango.desde <= STATE_auxiliarRango.hasta);
+  const start = usaRango ? STATE_auxiliarRango.desde : mesAux.start;
+  const end = usaRango ? STATE_auxiliarRango.hasta : mesAux.end;
+  const etiquetaPeriodo = usaRango ? `${fechaCorta(start)} al ${fechaCorta(end)}` : `${MESES_LARGO[Number(STATE.currentMonth.slice(5,7))-1]} ${STATE.currentMonth.slice(0,4)}`;
+  const sufijoArchivo = usaRango ? `${start} a ${end}` : STATE.currentMonth;
   const { filas } = await getLibroPartidaDobleConOrigen(b.id, end);
 
   const cuentasMap = {};
@@ -11250,13 +11296,21 @@ async function renderAuxiliares() {
         <h3>Auxiliar de cuenta</h3>
         <div style="display:flex;gap:8px;"><button class="btn btn-ghost btn-sm" id="auxExcelBtn">Excel</button><button class="btn btn-ghost btn-sm" id="auxPdfBtn">PDF</button></div>
       </div>
-      <div class="field" style="max-width:340px;">
-        <label>Cuenta</label>
-        <select id="auxCuentaSel">${cuentas.map(c=>`<option value="${c.clave}" ${c.clave===STATE_auxiliarClave?'selected':''}>${c.nombre}</option>`).join('')}</select>
+      <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end;">
+        <div class="field" style="max-width:340px;margin-bottom:0;">
+          <label>Cuenta</label>
+          <select id="auxCuentaSel">${cuentas.map(c=>`<option value="${c.clave}" ${c.clave===STATE_auxiliarClave?'selected':''}>${c.nombre}</option>`).join('')}</select>
+        </div>
+        <div class="field" style="margin-bottom:0;"><label>Desde</label><input type="date" id="auxDesde" value="${start}"></div>
+        <div class="field" style="margin-bottom:0;"><label>Hasta</label><input type="date" id="auxHasta" value="${end}"></div>
+        <div style="display:flex;gap:6px;">
+          <button class="btn btn-ghost btn-sm" id="auxRangoMes" ${usaRango ? '' : 'disabled'} title="Volver al mes seleccionado arriba">Mes seleccionado</button>
+          <button class="btn btn-ghost btn-sm" id="auxRangoAnio" title="Del 1 de enero del año del mes seleccionado a fin de ese mes">Año a la fecha</button>
+        </div>
       </div>
     </div>
     <div class="card">
-      <div class="card-head"><h3>${cuenta?.nombre||''}</h3><span class="hint">${MESES_LARGO[Number(STATE.currentMonth.slice(5,7))-1]} ${STATE.currentMonth.slice(0,4)} · Saldo inicial: ${fmt(Math.abs(saldoInicialNeto))} ${saldoInicialNeto>=0?(esDeudora?'Deudor':'Acreedor'):(esDeudora?'Acreedor':'Deudor')}</span></div>
+      <div class="card-head"><h3>${cuenta?.nombre||''}</h3><span class="hint">${etiquetaPeriodo} · Saldo inicial: ${fmt(Math.abs(saldoInicialNeto))} ${saldoInicialNeto>=0?(esDeudora?'Deudor':'Acreedor'):(esDeudora?'Acreedor':'Deudor')}</span></div>
       <div class="table-wrap scroll-sticky tabla-contable-wrap">
         <table class="tabla-contable">
           <thead><tr><th>Fecha</th><th>Documento</th><th>Concepto/Origen</th><th>Debe</th><th>Haber</th><th>Saldo</th></tr></thead>
@@ -11269,7 +11323,7 @@ async function renderAuxiliares() {
               <td class="num">${f.abono?fmt(f.abono):''}</td>
               <td class="num" style="font-weight:600;">${fmt(Math.abs(f.saldo))}</td>
               <td><button class="btn btn-ghost btn-sm aux-ver-documento" data-idx="${idx}" style="font-size:11px;padding:3px 8px;">Ver documento</button></td>
-            </tr>`).join('') : `<tr><td colspan="7" class="empty">Sin movimientos este mes.</td></tr>`}
+            </tr>`).join('') : `<tr><td colspan="7" class="empty">Sin movimientos en este periodo.</td></tr>`}
           </tbody>
           <tfoot><tr class="total-row"><td colspan="3">TOTAL DEL PERIODO</td><td class="num">${fmt(totalDebe)}</td><td class="num">${fmt(totalHaber)}</td><td class="num">${fmt(Math.abs(saldoCorrido))}</td><td></td></tr></tfoot>
         </table>
@@ -11277,16 +11331,27 @@ async function renderAuxiliares() {
     </div>
   `;
   document.getElementById('auxCuentaSel').addEventListener('change', (e) => { STATE_auxiliarClave = e.target.value; renderAuxiliares(); });
+  const aplicarRangoAux = () => {
+    const d = document.getElementById('auxDesde').value, h = document.getElementById('auxHasta').value;
+    if (!d || !h) return;
+    if (d > h) { toast('"Desde" no puede ser posterior a "Hasta".', 'error'); return; }
+    STATE_auxiliarRango = { mes: STATE.currentMonth, desde: d, hasta: h };
+    renderAuxiliares();
+  };
+  document.getElementById('auxDesde').addEventListener('change', aplicarRangoAux);
+  document.getElementById('auxHasta').addEventListener('change', aplicarRangoAux);
+  document.getElementById('auxRangoMes').addEventListener('click', () => { STATE_auxiliarRango = { mes: STATE.currentMonth, desde: '', hasta: '' }; renderAuxiliares(); });
+  document.getElementById('auxRangoAnio').addEventListener('click', () => { STATE_auxiliarRango = { mes: STATE.currentMonth, desde: `${STATE.currentMonth.slice(0,4)}-01-01`, hasta: mesAux.end }; renderAuxiliares(); });
   el.querySelectorAll('.aux-ver-documento').forEach(btn => btn.addEventListener('click', () => verDocumentoDesdeOrigen(filasConSaldo[Number(btn.dataset.idx)], b.id)));
   document.getElementById('auxExcelBtn').addEventListener('click', () => {
     const wb = XLSX.utils.book_new();
     const rows = [{ Fecha:'', Documento:'', Concepto:'Saldo inicial', Debe:'', Haber:'', Saldo: Math.abs(saldoInicialNeto) }];
     filasConSaldo.forEach(f => rows.push({ Fecha: f.fecha, Documento: f.referencia, Concepto: `${f.modulo}${f.detalle?' — '+f.detalle:''}`, Debe: f.cargo||'', Haber: f.abono||'', Saldo: Math.abs(f.saldo) }));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Auxiliar');
-    XLSX.writeFile(wb, `Auxiliar - ${cuenta?.nombre} - ${b.name} - ${STATE.currentMonth}.xlsx`);
+    XLSX.writeFile(wb, `Auxiliar - ${cuenta?.nombre} - ${b.name} - ${sufijoArchivo}.xlsx`);
   });
   document.getElementById('auxPdfBtn').addEventListener('click', () => {
-    const { doc, margin, y } = iniciarPdfConEncabezado(b, `Auxiliar — ${cuenta?.nombre} — ${MESES_LARGO[Number(STATE.currentMonth.slice(5,7))-1]} ${STATE.currentMonth.slice(0,4)}`);
+    const { doc, margin, y } = iniciarPdfConEncabezado(b, `Auxiliar — ${cuenta?.nombre} — ${etiquetaPeriodo}`);
     doc.autoTable({
       startY: y, margin: { left: margin, right: margin },
       head: [['Fecha','Documento','Concepto','Debe','Haber','Saldo']],
@@ -11294,7 +11359,7 @@ async function renderAuxiliares() {
       foot: [['','TOTAL','', fmt(totalDebe), fmt(totalHaber), fmt(Math.abs(saldoCorrido))]],
       styles: { fontSize: 8 }, headStyles: { fillColor: [10,31,61] },
     });
-    doc.save(`Auxiliar - ${cuenta?.nombre} - ${b.name} - ${STATE.currentMonth}.pdf`);
+    doc.save(`Auxiliar - ${cuenta?.nombre} - ${b.name} - ${sufijoArchivo}.pdf`);
   });
 }
 
@@ -13649,15 +13714,24 @@ function openFacturasCobroModal(rowId, table, facturasClientesPend, onDone) {
     const { data: row } = await sb.from(table).select('*').eq('id', rowId).single();
     const idsActuales = new Set(facturaIdsClienteDe(row || {}));
     const montoMovimiento = Number(row?.depositos) || 0;
+    // Lo que ESTE cobro ya aplicó a cada factura vuelve a estar disponible (al guardar se revierte y se reaplica), y esas
+    // facturas cuentan como suyas aunque el movimiento haya perdido el vínculo.
+    const yaAplicadoPorFactura = {};
+    {
+      const { data: appsMov } = await sb.from('fz_cobros_aplicados').select('factura_id,monto').eq('origen_tabla', table).eq('origen_id', rowId);
+      (appsMov || []).forEach(a => { yaAplicadoPorFactura[a.factura_id] = (yaAplicadoPorFactura[a.factura_id] || 0) + (Number(a.monto) || 0); });
+      Object.keys(yaAplicadoPorFactura).forEach(id => idsActuales.add(id));
+    }
     const opciones = facturasClientesPend.filter(f => f.estatus !== 'Pagado' || idsActuales.has(f.id));
     const porCliente = {};
+    const GRUPO_APLICADAS_COBRO = '★ Aplicadas a este cobro';
     opciones.forEach(f => {
-      const key = f.clienteNombre || '(sin cliente)';
+      const key = idsActuales.has(f.id) ? GRUPO_APLICADAS_COBRO : (f.clienteNombre || '(sin cliente)');
       (porCliente[key] = porCliente[key] || []).push(f);
     });
     Object.values(porCliente).forEach(lista => lista.sort((a,b) => a.fecha.localeCompare(b.fecha)));
     const box = document.getElementById('facturasPagoList');
-    const nombresCliente = Object.keys(porCliente).sort((a,b)=>a.localeCompare(b));
+    const nombresCliente = Object.keys(porCliente).sort((a,b) => a === GRUPO_APLICADAS_COBRO ? -1 : (b === GRUPO_APLICADAS_COBRO ? 1 : a.localeCompare(b)));
     document.getElementById('facturasPagoTitulo').textContent = 'Cobro de cliente';
     document.getElementById('facturasPagoSubtitulo').textContent = 'Selecciona las facturas que incluye este depósito. El monto se distribuirá automáticamente si marcas varias.';
     document.getElementById('facturasPagoResumenLabel').textContent = 'Resumen del cobro';
@@ -13732,14 +13806,14 @@ function openFacturasCobroModal(rowId, table, facturasClientesPend, onDone) {
         const facturasCli = porCliente[cli].filter(f => !texto || cli.toLowerCase().includes(texto) || String(f.folio).includes(texto) || (f.numero_factura||'').toLowerCase().includes(texto));
         if (!facturasCli.length) return '';
         const filasHtml = facturasCli.map(f => {
-          const saldo = Number(f.total) - Number(f.importe_pagado||0);
+          const saldo = Number(f.total) - Number(f.importe_pagado||0) + (yaAplicadoPorFactura[f.id] || 0);
           return `<tr>
             <td><input type="checkbox" class="factura-check" value="${f.id}" data-importe="${saldo}" ${idsActuales.has(f.id)?'checked':''}></td>
             <td>${fechaCorta(f.fecha)}</td>
             <td>#${f.folio}</td>
-            <td>${f.numero_factura || '—'}</td>
+            <td>${f.numero_factura || '—'}${cli === GRUPO_APLICADAS_COBRO ? `<div style="font-size:10.5px;color:var(--muted);">${f.clienteNombre || '(sin cliente)'}</div>` : ''}</td>
             <td><span class="mf-badge-moneda">${f.moneda||'MXN'}</span></td>
-            <td class="mf-num">${fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}</td>
+            <td class="mf-num">${fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}${yaAplicadoPorFactura[f.id] ? `<div style="font-size:10px;color:var(--muted);">este cobro aplicó ${fmt(yaAplicadoPorFactura[f.id])}</div>` : ''}</td>
             <td>${f.fecha_vencimiento ? fechaCorta(f.fecha_vencimiento) : '—'}</td>
           </tr>`;
         }).join('');
@@ -14010,6 +14084,7 @@ function wireEntradaCellHandlers(container, table, onChange, facturasClientesPen
     if (foco) foco.focus();
   };
   container.querySelectorAll('.entrada-tipo').forEach(sel => sel.addEventListener('change', async () => {
+    if (!(await prepararCambioTipoEntradaCobro(table, sel.dataset.id, sel.value))) { reemplazarCeldasDeFila(sel.dataset.id); return; } // canceló: se restaura lo mostrado
     const { error } = await sb.from(table).update({ tipo_entrada: sel.value, cliente_factura_id: null, cliente_factura_ids: [] }).eq('id', sel.dataset.id);
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     if (ledger) {
@@ -14237,12 +14312,21 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   actualizarResumenMovFacturas();
 
   // Espejo, del lado de clientes: facturas pendientes de cobro
-  const idsClienteYaVinculados = movimientoExistente ? facturaIdsClienteDe(movimientoExistente) : [];
+  const idsClienteYaVinculados = movimientoExistente ? [...facturaIdsClienteDe(movimientoExistente)] : []; // copia: no se modifica el movimiento
+  // Lo que ESTE cobro ya aplicó a cada factura vuelve a estar disponible (al guardar se revierte y se reaplica); esas facturas
+  // cuentan como suyas aunque el movimiento haya perdido el vínculo.
+  const yaAplicadoPorFacturaCli = {};
+  if (movimientoExistente) {
+    const { data: appsMovCli } = await sb.from('fz_cobros_aplicados').select('factura_id,monto').eq('origen_tabla', contexto.tipo === 'banco' ? 'fz_bancos_mov' : 'fz_efectivo_mov').eq('origen_id', movimientoExistente.id);
+    (appsMovCli || []).forEach(a => { yaAplicadoPorFacturaCli[a.factura_id] = (yaAplicadoPorFacturaCli[a.factura_id] || 0) + (Number(a.monto) || 0); });
+    Object.keys(yaAplicadoPorFacturaCli).forEach(id => { if (!idsClienteYaVinculados.includes(id)) idsClienteYaVinculados.push(id); });
+  }
   const pendientesCliente = facturasClientesPend.filter(f => f.estatus !== 'Pagado' || idsClienteYaVinculados.includes(f.id));
   const porClienteMov = {};
-  pendientesCliente.forEach(f => { const key = f.clienteNombre || '(sin cliente)'; (porClienteMov[key] = porClienteMov[key] || []).push(f); });
+  const GRUPO_APLICADAS_COBRO_MOV = '★ Aplicadas a este cobro';
+  pendientesCliente.forEach(f => { const key = idsClienteYaVinculados.includes(f.id) ? GRUPO_APLICADAS_COBRO_MOV : (f.clienteNombre || '(sin cliente)'); (porClienteMov[key] = porClienteMov[key] || []).push(f); });
   Object.values(porClienteMov).forEach(lista => lista.sort((a,b) => a.fecha.localeCompare(b.fecha)));
-  const nombresClienteMov = Object.keys(porClienteMov).sort((a,b)=>a.localeCompare(b));
+  const nombresClienteMov = Object.keys(porClienteMov).sort((a,b) => a === GRUPO_APLICADAS_COBRO_MOV ? -1 : (b === GRUPO_APLICADAS_COBRO_MOV ? 1 : a.localeCompare(b)));
   const movFacturasClienteBox = document.getElementById('movFacturasClienteList');
   movFacturasClienteBox.innerHTML = nombresClienteMov.map(cli => `
     <div class="mf-grupo factura-provgroup" data-prov="${cli.toLowerCase()}" style="margin-bottom:8px;">
@@ -14250,14 +14334,14 @@ async function openMovimientoModal(contexto, movimientoExistente) {
       <div class="mf-tabla-wrap"><table class="mf-tabla" style="font-size:12px;">
         <tbody>
         ${porClienteMov[cli].map(f => {
-          const saldo = Number(f.total) - Number(f.importe_pagado||0);
+          const saldo = Number(f.total) - Number(f.importe_pagado||0) + (yaAplicadoPorFacturaCli[f.id] || 0);
           return `<tr>
             <td style="width:20px;"><input type="checkbox" class="mov-factura-cliente-check" value="${f.id}" data-importe="${saldo}" data-cliente="${cli}" ${idsClienteYaVinculados.includes(f.id)?'checked':''}></td>
             <td>${fechaCorta(f.fecha)}</td>
             <td>#${f.folio}</td>
-            <td>${f.numero_factura || '—'}</td>
+            <td>${f.numero_factura || '—'}${cli === GRUPO_APLICADAS_COBRO_MOV ? `<div style="font-size:10.5px;color:var(--muted);">${f.clienteNombre || '(sin cliente)'}</div>` : ''}</td>
             <td><span class="mf-badge-moneda">${f.moneda||'MXN'}</span></td>
-            <td class="mf-num">${fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}</td>
+            <td class="mf-num">${fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}${yaAplicadoPorFacturaCli[f.id] ? `<div style="font-size:10px;color:var(--muted);">este cobro aplicó ${fmt(yaAplicadoPorFacturaCli[f.id])}</div>` : ''}</td>
           </tr>`;
         }).join('')}
         </tbody>
@@ -14710,6 +14794,24 @@ async function prepararCambioTipoSalidaPago(tabla, movId, nuevoTipo) {
     : 'Este pago está ligado a una factura. Si cambias el tipo de salida se pierde ese vínculo y la factura seguirá figurando como pagada en Proveedores; tendrás que corregir su estatus allá.\n\n¿Continuar?');
   if (!ok) return false;
   if (tieneApps) await aplicarPagoFacturas([], 0, fila.fecha, fila.business_id, { origen_tabla: tabla, origen_id: movId });
+  return true;
+}
+
+// Espejo, del lado de cobros, de prepararCambioTipoSalidaPago: cambiar el tipo de entrada de un cobro de cliente borra su
+// vínculo con las facturas. Si el cobro tiene facturas APLICADAS, esas aplicaciones se deshacen igual que al borrar el
+// movimiento (las facturas vuelven a Pendiente o Parcial); antes quedaban sueltas: la factura seguía "Pagada" sin ningún
+// cobro que la respaldara. Devuelve true si se puede continuar con el cambio.
+async function prepararCambioTipoEntradaCobro(tabla, movId, nuevoTipo) {
+  const { data: fila } = await sb.from(tabla).select('business_id,fecha,tipo_entrada,cliente_factura_id,cliente_factura_ids').eq('id', movId).single();
+  if (!fila || fila.tipo_entrada !== 'cliente' || nuevoTipo === 'cliente') return true;
+  const { data: apps } = await sb.from('fz_cobros_aplicados').select('id').eq('origen_tabla', tabla).eq('origen_id', movId).limit(1);
+  const tieneApps = (apps || []).length > 0;
+  if (!tieneApps && !facturaIdsClienteDe(fila).length) return true;
+  const ok = confirm(tieneApps
+    ? 'Este cobro tiene facturas aplicadas. Si cambias el tipo de entrada, esas aplicaciones se deshacen y las facturas vuelven a quedar pendientes (o parciales).\n\n¿Continuar?'
+    : 'Este cobro está ligado a una factura. Si cambias el tipo de entrada se pierde ese vínculo y la factura seguirá figurando como cobrada en Clientes; tendrás que corregir su estatus allá.\n\n¿Continuar?');
+  if (!ok) return false;
+  if (tieneApps) await aplicarCobroFacturas([], 0, fila.fecha, fila.business_id, { origen_tabla: tabla, origen_id: movId });
   return true;
 }
 
@@ -22116,10 +22218,11 @@ async function cargarContextoRevision(b) {
     if (error) throw new Error(`${tabla}: ${error.message}`);
     return data || [];
   };
-  const [ventas, conceptos, conceptosVenta, conceptosSistema, proveedores, bancosMov, efectivoMov, pagosAplicados, polizas, lineas, monedas] = await Promise.all([
+  const [ventas, conceptos, conceptosVenta, conceptosSistema, proveedores, bancosMov, efectivoMov, pagosAplicados, polizas, lineas, monedas, cobrosAplicados, facturasClientes] = await Promise.all([
     pag('fz_ventas'), loadConceptos(b.id), loadConceptosVenta(b.id), loadConceptosSistema(b.id),
     pag('fz_proveedores'), pag('fz_bancos_mov'), pag('fz_efectivo_mov'), pag('fz_pagos_aplicados'),
     pag('fz_polizas'), pag('fz_polizas_lineas', 'id,poliza_id,cargo,abono'), pag('fz_efectivo_monedas'),
+    pag('fz_cobros_aplicados'), pag('fz_facturas_clientes', 'id,folio,numero_factura,total'),
   ]);
   const porCat = {
     efectivo: conceptos.filter(c => c.categoria === 'efectivo'), tarjetas: conceptos.filter(c => c.categoria === 'tarjetas'),
@@ -22127,7 +22230,7 @@ async function cargarContextoRevision(b) {
     propinas: conceptos.filter(c => c.categoria === 'propinas'),
   };
   return { b, financiero: ventasAfectaFueraDeSuRegistro(b.id), ventas, conceptos, conceptosVenta, conceptosSistema, porCat,
-           proveedores, bancosMov, efectivoMov, pagosAplicados, polizas, lineas, monedas };
+           proveedores, bancosMov, efectivoMov, pagosAplicados, polizas, lineas, monedas, cobrosAplicados, facturasClientes };
 }
 
 // Cada revisión devuelve { id, titulo, ayuda, items:[{texto, monto?}], nota?, accion?:{etiqueta, ejecutar} } o null si no aplica.
@@ -22183,24 +22286,34 @@ function revDepositosVentas(ctx) {
   if (!ctx.financiero) return null; // en Fiscal Contable Ventas es solo auditoría
   const { ventas, conceptos, bancosMov, efectivoMov, b } = ctx;
   const conMov = conceptos.filter(c => c.banco_cuenta_id || c.moneda_id);
-  const mat = {};
+  const mat = {}; const tipoMat = {};
   [...bancosMov, ...efectivoMov].filter(m => m.venta_id && m.concepto_venta_id).forEach(m => {
-    const k = `${m.venta_id}|${m.concepto_venta_id}`; mat[k] = revRedondeo((mat[k] || 0) + (Number(m.depositos) || 0));
+    const k = `${m.venta_id}|${m.concepto_venta_id}`; mat[k] = revRedondeo((mat[k] || 0) + (Number(m.depositos) || 0)); tipoMat[k] = m.tipo_entrada;
   });
   const faltan = []; const distintos = [];
   ventas.forEach(v => conMov.forEach(c => {
     const monto = revRedondeo(Number((v.recon_data || {})[c.id]?.monto) || 0);
     const k = `${v.id}|${c.id}`; const m = mat[k] || 0;
     if (monto > 0 && !m) faltan.push({ fecha: v.fecha, texto: `${fechaCorta(v.fecha)} · ${c.nombre}: conciliado ${fmt(monto)} y sin depósito en Bancos/Efectivo`, monto, v, c });
-    else if (Math.abs(monto - m) >= 0.005) distintos.push({ fecha: v.fecha, texto: `${fechaCorta(v.fecha)} · ${c.nombre}: conciliado ${fmt(monto)}, depositado ${fmt(m)} (el depósito no siguió a la conciliación)`, monto: revRedondeo(monto - m) });
+    else if (Math.abs(monto - m) >= 0.005) {
+      const sinc = tipoMat[k] === 'venta_conciliada';
+      distintos.push({ fecha: v.fecha, texto: `${fechaCorta(v.fecha)} · ${c.nombre}: conciliado ${fmt(monto)}, depositado ${fmt(m)}${sinc ? '' : ' (ya no es el depósito automático: ajústalo en Bancos/Efectivo)'}`, monto: revRedondeo(monto - m), v, c, montoConc: monto, sinc });
+    }
   }));
   const items = [...faltan, ...distintos].sort((a, z) => a.fecha.localeCompare(z.fecha));
+  const sincronizables = distintos.filter(x => x.sinc);
+  const total = faltan.length + sincronizables.length;
   const r = { id: 'depositos_ventas', titulo: 'Depósitos de ventas conciliadas',
-    ayuda: 'Cada monto conciliado en Ventas debe tener su depósito real en Bancos o Efectivo. Si falta, el Activo queda corto; si el depósito difiere, edítalo en Bancos o Efectivo para que coincida con la conciliación.', items };
-  if (faltan.length) r.accion = {
-    etiqueta: `Crear ${faltan.length} depósito${faltan.length === 1 ? '' : 's'} faltante${faltan.length === 1 ? '' : 's'}`,
-    confirmar: `Se crearán ${faltan.length} depósitos en Bancos/Efectivo a partir de la conciliación de Ventas (no se duplican los que ya existen). ¿Continuar?`,
-    ejecutar: async () => { for (const x of faltan) await materializarDepositoVentaSiCorresponde(b.id, x.v.id, x.v.fecha, x.c, x.monto); return `${faltan.length} depósito(s) creado(s).`; },
+    ayuda: 'Cada monto conciliado en Ventas debe tener su depósito real en Bancos o Efectivo, con el mismo monto. Si falta, el Activo queda corto; si no coincide, el botón lo deja igual a la conciliación. Desde ahora, al editar la conciliación en Ventas el depósito se actualiza solo.', items };
+  if (total) r.accion = {
+    etiqueta: `Sincronizar ${total} depósito${total === 1 ? '' : 's'}`,
+    confirmar: `Se dejarán ${total} depósito(s) de Bancos/Efectivo iguales a su conciliación de Ventas: se crearán ${faltan.length}, y se corregirán o quitarán ${sincronizables.length}. No se tocan los depósitos que ya cambiaste de tipo, ni se borran los que tienen archivos adjuntos. ¿Continuar?`,
+    ejecutar: async () => {
+      const cuenta = { creado: 0, actualizado: 0, eliminado: 0, otros: 0 };
+      for (const x of faltan) { const r2 = await sincronizarDepositoVenta(b.id, x.v.id, x.v.fecha, x.c, x.monto); cuenta[r2.accion] !== undefined ? cuenta[r2.accion]++ : cuenta.otros++; }
+      for (const x of sincronizables) { const r2 = await sincronizarDepositoVenta(b.id, x.v.id, x.v.fecha, x.c, x.montoConc); cuenta[r2.accion] !== undefined ? cuenta[r2.accion]++ : cuenta.otros++; }
+      return `Depósitos: ${cuenta.creado} creado(s), ${cuenta.actualizado} corregido(s), ${cuenta.eliminado} quitado(s)${cuenta.otros ? `, ${cuenta.otros} sin cambio (con adjuntos o ya modificados)` : ''}.`;
+    },
   };
   return r;
 }
@@ -22307,6 +22420,55 @@ function revVinculosPagoFactura(ctx) {
   return r;
 }
 
+function revVinculosCobroFactura(ctx) {
+  const { bancosMov, efectivoMov, cobrosAplicados, facturasClientes } = ctx;
+  const movs = new Map();
+  bancosMov.forEach(m => movs.set('fz_bancos_mov|' + m.id, m)); efectivoMov.forEach(m => movs.set('fz_efectivo_mov|' + m.id, m));
+  const facturaPorId = Object.fromEntries(facturasClientes.map(f => [f.id, f]));
+  const nombreFactura = (id) => { const f = facturaPorId[id]; return f ? (f.numero_factura || ('#' + f.folio)) : 's/f'; };
+  const porOrigen = {};
+  cobrosAplicados.filter(p => p.origen_tabla === 'fz_bancos_mov' || p.origen_tabla === 'fz_efectivo_mov').forEach(p => { (porOrigen[p.origen_tabla + '|' + p.origen_id] = porOrigen[p.origen_tabla + '|' + p.origen_id] || []).push(p); });
+  const reparables = []; const huerfanas = []; const rotas = [];
+  Object.entries(porOrigen).forEach(([k, apps]) => {
+    const m = movs.get(k); const t = k.split('|')[0];
+    const total = revRedondeo(apps.reduce((a, x) => a + (Number(x.monto) || 0), 0));
+    const idsApp = [...new Set(apps.map(a => a.factura_id))];
+    const nombresFact = idsApp.map(nombreFactura).join(', ');
+    const idsRotos = idsApp.filter(id => !facturaPorId[id]);
+    if (m && m.tipo_entrada === 'cliente' && idsRotos.length) {
+      rotas.push({ fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${m.descripcion || m.proveedor || 'Cobro de cliente'}: ${idsRotos.length === idsApp.length ? 'su aplicación apunta' : 'parte de su aplicación apunta'} a una factura que ya no existe (se borró o se volvió a crear)`, monto: total });
+      return;
+    }
+    if (!m || m.tipo_entrada !== 'cliente') {
+      huerfanas.push({ fecha: m?.fecha || apps[0].fecha, texto: `${fechaCorta(m?.fecha || apps[0].fecha)} · factura ${nombresFact}: tiene una aplicación de cobro pero ${m ? 'su movimiento ya no es un cobro de cliente' : 'su movimiento ya no existe'}`, monto: total });
+      return;
+    }
+    const ligados = facturaIdsClienteDe(m);
+    if (idsApp.every(id => ligados.includes(id))) return;
+    reparables.push({ fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${m.descripcion || m.proveedor || 'Cobro de cliente'}: tiene aplicado ${fmt(total)} a la factura ${nombresFact}, pero el movimiento perdió el vínculo con ella`, monto: total, t, m, idsApp });
+  });
+  [...bancosMov.map(m => ['fz_bancos_mov', m]), ...efectivoMov.map(m => ['fz_efectivo_mov', m])].forEach(([t, m]) => {
+    if (m.tipo_entrada !== 'cliente' || porOrigen[t + '|' + m.id]) return; // los que tienen aplicación ya se revisaron arriba
+    const ids = facturaIdsClienteDe(m);
+    if (ids.length && ids.some(id => !facturaPorId[id])) rotas.push({ fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${m.descripcion || m.proveedor || 'Cobro de cliente'}: está ligado a una factura que ya no existe`, monto: revRedondeo(m.depositos) });
+  });
+  const items = [...rotas, ...reparables, ...huerfanas].sort((a, z) => a.fecha.localeCompare(z.fecha));
+  const r = { id: 'vinculos_cobro', titulo: 'Cobros con facturas aplicadas pero sin vínculo, o aplicaciones sin cobro',
+    ayuda: 'Cambiar el tipo de entrada desde la tabla borraba el vínculo del cobro con sus facturas sin deshacer las aplicaciones. Si solo se perdió el vínculo, el botón lo restaura. Si el movimiento ya no es un cobro de cliente (o no existe), la factura figura cobrada sin un cobro que la respalde: regresa el movimiento a "Cobro de cliente" o corrige el estatus de la factura. Si la factura a la que apunta ya no existe, abre el cobro y vuelve a aplicarlo a la factura correcta.', items };
+  if (reparables.length) r.accion = {
+    etiqueta: `Restaurar el vínculo de ${reparables.length} cobro${reparables.length === 1 ? '' : 's'}`,
+    confirmar: `Se restaurará, en ${reparables.length} movimiento(s), el vínculo con la(s) factura(s) que ya tienen aplicada. No cambia ningún saldo, estatus ni importe. ¿Continuar?`,
+    ejecutar: async () => {
+      for (const x of reparables) {
+        const { error } = await sb.from(x.t).update({ cliente_factura_ids: x.idsApp, cliente_factura_id: x.idsApp[0] || null }).eq('id', x.m.id);
+        if (error) throw error;
+      }
+      return `${reparables.length} vínculo(s) restaurado(s).`;
+    },
+  };
+  return r;
+}
+
 function revFacturasSinDesglose(ctx) {
   const items = [];
   ctx.proveedores.filter(f => !f.origen_venta_id && !f.origen_poliza_id && Number(f.importe) > 0).forEach(f => {
@@ -22363,7 +22525,7 @@ function revSalidasSinClasificar(ctx) {
 
 async function ejecutarRevisionConsistencia(b) {
   const ctx = await cargarContextoRevision(b);
-  const checks = [revVentasCategorias, revPropinas, revDepositosVentas, revPagosProveedor, revVinculosPagoFactura, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar];
+  const checks = [revVentasCategorias, revPropinas, revDepositosVentas, revPagosProveedor, revVinculosPagoFactura, revVinculosCobroFactura, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar];
   const out = [];
   for (const fn of checks) {
     try { const r = fn(ctx); if (r) out.push(r); }
