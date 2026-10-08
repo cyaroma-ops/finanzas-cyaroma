@@ -13726,6 +13726,12 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
     const { data: row } = await sb.from(table).select('*').eq('id', rowId).single();
     const idsActuales = new Set(facturaIdsDe(row || {}));
     const montoMovimiento = Number(row?.cargos) > 0 ? Number(row.cargos) : Number(row?.depositos) || 0;
+    // Lo que este movimiento ya aplicó a cada factura vuelve a estar disponible (al guardar se revierte y se reaplica).
+    const yaAplicadoPorFactura = {};
+    {
+      const { data: appsMov } = await sb.from('fz_pagos_aplicados').select('factura_id,monto').eq('origen_tabla', table).eq('origen_id', rowId);
+      (appsMov || []).forEach(a => { yaAplicadoPorFactura[a.factura_id] = (yaAplicadoPorFactura[a.factura_id] || 0) + (Number(a.monto) || 0); });
+    }
     const opciones = facturasPend.filter(f => f.estatus !== 'Pagado' || idsActuales.has(f.id));
     const porProveedor = {};
     opciones.forEach(f => {
@@ -13809,7 +13815,7 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
         const facturasProv = porProveedor[prov].filter(f => !texto || prov.toLowerCase().includes(texto) || (f.factura||'').toLowerCase().includes(texto) || (f.folio?String(f.folio).includes(texto):false));
         if (!facturasProv.length) return '';
         const filasHtml = facturasProv.map(f => {
-          const saldo = Number(f.importe) - Number(f.importe_pagado||0);
+          const saldo = Number(f.importe) - Number(f.importe_pagado||0) + (yaAplicadoPorFactura[f.id] || 0);
           const esCredito = Number(f.importe) < 0;
           return `<tr>
             <td><input type="checkbox" class="factura-check" value="${f.id}" data-importe="${saldo}" ${idsActuales.has(f.id)?'checked':''}></td>
@@ -14057,6 +14063,14 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     opcionesSubcuentaHtml(subcuentas, mayores, movimientoExistente?.subcuenta_id || null);
 
   const idsProvYaVinculados = movimientoExistente ? facturaIdsDe(movimientoExistente) : [];
+  // Lo que ESTE movimiento ya aplicó a cada factura: al guardar se revierte y se vuelve a aplicar, así que para
+  // este resumen vuelve a estar disponible. Sin esto, una factura ya pagada por este mismo pago salía en $0 y el
+  // modal decía "Sobrará como crédito a favor" aunque el pago estuviera perfectamente aplicado.
+  const yaAplicadoPorFactura = {};
+  if (movimientoExistente) {
+    const { data: appsMov } = await sb.from('fz_pagos_aplicados').select('factura_id,monto').eq('origen_tabla', contexto.tipo === 'banco' ? 'fz_bancos_mov' : 'fz_efectivo_mov').eq('origen_id', movimientoExistente.id);
+    (appsMov || []).forEach(a => { yaAplicadoPorFactura[a.factura_id] = (yaAplicadoPorFactura[a.factura_id] || 0) + (Number(a.monto) || 0); });
+  }
   const pendientes = facturasPend.filter(f => f.estatus !== 'Pagado' || idsProvYaVinculados.includes(f.id));
   const porProveedor = {};
   pendientes.forEach(f => { const key = f.proveedor || '(sin proveedor)'; (porProveedor[key] = porProveedor[key] || []).push(f); });
@@ -14069,7 +14083,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
       <div class="mf-tabla-wrap"><table class="mf-tabla" style="font-size:11.5px;">
         <tbody>
         ${porProveedor[prov].map(f => {
-          const saldo = Number(f.importe) - Number(f.importe_pagado||0);
+          const saldo = Number(f.importe) - Number(f.importe_pagado||0) + (yaAplicadoPorFactura[f.id] || 0);
           const esCredito = Number(f.importe) < 0;
           return `<tr>
             <td style="width:20px;"><input type="checkbox" class="mov-factura-check" value="${f.id}" data-importe="${saldo}" ${idsProvYaVinculados.includes(f.id)?'checked':''}></td>
