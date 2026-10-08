@@ -15415,6 +15415,20 @@ async function renderProveedores() {
   window.scrollTo(0, scrollY);
 }
 
+// Abre DIRECTO el editor de un movimiento de Banco o Efectivo (el mismo que usa Bancos/Efectivo), sin cambiar de
+// pantalla. Si el pago quedó ligado a su factura por el método rápido ("Pagado desde") y todavía no tiene su
+// aplicación registrada, ese editor mostraría "aplicado $0" y al guardar podría crear un crédito a favor falso:
+// se avisa antes. Con "Registrar la aplicación" (Revisión de consistencia) ya no hay nada que avisar.
+async function editarMovimientoDesdeProveedor(tabla, movId, businessId, onDone) {
+  const { data: mov } = await sb.from(tabla).select('*').eq('id', movId).single();
+  if (!mov) { toast('No se encontró el movimiento.', 'error'); return; }
+  if (mov.tipo_salida === 'proveedor' && facturaIdsDe(mov).length) {
+    const { data: apps } = await sb.from('fz_pagos_aplicados').select('id').eq('origen_tabla', tabla).eq('origen_id', movId).limit(1);
+    if (!(apps || []).length && !confirm('Este pago está ligado a su factura por el método rápido ("Pagado desde") y todavía no tiene la aplicación registrada. Si lo guardas desde aquí, el sistema podría crear un crédito a favor falso.\n\nAntes de editarlo, ve a Revisión de consistencia y presiona "Registrar la aplicación".\n\n¿Abrirlo de todos modos? (solo para consultar; no lo guardes)')) return;
+  }
+  await openMovimientoModal({ tipo: tabla === 'fz_bancos_mov' ? 'banco' : 'efectivo', refId: tabla === 'fz_bancos_mov' ? mov.cuenta_id : mov.moneda_id, businessId, onDone: onDone || (() => {}) }, mov);
+}
+
 async function verDesglosePago(origenTabla, origenId, businessId) {
   const nombreTabla = origenTabla === 'fz_bancos_mov' ? 'Banco' : 'Efectivo';
   const { data: mov } = await sb.from(origenTabla).select('*').eq('id', origenId).single();
@@ -15423,7 +15437,11 @@ async function verDesglosePago(origenTabla, origenId, businessId) {
   document.getElementById('pagosFacturaTitulo').textContent = `Pago desde ${nombreTabla}`;
   const info = document.getElementById('pagosFacturaInfo');
   const list = document.getElementById('pagosFacturaList');
-  info.innerHTML = `${fechaCorta(mov.fecha)} · ${mov.descripcion || mov.concepto || mov.proveedor || ''} · Importe total <strong>${fmt(mov.cargos)}</strong> <button class="btn btn-ghost btn-sm" id="pagosFacturaAbrirMov" style="font-size:11px;padding:3px 8px;margin-left:6px;">Abrir movimiento${iconoAbrir()}</button>`;
+  info.innerHTML = `${fechaCorta(mov.fecha)} · ${mov.descripcion || mov.concepto || mov.proveedor || ''} · Importe total <strong>${fmt(mov.cargos)}</strong> <button class="btn btn-gold btn-sm" id="pagosFacturaEditarMov" style="font-size:11px;padding:3px 8px;margin-left:6px;">Editar movimiento</button><button class="btn btn-ghost btn-sm" id="pagosFacturaAbrirMov" style="font-size:11px;padding:3px 8px;margin-left:6px;">Ver en ${origenTabla==='fz_bancos_mov'?'Bancos':'Efectivo'}${iconoAbrir()}</button>`;
+  document.getElementById('pagosFacturaEditarMov').onclick = () => {
+    document.getElementById('modalPagosFactura').classList.remove('show');
+    editarMovimientoDesdeProveedor(origenTabla, mov.id, businessId, () => renderProveedores());
+  };
   document.getElementById('pagosFacturaAbrirMov').onclick = () => {
     document.getElementById('modalPagosFactura').classList.remove('show');
     abrirOrigenDesdeDetalle({ tipo: origenTabla==='fz_bancos_mov'?'bancos':'efectivo', id: mov.id, cuentaId: mov.cuenta_id, monedaId: mov.moneda_id, fecha: mov.fecha }, businessId);
@@ -15703,8 +15721,7 @@ async function renderProveedorDetalle(el, b) {
   }));
   el.querySelectorAll('.ver-factura-btn').forEach(btn => btn.addEventListener('click', () => {
     const origen = JSON.parse(btn.dataset.origen.replace(/&apos;/g, "'"));
-    STATE_provVista = 'facturas';
-    irASeccion('proveedores').then(() => resaltarFilaPorId(origen.id));
+    abrirOrigenDesdeDetalle(origen, b.id); // abre el editor de la factura aquí mismo; al guardar se vuelve a dibujar este detalle
   }));
   el.querySelectorAll('.ver-desglose-pago-btn').forEach(btn => btn.addEventListener('click', () => {
     const origen = JSON.parse(btn.dataset.origen.replace(/&apos;/g, "'"));
@@ -16511,6 +16528,33 @@ document.getElementById('closeElegirFacturaCobro2').addEventListener('click', ()
 
 // Espejo exacto de abrirElegirFacturaCobro, del lado de proveedores — reutiliza
 // aplicarPagoFacturas (el mismo motor que ya usa Bancos → Pago a proveedor), nunca un motor nuevo.
+// Comprobante de pago: se adjunta al movimiento de Banco o Efectivo que crea "Registrar pago" (el mismo lugar
+// donde ya se ve en Bancos). Si el pago queda "por clasificar" todavía no hay movimiento: se adjunta al clasificarlo.
+let STATE_pagoProvArchivosPendientes = [];
+function renderPagoProvAdjuntoPendiente() {
+  const box = document.getElementById('elegirFacturaPagoAdjuntoCell');
+  if (!box) return;
+  const esManual = document.getElementById('elegirFacturaPagoCuenta')?.value === 'manual';
+  if (esManual) { box.innerHTML = '<p class="doc-adjunto-hint" style="margin:0;">El comprobante se adjunta cuando el pago se clasifique en Bancos o Efectivo.</p>'; return; }
+  const pendientes = STATE_pagoProvArchivosPendientes;
+  box.innerHTML = documentoSoporteBloqueHtml(pendientes, 'pago-prov-adjunto-input');
+  const etiqueta = box.querySelector('.doc-adjunto-label'); if (etiqueta) etiqueta.textContent = 'Comprobante de pago';
+  const agregar = (files) => {
+    files.forEach(file => {
+      const ext = (file.name.split('.').pop() || '').toLowerCase();
+      if (!ADJUNTOS_EXT_PERMITIDAS.includes(ext)) { toast(`"${file.name}": solo se permiten archivos PDF, JPG o PNG.`, 'error'); return; }
+      if (file.size > ADJUNTOS_MAX_MB * 1024 * 1024) { toast(`"${file.name}" pesa más de ${ADJUNTOS_MAX_MB} MB.`, 'error'); return; }
+      STATE_pagoProvArchivosPendientes.push(file);
+    });
+    renderPagoProvAdjuntoPendiente();
+  };
+  const input = box.querySelector('.pago-prov-adjunto-input');
+  if (input) input.addEventListener('change', () => agregar(Array.from(input.files)));
+  wireDocumentoSoporteVerQuitar(box, pendientes, renderPagoProvAdjuntoPendiente);
+  const bloque = box.querySelector('.doc-adjunto-bloque');
+  if (bloque) habilitarDragDropAdjunto(bloque, agregar);
+}
+
 async function abrirElegirFacturaPago(businessId, proveedorPreseleccionado) {
   const { data: pendientesRaw } = await sb.from('fz_proveedores').select('id,proveedor,proveedor_id,factura,folio,fecha,importe,importe_pagado,estatus,moneda,tipo_cambio,fecha_vencimiento').eq('business_id', businessId).neq('estatus', 'Pagado').order('fecha', { ascending: false });
   const pendientes = pendientesRaw || [];
@@ -16527,6 +16571,9 @@ async function abrirElegirFacturaPago(businessId, proveedorPreseleccionado) {
   document.getElementById('elegirFacturaPagoTc').value = '';
   document.getElementById('elegirFacturaPagoTcWrap').style.display = 'none';
   document.getElementById('elegirFacturaPagoTc').dataset.tocado = '';
+  STATE_pagoProvArchivosPendientes = [];
+  selCuenta.onchange = renderPagoProvAdjuntoPendiente;
+  renderPagoProvAdjuntoPendiente();
 
   const box = document.getElementById('elegirFacturaPagoList');
   const buscar = document.getElementById('elegirFacturaPagoBuscar');
@@ -16694,6 +16741,11 @@ document.getElementById('aplicarElegirFacturaPago').addEventListener('click', as
     const { data: mov, error } = await sb.from(tabla).insert(payload).select().single();
     if (error) { toast('Error creando el movimiento: ' + error.message, 'error'); return; }
     origen_tabla = tabla; origen_id = mov.id;
+    for (const file of STATE_pagoProvArchivosPendientes) {
+      const subido = await subirAdjunto(tabla, mov.id, b.id, file);
+      if (subido) await sb.from('fz_adjuntos').insert({ business_id: b.id, tabla, registro_id: mov.id, archivo_path: subido.path, archivo_nombre: subido.nombre });
+    }
+    STATE_pagoProvArchivosPendientes = [];
   }
 
   const resultado = await aplicarPagoFacturas(idsSeleccionados, monto, fecha, b.id, {
@@ -17722,29 +17774,58 @@ async function syncPagoProveedor(businessId, facturaId) {
     ...(emQ.data || []).filter(m => facturaIdsDe(m).length === 1 && facturaIdsDe(m)[0] === facturaId).map(m => ({ ...m, _t: 'fz_efectivo_mov' })),
   ];
 
+  // Además del movimiento, el método rápido guarda la APLICACIÓN del pago a la factura (la misma que guarda el
+  // modal del banco). Sin ella el modal de Bancos mostraba "aplicado $0" y ofrecía crear un crédito a favor
+  // falso. Solo negocios financieros y facturas en pesos: en Fiscal Contable la aplicación dispara la
+  // realización de IVA, y ese comportamiento queda exactamente como estaba.
+  const guardarAplicacion = ventasAfectaFueraDeSuRegistro(businessId) && (Number(factura.tipo_cambio) || 1) === 1;
+  const fechaCorte = guardarAplicacion ? await obtenerFechaCorteRealizacion(businessId) : null;
+  const cacheSub = new Map();
+  const quitarAplicacion = async (m) => {
+    if (!guardarAplicacion) return;
+    const { data: previas } = await sb.from('fz_pagos_aplicados').select('id,fecha').eq('origen_tabla', m._t).eq('origen_id', m.id).eq('factura_id', facturaId);
+    if (!(previas || []).length) return;
+    await sb.from('fz_pagos_aplicados').delete().eq('origen_tabla', m._t).eq('origen_id', m.id).eq('factura_id', facturaId);
+    for (const pr of previas) await sincronizarRealizacionFactura(facturaId, 'proveedor', businessId, pr.fecha, fechaCorte, cacheSub);
+  };
+  const asegurarAplicacion = async (tabla, movId, fecha) => {
+    if (!guardarAplicacion) return;
+    const monto = Number(factura.importe) || 0;
+    const { data: previas } = await sb.from('fz_pagos_aplicados').select('*').eq('origen_tabla', tabla).eq('origen_id', movId).eq('factura_id', facturaId);
+    if ((previas || []).length === 1 && Math.abs(Number(previas[0].monto) - monto) < 0.005 && previas[0].fecha === fecha) return; // ya está al día
+    if ((previas || []).length) await sb.from('fz_pagos_aplicados').delete().eq('origen_tabla', tabla).eq('origen_id', movId).eq('factura_id', facturaId);
+    const { error } = await sb.from('fz_pagos_aplicados').insert({ business_id: businessId, factura_id: facturaId, monto, origen_tabla: tabla, origen_id: movId, fecha, tipo_cambio: null });
+    if (error) { toast('Error guardando la aplicación del pago: ' + error.message, 'error'); return; }
+    await sincronizarRealizacionFactura(facturaId, 'proveedor', businessId, fecha, fechaCorte, cacheSub);
+  };
+
   if (factura.estatus !== 'Pagado' || !factura.pagado_desde_tipo || !factura.pagado_desde_cuenta_id) {
-    for (const m of movesUnicos) await sb.from(m._t).delete().eq('id', m.id);
+    for (const m of movesUnicos) { await quitarAplicacion(m); await sb.from(m._t).delete().eq('id', m.id); }
     return;
   }
 
   const yaCorrecta = movesUnicos.find(m => factura.pagado_desde_tipo === 'banco'
     ? (m._t === 'fz_bancos_mov' && m.cuenta_id === factura.pagado_desde_cuenta_id)
     : (m._t === 'fz_efectivo_mov' && m.moneda_id === factura.pagado_desde_cuenta_id));
-  for (const m of movesUnicos) { if (m.id !== yaCorrecta?.id) await sb.from(m._t).delete().eq('id', m.id); }
+  for (const m of movesUnicos) { if (m.id !== yaCorrecta?.id) { await quitarAplicacion(m); await sb.from(m._t).delete().eq('id', m.id); } }
 
   if (yaCorrecta) {
-    const { error } = await sb.from(yaCorrecta._t).update({ cargos: factura.importe, fecha: factura.fecha_pago || todayStr() }).eq('id', yaCorrecta.id);
+    const fechaPago = factura.fecha_pago || todayStr();
+    const { error } = await sb.from(yaCorrecta._t).update({ cargos: factura.importe, fecha: fechaPago }).eq('id', yaCorrecta.id);
     if (error) toast('Error actualizando el movimiento del pago: ' + error.message, 'error');
+    else await asegurarAplicacion(yaCorrecta._t, yaCorrecta.id, fechaPago);
   } else {
     const payload = {
       business_id: businessId, fecha: factura.fecha_pago || todayStr(), cargos: factura.importe, depositos: 0,
       tipo_salida: 'proveedor', proveedor_factura_id: facturaId, proveedor_factura_ids: [facturaId],
       descripcion: `Pago factura ${factura.factura || 's/f'} — ${factura.proveedor}`,
     };
-    const { error } = factura.pagado_desde_tipo === 'banco'
-      ? await sb.from('fz_bancos_mov').insert({ ...payload, cuenta_id: factura.pagado_desde_cuenta_id, concepto: 'Pago a proveedor' })
-      : await sb.from('fz_efectivo_mov').insert({ ...payload, moneda_id: factura.pagado_desde_cuenta_id, proveedor: factura.proveedor });
+    const tablaNueva = factura.pagado_desde_tipo === 'banco' ? 'fz_bancos_mov' : 'fz_efectivo_mov';
+    const { data: movNuevo, error } = factura.pagado_desde_tipo === 'banco'
+      ? await sb.from('fz_bancos_mov').insert({ ...payload, cuenta_id: factura.pagado_desde_cuenta_id, concepto: 'Pago a proveedor' }).select().single()
+      : await sb.from('fz_efectivo_mov').insert({ ...payload, moneda_id: factura.pagado_desde_cuenta_id, proveedor: factura.proveedor }).select().single();
     if (error) toast('Error creando el movimiento del pago: ' + error.message, 'error');
+    else if (movNuevo) await asegurarAplicacion(tablaNueva, movNuevo.id, payload.fecha);
   }
 }
 
