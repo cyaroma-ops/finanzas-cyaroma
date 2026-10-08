@@ -1028,7 +1028,7 @@ const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activo
 // Pantallas que SOLO aplican a negocios Fiscal Contable. En un negocio Financiero se quitan los accesos (menú y
 // Configuración): no les corresponden, y la Balanza de Comprobación solo se calcula en Fiscal Contable. Solo se ocultan
 // accesos — no se borra ni se cambia ningún dato, y al volver a un negocio fiscal todo reaparece igual.
-const SECCIONES_SOLO_FISCAL = ['balanza', 'impuestos', 'papelestrabajo', 'cedulasmaestras', 'parametrosfiscales', 'fuentesfiscales', 'saldosfavoriva', 'ivafiscal'];
+const SECCIONES_SOLO_FISCAL = ['impuestos', 'papelestrabajo', 'cedulasmaestras', 'parametrosfiscales', 'fuentesfiscales', 'saldosfavoriva', 'ivafiscal'];
 const esNegocioFinanciero = (neg) => !!neg && neg.modo !== 'fiscal_contable';
 function actualizarMenuPorModo() {
   const ocultar = esNegocioFinanciero(biz());
@@ -11502,15 +11502,55 @@ async function renderLibroDiario() {
 }
 
 let STATE_renderTokenBalanza = 0;
+// BALANZA FINANCIERA — partidas del Estado de Resultados que NO viven en el libro contable, expresadas como renglones de
+// partida doble: Ventas diarias, sobrante o faltante de caja, gastos capturados en Ventas, gastos/costos manuales de
+// resultados y el resultado de ejercicios anteriores sin cierre. Se calculan con las MISMAS fuentes y reglas del Estado
+// de Resultados y del Balance General, así que la Balanza cuadra exactamente cuando el Balance cuadra y, si no cuadra,
+// la diferencia es la misma que marca el Balance. Solo se usan en negocios Financieros; no modifica el libro ni el motor.
+async function construirFilasPartidasEstadoResultados(b, end, inicioAnio, hastaYm) {
+  const [ventasQ, conceptosVenta, conceptos, conceptosSistema, subcuentas, mayores, plQ, resultadosAnteriores] = await Promise.all([
+    sb.from('fz_ventas').select('*').eq('business_id', b.id).gte('fecha', inicioAnio).lte('fecha', end),
+    loadConceptosVenta(b.id), loadConceptos(b.id), loadConceptosSistema(b.id), loadSubcuentas(b.id), loadCuentasMayor(b.id),
+    sb.from('fz_pl_gastos').select('*').eq('business_id', b.id).gte('mes', inicioAnio.slice(0, 7)).lte('mes', end.slice(0, 7)),
+    computeResultadoEjerciciosAnteriores(b.id, hastaYm),
+  ]);
+  const v = ventasQ.data || [];
+  const porCatPL = { efectivo: conceptos.filter(c=>c.categoria==='efectivo'), tarjetas: conceptos.filter(c=>c.categoria==='tarjetas'), bancos: conceptos.filter(c=>c.categoria==='bancos'), cxc: conceptos.filter(c=>c.categoria==='cxc'), propinas: conceptos.filter(c=>c.categoria==='propinas') };
+  const filas = [];
+  // monto "deudor": positivo = cargo, negativo = abono (igual para cuentas de naturaleza deudora o acreedora)
+  const agregar = (clave, nombre, tipo, fecha, montoDeudor) => {
+    if (Math.abs(montoDeudor) < 0.005) return;
+    filas.push({ clave, nombre, tipo, fecha, cargo: montoDeudor > 0 ? montoDeudor : 0, abono: montoDeudor < 0 ? -montoDeudor : 0 });
+  };
+  let difNeto = 0;
+  const difPorDia = v.map(r => { const d = computeRowDiffs(r, conceptosVenta, porCatPL, conceptosSistema).difTotal; difNeto += d; return [r.fecha, d]; });
+  v.forEach(r => {
+    agregar('er:ventas', 'Ventas del periodo (según Ventas)', 'ingreso', r.fecha, -totalVentaDinamico(r, conceptosVenta));
+    agregar('er:gastos_ventas', 'Gastos capturados en Ventas', 'gasto', r.fecha, Number(r.gastos) || 0);
+  });
+  // Sobrante (ingreso) o faltante (gasto) de caja: igual que el Estado de Resultados, por el NETO acumulado del año.
+  const tipoDif = difNeto > 0 ? 'gasto' : 'ingreso';
+  difPorDia.forEach(([fecha, d]) => agregar('er:dif_caja', tipoDif === 'gasto' ? 'Faltante de caja (conciliación de Ventas)' : 'Sobrante de caja (conciliación de Ventas)', tipoDif, fecha, d));
+  // Gastos / costos manuales de resultados: sin subcuenta = gasto sin clasificar; con subcuenta, según el tipo de su cuenta mayor.
+  (plQ.data || []).forEach(g => {
+    const monto = Number(g.monto) || 0; const fecha = g.mes + '-01';
+    if (!g.subcuenta_id) { agregar('er:pl_gasto', 'Gastos manuales de resultados', 'gasto', fecha, monto); return; }
+    const sub = subcuentas.find(x => x.id === g.subcuenta_id);
+    const tipo = sub ? mayores.find(m => m.id === sub.cuenta_mayor_id)?.tipo : null;
+    if (tipo === 'gasto') agregar('er:pl_gasto', 'Gastos manuales de resultados', 'gasto', fecha, monto);
+    else if (tipo === 'costo') agregar('er:pl_costo', 'Costos manuales de resultados', 'costo', fecha, monto);
+  });
+  // Resultado de años anteriores que todavía no se cerró con póliza: vive en Capital (igual que en el Balance General).
+  agregar('er:resultados_anteriores', 'Resultados de ejercicios anteriores (sin cierre)', 'capital', `${Number(inicioAnio.slice(0, 4)) - 1}-12-31`, -resultadosAnteriores);
+  return filas;
+}
+
 async function renderBalanza() {
   const el = document.getElementById('sec-balanza');
   const b = biz();
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
   el.innerHTML = '';
-  if (b.modo !== 'fiscal_contable') {
-    el.insertAdjacentHTML('beforeend', `<div class="empty">Este negocio está en modo Financiero — cambia a "Fiscal Contable" en Configuración → Negocios para activar este reporte.</div>`);
-    return;
-  }
+  const esFin = esNegocioFinanciero(b); // la Balanza financiera suma al libro las partidas del Estado de Resultados que no viven en él
 
   // Token de render: si mientras esta llamada espera la reconstrucción el usuario dispara otro
   // render de Balanza (cambio de negocio/mes u otro disparo), esta llamada queda obsoleta y debe
@@ -11526,7 +11566,12 @@ async function renderBalanza() {
     const { start, end } = monthBounds(STATE.currentMonth);
     const inicioAnio = `${STATE.currentMonth.slice(0,4)}-01-01`;
 
-    const { filas, mayores, subcuentas } = await getLibroPartidaDoble(b.id, end);
+    const [libro, filasEstadoResultados] = await Promise.all([
+      getLibroPartidaDoble(b.id, end),
+      esFin ? construirFilasPartidasEstadoResultados(b, end, inicioAnio, STATE.currentMonth) : Promise.resolve([]),
+    ]);
+    const { filas, mayores, subcuentas } = libro;
+    filas.push(...filasEstadoResultados);
     if (miTokenBalanza !== STATE_renderTokenBalanza) return; // render obsoleto — otro ya tomó el lugar
     const mayorDeSub = (subId) => { const s = subcuentas.find(x=>x.id===subId); return s ? mayores.find(m=>m.id===s.cuenta_mayor_id) : null; };
 
@@ -11653,6 +11698,7 @@ async function renderBalanza() {
         </div>
       </div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;">Partida doble completa: Cargos y Abonos reconstruidos de Pólizas, Facturas de Proveedores/Clientes, y movimientos de Bancos/Efectivo. Trabaja con los nombres y tipos ya existentes en tu catálogo — sin códigos de cuenta todavía.</p>
+      ${esFin ? `<p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;">Balanza financiera: además del libro contable incluye, como cuentas aparte, las partidas del Estado de Resultados que no viven en él — <strong>Ventas del periodo</strong>, <strong>sobrante o faltante de caja</strong>, <strong>gastos capturados en Ventas</strong>, <strong>gastos y costos manuales</strong> y <strong>Resultados de ejercicios anteriores</strong> sin cierre. Con ellas cuadra exactamente cuando el Balance General cuadra; si no cuadra, usa "Ver origen de la diferencia".</p>` : ''}
       <div class="balanza-viewport-exterior">
       <div class="balanza-scroller-interior">
         <table class="tabla-contable">
@@ -19331,7 +19377,14 @@ async function diagnosticarDescuadreBalanza(businessId, hastaFecha) {
     grupos[key].cargo += f.cargo;
     grupos[key].abono += f.abono;
   });
-  const documentosDescuadrados = Object.values(grupos).filter(g => Math.abs(g.cargo - g.abono) > 0.001);
+  let documentosDescuadrados = Object.values(grupos).filter(g => Math.abs(g.cargo - g.abono) > 0.001);
+  if (esNegocioFinanciero((STATE.businesses || []).find(x => x.id === businessId))) {
+    // En un negocio Financiero hay documentos de un solo lado por diseño y NO son error: el depósito de Ventas pendiente
+    // de depositar (su contrapartida son las partidas de Ventas de la Balanza) y las propinas por repartir.
+    const { data: facturasDePropina } = await sb.from('fz_proveedores').select('id').eq('business_id', businessId).not('origen_venta_id', 'is', null);
+    const idsPropina = new Set((facturasDePropina || []).map(x => x.id));
+    documentosDescuadrados = documentosDescuadrados.filter(g => g.tipoOrigen !== 'venta_recibido' && !(g.tipoOrigen === 'factura_proveedor' && idsPropina.has(g.id)));
+  }
 
   const paresTraspasoDescuadrados = [];
   Object.entries(traspasoGrupos).forEach(([traspasoId, movs]) => {
@@ -19540,6 +19593,31 @@ async function abrirDiagnosticoFiscal(businessId, periodo) {
 }
 document.getElementById('closeDiagnosticoFiscal').addEventListener('click', () => document.getElementById('modalDiagnosticoFiscal').classList.remove('show'));
 
+// En financiero, una diferencia de la Balanza también puede venir de partidas que no son un documento del libro (ventas
+// contra sistema, propinas, depósitos, etc.). Se muestran las mismas revisiones de la Revisión de consistencia.
+async function bloqueCausasRevisionHtml(businessId) {
+  const neg = (STATE.businesses || []).find(x => x.id === businessId);
+  let revs = [];
+  try { revs = await ejecutarRevisionConsistencia(neg); } catch (err) { return `<p style="color:var(--red);font-size:12.5px;">No se pudieron revisar las causas frecuentes: ${revEsc(err.message || err)}</p>`; }
+  const conHallazgos = revs.filter(r => r.error || r.items.length);
+  const filas = conHallazgos.map(r => {
+    const total = revRedondeo(r.items.reduce((a, x) => a + (Number(x.monto) || 0), 0));
+    return `<tr><td>${revEsc(r.titulo)}</td><td class="num">${r.error ? 'error' : r.items.length}</td><td class="num">${r.error || !total ? '' : fmt(total)}</td></tr>`;
+  }).join('');
+  return `<div class="card" style="margin-top:14px;">
+    <p style="font-size:12.5px;font-weight:700;color:var(--navy-1);margin-bottom:6px;">Causas frecuentes (Revisión de consistencia)</p>
+    ${conHallazgos.length
+      ? `<p style="font-size:12px;color:var(--muted);margin-bottom:8px;">Estas revisiones encontraron algo que puede explicar una diferencia:</p>
+         <div class="table-wrap"><table><thead><tr><th>Revisión</th><th>Hallazgos</th><th>Monto</th></tr></thead><tbody>${filas}</tbody></table></div>`
+      : `<p style="font-size:12px;color:var(--muted);margin-bottom:8px;">La Revisión de consistencia no encontró hallazgos.</p>`}
+    <button class="btn btn-gold btn-sm" id="diagIrRevision" style="margin-top:8px;">Abrir Revisión de consistencia</button>
+  </div>`;
+}
+function conectarBloqueRevision(body) {
+  const ir = body.querySelector('#diagIrRevision');
+  if (ir) ir.addEventListener('click', () => { document.getElementById('modalDiagnosticoDescuadre').classList.remove('show'); irASeccion('revision'); });
+}
+
 async function abrirDiagnosticoDescuadre(businessId, hastaFecha) {
   const body = document.getElementById('diagnosticoDescuadreBody');
   body.innerHTML = `<div class="empty">Buscando el origen…</div>`;
@@ -19547,6 +19625,7 @@ async function abrirDiagnosticoDescuadre(businessId, hastaFecha) {
 
   const { documentosDescuadrados, paresTraspasoDescuadrados } = await diagnosticarDescuadreBalanza(businessId, hastaFecha);
   window.STATE_diagnosticoActual = { documentosDescuadrados, paresTraspasoDescuadrados, businessId };
+  const bloqueRevision = esNegocioFinanciero((STATE.businesses || []).find(x => x.id === businessId)) ? await bloqueCausasRevisionHtml(businessId) : '';
 
   const filaDocumento = (g, idx) => `
     <div class="card" style="margin-bottom:12px;">
@@ -19578,6 +19657,7 @@ async function abrirDiagnosticoDescuadre(businessId, hastaFecha) {
 
   if (!documentosDescuadrados.length && !paresTraspasoDescuadrados.length) {
     body.innerHTML = `<div class="empty">No se logró aislar un documento único responsable — la diferencia puede estar repartida entre varios movimientos con redondeos muy pequeños cada uno. No se muestra un origen inventado.</div>`;
+    body.insertAdjacentHTML('beforeend', bloqueRevision); conectarBloqueRevision(body);
     return;
   }
   body.innerHTML = `
@@ -19592,6 +19672,7 @@ async function abrirDiagnosticoDescuadre(businessId, hastaFecha) {
     const m = t.movs[Number(btn.dataset.midx)];
     verDocumentoDesdeOrigen({ tipoOrigen: m._tabla==='fz_bancos_mov'?'banco_mov':'efectivo_mov', id: m.id, fecha: m.fecha, cuentaId: m.cuenta_id, monedaId: m.moneda_id }, businessId);
   }));
+  body.insertAdjacentHTML('beforeend', bloqueRevision); conectarBloqueRevision(body);
 }
 document.getElementById('closeDiagnosticoDescuadre').addEventListener('click', () => {
   document.getElementById('modalDiagnosticoDescuadre').classList.remove('show');
