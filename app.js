@@ -13822,9 +13822,9 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
             <td><input type="checkbox" class="factura-check" value="${f.id}" data-importe="${saldo}" ${idsActuales.has(f.id)?'checked':''}></td>
             <td>${fechaCorta(f.fecha)}</td>
             <td>${f.folio ? '#'+f.folio : '—'}</td>
-            <td>${f.factura || '—'}</td>
+            <td>${f.factura || '—'}${prov === GRUPO_APLICADAS ? `<div style="font-size:10.5px;color:var(--muted);">${f.proveedor || '(sin proveedor)'}</div>` : ''}</td>
             <td><span class="mf-badge-moneda">${f.moneda||'MXN'}</span></td>
-            <td class="mf-num" style="${esCredito?'color:var(--green);':''}">${esCredito?'crédito ':''}${fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}</td>
+            <td class="mf-num" style="${esCredito?'color:var(--green);':''}">${esCredito?'crédito ':''}${fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}${yaAplicadoPorFactura[f.id] ? `<div style="font-size:10px;color:var(--muted);">este pago aplicó ${fmt(yaAplicadoPorFactura[f.id])}</div>` : ''}</td>
             <td>${f.fecha_vencimiento ? fechaCorta(f.fecha_vencimiento) : '—'}</td>
           </tr>`;
         }).join('');
@@ -14090,7 +14090,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
           return `<tr>
             <td style="width:20px;"><input type="checkbox" class="mov-factura-check" value="${f.id}" data-importe="${saldo}" ${idsProvYaVinculados.includes(f.id)?'checked':''}></td>
             <td>${fechaCorta(f.fecha)}</td>
-            <td>${f.factura||'—'}</td>
+            <td>${f.factura||'—'}${prov === GRUPO_APLICADAS_MOV ? `<div style="font-size:10.5px;color:var(--muted);">${f.proveedor || '(sin proveedor)'}${f.folio ? ' · #' + f.folio : ''}</div>` : ''}</td>
             <td><span class="mf-badge-moneda">${f.moneda||'MXN'}</span></td>
             <td class="mf-num" style="${esCredito?'color:var(--green);':''}">${esCredito?'crédito ':''}${fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}${yaAplicadoPorFactura[f.id] ? `<div style="font-size:10px;color:var(--muted);">este pago aplicó ${fmt(yaAplicadoPorFactura[f.id])}</div>` : ''}</td>
           </tr>`;
