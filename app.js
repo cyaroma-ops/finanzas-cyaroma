@@ -999,6 +999,7 @@ const SECTION_META = {
   activosfijos: { title: 'Activos Fijos', sub: '', showMonth: false, needsBiz: true },
   ivafiscal: { title: 'IVA y Retenciones', sub: '', showMonth: true, needsBiz: true },
   balanza: { title: 'Balanza de Comprobación', sub: '', showMonth: true, needsBiz: true },
+  revision: { title: 'Revisión de consistencia', sub: 'Qué está descuadrado o incompleto, antes de que llegue al Balance', showMonth: false, needsBiz: true },
   librodiario: { title: 'Libro Diario', sub: '', showMonth: false, needsBiz: true },
   diariospolizas: { title: 'Diarios y Pólizas', sub: '', showMonth: true, needsBiz: true },
   auxiliares: { title: 'Auxiliares', sub: '', showMonth: true, needsBiz: true },
@@ -1161,6 +1162,7 @@ async function renderCurrentSection() {
   if (s === 'cedulasmaestras') return renderCedulasMaestras();
   if (s === 'parametrosfiscales') return renderParametrosFiscales();
   if (s === 'balanza') return renderBalanza();
+  if (s === 'revision') return renderRevisionConsistencia();
   if (s === 'librodiario') return renderLibroDiario();
   if (s === 'diariospolizas') return renderDiariosPolizasWrapper();
   if (s === 'auxiliares') return renderAuxiliares();
@@ -21665,3 +21667,247 @@ document.addEventListener('keydown', (e) => {
   const btn = botonCerrarModal(modalAbierto);
   if (btn) btn.click();
 });
+
+/* ============================================================
+   REVISIÓN DE CONSISTENCIA
+   Pantalla que revisa SOLA lo que hasta ahora se buscaba a mano con consultas: días con ventas por
+   categoría distintas del sistema, propinas sin provisionar, depósitos de ventas faltantes, pagos a
+   proveedor sin aplicar, facturas sin desglose, pólizas descuadradas, fechas raras y salidas sin
+   clasificar. SOLO LEE. Los botones de corrección ejecutan únicamente lo que dice su etiqueta, con
+   las mismas funciones que ya usa el sistema (nunca SQL directo), y piden confirmación.
+   ============================================================ */
+const REV_MAX_ITEMS = 12;
+const revRedondeo = (n) => Math.round((Number(n) || 0) * 100) / 100;
+const revEsc = (t) => String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+async function cargarContextoRevision(b) {
+  const pag = async (tabla, cols = '*') => {
+    const { data, error } = await fetchTodasLasPaginas(() => sb.from(tabla).select(cols).eq('business_id', b.id).order('id'));
+    if (error) throw new Error(`${tabla}: ${error.message}`);
+    return data || [];
+  };
+  const [ventas, conceptos, conceptosVenta, conceptosSistema, proveedores, bancosMov, efectivoMov, pagosAplicados, polizas, lineas, monedas] = await Promise.all([
+    pag('fz_ventas'), loadConceptos(b.id), loadConceptosVenta(b.id), loadConceptosSistema(b.id),
+    pag('fz_proveedores'), pag('fz_bancos_mov'), pag('fz_efectivo_mov'), pag('fz_pagos_aplicados'),
+    pag('fz_polizas'), pag('fz_polizas_lineas', 'id,poliza_id,cargo,abono'), pag('fz_efectivo_monedas'),
+  ]);
+  const porCat = {
+    efectivo: conceptos.filter(c => c.categoria === 'efectivo'), tarjetas: conceptos.filter(c => c.categoria === 'tarjetas'),
+    bancos: conceptos.filter(c => c.categoria === 'bancos'), cxc: conceptos.filter(c => c.categoria === 'cxc'),
+    propinas: conceptos.filter(c => c.categoria === 'propinas'),
+  };
+  return { b, financiero: ventasAfectaFueraDeSuRegistro(b.id), ventas, conceptos, conceptosVenta, conceptosSistema, porCat,
+           proveedores, bancosMov, efectivoMov, pagosAplicados, polizas, lineas, monedas };
+}
+
+// Cada revisión devuelve { id, titulo, ayuda, items:[{texto, monto?}], nota?, accion?:{etiqueta, ejecutar} } o null si no aplica.
+function revVentasCategorias(ctx) {
+  const { ventas, conceptosVenta, porCat, conceptosSistema } = ctx;
+  const grandes = []; const chicos = [];
+  ventas.forEach(r => {
+    const d = computeRowDiffs(r, conceptosVenta, porCat, conceptosSistema);
+    const sistema = d.sistemaEfvo + d.sistemaTarj + d.sistemaCxc;
+    if (Math.abs(sistema) < 0.005) return; // día sin dato del sistema: no hay con qué comparar
+    const dif = revRedondeo(d.totalVenta - sistema);
+    if (Math.abs(dif) >= 0.5) grandes.push({ fecha: r.fecha, texto: `${fechaCorta(r.fecha)} · ventas por categoría contra sistema`, monto: dif });
+    else if (Math.abs(dif) >= 0.005) chicos.push(dif);
+  });
+  grandes.sort((a, z) => a.fecha.localeCompare(z.fecha));
+  return {
+    id: 'ventas_categorias', titulo: 'Ventas por categoría contra el sistema (punto de venta)',
+    ayuda: 'Si las categorías no coinciden con lo que reportó el sistema, esa diferencia entra al Estado de Resultados como ingreso sin dinero que la respalde y descuadra el Balance. Corrígela en Ventas, día por día.',
+    items: grandes,
+    nota: chicos.length ? `${chicos.length} día(s) más con diferencias de centavos (suman ${fmt(chicos.reduce((a, x) => a + x, 0))}): es redondeo normal del punto de venta y no hace falta corregirlas.` : '',
+  };
+}
+
+function revPropinas(ctx) {
+  if (!ctx.financiero) return null; // en Fiscal Contable Ventas no genera cuentas por pagar
+  const { ventas, porCat, proveedores, b } = ctx;
+  const propinas = porCat.propinas;
+  const base = { id: 'propinas', titulo: 'Propinas conciliadas contra propinas provisionadas', ayuda: 'Cada propina capturada en la conciliación debe tener su cuenta por pagar de "Propinas por repartir". Si falta, el dinero está en el Activo pero la obligación no está en el Pasivo.' };
+  if (!propinas.length) return { ...base, items: [], nota: 'Este negocio no tiene conceptos de propinas configurados.' };
+  const facturas = proveedores.filter(f => f.origen_venta_id);
+  const arreglables = []; const aMano = [];
+  ventas.forEach(v => propinas.forEach(c => {
+    const conc = revRedondeo(Number((v.recon_data || {})[c.id]?.monto) || 0);
+    const fs = facturas.filter(f => f.origen_venta_id === v.id && f.origen_concepto_id === c.id);
+    const prov = revRedondeo(fs.reduce((a, f) => a + (Number(f.importe) || 0), 0));
+    const dif = revRedondeo(conc - prov);
+    if (Math.abs(dif) < 0.005) return;
+    const item = { fecha: v.fecha, texto: `${fechaCorta(v.fecha)} · ${c.nombre}: conciliado ${fmt(conc)}, provisionado ${fmt(prov)}`, monto: dif };
+    const seguro = conc > 0 && fs.length <= 1 && fs.every(f => f.estatus === 'Pendiente');
+    if (seguro) arreglables.push({ ...item, v, c, conc }); else aMano.push({ ...item, texto: item.texto + ' (ya pagada, parcial o repetida: ajústala en Proveedores)' });
+  }));
+  const items = [...arreglables, ...aMano].sort((a, z) => a.fecha.localeCompare(z.fecha));
+  const r = { ...base, items };
+  if (arreglables.length) r.accion = {
+    etiqueta: `Provisionar / actualizar ${arreglables.length} propina${arreglables.length === 1 ? '' : 's'}`,
+    confirmar: `Se crearán o actualizarán ${arreglables.length} cuentas por pagar de "Propinas por repartir" (solo las que siguen Pendientes). ¿Continuar?`,
+    ejecutar: async () => { for (const x of arreglables) await provisionarPropina(b.id, x.v.id, x.c, x.conc, x.v.fecha); return `${arreglables.length} propina(s) provisionada(s).`; },
+  };
+  return r;
+}
+
+function revDepositosVentas(ctx) {
+  if (!ctx.financiero) return null; // en Fiscal Contable Ventas es solo auditoría
+  const { ventas, conceptos, bancosMov, efectivoMov, b } = ctx;
+  const conMov = conceptos.filter(c => c.banco_cuenta_id || c.moneda_id);
+  const mat = {};
+  [...bancosMov, ...efectivoMov].filter(m => m.venta_id && m.concepto_venta_id).forEach(m => {
+    const k = `${m.venta_id}|${m.concepto_venta_id}`; mat[k] = revRedondeo((mat[k] || 0) + (Number(m.depositos) || 0));
+  });
+  const faltan = []; const distintos = [];
+  ventas.forEach(v => conMov.forEach(c => {
+    const monto = revRedondeo(Number((v.recon_data || {})[c.id]?.monto) || 0);
+    const k = `${v.id}|${c.id}`; const m = mat[k] || 0;
+    if (monto > 0 && !m) faltan.push({ fecha: v.fecha, texto: `${fechaCorta(v.fecha)} · ${c.nombre}: conciliado ${fmt(monto)} y sin depósito en Bancos/Efectivo`, monto, v, c });
+    else if (Math.abs(monto - m) >= 0.005) distintos.push({ fecha: v.fecha, texto: `${fechaCorta(v.fecha)} · ${c.nombre}: conciliado ${fmt(monto)}, depositado ${fmt(m)} (el depósito no siguió a la conciliación)`, monto: revRedondeo(monto - m) });
+  }));
+  const items = [...faltan, ...distintos].sort((a, z) => a.fecha.localeCompare(z.fecha));
+  const r = { id: 'depositos_ventas', titulo: 'Depósitos de ventas conciliadas',
+    ayuda: 'Cada monto conciliado en Ventas debe tener su depósito real en Bancos o Efectivo. Si falta, el Activo queda corto; si el depósito difiere, edítalo en Bancos o Efectivo para que coincida con la conciliación.', items };
+  if (faltan.length) r.accion = {
+    etiqueta: `Crear ${faltan.length} depósito${faltan.length === 1 ? '' : 's'} faltante${faltan.length === 1 ? '' : 's'}`,
+    confirmar: `Se crearán ${faltan.length} depósitos en Bancos/Efectivo a partir de la conciliación de Ventas (no se duplican los que ya existen). ¿Continuar?`,
+    ejecutar: async () => { for (const x of faltan) await materializarDepositoVentaSiCorresponde(b.id, x.v.id, x.v.fecha, x.c, x.monto); return `${faltan.length} depósito(s) creado(s).`; },
+  };
+  return r;
+}
+
+function revPagosProveedor(ctx) {
+  const { bancosMov, efectivoMov, pagosAplicados, proveedores, monedas } = ctx;
+  const esPesos = (id) => { const n = (monedas.find(x => x.id === id)?.nombre || '').toLowerCase(); return n.includes('mxn') || n.includes('peso'); };
+  const lista = [
+    ...bancosMov.map(m => ({ m, t: 'fz_bancos_mov' })),
+    ...efectivoMov.filter(m => esPesos(m.moneda_id)).map(m => ({ m, t: 'fz_efectivo_mov' })),
+  ].filter(x => x.m.tipo_salida === 'proveedor' && Number(x.m.cargos) > 0);
+  const aplicadoPor = {};
+  pagosAplicados.forEach(p => { const k = `${p.origen_tabla}|${p.origen_id}`; aplicadoPor[k] = (aplicadoPor[k] || 0) + (Number(p.monto) || 0); });
+  const creditos = proveedores.filter(f => Number(f.importe) < 0);
+  const items = [];
+  lista.forEach(({ m, t }) => {
+    const aplicado = revRedondeo(aplicadoPor[`${t}|${m.id}`] || 0);
+    const falta = revRedondeo(Number(m.cargos) - aplicado);
+    if (falta < 0.005) return;
+    const credito = creditos.some(c => (c.origen_tabla === t && c.origen_id === m.id) || c.factura === `Crédito a favor (pago del ${m.fecha})`);
+    if (credito) return; // el excedente ya tiene su crédito a favor
+    items.push({ fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${m.proveedor || m.descripcion || 'Pago a proveedor'}: salió ${fmt(m.cargos)}, aplicado a facturas ${fmt(aplicado)}`, monto: falta });
+  });
+  items.sort((a, z) => a.fecha.localeCompare(z.fecha));
+  return { id: 'pagos_proveedor', titulo: 'Pagos a proveedor sin aplicar o aplicados de menos',
+    ayuda: 'El Balance baja Proveedores por lo que salió del banco, pero en el módulo de Proveedores esas facturas pueden seguir como pendientes. Aplica el pago a su factura (se crea el crédito a favor si pagaste de más).', items };
+}
+
+function revFacturasSinDesglose(ctx) {
+  const items = [];
+  ctx.proveedores.filter(f => !f.origen_venta_id && !f.origen_poliza_id && Number(f.importe) > 0).forEach(f => {
+    const tc = Number(f.tipo_cambio) || 1;
+    const dr = desgloseLineas(f.desglose).reduce((a, l) => a + (Number(l.monto) || 0) * tc, 0) + ((f.aplica_iva && Number(f.iva_monto)) ? Number(f.iva_monto) * tc : 0);
+    const cr = ((f.aplica_retencion && Number(f.retencion_isr_monto)) ? Number(f.retencion_isr_monto) * tc : 0) + ((f.aplica_retencion && Number(f.retencion_iva_monto)) ? Number(f.retencion_iva_monto) * tc : 0) + (Number(f.importe) || 0) * tc;
+    const falta = revRedondeo(cr - dr);
+    if (Math.abs(falta) >= 0.01) items.push({ fecha: f.fecha, texto: `${fechaCorta(f.fecha)} · ${f.proveedor || '?'} · factura ${f.factura || 's/f'}`, monto: falta });
+  });
+  items.sort((a, z) => a.fecha.localeCompare(z.fecha));
+  return { id: 'facturas_desglose', titulo: 'Facturas sin desglose completo',
+    ayuda: ctx.financiero ? 'Lo que no está desglosado se registra en "Sin clasificar" (gastos por identificar) y baja la utilidad. Desglósalo para llevarlo a su cuenta real.' : 'Una factura sin desglose completo deja su documento contable con un solo lado. Desglósala por cuenta.', items };
+}
+
+function revPolizasDescuadradas(ctx) {
+  const por = {};
+  ctx.lineas.forEach(l => { const p = por[l.poliza_id] || (por[l.poliza_id] = { c: 0, a: 0 }); p.c += Number(l.cargo) || 0; p.a += Number(l.abono) || 0; });
+  const items = [];
+  ctx.polizas.forEach(p => {
+    const t = por[p.id]; if (!t) return;
+    const dif = revRedondeo(t.c - t.a);
+    if (Math.abs(dif) > 0.004) items.push({ fecha: p.fecha, texto: `${fechaCorta(p.fecha)} · Póliza #${p.numero}${p.concepto ? ' · ' + p.concepto : ''}`, monto: dif });
+  });
+  items.sort((a, z) => a.fecha.localeCompare(z.fecha));
+  return { id: 'polizas', titulo: 'Pólizas con cargos distintos de abonos', ayuda: 'Una póliza debe sumar lo mismo en cargos y abonos. Ábrela en Pólizas y corrige la línea que falta o sobra.', items };
+}
+
+function revFechasRaras(ctx) {
+  const hoy = new Date(); const limite = `${hoy.getFullYear() + 1}-12-31`;
+  const fuentes = [['Facturas de proveedor', ctx.proveedores], ['Ventas', ctx.ventas], ['Movimientos de banco', ctx.bancosMov], ['Movimientos de efectivo', ctx.efectivoMov], ['Pólizas', ctx.polizas]];
+  const items = [];
+  fuentes.forEach(([nombre, filas]) => filas.forEach(f => {
+    if (f.fecha && (f.fecha < '2015-01-01' || f.fecha > limite)) items.push({ fecha: f.fecha, texto: `${nombre} · fecha ${f.fecha}${f.proveedor ? ' · ' + f.proveedor : f.descripcion ? ' · ' + f.descripcion : ''}` });
+  }));
+  return { id: 'fechas', titulo: 'Fechas fuera de lo razonable', ayuda: 'Una fecha mal capturada (por ejemplo el año 0023) queda fuera de todos los periodos y distorsiona Balances y reportes. Corrígela en su pantalla.', items };
+}
+
+function revSalidasSinClasificar(ctx) {
+  if (!ctx.financiero) return null;
+  const items = [];
+  const revisar = (m, nombre) => {
+    if (!(Number(m.cargos) > 0)) return;
+    const ts = m.tipo_salida;
+    const sinClase = !ts || ts === 'otro' || (ts === 'gasto' && !m.subcuenta_id);
+    if (sinClase) items.push({ fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${nombre} · ${m.proveedor || m.descripcion || 'sin descripción'}`, monto: revRedondeo(m.cargos) });
+  };
+  ctx.bancosMov.forEach(m => revisar(m, 'Banco')); ctx.efectivoMov.forEach(m => revisar(m, 'Efectivo'));
+  items.sort((a, z) => a.fecha.localeCompare(z.fecha));
+  const total = revRedondeo(items.reduce((a, x) => a + x.monto, 0));
+  return { id: 'salidas_sin_clasificar', titulo: 'Salidas de dinero sin clasificar',
+    ayuda: 'Van a "Gastos por identificar" (Sin clasificar) y bajan la utilidad mientras no se les asigne tipo y cuenta. Clasifícalas en Bancos o Efectivo.',
+    items, nota: items.length ? `Total: ${fmt(total)} en ${items.length} salida(s).` : '' };
+}
+
+async function ejecutarRevisionConsistencia(b) {
+  const ctx = await cargarContextoRevision(b);
+  const checks = [revVentasCategorias, revPropinas, revDepositosVentas, revPagosProveedor, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar];
+  const out = [];
+  for (const fn of checks) {
+    try { const r = fn(ctx); if (r) out.push(r); }
+    catch (err) { out.push({ id: fn.name, titulo: fn.name, ayuda: '', items: [], error: err.message || String(err) }); }
+  }
+  return out;
+}
+
+async function renderRevisionConsistencia() {
+  const el = document.getElementById('sec-revision');
+  const b = biz();
+  if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
+  el.innerHTML = `<div class="card"><div class="card-head"><h3>Revisión de consistencia — ${revEsc(b.name)}</h3><button class="btn btn-ghost btn-sm" id="revRepetirBtn">Volver a revisar</button></div><div class="empty" id="revCuerpo">Revisando la información del negocio…</div></div>`;
+  const pintar = async () => {
+    const cuerpo = document.getElementById('revCuerpo');
+    if (!cuerpo) return;
+    cuerpo.className = 'empty'; cuerpo.innerHTML = 'Revisando la información del negocio…';
+    let revs;
+    try { revs = await ejecutarRevisionConsistencia(b); }
+    catch (err) { cuerpo.innerHTML = `No se pudo completar la revisión: ${revEsc(err.message || err)}`; return; }
+    const conAviso = revs.filter(r => r.error || r.items.length).length;
+    cuerpo.className = '';
+    cuerpo.innerHTML = `
+      <div style="padding:2px 4px 12px;font-size:13px;color:var(--muted);">Esta pantalla solo lee. Los botones corrigen únicamente lo que dice su etiqueta, con las mismas funciones del sistema, y piden confirmación. Revisado a las ${new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}.</div>
+      <div style="padding:0 4px 14px;font-size:14px;"><strong>${conAviso ? `⚠ ${conAviso} de ${revs.length} revisiones con algo que atender` : `✓ Todo en orden (${revs.length} revisiones)`}</strong></div>
+      ${revs.map(r => {
+        const ok = !r.error && !r.items.length;
+        const filas = (r.items || []).slice(0, REV_MAX_ITEMS).map(x => `<tr><td>${revEsc(x.texto)}</td><td class="num">${x.monto === undefined ? '' : fmt(x.monto)}</td></tr>`).join('');
+        const mas = (r.items || []).length > REV_MAX_ITEMS ? `<tr><td colspan="2" style="color:var(--muted);">… y ${r.items.length - REV_MAX_ITEMS} más</td></tr>` : '';
+        return `
+          <div class="card" style="margin-bottom:12px;border-left:3px solid ${ok ? 'var(--green)' : (r.error ? 'var(--red)' : 'var(--gold, #c9a227)')};">
+            <div class="card-head"><h3 style="font-size:14px;">${ok ? '✓' : '⚠'} ${revEsc(r.titulo)}${r.items.length ? ` <span class="badge pend" style="margin-left:6px;">${r.items.length}</span>` : ''}</h3>
+              ${r.accion ? `<button class="btn btn-gold btn-sm rev-accion" data-rev="${revEsc(r.id)}">${revEsc(r.accion.etiqueta)}</button>` : ''}</div>
+            <div style="padding:6px 14px 12px;font-size:13px;">
+              ${r.error ? `<div style="color:var(--red);">No se pudo revisar: ${revEsc(r.error)}</div>` : ''}
+              ${ok ? `<div style="color:var(--muted);">Sin diferencias.${r.nota ? ' ' + revEsc(r.nota) : ''}</div>` : `
+                <div style="color:var(--muted);margin-bottom:8px;">${revEsc(r.ayuda)}</div>
+                <table class="tabla-operativa"><tbody>${filas}${mas}</tbody></table>
+                ${r.nota ? `<div style="color:var(--muted);margin-top:8px;">${revEsc(r.nota)}</div>` : ''}`}
+            </div>
+          </div>`;
+      }).join('')}`;
+    cuerpo.querySelectorAll('.rev-accion').forEach(btn => btn.addEventListener('click', async () => {
+      const r = revs.find(x => x.id === btn.dataset.rev);
+      if (!r || !r.accion) return;
+      if (!confirm(r.accion.confirmar || '¿Ejecutar esta corrección?')) return;
+      btn.disabled = true; btn.textContent = 'Procesando…';
+      try { const msg = await r.accion.ejecutar(); toast(msg || 'Listo.'); }
+      catch (err) { toast('No se pudo completar: ' + (err.message || err), 'error'); }
+      await pintar();
+    }));
+  };
+  document.getElementById('revRepetirBtn').addEventListener('click', pintar);
+  await pintar();
+}
