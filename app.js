@@ -21790,7 +21790,7 @@ function revDepositosVentas(ctx) {
 }
 
 function revPagosProveedor(ctx) {
-  const { bancosMov, efectivoMov, pagosAplicados, proveedores, monedas } = ctx;
+  const { bancosMov, efectivoMov, pagosAplicados, proveedores, monedas, b } = ctx;
   const esPesos = (id) => { const n = (monedas.find(x => x.id === id)?.nombre || '').toLowerCase(); return n.includes('mxn') || n.includes('peso'); };
   const lista = [
     ...bancosMov.map(m => ({ m, t: 'fz_bancos_mov' })),
@@ -21799,18 +21799,48 @@ function revPagosProveedor(ctx) {
   const aplicadoPor = {};
   pagosAplicados.forEach(p => { const k = `${p.origen_tabla}|${p.origen_id}`; aplicadoPor[k] = (aplicadoPor[k] || 0) + (Number(p.monto) || 0); });
   const creditos = proveedores.filter(f => Number(f.importe) < 0);
-  const items = [];
+  const facturaPorId = Object.fromEntries(proveedores.map(f => [f.id, f]));
+  const items = []; const convertibles = [];
   lista.forEach(({ m, t }) => {
     const aplicado = revRedondeo(aplicadoPor[`${t}|${m.id}`] || 0);
     const falta = revRedondeo(Number(m.cargos) - aplicado);
     if (falta < 0.005) return;
     const credito = creditos.some(c => (c.origen_tabla === t && c.origen_id === m.id) || c.factura === `Crédito a favor (pago del ${m.fecha})`);
     if (credito) return; // el excedente ya tiene su crédito a favor
-    items.push({ fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${m.proveedor || m.descripcion || 'Pago a proveedor'}: salió ${fmt(m.cargos)}, aplicado a facturas ${fmt(aplicado)}`, monto: falta });
+    const nombre = m.proveedor || m.descripcion || 'Pago a proveedor';
+    // Método rápido de Proveedores: la factura se marcó "Pagado" con su "Pagado desde" y el sistema creó este
+    // movimiento ligado a ella (proveedor_factura_ids) SIN guardar la aplicación. El Balance lo cuenta bien
+    // (baja Proveedores por lo que salió); solo falta el registro de la aplicación, y por eso el modal del
+    // banco lo muestra como $0 aplicado. Se reconoce solo por esa relación real, nunca por texto o importe.
+    const ids = facturaIdsDe(m);
+    if (aplicado < 0.005 && ids.length === 1) {
+      const f = facturaPorId[ids[0]];
+      if (f && Number(f.importe) > 0 && (Number(f.tipo_cambio) || 1) === 1 && f.estatus === 'Pagado'
+          && Math.abs((Number(f.importe_pagado) || 0) - Number(m.cargos)) < 0.01 && Math.abs(Number(f.importe) - Number(m.cargos)) < 0.01) {
+        const it = { fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${nombre}: factura ${f.factura || 's/f'} ya pagada con "Pagado desde"; falta registrar la aplicación`, monto: revRedondeo(m.cargos), m, t, f };
+        items.push(it); convertibles.push(it); return;
+      }
+    }
+    items.push({ fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${nombre}: salió ${fmt(m.cargos)}, aplicado a facturas ${fmt(aplicado)}`, monto: falta });
   });
   items.sort((a, z) => a.fecha.localeCompare(z.fecha));
-  return { id: 'pagos_proveedor', titulo: 'Pagos a proveedor sin aplicar o aplicados de menos',
-    ayuda: 'El Balance baja Proveedores por lo que salió del banco, pero en el módulo de Proveedores esas facturas pueden seguir como pendientes. Aplica el pago a su factura (se crea el crédito a favor si pagaste de más).', items };
+  const r = { id: 'pagos_proveedor', titulo: 'Pagos a proveedor sin aplicar o aplicados de menos',
+    ayuda: 'El Balance baja Proveedores por lo que salió del banco, pero en el módulo de Proveedores esas facturas pueden seguir como pendientes. Aplica el pago a su factura (se crea el crédito a favor si pagaste de más). Si la factura ya aparece Pagada por el método rápido de Proveedores, el Balance está bien y solo falta registrar la aplicación; NO guardes el movimiento en Bancos mientras tanto, porque crearía un crédito a favor falso.', items };
+  if (convertibles.length && ctx.financiero) r.accion = {
+    etiqueta: `Registrar la aplicación de ${convertibles.length} pago${convertibles.length === 1 ? '' : 's'}`,
+    confirmar: `Se guardará la aplicación de ${convertibles.length} pago(s) a la factura con la que ya están ligados y que ya figura Pagada. No cambia ningún saldo, estatus ni importe pagado; solo deja el vínculo que el modal de Bancos necesita. ¿Continuar?`,
+    ejecutar: async () => {
+      const fechaCorte = await obtenerFechaCorteRealizacion(b.id);
+      const cache = new Map();
+      for (const x of convertibles) {
+        const { error } = await sb.from('fz_pagos_aplicados').insert({ business_id: b.id, factura_id: x.f.id, monto: Number(x.m.cargos), origen_tabla: x.t, origen_id: x.m.id, fecha: x.m.fecha, tipo_cambio: null });
+        if (error) throw error;
+        await sincronizarRealizacionFactura(x.f.id, 'proveedor', b.id, x.m.fecha, fechaCorte, cache);
+      }
+      return `${convertibles.length} aplicación(es) registrada(s).`;
+    },
+  };
+  return r;
 }
 
 function revFacturasSinDesglose(ctx) {
