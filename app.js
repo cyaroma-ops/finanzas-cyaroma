@@ -11671,11 +11671,11 @@ async function construirFilasPartidasEstadoResultados(b, end, inicioAnio, hastaY
   return filas;
 }
 
-async function renderBalanza() {
+async function renderBalanzaCuerpo() {
   const el = document.getElementById('sec-balanza');
   const b = biz();
   if (!b) { el.innerHTML = `<div class="empty">Selecciona un negocio.</div>`; return; }
-  el.innerHTML = '';
+  [...el.children].forEach(hijo => { if (hijo.id !== 'cargando-sec-balanza') hijo.remove(); }); // limpia la pantalla sin borrar el aviso de "calculando"
   const esFin = esNegocioFinanciero(b); // la Balanza financiera suma al libro las partidas del Estado de Resultados que no viven en él
 
   // Token de render: si mientras esta llamada espera la reconstrucción el usuario dispara otro
@@ -11692,6 +11692,9 @@ async function renderBalanza() {
     const { start, end } = monthBounds(STATE.currentMonth);
     const inicioAnio = `${STATE.currentMonth.slice(0,4)}-01-01`;
 
+    // El Estado de Resultados contra el que se compara el resultado arranca junto con los demás cálculos (antes esperaba a que terminaran).
+    const pResumenPL = computeResumenNegocio(b.id, { start: inicioAnio, end });
+    pResumenPL.catch(() => {}); // si algo falla antes, no queda un error sin atender (el await de abajo lo vuelve a lanzar)
     const [libro, filasEstadoResultados] = await Promise.all([
       getLibroPartidaDoble(b.id, end),
       esFin ? construirFilasPartidasEstadoResultados(b, end, inicioAnio, STATE.currentMonth) : Promise.resolve([]),
@@ -11761,7 +11764,7 @@ async function renderBalanza() {
   const esUtilidad = utilidadEjercicio >= 0;
 
   // Verificación cruzada contra el Estado de Resultados (misma fórmula, mismo periodo acumulado)
-  const resumenPLCheck = await computeResumenNegocio(b.id, { start: inicioAnio, end });
+  const resumenPLCheck = await pResumenPL;
   if (miTokenBalanza !== STATE_renderTokenBalanza) return; // render obsoleto — otro ya tomó el lugar
   const diferenciaVsPL = utilidadEjercicio - resumenPLCheck.utilidad;
 
@@ -18814,6 +18817,7 @@ async function computeUtilidadAcumulada(businessId, hastaYm) {
 
 const renderBalanceGeneral = envolverRenderPesado('sec-balance', 'Calculando el Balance General… puede tardar unos segundos.', renderBalanceGeneralCuerpo);
 const renderPL = envolverRenderPesado('sec-pl', 'Calculando el Estado de Resultados… puede tardar unos segundos.', renderPLCuerpo);
+const renderBalanza = envolverRenderPesado('sec-balanza', 'Calculando la Balanza de Comprobación… puede tardar unos segundos.', renderBalanzaCuerpo);
 
 function fmtNeg(n) {
   return Number(n) < 0 ? `<span style="color:var(--red);">${fmt(n)}</span>` : fmt(n);
