@@ -19351,7 +19351,11 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
         const tcOriginal = fProv ? (Number(fProv.tipo_cambio)||1) : 1;
         const tcReal = Number(ap.tipo_cambio) || tcOriginal;
         const montoOriginal = Number(ap.monto)||0;
-        push({ ...basePpc, cuenta: 'Proveedores' }, 'proveedores', 'pasivo', montoOriginal * tcOriginal, 0);
+        // Una aplicación sobre un CRÉDITO a favor (factura de importe negativo) NO es una factura que se paga: es un crédito que este pago CONSUME. El crédito ya
+        // bajó Proveedores por sí mismo cuando nació (su cargo); al usarlo se cancela con un ABONO de Proveedores. Antes se contaba como un cargo más y el pago
+        // quedaba descuadrado por el DOBLE del crédito.
+        if (fProv && Number(fProv.importe) < 0) push({ ...basePpc, cuenta: 'Proveedores' }, 'proveedores', 'pasivo', 0, montoOriginal * tcOriginal);
+        else push({ ...basePpc, cuenta: 'Proveedores' }, 'proveedores', 'pasivo', montoOriginal * tcOriginal, 0);
         const diferencia = montoOriginal * (tcReal - tcOriginal);
         if (Math.abs(diferencia) > 0.004) {
           if (diferencia > 0) push({ ...basePpc, cuenta: 'Pérdida Cambiaria' }, 'perdida_cambiaria', 'gasto', diferencia, 0);
@@ -19522,7 +19526,8 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
     const aplicadoMxn = pagos.reduce((a, p) => {
       const fp = facturasProvMapGlobal[p.factura_id];
       const tcOrig = fp ? (Number(fp.tipo_cambio) || 1) : 1;
-      return a + (Number(p.monto) || 0) * (Number(p.tipo_cambio) || tcOrig);
+      // un crédito consumido suma a los fondos del pago: resta de lo aplicado a facturas
+      return a + (fp && Number(fp.importe) < 0 ? -1 : 1) * (Number(p.monto) || 0) * (Number(p.tipo_cambio) || tcOrig);
     }, 0);
     const salidaCaja = (m.equivalente_mxn_historico !== null && m.equivalente_mxn_historico !== undefined) ? Number(m.equivalente_mxn_historico) : Number(m.cargos);
     const excedente = redondearMoneda(salidaCaja - aplicadoMxn);
@@ -19589,7 +19594,11 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
               // Proveedores se cancela al TC HISTÓRICO (el mismo con el que se registró la
               // factura) — nunca al de liquidación, así la cuenta cierra exacto sin importar
               // cuánto cambió el TC entre la factura y el pago.
-              push({ ...base, cuenta: 'Proveedores' }, 'proveedores', 'pasivo', montoOriginal * tcOriginal, 0);
+              // Una aplicación sobre un CRÉDITO a favor (factura de importe negativo) NO es una factura que se paga: es un crédito que este pago CONSUME. El crédito ya
+              // bajó Proveedores por sí mismo cuando nació (su cargo); al usarlo se cancela con un ABONO de Proveedores. Antes se contaba como un cargo más y el pago
+              // quedaba descuadrado por el DOBLE del crédito.
+              if (fProv && Number(fProv.importe) < 0) push({ ...base, cuenta: 'Proveedores' }, 'proveedores', 'pasivo', 0, montoOriginal * tcOriginal);
+              else push({ ...base, cuenta: 'Proveedores' }, 'proveedores', 'pasivo', montoOriginal * tcOriginal, 0);
               const diferencia = montoOriginal * (tcReal - tcOriginal);
               if (Math.abs(diferencia) > 0.004) {
                 if (diferencia > 0) push({ ...base, cuenta: 'Pérdida Cambiaria' }, 'perdida_cambiaria', 'gasto', diferencia, 0);
@@ -23007,21 +23016,35 @@ function revPagosProveedor(ctx) {
       const noResuelve = (razon) => { miembros.forEach(x => { x.texto += ` [${etiquetaG}: ${razon}]`; }); };
       if (miembros.length < 2 && idsF.length < 2) return; // un pago con una factura ya tiene su explicación individual
       if (!fs.every(Boolean)) return noResuelve('una factura ligada ya no existe');
-      if (fs.some(f => Number(f.importe) < 0)) return noResuelve('incluye un crédito a favor: se deja a revisión porque el motor contable no cuenta bien un pago que usó un crédito');
-      if (fs.some(f => (Number(f.tipo_cambio) || 1) !== 1 || !(Number(f.importe) > 0))) return noResuelve('incluye una factura en otra moneda o con importe cero');
-      const necesidad = fs.map(f => {
+      if (fs.some(f => (Number(f.tipo_cambio) || 1) !== 1)) return noResuelve('incluye una factura en otra moneda');
+      if (fs.some(f => !(Number(f.importe) > 0) && !(Number(f.importe) < 0))) return noResuelve('incluye una factura con importe cero');
+      // Un CRÉDITO A FAVOR ligado a un pago es dinero que ese pago ya usó: el flujo normal lo suma a los fondos del pago y guarda una
+      // aplicación para el propio crédito. Aquí se acepta si pertenece a UN solo pago del grupo y todavía no tiene aplicaciones.
+      const creditosG = fs.filter(f => Number(f.importe) < 0); const realesG = fs.filter(f => Number(f.importe) > 0);
+      const duenoCredito = new Map();
+      for (const c of creditosG) {
+        const duenos = miembros.filter(x => x.poolCand.ids.includes(c.id));
+        if (duenos.length !== 1) return noResuelve('un crédito a favor está ligado a más de un pago');
+        if (pagosAplicados.some(pa => pa.factura_id === c.id)) return noResuelve('un crédito a favor ya tiene aplicaciones');
+        duenoCredito.set(c.id, duenos[0]);
+      }
+      const necesidad = realesG.map(f => {
         const aplicadoF = pagosAplicados.filter(pa => pa.factura_id === f.id).reduce((acc, pa) => acc + (Number(pa.monto) || 0), 0);
         return { f, need: revRedondeo((Number(f.importe_pagado) || 0) - aplicadoF), pagado: Number(f.importe_pagado) || 0 };
       });
       if (necesidad.some(n => n.need < -0.005 || n.pagado > Number(n.f.importe) + 0.01)) return noResuelve('una factura tiene aplicado más de lo que figura pagado');
       const enGrupo = new Set(miembros.map(x => x.poolCand.m.id));
       if (fs.some(f => lista.some(o => !enGrupo.has(o.m.id) && facturaIdsDe(o.m).includes(f.id) && !((aplicadoPor[`${o.t}|${o.m.id}`] || 0) > 0.005)))) return noResuelve('otro pago sin aplicar comparte una de sus facturas');
-      const sumaPagos = revRedondeo(miembros.reduce((acc, x) => acc + Number(x.poolCand.m.cargos), 0));
+      const fondos = new Map(miembros.map(x => [x, Number(x.poolCand.m.cargos)]));
+      creditosG.forEach(c => { const d = duenoCredito.get(c.id); fondos.set(d, (fondos.get(d) || 0) + Math.abs(Number(c.importe))); });
+      const sumaPagos = revRedondeo([...fondos.values()].reduce((acc, v) => acc + v, 0));
       const sumaNeed = revRedondeo(necesidad.reduce((acc, n) => acc + n.need, 0));
-      if (Math.abs(sumaPagos - sumaNeed) >= 0.01) return noResuelve(`los pagos suman ${fmt(sumaPagos)} y lo que las facturas dicen tener pagado sin aplicar suma ${fmt(sumaNeed)}`);
-      const enlaces = miembros.flatMap(x => x.poolCand.ids.map(fid => [kPago(x), fid]));
-      const r = asignarPagosAFacturas(miembros.map(x => ({ k: kPago(x), cents: Math.round(Number(x.poolCand.m.cargos) * 100) })), necesidad.filter(n => n.need > 0.004).map(n => ({ k: n.f.id, cents: Math.round(n.need * 100) })), enlaces);
+      if (Math.abs(sumaPagos - sumaNeed) >= 0.01) return noResuelve(`los pagos${creditosG.length ? ' (con sus créditos a favor)' : ''} suman ${fmt(sumaPagos)} y lo que las facturas dicen tener pagado sin aplicar suma ${fmt(sumaNeed)}`);
+      const idsReales = new Set(realesG.map(f => f.id));
+      const enlaces = miembros.flatMap(x => x.poolCand.ids.filter(fid => idsReales.has(fid)).map(fid => [kPago(x), fid]));
+      const r = asignarPagosAFacturas(miembros.map(x => ({ k: kPago(x), cents: Math.round(fondos.get(x) * 100) })), necesidad.filter(n => n.need > 0.004).map(n => ({ k: n.f.id, cents: Math.round(n.need * 100) })), enlaces);
       if (!r.ok) return noResuelve('las cantidades cuadran en total pero no hay un reparto que respete las facturas a las que cada pago está ligado');
+      creditosG.forEach(c => r.asign.push({ p: kPago(duenoCredito.get(c.id)), f: c.id, cents: Math.round(Math.abs(Number(c.importe)) * 100) }));
       const grupo = { miembros, asign: r.asign, fs };
       poolGrupos.push(grupo);
       miembros.forEach(x => {
@@ -23033,7 +23056,7 @@ function revPagosProveedor(ctx) {
   items.sort((a, z) => a.fecha.localeCompare(z.fecha));
   const total = convertibles.length + aplicables.length + multiRegistrar.length + multiAplicar.length + poolItems.length;
   const r = { id: 'pagos_proveedor', titulo: 'Pagos a proveedor sin aplicar o aplicados de menos',
-    ayuda: 'Antes de presionar el botón, confirma en cada renglón que el proveedor de la factura corresponde al pago: el sistema aplica el pago a la factura con la que YA está ligado (nunca une por coincidencia de importe), así que una liga equivocada se aplicaría tal cual. El Balance baja Proveedores por lo que salió del banco, pero en el módulo de Proveedores esas facturas pueden seguir como pendientes. Cada renglón dice en qué situación está: (1) factura ya pagada por el método rápido: solo falta registrar la aplicación; (2) pago ya ligado a una factura del mismo importe que sigue pendiente: se aplica y la factura pasa a Pagada; (2b) pago ligado a varias facturas que suman exactamente el pago: se registra o se aplica a cada una por su propio importe; (2c) grupo de pagos que comparten facturas (como las propinas por repartir): si las cantidades cuadran exactamente, se registra cuánto aplicó cada pago a cada factura; (3) sin factura ligada, o con importes distintos: abre el pago y elige o ajusta su factura (se crea el crédito a favor si pagaste de más). En el caso (1) NO guardes el movimiento en Bancos mientras tanto, porque crearía un crédito a favor falso.', items };
+    ayuda: 'Antes de presionar el botón, confirma en cada renglón que el proveedor de la factura corresponde al pago: el sistema aplica el pago a la factura con la que YA está ligado (nunca une por coincidencia de importe), así que una liga equivocada se aplicaría tal cual. El Balance baja Proveedores por lo que salió del banco, pero en el módulo de Proveedores esas facturas pueden seguir como pendientes. Cada renglón dice en qué situación está: (1) factura ya pagada por el método rápido: solo falta registrar la aplicación; (2) pago ya ligado a una factura del mismo importe que sigue pendiente: se aplica y la factura pasa a Pagada; (2b) pago ligado a varias facturas que suman exactamente el pago: se registra o se aplica a cada una por su propio importe; (2c) grupo de pagos que comparten facturas (como las propinas por repartir): si las cantidades cuadran exactamente, se registra cuánto aplicó cada pago a cada factura, y el crédito a favor que algún pago haya usado se registra como usado; (3) sin factura ligada, o con importes distintos: abre el pago y elige o ajusta su factura (se crea el crédito a favor si pagaste de más). En el caso (1) NO guardes el movimiento en Bancos mientras tanto, porque crearía un crédito a favor falso.', items };
   if (total && ctx.financiero) r.accion = {
     etiqueta: `Aplicar ${total} pago${total === 1 ? '' : 's'} a su factura`,
     confirmar: `Se registrará la aplicación de ${total} pago(s) a las facturas con las que ya están ligados: ${convertibles.length + multiRegistrar.length} cuyas facturas ya figuran Pagadas (solo se guarda la aplicación; no cambia ningún saldo, estatus ni importe pagado) y ${aplicables.length + multiAplicar.length} cuyas facturas siguen pendientes en Proveedores (pasan a Pagadas con ese pago; en los pagos de varias facturas, cada una por su propio importe). ${poolItems.length ? `Además, ${poolItems.length} pago(s) de grupos que comparten facturas (como las propinas): solo se guarda cuánto aplicó cada pago a cada factura, sin cambiar ninguna factura. ` : ''}El Balance no cambia: ya cuenta esos pagos. ¿Continuar?`,
