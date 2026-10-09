@@ -22572,7 +22572,8 @@ function analizarPropinasSinMarca(ctx) {
   const sinMarca = proveedores.filter(f => esProp(f) && !f.origen_venta_id && Number(f.importe) > 0);
   const propinas = porCat.propinas || [];
   const marcadas = proveedores.filter(f => f.origen_venta_id);
-  const conteo = {};
+  const movsTodos = [...bancosMov.map(m => ({ m, t: 'fz_bancos_mov' })), ...efectivoMov.map(m => ({ m, t: 'fz_efectivo_mov' }))];
+  const conteo = {}; const conteoCopias = {};
   const analizadas = sinMarca.map(f => {
     const c = propinas.find(x => f.factura === `Propina ${x.nombre} ${f.fecha}`);
     const vs = ventas.filter(x => x.fecha === f.fecha);
@@ -22582,21 +22583,28 @@ function analizarPropinasSinMarca(ctx) {
     const monto = revRedondeo(Number((vs[0].recon_data || {})[c.id]?.monto) || 0);
     if (Math.abs(monto - Number(f.importe)) >= 0.01) { r.razon = `la venta concilió ${fmt(monto)} y la factura es de ${fmt(f.importe)}`; return r; }
     const delDia = marcadas.filter(m => m.origen_venta_id === vs[0].id && m.origen_concepto_id === c.id);
+    r.k = `${vs[0].id}|${c.id}`;
     if (delDia.length) {
       const sumaMarcadas = revRedondeo(delDia.reduce((acc, m) => acc + (Number(m.importe) || 0), 0));
       if (Math.abs(sumaMarcadas - monto) >= 0.01) { r.razon = `ya existe otra propina con marca por ${fmt(sumaMarcadas)} y la venta concilió ${fmt(monto)}`; return r; }
-      r.tipo = 'duplicada';
-      r.razon = (Number(f.importe_pagado) > 0 || f.estatus !== 'Pendiente') ? 'ya tiene pagos'
+      r.tipo = 'duplicada'; r.originales = delDia; r.original = fmt(sumaMarcadas);
+      r.movs = movsTodos.filter(o => facturaIdsDe(o.m).includes(f.id));
+      r.tieneDesglose = desgloseLineas(f.desglose).length > 0;
+      r.tienePagos = Number(f.importe_pagado) > 0 || f.estatus !== 'Pendiente' || pagosAplicados.some(pa => pa.factura_id === f.id) || r.movs.length > 0;
+      r.razon = r.tieneDesglose ? 'tiene un desglose capturado'
+        : (Number(f.importe_pagado) > 0 || f.estatus !== 'Pendiente') ? 'ya tiene pagos'
         : pagosAplicados.some(pa => pa.factura_id === f.id) ? 'ya tiene aplicaciones de pago'
-        : [...bancosMov, ...efectivoMov].some(m => facturaIdsDe(m).includes(f.id)) ? 'hay un pago ligado a ella'
-        : desgloseLineas(f.desglose).length ? 'tiene un desglose capturado' : '';
-      r.original = fmt(sumaMarcadas);
+        : r.movs.length ? 'hay un pago ligado a ella' : '';
+      conteoCopias[r.k] = (conteoCopias[r.k] || 0) + 1;
       return r;
     }
-    const k = `${vs[0].id}|${c.id}`; conteo[k] = (conteo[k] || 0) + 1; r.k = k; r.tipo = 'huerfana';
+    conteo[r.k] = (conteo[r.k] || 0) + 1; r.tipo = 'huerfana';
     return r;
   });
-  analizadas.forEach(a => { if (a.tipo === 'huerfana' && conteo[a.k] > 1) { a.tipo = 'manual'; a.razon = 'hay varias propinas sin marca para el mismo día y concepto'; } });
+  analizadas.forEach(a => {
+    if (a.tipo === 'huerfana' && conteo[a.k] > 1) { a.tipo = 'manual'; a.razon = 'hay varias propinas sin marca para el mismo día y concepto'; }
+    if (a.tipo === 'duplicada') a.copias = conteoCopias[a.k];
+  });
   return analizadas;
 }
 
@@ -22630,32 +22638,75 @@ function revPropinasDuplicadas(ctx) {
   if (!ctx.financiero) return null;
   const { b } = ctx;
   const base = { id: 'propinas_duplicadas', titulo: 'Propinas por repartir duplicadas (esa propina ya existe con su marca)',
-    ayuda: 'La venta de ese día ya tiene su propina provisionada y marcada por el mismo importe; esta es una COPIA sin marca. Hoy duplica la cuenta por pagar de "Propinas por repartir" y además cuenta como gasto sin clasificar, así que baja la utilidad y sube Proveedores por pagar. Si la copia está limpia (Pendiente, sin pagos, sin aplicaciones, sin pagos ligados y sin desglose) se puede eliminar; la propina original queda intacta. Si tiene pagos o desglose, se deja a revisión.' };
+    ayuda: 'La venta de ese día ya tiene su propina provisionada y marcada por el mismo importe; esta es una COPIA sin marca. Hoy duplica la cuenta por pagar de "Propinas por repartir" y además cuenta como gasto sin clasificar, así que baja la utilidad y sube Proveedores por pagar. Si la copia está limpia (Pendiente, sin pagos) se ELIMINA. Si ya tiene pagos, se CONSOLIDA: sus pagos y aplicaciones pasan a la propina original (con marca), se suma lo pagado y recién entonces se quita la copia, para no perder ningún pago. Solo se hace si entre las dos no se ha pagado más que la propina; si no, se deja a revisión.' };
+  const estado = (x) => `${x.estatus || 'Pendiente'} ${fmt(x.importe_pagado || 0)} de ${fmt(x.importe)}`;
   const analizadas = analizarPropinasSinMarca(ctx).filter(a => a.tipo === 'duplicada');
-  const items = analizadas.map(a => ({ fecha: a.f.fecha, texto: `${fechaCorta(a.f.fecha)} · ${a.f.factura}: copia duplicada (la propina original con marca es de ${a.original})` + (a.razon ? `; no se puede eliminar sola (${a.razon})` : '; se puede eliminar'), monto: Number(a.f.importe), ...(a.razon ? {} : { ok: true, f: a.f }) }))
-    .sort((a, z) => a.fecha.localeCompare(z.fecha));
-  const borrables = items.filter(x => x.ok);
+  const items = analizadas.map(a => {
+    const detalle = `copia: ${estado(a.f)}; original con marca: ${a.originales.map(estado).join(' + ')}`;
+    let modo = null, razon = a.razon, orig = null;
+    if (!a.razon) modo = 'borrar';
+    else if (a.tienePagos && !a.tieneDesglose) {
+      orig = a.originales.length === 1 ? a.originales[0] : null;
+      if (!orig) razon = 'hay más de una propina original con marca';
+      else if (a.copias > 1) razon = 'hay más de una copia para esa propina';
+      else if (desgloseLineas(orig.desglose).length) razon = 'la original tiene un desglose capturado';
+      else if ((Number(a.f.importe_pagado) || 0) + (Number(orig.importe_pagado) || 0) > Number(orig.importe) + 0.01) razon = 'entre la copia y la original ya se pagó más que la propina';
+      else modo = 'fusionar';
+    }
+    const texto = `${fechaCorta(a.f.fecha)} · ${a.f.factura}: copia duplicada (${detalle}); ` + (modo === 'borrar' ? 'se puede eliminar' : modo === 'fusionar' ? 'se puede consolidar: sus pagos pasan a la original y la copia se elimina' : `no se puede consolidar sola (${razon})`);
+    return { fecha: a.f.fecha, texto, monto: Number(a.f.importe), ...(modo ? { ok: true, modo, f: a.f, orig, movs: a.movs } : {}) };
+  }).sort((x, y) => x.fecha.localeCompare(y.fecha));
+  const aplicables = items.filter(x => x.ok);
   const r = { ...base, items };
-  if (borrables.length) r.accion = {
-    etiqueta: `Eliminar ${borrables.length} propina${borrables.length === 1 ? '' : 's'} duplicada${borrables.length === 1 ? '' : 's'}`,
-    confirmar: `Se eliminarán ${borrables.length} copia(s) duplicada(s) de propinas por ${fmt(borrables.reduce((a, x) => a + Number(x.f.importe), 0))}. La propina original de cada venta (con su marca) NO se toca. Efecto: Proveedores por pagar baja ${fmt(borrables.reduce((a, x) => a + Number(x.f.importe), 0))} (estaba contado dos veces) y la utilidad sube lo mismo (dejan de contar como gasto sin clasificar). Los meses cerrados no se tocan. ¿Continuar?`,
-    ejecutar: async () => {
-      let hechas = 0, cerradas = 0, omitidas = 0;
-      for (const x of borrables) {
-        if (await bloqueadoPorCierre(b.id, x.f.fecha)) { cerradas++; continue; }
-        // Se vuelve a comprobar en la base que sigue siendo una copia limpia
-        const { data: fresca } = await sb.from('fz_proveedores').select('id,estatus,importe_pagado,origen_venta_id,proveedor,factura,importe').eq('id', x.f.id).maybeSingle();
-        const { data: apl } = await sb.from('fz_pagos_aplicados').select('id').eq('factura_id', x.f.id).limit(1);
-        if (!fresca || fresca.origen_venta_id || fresca.estatus !== 'Pendiente' || Number(fresca.importe_pagado) > 0 || (apl || []).length) { omitidas++; continue; }
-        await sb.from('fz_adjuntos').delete().eq('tabla', 'fz_proveedores').eq('registro_id', x.f.id);
-        const { error } = await sb.from('fz_proveedores').delete().eq('id', x.f.id);
-        if (error) throw error;
-        registrarAuditoria(b.id, 'eliminar', 'Proveedores', `${fresca.proveedor || 'Propinas por repartir'} · factura ${fresca.factura || 's/f'} · ${fmt(fresca.importe || 0)} (copia duplicada de una propina ya provisionada, eliminada desde la Revisión)`);
-        hechas++;
-      }
-      return `${hechas} propina(s) duplicada(s) eliminada(s)${cerradas ? ` · ${cerradas} en meses cerrados no se tocaron` : ''}${omitidas ? ` · ${omitidas} ya no eran una copia limpia y se dejaron` : ''}.`;
-    },
-  };
+  if (aplicables.length) {
+    const nBorrar = aplicables.filter(x => x.modo === 'borrar').length, nFusionar = aplicables.filter(x => x.modo === 'fusionar').length;
+    const total = aplicables.reduce((acc, x) => acc + Number(x.f.importe), 0);
+    r.accion = {
+      etiqueta: `Consolidar ${aplicables.length} propina${aplicables.length === 1 ? '' : 's'} duplicada${aplicables.length === 1 ? '' : 's'}`,
+      confirmar: `${nBorrar ? `Se eliminarán ${nBorrar} copia(s) limpia(s). ` : ''}${nFusionar ? `Se consolidarán ${nFusionar} copia(s) que ya tienen pagos: sus pagos y aplicaciones pasan a la propina original (con marca), se suma lo pagado y se elimina la copia. ` : ''}La propina original de cada venta se conserva. Efecto: Proveedores por pagar baja ${fmt(total)} (estaba contado dos veces) y la utilidad sube lo mismo (dejan de contar como gasto sin clasificar); ningún pago se pierde. Los meses cerrados no se tocan. ¿Continuar?`,
+      ejecutar: async () => {
+        let borradas = 0, fusionadas = 0, cerradas = 0, omitidas = 0;
+        for (const x of aplicables) {
+          if (await bloqueadoPorCierre(b.id, x.f.fecha)) { cerradas++; continue; }
+          const { data: fresca } = await sb.from('fz_proveedores').select('*').eq('id', x.f.id).maybeSingle();
+          if (!fresca || fresca.origen_venta_id) { omitidas++; continue; }
+          const { data: aplC } = await sb.from('fz_pagos_aplicados').select('id').eq('factura_id', x.f.id);
+          if (x.modo === 'borrar') {
+            if (fresca.estatus !== 'Pendiente' || Number(fresca.importe_pagado) > 0 || (aplC || []).length) { omitidas++; continue; }
+          } else {
+            const { data: orig } = await sb.from('fz_proveedores').select('*').eq('id', x.orig.id).maybeSingle();
+            if (!orig || !orig.origen_venta_id) { omitidas++; continue; }
+            const pagC = Number(fresca.importe_pagado) || 0, pagO = Number(orig.importe_pagado) || 0;
+            if (pagC + pagO > Number(orig.importe) + 0.01) { omitidas++; continue; }
+            // 1) las aplicaciones de la copia pasan a la original
+            const { error: eA } = await sb.from('fz_pagos_aplicados').update({ factura_id: orig.id }).eq('factura_id', fresca.id);
+            if (eA) throw eA;
+            // 2) los pagos ligados a la copia se ligan a la original
+            for (const mv of (x.movs || [])) {
+              const { data: m } = await sb.from(mv.t).select('id,proveedor_factura_id,proveedor_factura_ids').eq('id', mv.m.id).maybeSingle();
+              if (!m) continue;
+              const ids = [...new Set(facturaIdsDe(m).map(id => id === fresca.id ? orig.id : id))];
+              await sb.from(mv.t).update({ proveedor_factura_ids: ids, proveedor_factura_id: ids[0] || null }).eq('id', mv.m.id);
+            }
+            // 3) la original suma lo pagado
+            const nuevoPagado = revRedondeo(pagC + pagO);
+            const estatus = nuevoPagado >= Number(orig.importe) - 0.01 ? 'Pagado' : (nuevoPagado > 0.004 ? 'Parcial' : 'Pendiente');
+            const fechaPago = [orig.fecha_pago, fresca.fecha_pago].filter(Boolean).sort().slice(-1)[0] || null;
+            const { error: eU } = await sb.from('fz_proveedores').update({ importe_pagado: nuevoPagado, estatus, fecha_pago: fechaPago,
+              pagado_desde: orig.pagado_desde || fresca.pagado_desde || null, pagado_desde_tipo: orig.pagado_desde_tipo || fresca.pagado_desde_tipo || null, pagado_desde_cuenta_id: orig.pagado_desde_cuenta_id || fresca.pagado_desde_cuenta_id || null }).eq('id', orig.id);
+            if (eU) throw eU;
+          }
+          // 4) se quita la copia
+          await sb.from('fz_adjuntos').delete().eq('tabla', 'fz_proveedores').eq('registro_id', x.f.id);
+          const { error } = await sb.from('fz_proveedores').delete().eq('id', x.f.id);
+          if (error) throw error;
+          registrarAuditoria(b.id, 'eliminar', 'Proveedores', `${fresca.proveedor || 'Propinas por repartir'} · factura ${fresca.factura || 's/f'} · ${fmt(fresca.importe || 0)} (copia duplicada ${x.modo === 'fusionar' ? 'consolidada en su propina original' : 'eliminada'} desde la Revisión)`);
+          if (x.modo === 'fusionar') fusionadas++; else borradas++;
+        }
+        return `${borradas ? `${borradas} copia(s) eliminada(s)` : ''}${borradas && fusionadas ? ' · ' : ''}${fusionadas ? `${fusionadas} copia(s) consolidada(s) en su original` : ''}${(!borradas && !fusionadas) ? 'No se cambió ninguna' : ''}${cerradas ? ` · ${cerradas} en meses cerrados no se tocaron` : ''}${omitidas ? ` · ${omitidas} ya no estaban en el estado esperado y se dejaron` : ''}.`;
+      },
+    };
+  }
   return r;
 }
 
