@@ -602,13 +602,30 @@ async function consultarFacturasProveedor(businessId, columnas, ordenar) {
   if (document.getElementById('estiloRevisionConsistencia')) return;
   const st = document.createElement('style'); st.id = 'estiloRevisionConsistencia';
   st.textContent = '#revCuerpo{min-width:0;max-width:100%;}'
-    + '#revCuerpo .card{max-width:100%;min-width:0;overflow:hidden;box-sizing:border-box;}'
+    + '#revCuerpo .card{max-width:100%;min-width:0;box-sizing:border-box;}'
     + '#revCuerpo .card-head{flex-wrap:wrap;gap:8px;min-width:0;}'
     + '#revCuerpo .card-head h3{min-width:0;max-width:100%;white-space:normal;overflow-wrap:anywhere;word-break:break-word;}'
-    + '#revCuerpo .tabla-operativa,#revCuerpo .tabla-operativa tbody,#revCuerpo .tabla-operativa tr{max-width:100%;min-width:0;box-sizing:border-box;}'
-    + '#revCuerpo .tabla-operativa td{white-space:normal;overflow-wrap:anywhere;word-break:break-word;min-width:0;max-width:100%;}'
-    + '#revCuerpo .card p,#revCuerpo .card div{overflow-wrap:anywhere;word-break:break-word;}'
-    + '#revCuerpo .btn{white-space:normal;max-width:100%;text-align:center;}';
+    + '#revCuerpo .rev-accion{white-space:normal;text-align:left;}'
+    // tabla real con columnas: el detalle se lleva todo el ancho sobrante y se parte; el importe y el botón miden lo que su contenido
+    + '#revCuerpo .tabla-operativa{display:table !important;width:100% !important;table-layout:auto;border-collapse:collapse;}'
+    + '#revCuerpo .tabla-operativa thead{display:table-header-group !important;}'
+    + '#revCuerpo .tabla-operativa tbody{display:table-row-group !important;}'
+    + '#revCuerpo .tabla-operativa tr{display:table-row !important;border:0 !important;padding:0 !important;margin:0 !important;background:none !important;}'
+    + '#revCuerpo .tabla-operativa th{display:table-cell !important;padding:4px 8px !important;font-size:11px;font-weight:600;color:var(--muted);text-align:left;border-bottom:1px solid var(--line);white-space:nowrap;}'
+    + '#revCuerpo .tabla-operativa th.num{text-align:right;}'
+    + '#revCuerpo .tabla-operativa td{display:table-cell !important;padding:7px 8px !important;border:0 !important;border-top:1px solid var(--line) !important;vertical-align:top;font-size:12.5px;line-height:1.4;}'
+    + '#revCuerpo .tabla-operativa td:first-child{width:100%;white-space:normal;overflow-wrap:anywhere;word-break:break-word;}'
+    + '#revCuerpo .tabla-operativa td.num{width:1%;white-space:nowrap !important;overflow-wrap:normal !important;word-break:normal !important;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;}'
+    + '#revCuerpo .tabla-operativa td:last-child:not(:first-child):not(.num){width:1%;white-space:nowrap;text-align:right;}'
+    + '#revCuerpo .tabla-operativa td[colspan]{width:auto;}'
+    + '@media (max-width:640px){'
+    + '#revCuerpo .tabla-operativa,#revCuerpo .tabla-operativa tbody,#revCuerpo .tabla-operativa tr,#revCuerpo .tabla-operativa td{display:block !important;width:100% !important;}'
+    + '#revCuerpo .tabla-operativa thead{display:none !important;}'
+    + '#revCuerpo .tabla-operativa tr{border-top:1px solid var(--line) !important;padding:8px 0 !important;}'
+    + '#revCuerpo .tabla-operativa td{border:0 !important;padding:2px 0 !important;}'
+    + '#revCuerpo .tabla-operativa td.num{text-align:left;}'
+    + '#revCuerpo .tabla-operativa td:empty{display:none !important;}'
+    + '}';
   document.head.appendChild(st);
 })();
 
@@ -23194,13 +23211,13 @@ async function renderRevisionConsistencia() {
         const mas = (r.items || []).length > REV_MAX_ITEMS ? `<tr><td colspan="3" style="color:var(--muted);">… y ${r.items.length - REV_MAX_ITEMS} más</td></tr>` : '';
         return `
           <div class="card" style="margin-bottom:12px;border-left:3px solid ${ok ? 'var(--green)' : (r.error ? 'var(--red)' : 'var(--gold, #c9a227)')};">
-            <div class="card-head"><h3 style="font-size:14px;">${ok ? '✓' : '⚠'} ${revEsc(r.titulo)}${r.items.length ? ` <span class="badge pend" style="margin-left:6px;">${r.items.length}</span>` : ''}</h3>
-              ${r.accion ? `<button class="btn btn-gold btn-sm rev-accion" data-rev="${revEsc(r.id)}">${revEsc(r.accion.etiqueta)}</button>` : ''}</div>
+            <div class="card-head"><h3 style="font-size:14px;">${ok ? '✓' : '⚠'} ${revEsc(r.titulo)}${r.items.length ? ` <span class="badge pend" style="margin-left:6px;">${r.items.length}</span>` : ''}</h3></div>
             <div style="padding:6px 14px 12px;font-size:13px;">
               ${r.error ? `<div style="color:var(--red);">No se pudo revisar: ${revEsc(r.error)}</div>` : ''}
               ${ok ? `<div style="color:var(--muted);">Sin diferencias.${r.nota ? ' ' + revEsc(r.nota) : ''}</div>` : `
                 <div style="color:var(--muted);margin-bottom:8px;">${revEsc(r.ayuda)}</div>
-                <table class="tabla-operativa"><tbody>${filas}${mas}</tbody></table>
+                ${r.accion ? `<div style="margin:0 0 10px;"><button class="btn btn-gold btn-sm rev-accion" data-rev="${revEsc(r.id)}">${revEsc(r.accion.etiqueta)}</button></div>` : ''}
+                <table class="tabla-operativa"><thead><tr><th>Detalle</th><th class="num">Importe</th><th></th></tr></thead><tbody>${filas}${mas}</tbody></table>
                 ${r.nota ? `<div style="color:var(--muted);margin-top:8px;">${revEsc(r.nota)}</div>` : ''}`}
             </div>
           </div>`;
