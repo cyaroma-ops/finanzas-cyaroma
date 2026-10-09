@@ -575,6 +575,17 @@ async function consultarFacturasProveedor(businessId, columnas, ordenar) {
   return r.data || [];
 }
 
+// Las casillas y botones de opción que están dentro de un ".field" (la lista de facturas del modal de Bancos/Efectivo, la de cobros,
+// "Aplica IVA"…) heredaban la regla de los campos de texto (ancho 100% + relleno de 11px 13px + borde). En Chrome/Edge el relleno se ignora
+// en una casilla; Firefox sí lo respeta, y en una celda de 20 px la casilla se quedaba con ANCHO CERO: se veía solo la fila gris y no se
+// podía marcar nada. Aquí se les devuelve su tamaño natural. Los campos de texto no cambian.
+(function corregirCasillasEnCampos() {
+  if (document.getElementById('estiloCasillasEnCampos')) return;
+  const st = document.createElement('style'); st.id = 'estiloCasillasEnCampos';
+  st.textContent = '.field input[type="checkbox"],.field input[type="radio"]{width:auto;min-width:16px;height:16px;padding:0;border:0;margin:0;border-radius:0;background:none;box-shadow:none;}';
+  document.head.appendChild(st);
+})();
+
 function biz() {
   return STATE.businesses.find(b => b.id === STATE.currentBusinessId) || null;
 }
