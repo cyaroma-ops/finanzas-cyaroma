@@ -22529,6 +22529,56 @@ function revVentasCategorias(ctx) {
   };
 }
 
+// Propinas por repartir que perdieron su marca de venta (origen_venta_id). Sin ella el motor las toma por una factura de gasto normal:
+// lo no desglosado va a "Sin clasificar" y BAJA LA UTILIDAD, siendo dinero de los empleados. Aquí se les RESTAURA la marca (no se crea ni se
+// borra nada) solo si coinciden exactamente con la propina conciliada de ese día: mismo día, mismo concepto y mismo importe, sin otra
+// propina marcada para esa venta y concepto, y sin que haya dos candidatas.
+function revPropinasSinMarca(ctx) {
+  if (!ctx.financiero) return null;
+  const { ventas, porCat, proveedores, b } = ctx;
+  const base = { id: 'propinas_sin_marca', titulo: 'Propinas por repartir sin su marca de venta (cuentan como gasto)',
+    ayuda: 'Cada propina conciliada se provisiona como cuenta por pagar de "Propinas por repartir" y lleva la marca de la venta que la originó. Sin esa marca, el sistema la toma por una factura de gasto normal: lo que no está desglosado va a "Sin clasificar" y baja la utilidad, aunque es dinero de los empleados. Si coincide exactamente con la propina conciliada de ese día, aquí se le restaura la marca (no se crea ni se borra nada).' };
+  const esProp = (f) => String(f.proveedor || '').trim().toLowerCase() === 'propinas por repartir';
+  const sinMarca = proveedores.filter(f => esProp(f) && !f.origen_venta_id && Number(f.importe) > 0);
+  if (!sinMarca.length) return { ...base, items: [] };
+  const propinas = porCat.propinas || [];
+  const marcadas = proveedores.filter(f => f.origen_venta_id);
+  const conteo = {};
+  const analizadas = sinMarca.map(f => {
+    const c = propinas.find(x => f.factura === `Propina ${x.nombre} ${f.fecha}`);
+    const vs = ventas.filter(x => x.fecha === f.fecha);
+    let razon = '';
+    if (!c) razon = 'su nombre no corresponde a un concepto de propinas de ese día';
+    else if (vs.length !== 1) razon = vs.length ? 'hay varias ventas ese día' : 'no hay venta capturada ese día';
+    else {
+      const monto = revRedondeo(Number((vs[0].recon_data || {})[c.id]?.monto) || 0);
+      if (Math.abs(monto - Number(f.importe)) >= 0.01) razon = `la venta concilió ${fmt(monto)} y la factura es de ${fmt(f.importe)}`;
+      else if (marcadas.some(m => m.origen_venta_id === vs[0].id && m.origen_concepto_id === c.id)) razon = 'ya existe otra propina con marca para esa venta y concepto';
+    }
+    if (c && vs.length === 1) { const k = `${vs[0].id}|${c.id}`; conteo[k] = (conteo[k] || 0) + 1; }
+    return { f, c, v: vs[0], razon };
+  });
+  analizadas.forEach(a => { if (!a.razon && a.c && a.v && conteo[`${a.v.id}|${a.c.id}`] > 1) a.razon = 'hay varias propinas sin marca para el mismo día y concepto'; });
+  const items = analizadas.map(a => ({ fecha: a.f.fecha, texto: `${fechaCorta(a.f.fecha)} · ${a.f.factura}: ` + (a.razon ? `no se puede restaurar sola (${a.razon})` : 'coincide exactamente con la propina conciliada de ese día; falta su marca y hoy cuenta como gasto sin clasificar'), monto: Number(a.f.importe), ...(a.razon ? {} : { ok: true, f: a.f, c: a.c, v: a.v }) }))
+    .sort((a, z) => a.fecha.localeCompare(z.fecha));
+  const arreglables = items.filter(x => x.ok);
+  const r = { ...base, items };
+  if (arreglables.length) r.accion = {
+    etiqueta: `Restaurar la marca a ${arreglables.length} propina${arreglables.length === 1 ? '' : 's'}`,
+    confirmar: `Se marcarán ${arreglables.length} propina(s) como cuentas por pagar de su venta (no se crea ni se borra nada): dejan de contarse como gasto sin clasificar y la utilidad sube ${fmt(arreglables.reduce((a, x) => a + Number(x.f.importe), 0))}. Los meses cerrados no se tocan. ¿Continuar?`,
+    ejecutar: async () => {
+      let hechas = 0, cerradas = 0;
+      for (const x of arreglables) {
+        if (await bloqueadoPorCierre(b.id, x.f.fecha)) { cerradas++; continue; }
+        const { error } = await sb.from('fz_proveedores').update({ origen_venta_id: x.v.id, origen_concepto_id: x.c.id }).eq('id', x.f.id);
+        if (error) throw error; hechas++;
+      }
+      return `${hechas} propina(s) marcada(s)${cerradas ? ` (${cerradas} en meses cerrados no se tocaron)` : ''}.`;
+    },
+  };
+  return r;
+}
+
 function revPropinas(ctx) {
   if (!ctx.financiero) return null; // en Fiscal Contable Ventas no genera cuentas por pagar
   const { ventas, porCat, proveedores, b } = ctx;
@@ -22545,7 +22595,9 @@ function revPropinas(ctx) {
     if (Math.abs(dif) < 0.005) return;
     const item = { fecha: v.fecha, texto: `${fechaCorta(v.fecha)} · ${c.nombre}: conciliado ${fmt(conc)}, provisionado ${fmt(prov)}`, monto: dif };
     const seguro = conc > 0 && fs.length <= 1 && fs.every(f => f.estatus === 'Pendiente');
-    if (seguro) arreglables.push({ ...item, v, c, conc }); else aMano.push({ ...item, texto: item.texto + ' (ya pagada, parcial o repetida: ajústala en Proveedores)' });
+    const huerfana = fs.length === 0 && conc > 0 && proveedores.some(f => !f.origen_venta_id && String(f.proveedor || '').trim().toLowerCase() === 'propinas por repartir' && f.fecha === v.fecha && f.factura === `Propina ${c.nombre} ${v.fecha}`);
+    if (huerfana) aMano.push({ ...item, texto: item.texto + ' (ya existe esa cuenta por pagar pero sin su marca de venta: restáurala en la revisión "Propinas por repartir sin su marca" en vez de crear otra)' });
+    else if (seguro) arreglables.push({ ...item, v, c, conc }); else aMano.push({ ...item, texto: item.texto + ' (ya pagada, parcial o repetida: ajústala en Proveedores)' });
   }));
   const items = [...arreglables, ...aMano].sort((a, z) => a.fecha.localeCompare(z.fecha));
   const r = { ...base, items };
@@ -22798,7 +22850,7 @@ function revPagosProveedor(ctx) {
             items.push(it); multiAplicar.push(it); return;
           }
         }
-        detalleMulti = ` · ligado a ${fs.length} facturas (${nombresFact}) de ${proveedoresFact} que suman ${fmt(suma)}${Math.abs(suma - Number(m.cargos)) < 0.01 ? '' : ` y el pago es de ${fmt(m.cargos)}`}${sinOtrosPagos ? '' : '; alguna ya tiene otro pago'}${enPesos ? '' : '; hay moneda extranjera'}: revisa su aplicación`;
+        detalleMulti = ` · ligado a ${fs.length} facturas (${nombresFact}) de ${proveedoresFact} que suman ${fmt(suma)}${Math.abs(suma - Number(m.cargos)) < 0.01 ? '' : ` y el pago es de ${fmt(m.cargos)}`}${sinOtrosPagos ? '' : '; alguna ya tiene otro pago'}${fs.some(x => Number(x.importe) < 0) ? '; hay un crédito a favor' : ''}${fs.some(x => (Number(x.tipo_cambio) || 1) !== 1) ? '; hay moneda extranjera' : ''}: revisa su aplicación`;
       }
     }
     // Resto: se dice POR QUÉ no se puede corregir solo.
@@ -22824,7 +22876,8 @@ function revPagosProveedor(ctx) {
       const noResuelve = (razon) => { miembros.forEach(x => { x.texto += ` [${etiquetaG}: ${razon}]`; }); };
       if (miembros.length < 2 && idsF.length < 2) return; // un pago con una factura ya tiene su explicación individual
       if (!fs.every(Boolean)) return noResuelve('una factura ligada ya no existe');
-      if (!fs.every(f => Number(f.importe) > 0 && (Number(f.tipo_cambio) || 1) === 1)) return noResuelve('incluye un crédito o una factura en otra moneda');
+      if (fs.some(f => Number(f.importe) < 0)) return noResuelve('incluye un crédito a favor: se deja a revisión porque el motor contable no cuenta bien un pago que usó un crédito');
+      if (fs.some(f => (Number(f.tipo_cambio) || 1) !== 1 || !(Number(f.importe) > 0))) return noResuelve('incluye una factura en otra moneda o con importe cero');
       const necesidad = fs.map(f => {
         const aplicadoF = pagosAplicados.filter(pa => pa.factura_id === f.id).reduce((acc, pa) => acc + (Number(pa.monto) || 0), 0);
         return { f, need: revRedondeo((Number(f.importe_pagado) || 0) - aplicadoF), pagado: Number(f.importe_pagado) || 0 };
@@ -22997,7 +23050,7 @@ function revFacturasSinDesglose(ctx) {
     const dr = desgloseLineas(f.desglose).reduce((a, l) => a + (Number(l.monto) || 0) * tc, 0) + ((f.aplica_iva && Number(f.iva_monto)) ? Number(f.iva_monto) * tc : 0);
     const cr = ((f.aplica_retencion && Number(f.retencion_isr_monto)) ? Number(f.retencion_isr_monto) * tc : 0) + ((f.aplica_retencion && Number(f.retencion_iva_monto)) ? Number(f.retencion_iva_monto) * tc : 0) + (Number(f.importe) || 0) * tc;
     const falta = revRedondeo(cr - dr);
-    if (Math.abs(falta) >= 0.01) items.push({ fecha: f.fecha, texto: `${fechaCorta(f.fecha)} · ${f.proveedor || '?'} · factura ${f.factura || 's/f'}`, monto: falta });
+    if (Math.abs(falta) >= 0.01) items.push({ fecha: f.fecha, texto: `${fechaCorta(f.fecha)} · ${f.proveedor || '?'} · factura ${f.factura || 's/f'}`, monto: falta, ...(String(f.proveedor || '').trim().toLowerCase() === 'propinas por repartir' ? { texto: `${fechaCorta(f.fecha)} · ${f.proveedor} · factura ${f.factura || 's/f'} — propina sin su marca de venta: hoy cuenta como gasto (ver la revisión de propinas sin marca)` } : {}) });
   });
   items.sort((a, z) => a.fecha.localeCompare(z.fecha));
   return { id: 'facturas_desglose', titulo: 'Facturas sin desglose completo',
@@ -23046,7 +23099,7 @@ function revSalidasSinClasificar(ctx) {
 
 async function ejecutarRevisionConsistencia(b) {
   const ctx = await cargarContextoRevision(b);
-  const checks = [revVentasCategorias, revPropinas, revDepositosVentas, revPagosProveedor, revVinculosPagoFactura, revVinculosCobroFactura, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar];
+  const checks = [revVentasCategorias, revPropinas, revPropinasSinMarca, revDepositosVentas, revPagosProveedor, revVinculosPagoFactura, revVinculosCobroFactura, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar];
   const out = [];
   for (const fn of checks) {
     try { const r = fn(ctx); if (r) out.push(r); }
