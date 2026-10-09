@@ -22564,15 +22564,20 @@ function revPagosProveedor(ctx) {
     const ids = facturaIdsDe(m);
     if (aplicado < 0.005 && ids.length === 1) {
       const f = facturaPorId[ids[0]];
-      // La factura ya figura con lo pagado IGUAL a este pago (Pagada, o Parcial con ese pago), y no hay otro pago ligado ni aplicado:
-      // solo falta guardar la aplicación POR EL MONTO DEL PAGO, sin tocar la factura (si el pago es menor que la factura, el
-      // remanente queda como saldo pendiente de la factura).
+      // La factura ya figura pagada (Pagada, o Parcial) y lo que le falta por tener aplicado es EXACTAMENTE este pago: lo que la factura
+      // dice tener pagado, menos lo que ya tiene aplicado de otros pagos, es igual al monto de este pago. Y no hay otro pago ligado
+      // sin aplicar. Entonces solo falta guardar la aplicación POR EL MONTO DEL PAGO, sin tocar la factura (si el pago es menor que la
+      // factura, el remanente queda como saldo pendiente de la factura).
       const pagadoF = Number(f && f.importe_pagado) || 0;
-      const sinOtrosPagos1 = f && !pagosAplicados.some(pa => pa.factura_id === f.id) && !lista.some(o => o.m.id !== m.id && facturaIdsDe(o.m).includes(f.id));
+      const aplicadoEnF = f ? pagosAplicados.filter(pa => pa.factura_id === f.id).reduce((acc, pa) => acc + (Number(pa.monto) || 0), 0) : 0;
+      const otrosSinAplicar = f ? lista.filter(o => o.m.id !== m.id && facturaIdsDe(o.m).includes(f.id) && !((aplicadoPor[`${o.t}|${o.m.id}`] || 0) > 0.005)) : [];
       if (f && Number(f.importe) > 0 && (Number(f.tipo_cambio) || 1) === 1 && (f.estatus === 'Pagado' || f.estatus === 'Parcial')
-          && Math.abs(pagadoF - Number(m.cargos)) < 0.01 && pagadoF <= Number(f.importe) + 0.01 && sinOtrosPagos1) {
-        const parcial = Math.abs(Number(f.importe) - Number(m.cargos)) >= 0.01;
-        const it = { fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${nombre}: factura ${f.factura || 's/f'} de ${f.proveedor || 'proveedor sin nombre'} ${parcial ? `figura ${String(f.estatus).toLowerCase()} con pagado ${fmt(pagadoF)} (igual a este pago; queda pendiente ${fmt(Number(f.importe) - pagadoF)})` : 'ya pagada con "Pagado desde"'}; falta registrar la aplicación`, monto: revRedondeo(m.cargos), m, t, f };
+          && Math.abs((pagadoF - aplicadoEnF) - Number(m.cargos)) < 0.01 && pagadoF <= Number(f.importe) + 0.01 && !otrosSinAplicar.length) {
+        const pendienteF = revRedondeo(Number(f.importe) - pagadoF);
+        const completo = aplicadoEnF < 0.005 && Math.abs(Number(f.importe) - Number(m.cargos)) < 0.01;
+        const detalle = completo ? 'ya pagada con "Pagado desde"'
+          : `figura ${String(f.estatus).toLowerCase()} con pagado ${fmt(pagadoF)}${aplicadoEnF >= 0.005 ? `, de los cuales ${fmt(aplicadoEnF)} ya tienen su aplicación y este pago de ${fmt(m.cargos)} es el resto` : ' (igual a este pago)'}${pendienteF >= 0.005 ? `; queda pendiente ${fmt(pendienteF)}` : ''}`;
+        const it = { fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${nombre}: factura ${f.factura || 's/f'} de ${f.proveedor || 'proveedor sin nombre'} ${detalle}; falta registrar la aplicación`, monto: revRedondeo(m.cargos), m, t, f };
         items.push(it); convertibles.push(it); return;
       }
     }
