@@ -22926,13 +22926,13 @@ function revPagosProveedor(ctx) {
   pagosAplicados.forEach(p => { const k = `${p.origen_tabla}|${p.origen_id}`; aplicadoPor[k] = (aplicadoPor[k] || 0) + (Number(p.monto) || 0); });
   const creditos = proveedores.filter(f => Number(f.importe) < 0);
   const facturaPorId = Object.fromEntries(proveedores.map(f => [f.id, f]));
-  const items = []; const convertibles = []; const aplicables = []; const multiRegistrar = []; const multiAplicar = [];
+  const items = []; const convertibles = []; const aplicables = []; const multiRegistrar = []; const multiAplicar = []; const ocultos = [];
   lista.forEach(({ m, t }) => {
     const aplicado = revRedondeo(aplicadoPor[`${t}|${m.id}`] || 0);
     const falta = revRedondeo(Number(m.cargos) - aplicado);
     if (falta < 0.005) return;
-    const credito = creditos.some(c => (c.origen_tabla === t && c.origen_id === m.id) || c.factura === `Crédito a favor (pago del ${m.fecha})`);
-    if (credito) return; // el excedente ya tiene su crédito a favor
+    const credito = creditos.some(c => (c.origen_tabla === t && c.origen_id === m.id) || (!c.origen_id && c.factura === `Crédito a favor (pago del ${m.fecha})`));  // la leyenda con la fecha solo vale para créditos VIEJOS sin origen; un crédito con origen es de UN pago, no de todos los de ese día
+    if (credito) { const idsH = facturaIdsDe(m); if (aplicado < 0.005 && idsH.length && creditos.some(c => c.origen_tabla === t && c.origen_id === m.id)) ocultos.push({ m, t, ids: idsH }); return; } // el excedente ya tiene su crédito a favor
     const nombre = m.proveedor || m.descripcion || 'Pago a proveedor';
     // Método rápido de Proveedores: la factura se marcó "Pagado" con su "Pagado desde" y el sistema creó este
     // movimiento ligado a ella (proveedor_factura_ids) SIN guardar la aplicación. El Balance lo cuenta bien
@@ -23006,6 +23006,9 @@ function revPagosProveedor(ctx) {
   // Se unen los pagos sin aplicar que comparten alguna factura; cada grupo se resuelve SOLO si cuadra exacto (ver asignarPagosAFacturas).
   const poolItems = []; const poolGrupos = [];
   const candidatos = items.filter(x => x.poolCand);
+  // Un pago que SOBRÓ y creó su crédito a favor se descarta de la lista, pero sigue sin aplicación y comparte facturas con los demás: si no entra al
+  // grupo bloquea a todos. Se incorpora (sin mostrarlo si el grupo no se resuelve).
+  ocultos.forEach(o => candidatos.push({ oculto: true, fecha: o.m.fecha, texto: '', monto: Number(o.m.cargos), poolCand: o }));
   if (ctx.financiero && candidatos.length) {
     const padre = new Map(); const raiz = (a) => { while (padre.get(a) !== a) { padre.set(a, padre.get(padre.get(a))); a = padre.get(a); } return a; };
     const unir = (a, c) => { if (!padre.has(a)) padre.set(a, a); if (!padre.has(c)) padre.set(c, c); const ra = raiz(a), rc = raiz(c); if (ra !== rc) padre.set(ra, rc); };
@@ -23036,7 +23039,13 @@ function revPagosProveedor(ctx) {
       });
       if (necesidad.some(n => n.need < -0.005 || n.pagado > Number(n.f.importe) + 0.01)) return noResuelve('una factura tiene aplicado más de lo que figura pagado');
       const enGrupo = new Set(miembros.map(x => x.poolCand.m.id));
-      if (fs.some(f => lista.some(o => !enGrupo.has(o.m.id) && facturaIdsDe(o.m).includes(f.id) && !((aplicadoPor[`${o.t}|${o.m.id}`] || 0) > 0.005)))) return noResuelve('otro pago sin aplicar comparte una de sus facturas');
+      const bloqueador = lista.find(o => !enGrupo.has(o.m.id) && fs.some(f => facturaIdsDe(o.m).includes(f.id)) && !((aplicadoPor[`${o.t}|${o.m.id}`] || 0) > 0.005));
+      if (bloqueador) return noResuelve(`otro pago sin aplicar comparte una de sus facturas (${fechaCorta(bloqueador.m.fecha)} · ${bloqueador.m.proveedor || bloqueador.m.descripcion || 'pago'} · ${fmt(bloqueador.m.cargos)})`);
+      // CRÉDITOS NACIDOS de estos pagos (un pago que sobró): no son facturas del grupo; reciben el sobrante de SUS pagos. SOLO por origen (exacto): un crédito
+      // viejo sin origen no dice de cuál pago salió y repartir su sobrante sería una suposición que movería el Balance. Si ya tienen aplicaciones, no se tocan.
+      const idsFSet = new Set(fs.map(f => f.id)); const proveedoresG = new Set(realesG.map(f => f.proveedor));
+      const donantesDe = (c) => miembros.filter(x => c.origen_tabla === x.poolCand.t && c.origen_id === x.poolCand.m.id);
+      const nacidos = creditos.filter(c => !idsFSet.has(c.id) && proveedoresG.has(c.proveedor) && !pagosAplicados.some(pa => pa.factura_id === c.id) && donantesDe(c).length);
       const fondos = new Map(miembros.map(x => [x, Number(x.poolCand.m.cargos)]));
       creditosG.forEach(c => { const d = duenoCredito.get(c.id); fondos.set(d, (fondos.get(d) || 0) + Math.abs(Number(c.importe))); });
       const sumaPagos = revRedondeo([...fondos.values()].reduce((acc, v) => acc + v, 0));
@@ -23044,24 +23053,27 @@ function revPagosProveedor(ctx) {
       // El reparto de propinas entre empleados se redondea al centavo, así que la suma de los pagos puede diferir de lo pagado en las facturas por unos
       // centavos. Se tolera $0.01 por pago con tope de $0.10; más que eso se deja a revisión.
       const tolG = Math.min(0.10, 0.01 * Math.max(1, miembros.length));
-      const difG = revRedondeo(sumaPagos - sumaNeed);
-      if (Math.abs(difG) > tolG + 0.0001) return noResuelve(`los pagos${creditosG.length ? ' (con sus créditos a favor)' : ''} suman ${fmt(sumaPagos)} y lo que las facturas dicen tener pagado sin aplicar suma ${fmt(sumaNeed)}`);
+      const sumaNacidos = revRedondeo(nacidos.reduce((acc, c) => acc + Math.abs(Number(c.importe)), 0));
+      const difG = revRedondeo(sumaPagos - sumaNeed - sumaNacidos);
+      if (Math.abs(difG) > tolG + 0.0001) return noResuelve(`los pagos${creditosG.length ? ' (con sus créditos a favor)' : ''} suman ${fmt(sumaPagos)} y lo que las facturas dicen tener pagado sin aplicar${nacidos.length ? ' más los créditos por sobrante' : ''} suma ${fmt(sumaNeed + sumaNacidos)}`);
       const idsReales = new Set(realesG.map(f => f.id));
       const enlaces = miembros.flatMap(x => x.poolCand.ids.filter(fid => idsReales.has(fid)).map(fid => [kPago(x), fid]));
-      const r = asignarPagosAFacturas(miembros.map(x => ({ k: kPago(x), cents: Math.round(fondos.get(x) * 100) })), necesidad.filter(n => n.need > 0.004).map(n => ({ k: n.f.id, cents: Math.round(n.need * 100) })), enlaces, Math.round(tolG * 100));
+      const r = asignarPagosAFacturas(miembros.map(x => ({ k: kPago(x), cents: Math.round(fondos.get(x) * 100) })), [...necesidad.filter(n => n.need > 0.004).map(n => ({ k: n.f.id, cents: Math.round(n.need * 100) })), ...nacidos.map(c => ({ k: 'c|' + c.id, cents: Math.round(Math.abs(Number(c.importe)) * 100) }))], [...enlaces, ...nacidos.flatMap(c => donantesDe(c).map(x => [kPago(x), 'c|' + c.id]))], Math.round(tolG * 100));
       if (!r.ok) return noResuelve('las cantidades cuadran en total pero no hay un reparto que respete las facturas a las que cada pago está ligado');
       // Centavos de redondeo: si a un pago le SOBRA, queda como CRÉDITO A FAVOR (baja Proveedores); si a una factura le FALTA, queda como SALDO PENDIENTE
       // (se sigue debiendo). Igual que el flujo normal, pero sin esconder el centavo.
       const fondosCents = {}; miembros.forEach(x => { fondosCents[kPago(x)] = Math.round(fondos.get(x) * 100); });
       const needCents = {}; necesidad.forEach(n => { needCents[n.f.id] = Math.round(n.need * 100); });
-      const sobraTotal = Object.values(fondosCents).reduce((acc, v) => acc + v, 0) - r.asign.reduce((acc, a) => acc + a.cents, 0);
+      // lo que cada pago destinó a SU crédito por sobrante no es una aplicación a facturas: se aparta
+      const aCreditoCents = {}; r.asign = r.asign.filter(a => { if (String(a.f).startsWith('c|')) { aCreditoCents[a.p] = (aCreditoCents[a.p] || 0) + a.cents; return false; } return true; });
+      const sobraTotal = Object.values(fondosCents).reduce((acc, v) => acc + v, 0) - r.asign.reduce((acc, a) => acc + a.cents, 0) - Object.values(aCreditoCents).reduce((acc, v) => acc + v, 0);
       if (sobraTotal > 0 && new Set(realesG.map(f => f.proveedor)).size > 1) return noResuelve('sobran centavos y las facturas son de varios proveedores');
       creditosG.forEach(c => r.asign.push({ p: kPago(duenoCredito.get(c.id)), f: c.id, cents: Math.round(Math.abs(Number(c.importe)) * 100) }));
-      const grupo = { miembros, asign: r.asign, fs, dif: difG, fondosCents, needCents, realesIds: realesG.map(f => f.id), reales: realesG };
+      const grupo = { miembros, asign: r.asign, fs, dif: difG, aCreditoCents, fondosCents, needCents, realesIds: realesG.map(f => f.id), reales: realesG };
       poolGrupos.push(grupo);
       miembros.forEach(x => {
         x.texto = `${fechaCorta(x.poolCand.m.fecha)} · ${x.poolCand.m.proveedor || x.poolCand.m.descripcion || 'Pago a proveedor'}: pago de ${fmt(x.poolCand.m.cargos)} de un ${etiquetaG} de ${[...new Set(fs.map(f => f.proveedor || 'proveedor sin nombre'))].join(' / ')} cuyas cantidades cuadran${Math.abs(difG) >= 0.005 ? ` con una diferencia de ${fmt(Math.abs(difG))} por redondeo (${difG > 0 ? 'los pagos suman un poco más: lo que sobra queda como crédito a favor' : 'a las facturas les falta ese resto: queda como saldo pendiente'})` : ' exactamente'}; falta registrar su aplicación`;
-        x.poolOk = true; poolItems.push(x);
+        x.poolOk = true; poolItems.push(x); if (x.oculto) items.push(x);
       });
     });
   }
@@ -23107,7 +23119,7 @@ function revPagosProveedor(ctx) {
           // lo que SOBRA de este pago (centavos de redondeo) queda como crédito a favor, como lo hace el flujo normal
           const kP = `p|${x.poolCand.t}|${x.poolCand.m.id}`;
           const aplicadoReal = suyas.filter(a => g.realesIds.includes(a.f)).reduce((acc, a) => acc + a.cents, 0);
-          const sobra = (g.fondosCents[kP] || 0) - aplicadoReal;
+          const sobra = (g.fondosCents[kP] || 0) - aplicadoReal - ((g.aCreditoCents || {})[kP] || 0);
           if (sobra >= 1) {
             const { data: yaCredito } = await sb.from('fz_proveedores').select('id').eq('origen_tabla', x.poolCand.t).eq('origen_id', x.poolCand.m.id).lt('importe', 0).limit(1);
             const base = g.reales[0];
