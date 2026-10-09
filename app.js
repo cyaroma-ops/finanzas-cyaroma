@@ -543,6 +543,25 @@ async function bloqueadoPorCierre(businessId, fecha) {
   return cerrado;
 }
 
+// ¿El movimiento (fila de Bancos/Efectivo) cae en un periodo ya cerrado? Si sí, avisa y devuelve true.
+async function movimientoBloqueadoPorCierre(tabla, movId) {
+  const { data: fila } = await sb.from(tabla).select('business_id,fecha').eq('id', movId).maybeSingle();
+  return !!fila && await bloqueadoPorCierre(fila.business_id, fila.fecha);
+}
+// Igual, para una factura de proveedor (por su fecha de factura).
+async function facturaProveedorBloqueadaPorCierre(facturaId) {
+  const { data: fila } = await sb.from('fz_proveedores').select('business_id,fecha').eq('id', facturaId).maybeSingle();
+  return !!fila && await bloqueadoPorCierre(fila.business_id, fila.fecha);
+}
+// Para importaciones desde Excel: si alguna fecha del archivo cae en un periodo cerrado, no se importa nada.
+async function importacionBloqueadaPorCierre(businessId, fechas) {
+  const periodos = [...new Set((fechas || []).filter(Boolean).map(f => String(f).slice(0, 7)))];
+  const cerrados = [];
+  for (const per of periodos) if (await periodoEstaCerrado(businessId, per + '-01')) cerrados.push(per);
+  if (cerrados.length) toast(`El archivo trae registros en periodos ya cerrados (${cerrados.join(', ')}). No se importó nada: pide reabrir esos periodos o quita esas filas del archivo.`, 'error');
+  return cerrados.length > 0;
+}
+
 function biz() {
   return STATE.businesses.find(b => b.id === STATE.currentBusinessId) || null;
 }
@@ -12985,6 +13004,7 @@ function limpiarFormDesglose() {
 }
 
 async function guardarLineaDesglose(businessId, facturaId, subcuentas, mayores) {
+  if (await facturaProveedorBloqueadaPorCierre(facturaId)) return; // periodo cerrado: el desglose mueve el resultado
   const subId = document.getElementById('newDesgloseSubcuenta').value;
   const importe = leerMonto(document.getElementById('newDesgloseImporte').value);
   const iva = leerMonto(document.getElementById('newDesgloseIva').value);
@@ -13036,6 +13056,7 @@ async function renderDesgloseList(businessId, facturaId, subcuentas, mayores) {
   }));
   box.querySelectorAll('.desglose-del').forEach(btn => btn.addEventListener('click', async () => {
     const idx = Number(btn.dataset.idx);
+    if (await facturaProveedorBloqueadaPorCierre(facturaId)) return; // periodo cerrado
     const nuevas = lineas.filter((_,i)=>i!==idx);
     await sb.from('fz_proveedores').update({ desglose: nuevas }).eq('id', facturaId);
     if (STATE_desgloseEditandoIdx === idx) { STATE_desgloseEditandoIdx = null; limpiarFormDesglose(); }
@@ -13174,6 +13195,7 @@ function openImportExcelModal(tipo, businessId, onDone, extra) {
           };
         }).filter(f => f.proveedor && f.importe);
         if (!payload.length) { toast('No se encontraron filas válidas (revisa las columnas Proveedor e Importe).', 'error'); return; }
+        if (await importacionBloqueadaPorCierre(businessId, payload.map(x => x.fecha))) return; // periodo cerrado
         const { error } = await sb.from('fz_proveedores').insert(payload);
         if (error) { toast('Error al importar: ' + error.message, 'error'); return; }
         toast(`${payload.length} facturas importadas. Ya puedes desglosarlas por subcuenta.`);
@@ -13221,6 +13243,7 @@ function openImportExcelModal(tipo, businessId, onDone, extra) {
           }
         });
         if (!payload.length) { toast('No se encontraron filas válidas (revisa las columnas Depósitos/Cargos).', 'error'); return; }
+        if (await importacionBloqueadaPorCierre(businessId, [...payload, ...legsDestino.map(l => l.row)].map(x => x.fecha))) return; // periodo cerrado
         const { error } = await sb.from('fz_bancos_mov').insert(payload);
         if (error) { toast('Error al importar: ' + error.message, 'error'); return; }
         for (const leg of legsDestino) await sb.from(leg.tabla).insert(leg.row);
@@ -13270,6 +13293,7 @@ function openImportExcelModal(tipo, businessId, onDone, extra) {
           }
         });
         if (!payload.length) { toast('No se encontraron filas válidas (revisa las columnas Depósitos/Cargos).', 'error'); return; }
+        if (await importacionBloqueadaPorCierre(businessId, [...payload, ...legsDestino.map(l => l.row)].map(x => x.fecha))) return; // periodo cerrado
         const { error } = await sb.from('fz_efectivo_mov').insert(payload);
         if (error) { toast('Error al importar: ' + error.message, 'error'); return; }
         for (const leg of legsDestino) await sb.from(leg.tabla).insert(leg.row);
@@ -13320,6 +13344,7 @@ function openImportExcelModal(tipo, businessId, onDone, extra) {
           return base;
         });
         if (!payload.length) { toast('El archivo no tiene filas.', 'error'); return; }
+        if (await importacionBloqueadaPorCierre(businessId, payload.map(x => x.fecha))) return; // periodo cerrado
         const { data: nuevasVentas, error } = await sb.from('fz_ventas').insert(payload).select();
         if (error) { toast('Error al importar: ' + error.message, 'error'); return; }
         registrarAuditoria(businessId, 'crear', 'Ventas', `${payload.length} día(s) de ventas importados desde Excel`);
@@ -13355,6 +13380,7 @@ function openImportExcelModal(tipo, businessId, onDone, extra) {
           const key = fecha + '||' + concepto;
           (grupos[key] = grupos[key] || []).push(r);
         });
+        if (await importacionBloqueadaPorCierre(businessId, Object.keys(grupos).map(k => k.split('||')[0]))) return; // periodo cerrado
         const { data: existentes } = await sb.from('fz_polizas').select('numero').eq('business_id', businessId);
         let maxNum = (existentes || []).reduce((mx,p)=>Math.max(mx, p.numero||0), 0);
         let countPolizas = 0, countLineas = 0;
@@ -13978,6 +14004,7 @@ function openFacturasCobroModal(rowId, table, facturasClientesPend, onDone) {
         const idsSeleccionados = Array.from(box.querySelectorAll('.factura-check:checked')).map(c => c.value);
         const tcWrapVisible = document.getElementById('facturasPagoTcCampo').style.display !== 'none';
         const tipoCambioReal = tcWrapVisible ? (leerMonto(document.getElementById('facturasPagoTc').value) || 1) : 1;
+        if (row && await bloqueadoPorCierre(row.business_id, row.fecha)) return; // periodo cerrado
         const { idsAfectados } = await aplicarCobroFacturas(idsSeleccionados, montoMovimiento, row?.fecha || todayStr(), row.business_id, {
           origen_tabla: table, origen_id: rowId,
           tipo_cambio_real: tipoCambioReal,
@@ -14139,6 +14166,7 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
         const fechaPago = row?.fecha || todayStr();
         const proveedoresInvolucrados = [...new Set(idsSeleccionados.map(id => mapaFacturaPorId[id]?.proveedor).filter(Boolean))];
         const facturasDescr = idsSeleccionados.map(id => mapaFacturaPorId[id]?.factura || 's/f').join(', ');
+        if (row && await bloqueadoPorCierre(row.business_id, row.fecha)) return; // periodo cerrado
         const { idsAfectados, creadoCredito } = await aplicarPagoFacturas(idsSeleccionados, montoMovimiento, fechaPago, row.business_id, {
           pagado_desde: traspasoCtx?.origenCorto || null,
           pagado_desde_tipo: traspasoCtx?.origenTipo || null,
@@ -14838,6 +14866,7 @@ async function openTraspasoModal(businessId, onDone) {
     if (origen.startsWith('nuevo:') || destino.startsWith('nuevo:')) { toast('Termina de crear la cuenta/caja nueva antes de guardar.', 'error'); return; }
     if (origen === destino) { toast('Elige cuentas distintas.', 'error'); return; }
     if (!montoOrigen) { toast('Escribe un monto.', 'error'); return; }
+    if (await bloqueadoPorCierre(businessId, fecha)) return; // periodo cerrado
     const traspasoId = uid();
     const [oTipo, oId] = origen.split(':');
     const [dTipo, dId] = destino.split(':');
@@ -14913,6 +14942,7 @@ function facturaIdsDe(r) {
 // Devuelve true si se puede continuar con el cambio.
 async function prepararCambioTipoSalidaPago(tabla, movId, nuevoTipo) {
   const { data: fila } = await sb.from(tabla).select('business_id,fecha,tipo_salida,proveedor_factura_id,proveedor_factura_ids').eq('id', movId).single();
+  if (fila && await bloqueadoPorCierre(fila.business_id, fila.fecha)) return false; // periodo cerrado: no se cambia el tipo
   if (!fila || fila.tipo_salida !== 'proveedor' || nuevoTipo === 'proveedor') return true;
   const { data: apps } = await sb.from('fz_pagos_aplicados').select('id').eq('origen_tabla', tabla).eq('origen_id', movId).limit(1);
   const tieneApps = (apps || []).length > 0;
@@ -14931,6 +14961,7 @@ async function prepararCambioTipoSalidaPago(tabla, movId, nuevoTipo) {
 // cobro que la respaldara. Devuelve true si se puede continuar con el cambio.
 async function prepararCambioTipoEntradaCobro(tabla, movId, nuevoTipo) {
   const { data: fila } = await sb.from(tabla).select('business_id,fecha,tipo_entrada,cliente_factura_id,cliente_factura_ids').eq('id', movId).single();
+  if (fila && await bloqueadoPorCierre(fila.business_id, fila.fecha)) return false; // periodo cerrado: no se cambia el tipo
   if (!fila || fila.tipo_entrada !== 'cliente' || nuevoTipo === 'cliente') return true;
   const { data: apps } = await sb.from('fz_cobros_aplicados').select('id').eq('origen_tabla', tabla).eq('origen_id', movId).limit(1);
   const tieneApps = (apps || []).length > 0;
@@ -14974,6 +15005,7 @@ function wireSalidaCellHandlers(container, table, onChange, traspasoCtx, factura
     reemplazarCeldasDeFila(sel.dataset.id);
   }));
   container.querySelectorAll('.salida-detalle').forEach(sel => sel.addEventListener('change', async () => {
+    if (await movimientoBloqueadoPorCierre(table, sel.dataset.id)) { reemplazarCeldasDeFila(sel.dataset.id); return; } // periodo cerrado
     const field = sel.dataset.field;
     const { error } = await sb.from(table).update({ [field]: sel.value || null }).eq('id', sel.dataset.id);
     if (error) { toast('Error: ' + error.message, 'error'); return; }
@@ -14981,6 +15013,7 @@ function wireSalidaCellHandlers(container, table, onChange, traspasoCtx, factura
     reemplazarCeldasDeFila(sel.dataset.id);
   }));
   container.querySelectorAll('.salida-detalle-buscar').forEach(inp => inp.addEventListener('change', async () => {
+    if (await movimientoBloqueadoPorCierre(table, inp.dataset.id)) { reemplazarCeldasDeFila(inp.dataset.id); return; } // periodo cerrado
     const texto = inp.value.trim();
     if (!texto) {
       const { error } = await sb.from(table).update({ subcuenta_id: null }).eq('id', inp.dataset.id);
@@ -15003,6 +15036,7 @@ function wireSalidaCellHandlers(container, table, onChange, traspasoCtx, factura
     if (!sel.value) return;
     const { data: origenRow } = await sb.from(table).select('*').eq('id', sel.dataset.id).single();
     if (!origenRow) return;
+    if (await bloqueadoPorCierre(origenRow.business_id, origenRow.fecha)) { onChange(); return; } // periodo cerrado
     const monto = Number(origenRow.cargos) > 0 ? Number(origenRow.cargos) : Number(origenRow.depositos) || 0;
     if (!monto) { toast('Este movimiento no tiene monto en cargos o depósitos.', 'error'); return; }
     const esSalida = Number(origenRow.cargos) > 0;
@@ -15684,6 +15718,11 @@ async function renderProveedores() {
       let val = inp.value;
       if (field === 'importe') val = leerMonto(val);
       if ((field === 'fecha' || field === 'fecha_pago') && val === '') val = null;
+      if (field === 'importe' || field === 'fecha') {
+        // El importe y la fecha de la factura mueven el resultado del periodo: no se editan en un periodo cerrado (ni se mueven a uno).
+        const factura0 = all.find(x => x.id === inp.dataset.id);
+        if ((factura0 && await bloqueadoPorCierre(b.id, factura0.fecha)) || (field === 'fecha' && val && await bloqueadoPorCierre(b.id, val))) { renderProveedores(); return; }
+      }
       const payload = { [field]: val };
       if (field === 'proveedor_id') {
         const c = catalogo.find(x => x.id === val);
@@ -17493,6 +17532,8 @@ async function eliminarFacturaProveedorConCascada(facturaId, businessId) {
 }
 
 async function eliminarFacturaCliente(facturaId, businessId) {
+  const { data: fcli } = await sb.from('fz_facturas_clientes').select('fecha').eq('id', facturaId).maybeSingle();
+  if (fcli && await bloqueadoPorCierre(businessId, fcli.fecha)) return; // periodo cerrado
   const { data: cobros } = await sb.from('fz_cobros_aplicados').select('*').eq('factura_id', facturaId);
   for (const c of (cobros || [])) {
     if (c.origen_tabla !== 'manual' && c.origen_id) {
@@ -21542,6 +21583,7 @@ async function renderPLCuerpo() {
   }));
   el.querySelectorAll('.pl-sinclas-fila').forEach(tr => tr.addEventListener('click', () => { STATE_plSinClasAbierto = !STATE_plSinClasAbierto; renderPL(); }));
   document.getElementById('addGastoBtn').addEventListener('click', async () => {
+    if (await bloqueadoPorCierre(b.id, STATE.currentMonth + '-01')) return; // periodo cerrado
     await sb.from('fz_pl_gastos').insert({ business_id: b.id, mes: STATE.currentMonth, monto: 0 });
     renderPL();
   });
@@ -21549,12 +21591,16 @@ async function renderPLCuerpo() {
     inp.addEventListener('change', async () => {
       const field = inp.dataset.field;
       const val = field === 'monto' ? leerMonto(inp.value) : (inp.value || null);
+      const { data: g0 } = await sb.from('fz_pl_gastos').select('mes').eq('id', inp.dataset.id).maybeSingle();
+      if ((g0 && await bloqueadoPorCierre(b.id, g0.mes + '-01')) || (field === 'mes' && val && await bloqueadoPorCierre(b.id, val + '-01'))) { renderPL(); return; } // periodo cerrado
       await sb.from('fz_pl_gastos').update({ [field]: val }).eq('id', inp.dataset.id);
       renderPL();
     });
   });
   wireInputsMoneda(el);
   el.querySelectorAll('.gasto-del').forEach(btn => btn.addEventListener('click', async () => {
+    const { data: g0 } = await sb.from('fz_pl_gastos').select('mes').eq('id', btn.dataset.id).maybeSingle();
+    if (g0 && await bloqueadoPorCierre(b.id, g0.mes + '-01')) return; // periodo cerrado
     await sb.from('fz_pl_gastos').delete().eq('id', btn.dataset.id);
     renderPL();
   }));
@@ -22492,7 +22538,7 @@ function revPagosProveedor(ctx) {
   pagosAplicados.forEach(p => { const k = `${p.origen_tabla}|${p.origen_id}`; aplicadoPor[k] = (aplicadoPor[k] || 0) + (Number(p.monto) || 0); });
   const creditos = proveedores.filter(f => Number(f.importe) < 0);
   const facturaPorId = Object.fromEntries(proveedores.map(f => [f.id, f]));
-  const items = []; const convertibles = [];
+  const items = []; const convertibles = []; const aplicables = [];
   lista.forEach(({ m, t }) => {
     const aplicado = revRedondeo(aplicadoPor[`${t}|${m.id}`] || 0);
     const falta = revRedondeo(Number(m.cargos) - aplicado);
@@ -22513,14 +22559,30 @@ function revPagosProveedor(ctx) {
         items.push(it); convertibles.push(it); return;
       }
     }
-    items.push({ fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${nombre}: salió ${fmt(m.cargos)}, aplicado a facturas ${fmt(aplicado)}`, monto: falta });
+    // Pago ligado a UNA factura del mismo importe que sigue sin pagarse en Proveedores (pagado $0): ya está ligado, pero nunca se aplicó.
+    // El Balance lo cuenta bien; falta aplicarlo para que la factura pase a Pagada y quede su registro. Se aplica con el flujo normal.
+    if (aplicado < 0.005 && ids.length === 1) {
+      const f = facturaPorId[ids[0]];
+      if (f && Number(f.importe) > 0 && (Number(f.tipo_cambio) || 1) === 1
+          && Math.abs(Number(f.importe) - Number(m.cargos)) < 0.01 && Math.abs((Number(f.importe) - (Number(f.importe_pagado) || 0)) - Number(m.cargos)) < 0.01) {
+        const it = { fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${nombre}: pago de ${fmt(m.cargos)} ya ligado a la factura ${f.factura || 's/f'}, que sigue ${String(f.estatus || 'Pendiente').toLowerCase()} en Proveedores (pagado ${fmt(f.importe_pagado || 0)}); falta aplicarlo`, monto: revRedondeo(m.cargos), m, t, f };
+        items.push(it); aplicables.push(it); return;
+      }
+    }
+    // Resto: se dice POR QUÉ no se puede corregir solo.
+    let situacion = '';
+    if (!ids.length) situacion = ' · sin factura ligada: abre el pago y elige a qué factura corresponde';
+    else if (ids.length > 1) situacion = ` · ligado a ${ids.length} facturas: revisa su aplicación`;
+    else { const f = facturaPorId[ids[0]]; situacion = f ? ` · ligado a la factura ${f.factura || 's/f'} (${f.estatus || 'Pendiente'}, importe ${fmt(f.importe)}, pagado ${fmt(f.importe_pagado || 0)}): los importes no coinciden con el pago` : ' · ligado a una factura que ya no existe'; }
+    items.push({ fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${nombre}: salió ${fmt(m.cargos)}, aplicado a facturas ${fmt(aplicado)}${situacion}`, monto: falta });
   });
   items.sort((a, z) => a.fecha.localeCompare(z.fecha));
+  const total = convertibles.length + aplicables.length;
   const r = { id: 'pagos_proveedor', titulo: 'Pagos a proveedor sin aplicar o aplicados de menos',
-    ayuda: 'El Balance baja Proveedores por lo que salió del banco, pero en el módulo de Proveedores esas facturas pueden seguir como pendientes. Aplica el pago a su factura (se crea el crédito a favor si pagaste de más). Si la factura ya aparece Pagada por el método rápido de Proveedores, el Balance está bien y solo falta registrar la aplicación; NO guardes el movimiento en Bancos mientras tanto, porque crearía un crédito a favor falso.', items };
-  if (convertibles.length && ctx.financiero) r.accion = {
-    etiqueta: `Registrar la aplicación de ${convertibles.length} pago${convertibles.length === 1 ? '' : 's'}`,
-    confirmar: `Se guardará la aplicación de ${convertibles.length} pago(s) a la factura con la que ya están ligados y que ya figura Pagada. No cambia ningún saldo, estatus ni importe pagado; solo deja el vínculo que el modal de Bancos necesita. ¿Continuar?`,
+    ayuda: 'El Balance baja Proveedores por lo que salió del banco, pero en el módulo de Proveedores esas facturas pueden seguir como pendientes. Cada renglón dice en qué situación está: (1) factura ya pagada por el método rápido: solo falta registrar la aplicación; (2) pago ya ligado a una factura del mismo importe que sigue pendiente: se aplica y la factura pasa a Pagada; (3) sin factura ligada, o con importes distintos: abre el pago y elige o ajusta su factura (se crea el crédito a favor si pagaste de más). En el caso (1) NO guardes el movimiento en Bancos mientras tanto, porque crearía un crédito a favor falso.', items };
+  if (total && ctx.financiero) r.accion = {
+    etiqueta: `Aplicar ${total} pago${total === 1 ? '' : 's'} a su factura`,
+    confirmar: `Se registrará la aplicación de ${total} pago(s) a la factura con la que ya están ligados: ${convertibles.length} cuya factura ya figura Pagada (solo se guarda la aplicación; no cambia ningún saldo, estatus ni importe pagado) y ${aplicables.length} cuya factura sigue pendiente en Proveedores (la factura pasa a Pagada con ese pago). El Balance no cambia: ya cuenta esos pagos. ¿Continuar?`,
     ejecutar: async () => {
       const fechaCorte = await obtenerFechaCorteRealizacion(b.id);
       const cache = new Map();
@@ -22529,7 +22591,8 @@ function revPagosProveedor(ctx) {
         if (error) throw error;
         await sincronizarRealizacionFactura(x.f.id, 'proveedor', b.id, x.m.fecha, fechaCorte, cache);
       }
-      return `${convertibles.length} aplicación(es) registrada(s).`;
+      for (const x of aplicables) await aplicarPagoFacturas([x.f.id], Number(x.m.cargos), x.m.fecha, b.id, { origen_tabla: x.t, origen_id: x.m.id });
+      return `${total} aplicación(es) registrada(s) (${convertibles.length} del método rápido, ${aplicables.length} que estaban pendientes).`;
     },
   };
   return r;
