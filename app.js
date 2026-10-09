@@ -562,6 +562,19 @@ async function importacionBloqueadaPorCierre(businessId, fechas) {
   return cerrados.length > 0;
 }
 
+// Facturas de proveedor para las listas de pagos (modal de Bancos/Efectivo y listas de las tablas). Antes, si la consulta fallaba
+// (por ejemplo por una columna que la base no tiene), la lista quedaba VACÍA sin ningún aviso y no se podía elegir ninguna factura.
+// Ahora: si falla con la columna opcional "proveedor_id" (solo sirve para mostrar la razón social) se reintenta sin ella, y si aun así
+// falla se le avisa a la persona en vez de mostrar una lista vacía.
+async function consultarFacturasProveedor(businessId, columnas, ordenar) {
+  const sinOpcionales = columnas.split(',').filter(c => c !== 'proveedor_id').join(',');
+  const consulta = (cols) => ordenar(sb.from('fz_proveedores').select(cols).eq('business_id', businessId));
+  let r = await consulta(columnas);
+  if (r.error) r = await consulta(sinOpcionales);
+  if (r.error) { toast('No se pudieron cargar las facturas de proveedor: ' + (r.error.message || r.error), 'error'); return []; }
+  return r.data || [];
+}
+
 function biz() {
   return STATE.businesses.find(b => b.id === STATE.currentBusinessId) || null;
 }
@@ -14339,7 +14352,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   const [subcuentas, mayores, facturasPend, cuentaInfo, facturasClientesPend] = await Promise.all([
     loadSubcuentas(contexto.businessId),
     loadCuentasMayor(contexto.businessId),
-    sb.from('fz_proveedores').select('id,proveedor,proveedor_id,folio,fecha,factura,importe,importe_pagado,estatus,moneda,tipo_cambio,fecha_vencimiento').eq('business_id', contexto.businessId).order('fecha', { ascending: false }).then(r => r.data || []),
+    consultarFacturasProveedor(contexto.businessId, 'id,proveedor,proveedor_id,fecha,factura,importe,importe_pagado,estatus,moneda,tipo_cambio,fecha_vencimiento', q => q.order('fecha', { ascending: false })),
     contexto.tipo === 'efectivo'
       ? sb.from('fz_efectivo_monedas').select('nombre').eq('id', contexto.refId).single().then(r => r.data)
       : sb.from('fz_bancos_cuentas').select('nombre').eq('id', contexto.refId).single().then(r => r.data),
@@ -15224,7 +15237,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
     getMonedaLedgerRows(businessId, moneda, conceptosEfectivo, STATE.currentMonth),
     loadSubcuentas(businessId),
     loadCuentasMayor(businessId),
-    sb.from('fz_proveedores').select('id,proveedor,proveedor_id,folio,factura,importe,importe_pagado,estatus,fecha').eq('business_id', businessId).order('proveedor').order('fecha').then(r => r.data || []),
+    consultarFacturasProveedor(businessId, 'id,proveedor,proveedor_id,factura,importe,importe_pagado,estatus,fecha', q => q.order('proveedor').order('fecha')),
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
     loadFacturasClientesPendConNombre(businessId),
@@ -15439,7 +15452,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     getBancoLedgerRows(businessId, cuentaArr, conceptosTarjetas, STATE.currentMonth),
     loadSubcuentas(businessId),
     loadCuentasMayor(businessId),
-    sb.from('fz_proveedores').select('id,proveedor,proveedor_id,folio,factura,importe,importe_pagado,estatus,fecha').eq('business_id', businessId).order('proveedor').order('fecha').then(r => r.data || []),
+    consultarFacturasProveedor(businessId, 'id,proveedor,proveedor_id,factura,importe,importe_pagado,estatus,fecha', q => q.order('proveedor').order('fecha')),
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
     loadFacturasClientesPendConNombre(businessId),
