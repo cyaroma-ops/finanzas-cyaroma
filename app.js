@@ -11801,7 +11801,9 @@ async function renderBalanzaCuerpo() {
     let nombreMayor = nombreCuenta;
     if (clave.startsWith('sub:')) nombreMayor = mayorDeSub(clave.slice(4))?.nombre || nombreCuenta;
     const n = (nombreMayor || '').toLowerCase();
-    if (n.includes('anterior')) return 'resultados_anteriores';
+    // "Resultado de Ejercicios" (plural) es la cuenta que crea el propio cierre contable anual para guardar el resultado de cada
+    // año cerrado: son resultados de ejercicios anteriores, no una cuenta manual del año en curso.
+    if (n.includes('anterior') || n.trim() === 'resultado de ejercicios') return 'resultados_anteriores';
     if (n.includes('resultado') && n.includes('ejercicio')) return 'resultado_manual';
     return 'capital';
   };
