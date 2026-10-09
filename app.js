@@ -163,6 +163,25 @@ function prefijoMoneda(moneda) {
 // Devuelve { montoCuenta, tcHistorico, equivalenteMxn } o null si el caso no está soportado
 // (cuenta en una divisa DISTINTA a la del documento — no hay TC capturado para ese cruce; nunca
 // se inventa uno).
+// Código de moneda de una CAJA DE EFECTIVO. La tabla no tiene columna de moneda: se tomaba el NOMBRE de la caja tal cual como si fuera el
+// código, y una caja llamada "Efectivo MXN" no se reconocía como pesos: pagar una factura desde ella decía "cuenta en una divisa distinta"
+// y no guardaba nada. Ahora: un código exacto ("MXN") se respeta; si el nombre LO CONTIENE ("Efectivo MXN", "Caja USD") se toma ese código;
+// "pesos"/"dólares"/"euros" se traducen; si no dice nada y su tipo de cambio de reporte es 1, es pesos; y solo si no hay forma de saberlo
+// se usa el nombre como antes (no se inventa una moneda).
+function codigoMonedaDeCaja(nombre, tcReporte) {
+  const t = String(nombre || '').trim();
+  if (!t) return 'MXN';
+  if (/^[A-Za-z]{3}$/.test(t)) return t.toUpperCase();
+  const u = t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+  const cod = u.match(/\b(MXN|USD|EUR|CAD|GBP|JPY|CNY|CHF|BRL|COP|ARS|CLP|PEN)\b/);
+  if (cod) return cod[1];
+  if (/\bPESOS?\b/.test(u)) return 'MXN';
+  if (/\bDOLAR(ES)?\b/.test(u)) return 'USD';
+  if (/\bEUROS?\b/.test(u)) return 'EUR';
+  if (Number(tcReporte) === 1) return 'MXN';
+  return t;
+}
+
 function resolverMovimientoMultimoneda(monedaCuenta, monedaDocumento, montoDocumento, tcHistoricoDocumento, tcLiquidacion) {
   const monedaCta = monedaCuenta || 'MXN';
   const monedaDoc = monedaDocumento || 'MXN';
@@ -14730,9 +14749,9 @@ async function openMovimientoModal(contexto, movimientoExistente) {
       const tcWrapVisibleMov = (tipoElegido === 'proveedor' ? document.getElementById('movFacturasTcCampo') : document.getElementById('movFacturasClienteTcCampo')).style.display !== 'none';
       const tcLiquidacion = tcWrapVisibleMov ? (leerMonto(tcLiquidacionInput.value) || tcHistoricoDocumento) : tcHistoricoDocumento;
       const { data: cuentaRowMov } = contexto.tipo === 'efectivo'
-        ? await sb.from('fz_efectivo_monedas').select('nombre').eq('id', contexto.refId).maybeSingle()
+        ? await sb.from('fz_efectivo_monedas').select('nombre,tc_reporte').eq('id', contexto.refId).maybeSingle()
         : await sb.from('fz_bancos_cuentas').select('moneda').eq('id', contexto.refId).maybeSingle();
-      const monedaCuenta = contexto.tipo === 'efectivo' ? (cuentaRowMov?.nombre || 'MXN') : (cuentaRowMov?.moneda || 'MXN');
+      const monedaCuenta = contexto.tipo === 'efectivo' ? codigoMonedaDeCaja(cuentaRowMov?.nombre, cuentaRowMov?.tc_reporte) : (cuentaRowMov?.moneda || 'MXN');
       const montoDocumentoTotal = tipoElegido === 'proveedor' ? cargos : depositos;
       const resuelto = resolverMovimientoMultimoneda(monedaCuenta, monedaDocumento, montoDocumentoTotal, tcHistoricoDocumento, tcLiquidacion);
       if (!resuelto) { toast(`Esta cuenta está en una divisa distinta a la del documento (${monedaDocumento}) — este cruce todavía no está soportado.`, 'error'); return; }
@@ -17002,8 +17021,8 @@ document.getElementById('aplicarElegirFacturaCobro').addEventListener('click', a
     // Moneda real de la cuenta destino — nunca se asume MXN, se consulta.
     const { data: cuentaRow } = tipo === 'banco'
       ? await sb.from('fz_bancos_cuentas').select('moneda').eq('id', refId).maybeSingle()
-      : await sb.from('fz_efectivo_monedas').select('nombre').eq('id', refId).maybeSingle();
-    const monedaCuenta = tipo === 'banco' ? (cuentaRow?.moneda || 'MXN') : (cuentaRow?.nombre || 'MXN');
+      : await sb.from('fz_efectivo_monedas').select('nombre,tc_reporte').eq('id', refId).maybeSingle();
+    const monedaCuenta = tipo === 'banco' ? (cuentaRow?.moneda || 'MXN') : codigoMonedaDeCaja(cuentaRow?.nombre, cuentaRow?.tc_reporte);
     const resuelto = resolverMovimientoMultimoneda(monedaCuenta, monedaDocumento, monto, tcHistoricoDocumento, tipoCambioEfc);
     if (!resuelto) { toast(`La cuenta destino está en una divisa distinta a la del documento (${monedaDocumento}) — este cruce todavía no está soportado. Elige una cuenta en ${monedaDocumento} o en MXN.`, 'error'); return; }
     const nombreTerceroCobro = checksMarcados[0]?.dataset.tercero || '';
@@ -17234,8 +17253,8 @@ document.getElementById('aplicarElegirFacturaPago').addEventListener('click', as
     const tabla = tipo === 'banco' ? 'fz_bancos_mov' : 'fz_efectivo_mov';
     const { data: cuentaRow } = tipo === 'banco'
       ? await sb.from('fz_bancos_cuentas').select('moneda,nombre').eq('id', refId).maybeSingle()
-      : await sb.from('fz_efectivo_monedas').select('nombre').eq('id', refId).maybeSingle();
-    const monedaCuenta = tipo === 'banco' ? (cuentaRow?.moneda || 'MXN') : (cuentaRow?.nombre || 'MXN');
+      : await sb.from('fz_efectivo_monedas').select('nombre,tc_reporte').eq('id', refId).maybeSingle();
+    const monedaCuenta = tipo === 'banco' ? (cuentaRow?.moneda || 'MXN') : codigoMonedaDeCaja(cuentaRow?.nombre, cuentaRow?.tc_reporte);
     bancoMetodoDescr = tipo === 'banco' ? (cuentaRow?.nombre || 'Banco') : `Efectivo (${cuentaRow?.nombre || ''})`;
     const resuelto = resolverMovimientoMultimoneda(monedaCuenta, monedaDocumento, monto, tcHistoricoDocumento, tipoCambioEfp);
     if (!resuelto) { toast(`La cuenta origen está en una divisa distinta a la del documento (${monedaDocumento}) — este cruce todavía no está soportado. Elige una cuenta en ${monedaDocumento} o en MXN.`, 'error'); return; }
