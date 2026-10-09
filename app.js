@@ -22538,7 +22538,7 @@ function revPagosProveedor(ctx) {
   pagosAplicados.forEach(p => { const k = `${p.origen_tabla}|${p.origen_id}`; aplicadoPor[k] = (aplicadoPor[k] || 0) + (Number(p.monto) || 0); });
   const creditos = proveedores.filter(f => Number(f.importe) < 0);
   const facturaPorId = Object.fromEntries(proveedores.map(f => [f.id, f]));
-  const items = []; const convertibles = []; const aplicables = [];
+  const items = []; const convertibles = []; const aplicables = []; const multiRegistrar = []; const multiAplicar = [];
   lista.forEach(({ m, t }) => {
     const aplicado = revRedondeo(aplicadoPor[`${t}|${m.id}`] || 0);
     const falta = revRedondeo(Number(m.cargos) - aplicado);
@@ -22569,20 +22569,47 @@ function revPagosProveedor(ctx) {
         items.push(it); aplicables.push(it); return;
       }
     }
+    // Pago ligado a VARIAS facturas (se eligieron juntas en Bancos) sin ninguna aplicación registrada. Solo se puede corregir sin
+    // adivinar nada cuando las facturas SUMAN EXACTAMENTE el pago, todas son en pesos, y NINGUNA tiene otro pago aplicado ni está
+    // ligada a otro movimiento: entonces a cada factura le toca su propio importe.
+    let detalleMulti = '';
+    if (aplicado < 0.005 && ids.length > 1) {
+      const fs = ids.map(id => facturaPorId[id]);
+      if (fs.every(Boolean)) {
+        const nombresFact = fs.map(x => x.factura || 's/f').join(', ');
+        const proveedoresFact = [...new Set(fs.map(x => x.proveedor || 'proveedor sin nombre'))].join(' / ');
+        const suma = revRedondeo(fs.reduce((acc, x) => acc + Number(x.importe), 0));
+        const enPesos = fs.every(x => Number(x.importe) > 0 && (Number(x.tipo_cambio) || 1) === 1);
+        const sinOtrosPagos = fs.every(x => !pagosAplicados.some(pa => pa.factura_id === x.id) && !lista.some(o => o.m.id !== m.id && facturaIdsDe(o.m).includes(x.id)));
+        if (Math.abs(suma - Number(m.cargos)) < 0.01 && enPesos && sinOtrosPagos) {
+          const todasPagadas = fs.every(x => x.estatus === 'Pagado' && Math.abs((Number(x.importe_pagado) || 0) - Number(x.importe)) < 0.01);
+          const todasPendientes = fs.every(x => (Number(x.importe_pagado) || 0) < 0.005);
+          if (todasPagadas) {
+            const it = { fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${nombre}: pago de ${fmt(m.cargos)} ligado a ${fs.length} facturas (${nombresFact}) de ${proveedoresFact} que suman exactamente el pago y ya figuran Pagadas; falta registrar la aplicación`, monto: revRedondeo(m.cargos), m, t, fs };
+            items.push(it); multiRegistrar.push(it); return;
+          }
+          if (todasPendientes) {
+            const it = { fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${nombre}: pago de ${fmt(m.cargos)} ligado a ${fs.length} facturas (${nombresFact}) de ${proveedoresFact} que suman exactamente el pago y siguen pendientes en Proveedores; falta aplicarlo`, monto: revRedondeo(m.cargos), m, t, fs };
+            items.push(it); multiAplicar.push(it); return;
+          }
+        }
+        detalleMulti = ` · ligado a ${fs.length} facturas (${nombresFact}) de ${proveedoresFact} que suman ${fmt(suma)}${Math.abs(suma - Number(m.cargos)) < 0.01 ? '' : ` y el pago es de ${fmt(m.cargos)}`}${sinOtrosPagos ? '' : '; alguna ya tiene otro pago'}${enPesos ? '' : '; hay moneda extranjera'}: revisa su aplicación`;
+      }
+    }
     // Resto: se dice POR QUÉ no se puede corregir solo.
     let situacion = '';
     if (!ids.length) situacion = ' · sin factura ligada: abre el pago y elige a qué factura corresponde';
-    else if (ids.length > 1) situacion = ` · ligado a ${ids.length} facturas: revisa su aplicación`;
+    else if (ids.length > 1) situacion = detalleMulti || ` · ligado a ${ids.length} facturas: revisa su aplicación`;
     else { const f = facturaPorId[ids[0]]; situacion = f ? ` · ligado a la factura ${f.factura || 's/f'} (${f.estatus || 'Pendiente'}, importe ${fmt(f.importe)}, pagado ${fmt(f.importe_pagado || 0)}): los importes no coinciden con el pago` : ' · ligado a una factura que ya no existe'; }
     items.push({ fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${nombre}: salió ${fmt(m.cargos)}, aplicado a facturas ${fmt(aplicado)}${situacion}`, monto: falta });
   });
   items.sort((a, z) => a.fecha.localeCompare(z.fecha));
-  const total = convertibles.length + aplicables.length;
+  const total = convertibles.length + aplicables.length + multiRegistrar.length + multiAplicar.length;
   const r = { id: 'pagos_proveedor', titulo: 'Pagos a proveedor sin aplicar o aplicados de menos',
-    ayuda: 'Antes de presionar el botón, confirma en cada renglón que el proveedor de la factura corresponde al pago: el sistema aplica el pago a la factura con la que YA está ligado (nunca une por coincidencia de importe), así que una liga equivocada se aplicaría tal cual. El Balance baja Proveedores por lo que salió del banco, pero en el módulo de Proveedores esas facturas pueden seguir como pendientes. Cada renglón dice en qué situación está: (1) factura ya pagada por el método rápido: solo falta registrar la aplicación; (2) pago ya ligado a una factura del mismo importe que sigue pendiente: se aplica y la factura pasa a Pagada; (3) sin factura ligada, o con importes distintos: abre el pago y elige o ajusta su factura (se crea el crédito a favor si pagaste de más). En el caso (1) NO guardes el movimiento en Bancos mientras tanto, porque crearía un crédito a favor falso.', items };
+    ayuda: 'Antes de presionar el botón, confirma en cada renglón que el proveedor de la factura corresponde al pago: el sistema aplica el pago a la factura con la que YA está ligado (nunca une por coincidencia de importe), así que una liga equivocada se aplicaría tal cual. El Balance baja Proveedores por lo que salió del banco, pero en el módulo de Proveedores esas facturas pueden seguir como pendientes. Cada renglón dice en qué situación está: (1) factura ya pagada por el método rápido: solo falta registrar la aplicación; (2) pago ya ligado a una factura del mismo importe que sigue pendiente: se aplica y la factura pasa a Pagada; (2b) pago ligado a varias facturas que suman exactamente el pago: se registra o se aplica a cada una por su propio importe; (3) sin factura ligada, o con importes distintos: abre el pago y elige o ajusta su factura (se crea el crédito a favor si pagaste de más). En el caso (1) NO guardes el movimiento en Bancos mientras tanto, porque crearía un crédito a favor falso.', items };
   if (total && ctx.financiero) r.accion = {
     etiqueta: `Aplicar ${total} pago${total === 1 ? '' : 's'} a su factura`,
-    confirmar: `Se registrará la aplicación de ${total} pago(s) a la factura con la que ya están ligados: ${convertibles.length} cuya factura ya figura Pagada (solo se guarda la aplicación; no cambia ningún saldo, estatus ni importe pagado) y ${aplicables.length} cuya factura sigue pendiente en Proveedores (la factura pasa a Pagada con ese pago). El Balance no cambia: ya cuenta esos pagos. ¿Continuar?`,
+    confirmar: `Se registrará la aplicación de ${total} pago(s) a las facturas con las que ya están ligados: ${convertibles.length + multiRegistrar.length} cuyas facturas ya figuran Pagadas (solo se guarda la aplicación; no cambia ningún saldo, estatus ni importe pagado) y ${aplicables.length + multiAplicar.length} cuyas facturas siguen pendientes en Proveedores (pasan a Pagadas con ese pago; en los pagos de varias facturas, cada una por su propio importe). El Balance no cambia: ya cuenta esos pagos. ¿Continuar?`,
     ejecutar: async () => {
       const fechaCorte = await obtenerFechaCorteRealizacion(b.id);
       const cache = new Map();
@@ -22592,7 +22619,17 @@ function revPagosProveedor(ctx) {
         await sincronizarRealizacionFactura(x.f.id, 'proveedor', b.id, x.m.fecha, fechaCorte, cache);
       }
       for (const x of aplicables) await aplicarPagoFacturas([x.f.id], Number(x.m.cargos), x.m.fecha, b.id, { origen_tabla: x.t, origen_id: x.m.id });
-      return `${total} aplicación(es) registrada(s) (${convertibles.length} del método rápido, ${aplicables.length} que estaban pendientes).`;
+      // pagos de varias facturas ya pagadas: una aplicación por factura, por su propio importe (suman exactamente el pago)
+      for (const x of multiRegistrar) {
+        for (const fa of x.fs) {
+          const { error } = await sb.from('fz_pagos_aplicados').insert({ business_id: b.id, factura_id: fa.id, monto: Number(fa.importe), origen_tabla: x.t, origen_id: x.m.id, fecha: x.m.fecha, tipo_cambio: null });
+          if (error) throw error;
+          await sincronizarRealizacionFactura(fa.id, 'proveedor', b.id, x.m.fecha, fechaCorte, cache);
+        }
+      }
+      // pagos de varias facturas pendientes: el flujo normal las paga completas (suman exactamente el pago)
+      for (const x of multiAplicar) await aplicarPagoFacturas(x.fs.map(fa => fa.id), Number(x.m.cargos), x.m.fecha, b.id, { origen_tabla: x.t, origen_id: x.m.id });
+      return `${total} pago(s) aplicado(s) (${convertibles.length + multiRegistrar.length} solo registrados, ${aplicables.length + multiAplicar.length} que estaban pendientes).`;
     },
   };
   return r;
