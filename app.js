@@ -22538,6 +22538,103 @@ function revDepositosVentas(ctx) {
   return r;
 }
 
+// ---------- LIGAR UN PAGO A UNA FACTURA (desde la Revisión) ----------
+// El modal de edición de un pago solo ofrece facturas PENDIENTES (y las ya ligadas a ese pago): una factura que figura "Pagada"
+// no aparece, aunque sea la que corresponde, y no había otra pantalla para ligarla. Aquí se elige entre facturas de CUALQUIER estatus.
+// Nunca se liga por coincidencia de importe: la liga la elige la persona. Según la factura:
+//   · con saldo → se aplica el pago con el flujo normal (el mismo del modal; si sobra, se crea el crédito a favor);
+//   · ya figura pagada (y le falta aplicación por ese monto) → solo se registra la aplicación; la factura no se toca.
+function tokensDeNombre(txt) { return String(txt || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').split(/[^a-z0-9]+/).filter(w => w.length > 2); }
+
+async function candidatosParaPago(b, m, t) {
+  const [facturas, apps, bm, em] = await Promise.all([
+    sb.from('fz_proveedores').select('id,proveedor,factura,fecha,importe,importe_pagado,estatus,tipo_cambio').eq('business_id', b.id).order('fecha', { ascending: false }).then(r => r.data || []),
+    sb.from('fz_pagos_aplicados').select('factura_id,monto').eq('business_id', b.id).then(r => r.data || []),
+    sb.from('fz_bancos_mov').select('id,proveedor_factura_id,proveedor_factura_ids').eq('business_id', b.id).eq('tipo_salida', 'proveedor').then(r => r.data || []),
+    sb.from('fz_efectivo_mov').select('id,proveedor_factura_id,proveedor_factura_ids').eq('business_id', b.id).eq('tipo_salida', 'proveedor').then(r => r.data || []),
+  ]);
+  const aplicadoPorF = {}; apps.forEach(a => { aplicadoPorF[a.factura_id] = (aplicadoPorF[a.factura_id] || 0) + (Number(a.monto) || 0); });
+  const ligadaPorOtro = new Set(); [...bm, ...em].filter(x => x.id !== m.id).forEach(x => facturaIdsDe(x).forEach(id => ligadaPorOtro.add(id)));
+  const C = Number(m.cargos) || 0; const nombre = new Set(tokensDeNombre(m.proveedor || m.descripcion));
+  return facturas.filter(f => Number(f.importe) > 0 && (Number(f.tipo_cambio) || 1) === 1).map(f => {
+    const pagado = Number(f.importe_pagado) || 0, aplicado = aplicadoPorF[f.id] || 0;
+    const saldo = revRedondeo(Number(f.importe) - pagado), sinAplicar = revRedondeo(pagado - aplicado);
+    let modo = null, nota = '';
+    if (saldo >= C - 0.01) { modo = 'aplicar'; nota = saldo > C + 0.01 ? `quedará pendiente ${fmt(saldo - C)}` : 'queda pagada'; }
+    else if (saldo >= 0.01 && C - saldo <= 1.00) { modo = 'aplicar'; nota = `sobrarán ${fmt(C - saldo)}: se crea un crédito a favor`; }
+    else if (saldo < 0.01 && sinAplicar >= C - 0.01 && !ligadaPorOtro.has(f.id)) { modo = 'registrar'; nota = 'figura pagada: solo se registra la aplicación (la factura no se toca)'; }
+    else if (saldo < 0.01 && ligadaPorOtro.has(f.id)) nota = 'ya tiene otro pago ligado';
+    else nota = saldo >= 0.01 ? `su saldo es ${fmt(saldo)}, muy por debajo del pago` : 'ya tiene aplicado todo lo que figura pagado';
+    return { f, pagado, aplicado, saldo, modo, nota, mismoImporte: Math.abs(Number(f.importe) - C) < 0.01, comunes: tokensDeNombre(f.proveedor).filter(w => nombre.has(w)).length };
+  }).sort((a, z) => (!!z.modo - !!a.modo) || (z.mismoImporte - a.mismoImporte) || (z.comunes - a.comunes) || String(z.f.fecha).localeCompare(String(a.f.fecha)));
+}
+
+async function ejecutarLigaPagoFactura(b, m, t, cand) {
+  if (await bloqueadoPorCierre(b.id, m.fecha)) return false; // periodo cerrado
+  // Se vuelve a comprobar en la base: el pago sigue sin factura ligada y sin aplicación
+  const { data: fresco } = await sb.from(t).select('id,cargos,fecha,proveedor_factura_id,proveedor_factura_ids').eq('id', m.id).maybeSingle();
+  const { data: apl } = await sb.from('fz_pagos_aplicados').select('id').eq('origen_tabla', t).eq('origen_id', m.id).limit(1);
+  if (!fresco || facturaIdsDe(fresco).length || (apl || []).length) { toast('Este pago ya cambió (ya tiene factura o aplicación). Vuelve a revisar.', 'error'); return false; }
+  const f = cand.f;
+  if (cand.modo === 'aplicar') {
+    const r = await aplicarPagoFacturas([f.id], Number(fresco.cargos), fresco.fecha, b.id, { origen_tabla: t, origen_id: m.id });
+    if (!r.idsAfectados.length) { toast('La factura no pudo recibir el pago.', 'error'); return false; }
+    await sb.from(t).update({ proveedor_factura_ids: r.idsAfectados, proveedor_factura_id: r.idsAfectados[0] || null }).eq('id', m.id);
+  } else if (cand.modo === 'registrar') {
+    const { error } = await sb.from('fz_pagos_aplicados').insert({ business_id: b.id, factura_id: f.id, monto: Number(fresco.cargos), origen_tabla: t, origen_id: m.id, fecha: fresco.fecha, tipo_cambio: null });
+    if (error) throw error;
+    await sb.from(t).update({ proveedor_factura_ids: [f.id], proveedor_factura_id: f.id }).eq('id', m.id);
+    await sincronizarRealizacionFactura(f.id, 'proveedor', b.id, fresco.fecha, await obtenerFechaCorteRealizacion(b.id), new Map());
+  } else return false;
+  registrarAuditoria(b.id, 'editar', 'Proveedores', `Pago de ${fmt(fresco.cargos)} del ${fresco.fecha} ligado a la factura ${f.factura || 's/f'} de ${f.proveedor || 's/proveedor'} desde la Revisión de consistencia`);
+  return true;
+}
+
+async function abrirLigarPagoAFactura(b, item, alTerminar) {
+  const m = item.m, t = item.t;
+  let cand;
+  try { cand = await candidatosParaPago(b, m, t); } catch (err) { toast('No se pudieron cargar las facturas: ' + (err.message || err), 'error'); return; }
+  let modal = document.getElementById('modalLigarPagoFactura');
+  if (!modal) { modal = document.createElement('div'); modal.className = 'modal-bg'; modal.id = 'modalLigarPagoFactura'; document.body.appendChild(modal); }
+  modal.innerHTML = `<div class="modal" style="max-width:860px;width:96%;max-height:90vh;overflow:auto;">
+    <h3>Ligar pago a una factura</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:10px;">${revEsc(fechaCorta(m.fecha))} · ${revEsc(m.proveedor || m.descripcion || 'Pago a proveedor')} · <strong>${fmt(m.cargos)}</strong><br>Elige la factura a la que corresponde este pago. Se muestran facturas de cualquier estatus, las más parecidas primero. El sistema nunca une por coincidencia de importe: la liga la haces tú aquí.</p>
+    <div class="field"><input type="text" id="ligarBuscar" placeholder="Buscar por proveedor, número de factura o importe…"></div>
+    <div id="ligarLista" style="max-height:44vh;overflow:auto;border:1px solid var(--line);border-radius:8px;"></div>
+    <div id="ligarResumen" style="margin:10px 0;font-size:12.5px;min-height:18px;color:var(--muted);">Elige una factura de la lista.</div>
+    <div class="modal-actions"><button class="btn btn-ghost" id="ligarCancelar">Cancelar</button><button class="btn btn-gold" id="ligarConfirmar" disabled>Ligar y aplicar</button></div>
+  </div>`;
+  const pintarLista = () => {
+    const q = document.getElementById('ligarBuscar').value.trim().toLowerCase();
+    const vis = cand.filter(x => !q || `${x.f.proveedor || ''} ${x.f.factura || ''} ${x.f.importe}`.toLowerCase().includes(q)).slice(0, 40);
+    document.getElementById('ligarLista').innerHTML = vis.length
+      ? `<table class="tabla-operativa" style="width:100%;"><thead><tr><th></th><th>Fecha</th><th>Proveedor</th><th>Factura</th><th class="num">Importe</th><th class="num">Pagado</th><th>Estatus</th><th>Qué pasaría</th></tr></thead><tbody>${vis.map(x => `
+          <tr style="${x.modo ? '' : 'opacity:.55;'}"><td><input type="radio" name="ligarFactura" value="${revEsc(x.f.id)}" ${x.modo ? '' : 'disabled'}></td>
+          <td>${fechaCorta(x.f.fecha)}</td><td>${revEsc(x.f.proveedor || '')}</td><td>${revEsc(x.f.factura || 's/f')}${x.mismoImporte ? ' <span style="color:var(--gold);">· mismo importe</span>' : ''}</td>
+          <td class="num">${fmt(x.f.importe)}</td><td class="num">${fmt(x.pagado)}</td><td>${revEsc(x.f.estatus || '')}</td><td style="font-size:12px;">${revEsc(x.nota)}</td></tr>`).join('')}</tbody></table>`
+      : `<div class="empty" style="padding:14px;">Ninguna factura coincide con la búsqueda.</div>`;
+    document.querySelectorAll('input[name="ligarFactura"]').forEach(r => r.addEventListener('change', () => {
+      const x = cand.find(c => c.f.id === r.value);
+      document.getElementById('ligarResumen').innerHTML = `Se ligará el pago de <strong>${fmt(m.cargos)}</strong> a la factura <strong>${revEsc(x.f.factura || 's/f')}</strong> de ${revEsc(x.f.proveedor || '')}: ${revEsc(x.nota)}.`;
+      document.getElementById('ligarConfirmar').disabled = false;
+    }));
+    document.getElementById('ligarConfirmar').disabled = true; document.getElementById('ligarResumen').textContent = 'Elige una factura de la lista.';
+  };
+  const cerrar = () => modal.classList.remove('show');
+  document.getElementById('ligarBuscar').addEventListener('input', pintarLista);
+  document.getElementById('ligarCancelar').addEventListener('click', cerrar);
+  document.getElementById('ligarConfirmar').addEventListener('click', async (ev) => {
+    const sel = document.querySelector('input[name="ligarFactura"]:checked'); if (!sel) return;
+    const x = cand.find(c => c.f.id === sel.value); if (!x || !x.modo) return;
+    if (!confirm(`Se ligará el pago de ${fmt(m.cargos)} a la factura ${x.f.factura || 's/f'} de ${x.f.proveedor || 's/proveedor'}.\n\n${x.nota.charAt(0).toUpperCase() + x.nota.slice(1)}.\n\nEl Balance no cambia: el pago ya está contado. ¿Continuar?`)) return;
+    const btn = ev.currentTarget; btn.disabled = true; btn.textContent = 'Procesando…';
+    try { const ok = await ejecutarLigaPagoFactura(b, m, t, x); if (ok) { toast('Pago ligado a su factura.'); cerrar(); if (alTerminar) await alTerminar(); } }
+    catch (err) { toast('No se pudo completar: ' + (err.message || err), 'error'); }
+    finally { btn.disabled = false; btn.textContent = 'Ligar y aplicar'; }
+  });
+  pintarLista(); modal.classList.add('show');
+}
+
 function revPagosProveedor(ctx) {
   const { bancosMov, efectivoMov, pagosAplicados, proveedores, monedas, b } = ctx;
   const esPesos = (id) => { const n = (monedas.find(x => x.id === id)?.nombre || '').toLowerCase(); return n.includes('mxn') || n.includes('peso'); };
@@ -22623,7 +22720,7 @@ function revPagosProveedor(ctx) {
     if (!ids.length) situacion = ' · sin factura ligada: abre el pago y elige a qué factura corresponde';
     else if (ids.length > 1) situacion = detalleMulti || ` · ligado a ${ids.length} facturas: revisa su aplicación`;
     else { const f = facturaPorId[ids[0]]; situacion = f ? ` · ligado a la factura ${f.factura || 's/f'} (${f.estatus || 'Pendiente'}, importe ${fmt(f.importe)}, pagado ${fmt(f.importe_pagado || 0)}): los importes no coinciden con el pago` : ' · ligado a una factura que ya no existe'; }
-    items.push({ fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${nombre}: salió ${fmt(m.cargos)}, aplicado a facturas ${fmt(aplicado)}${situacion}`, monto: falta });
+    items.push({ fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${nombre}: salió ${fmt(m.cargos)}, aplicado a facturas ${fmt(aplicado)}${situacion}`, monto: falta, ...(ctx.financiero && !ids.length && aplicado < 0.005 ? { elegirFactura: true, m, t } : {}) });
   });
   items.sort((a, z) => a.fecha.localeCompare(z.fecha));
   const total = convertibles.length + aplicables.length + multiRegistrar.length + multiAplicar.length;
@@ -22838,8 +22935,8 @@ async function renderRevisionConsistencia() {
       <div style="padding:0 4px 14px;font-size:14px;"><strong>${conAviso ? `⚠ ${conAviso} de ${revs.length} revisiones con algo que atender` : `✓ Todo en orden (${revs.length} revisiones)`}</strong></div>
       ${revs.map(r => {
         const ok = !r.error && !r.items.length;
-        const filas = (r.items || []).slice(0, REV_MAX_ITEMS).map(x => `<tr><td>${revEsc(x.texto)}</td><td class="num">${x.monto === undefined ? '' : fmt(x.monto)}</td></tr>`).join('');
-        const mas = (r.items || []).length > REV_MAX_ITEMS ? `<tr><td colspan="2" style="color:var(--muted);">… y ${r.items.length - REV_MAX_ITEMS} más</td></tr>` : '';
+        const filas = (r.items || []).slice(0, REV_MAX_ITEMS).map((x, idx) => `<tr><td>${revEsc(x.texto)}</td><td class="num">${x.monto === undefined ? '' : fmt(x.monto)}</td><td>${x.elegirFactura ? `<button class="btn btn-ghost btn-sm rev-elegir" data-rev="${revEsc(r.id)}" data-i="${idx}">Elegir factura…</button>` : ''}</td></tr>`).join('');
+        const mas = (r.items || []).length > REV_MAX_ITEMS ? `<tr><td colspan="3" style="color:var(--muted);">… y ${r.items.length - REV_MAX_ITEMS} más</td></tr>` : '';
         return `
           <div class="card" style="margin-bottom:12px;border-left:3px solid ${ok ? 'var(--green)' : (r.error ? 'var(--red)' : 'var(--gold, #c9a227)')};">
             <div class="card-head"><h3 style="font-size:14px;">${ok ? '✓' : '⚠'} ${revEsc(r.titulo)}${r.items.length ? ` <span class="badge pend" style="margin-left:6px;">${r.items.length}</span>` : ''}</h3>
@@ -22853,6 +22950,11 @@ async function renderRevisionConsistencia() {
             </div>
           </div>`;
       }).join('')}`;
+    cuerpo.querySelectorAll('.rev-elegir').forEach(btn => btn.addEventListener('click', async () => {
+      const r = revs.find(x => x.id === btn.dataset.rev);
+      const it = r && (r.items || []).slice(0, REV_MAX_ITEMS)[Number(btn.dataset.i)];
+      if (it && it.elegirFactura) await abrirLigarPagoAFactura(b, it, pintar);
+    }));
     cuerpo.querySelectorAll('.rev-accion').forEach(btn => btn.addEventListener('click', async () => {
       const r = revs.find(x => x.id === btn.dataset.rev);
       if (!r || !r.accion) return;
