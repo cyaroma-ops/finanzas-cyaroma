@@ -18935,6 +18935,39 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   };
   const conDesde = (q) => desdeFecha ? q.gte('fecha', desdeFecha) : q;
 
+  // CARGAS INDEPENDIENTES — arrancan TODAS a la vez, desde el principio. Antes cada una esperaba a que terminara la anterior
+  // (más de diez esperas en fila, y todas las pantallas pasan por aquí). El resto del motor las espera más abajo, en el
+  // mismo punto de siempre y con las mismas variables: solo cambia CUÁNDO arrancan, no qué se calcula ni con qué datos.
+  const lanzar = (consulta) => { const p = Promise.resolve(consulta); p.catch(() => {}); return p; }; // arranca ya; un fallo se reporta donde se espera
+  const esFinanciero0 = ventasAfectaFueraDeSuRegistro(businessId);
+  const cargaNegocio = lanzar(sb.from('businesses').select('iva_realizacion_desde').eq('id', businessId).maybeSingle());
+  const cargaPolizas = lanzar(conDesde(sb.from('fz_polizas').select('id,fecha,numero,concepto').eq('business_id', businessId).lte('fecha', hastaFecha)))
+    .then(async (r) => { const ids = (r.data || []).map(x => x.id); return { polizas: r, lineas: ids.length ? await sb.from('fz_polizas_lineas').select('*').in('poliza_id', ids) : { data: [] } }; });
+  cargaPolizas.catch(() => {});
+  const cargaFacturasProv = lanzar(conDesde(sb.from('fz_proveedores').select('*').eq('business_id', businessId).lte('fecha', hastaFecha)));
+  const cargaPagosPorClasificar = lanzar(conDesde(sb.from('fz_pagos_por_clasificar').select('*').eq('business_id', businessId).eq('estado', 'pendiente').lte('fecha', hastaFecha)));
+  const cargaAplicacionesPpc = cargaPagosPorClasificar.then(async (r) => Object.fromEntries(await Promise.all((r.data || []).map(async (p) =>
+    [p.id, (await sb.from('fz_pagos_aplicados').select('*').eq('origen_tabla', 'fz_pagos_por_clasificar').eq('origen_id', p.id)).data]))));
+  cargaAplicacionesPpc.catch(() => {});
+  const cargaFacturasCli = lanzar(conDesde(sb.from('fz_facturas_clientes').select('*').eq('business_id', businessId).lte('fecha', hastaFecha)));
+  const cargaLineasCli = cargaFacturasCli.then(async (r) => ((r.data || []).length ? await sb.from('fz_facturas_clientes_lineas').select('*').in('factura_id', r.data.map(f => f.id)) : { data: [] }));
+  cargaLineasCli.catch(() => {});
+  const cargaCobros = lanzar(sb.from('fz_cobros_aplicados').select('*').eq('business_id', businessId).lte('fecha', hastaFecha));
+  const cargaPagos = lanzar(sb.from('fz_pagos_aplicados').select('*').eq('business_id', businessId).lte('fecha', hastaFecha));
+  const cargaAplicacionesFiscales = lanzar(sb.from('fz_aplicaciones_pago_fiscal').select('*').eq('business_id', businessId).lte('fecha', hastaFecha).is('revertido_at', null))
+    .then(async (r) => { const ids = [...new Set((r.data || []).map(a => a.pago_impuesto_id))]; return { aplicaciones: r, refs: ids.length ? await sb.from('fz_pagos_impuestos').select('id,tipo_impuesto,concepto').in('id', ids) : { data: [] } }; });
+  cargaAplicacionesFiscales.catch(() => {});
+  const cargaVentasConcepto = esFinanciero0
+    ? lanzar(sb.from('fz_conceptos').select('id,nombre,banco_cuenta_id,moneda_id').eq('business_id', businessId).or('banco_cuenta_id.not.is.null,moneda_id.not.is.null'))
+        .then(async (c) => ({ conceptos: c, ventas: (c.data && c.data.length) ? await conDesde(sb.from('fz_ventas').select('id,fecha,recon_data').eq('business_id', businessId).lte('fecha', hastaFecha)) : { data: [] } }))
+    : null;
+  if (cargaVentasConcepto) cargaVentasConcepto.catch(() => {});
+  const cargaBancosEfectivo = Promise.all([
+    fetchTodasLasPaginas(() => conDesde(sb.from('fz_bancos_mov').select('*').eq('business_id', businessId).lte('fecha', hastaFecha)).order('id')),
+    fetchTodasLasPaginas(() => conDesde(sb.from('fz_efectivo_mov').select('*').eq('business_id', businessId).lte('fecha', hastaFecha)).order('id')),
+  ]);
+  cargaBancosEfectivo.catch(() => {});
+
   const [subcuentas, mayores, cuentasBanco, monedas, clientes] = await Promise.all([
     loadSubcuentas(businessId), loadCuentasMayor(businessId),
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).then(r=>r.data||[]),
@@ -18962,15 +18995,16 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   const unidadesEfectivoPorMoneda = {};       // moneda_id -> unidades en su propia moneda (para mostrarlas en el Balance)
   const fxSub = { ganancia: null, perdida: null };
   const nombreCliente = (id) => { const c = clientes.find(x=>x.id===id); return c ? (c.razon_social || c.nombre_comercial) : '(cliente eliminado)'; };
-  const { data: negocioRow } = await sb.from('businesses').select('iva_realizacion_desde').eq('id', businessId).maybeSingle();
+  const { data: negocioRow } = await cargaNegocio;
   const fechaCorteRealizacion = negocioRow?.iva_realizacion_desde || null;
   const esRealizacionActiva = (fecha) => fechaCorteRealizacion && fecha >= fechaCorteRealizacion;
 
   // 1. Pólizas de Diario — cada póliza es un documento; sus líneas deberían cuadrar entre sí.
-  const { data: polizas } = await conDesde(sb.from('fz_polizas').select('id,fecha,numero,concepto').eq('business_id', businessId).lte('fecha', hastaFecha));
+  const resPolizas = await cargaPolizas;
+  const polizas = resPolizas.polizas.data;
   const polizaIds = (polizas||[]).map(p=>p.id);
   const polizaMap = Object.fromEntries((polizas||[]).map(p=>[p.id,p]));
-  const { data: lineasPoliza } = polizaIds.length ? await sb.from('fz_polizas_lineas').select('*').in('poliza_id', polizaIds) : { data: [] };
+  const lineasPoliza = resPolizas.lineas.data;
   (lineasPoliza||[]).forEach(l => {
     const p = polizaMap[l.poliza_id];
     if (!p) return;
@@ -19037,7 +19071,7 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
     cacheSubRealizacion[key] = id;
     return id;
   };
-  const { data: facturasProv } = await conDesde(sb.from('fz_proveedores').select('*').eq('business_id', businessId).lte('fecha', hastaFecha));
+  const { data: facturasProv } = await cargaFacturasProv;
   const facturasProvMapGlobal = Object.fromEntries((facturasProv||[]).map(f => [f.id, f]));
   for (const f of (facturasProv||[])) {
     if (f.origen_poliza_id) continue; // ya se contabilizó como provisión en Pólizas
@@ -19103,10 +19137,10 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   // 2b. Pagos por clasificar — puente contable para salidas cuya contrapartida real y/o cuyo
   // proveedor/factura todavía no se conocen. Solo los PENDIENTES entran aquí — los ya
   // "clasificado" los recoge el bloque normal de Bancos/Efectivo (su origen ya apunta ahí).
-  const { data: pagosPorClasificarPend } = await conDesde(sb.from('fz_pagos_por_clasificar').select('*').eq('business_id', businessId).eq('estado', 'pendiente').lte('fecha', hastaFecha));
+  const { data: pagosPorClasificarPend } = await cargaPagosPorClasificar;
   for (const p of (pagosPorClasificarPend || [])) {
     const basePpc = { modulo: 'Pago por clasificar', tipoOrigen: 'pago_por_clasificar', id: p.id, fecha: p.fecha, referencia: `Pendiente de clasificar${p.proveedor_tentativo ? ' — ' + p.proveedor_tentativo : ''}`, detalle: p.descripcion || '' };
-    const { data: aplicacionesPpc } = await sb.from('fz_pagos_aplicados').select('*').eq('origen_tabla', 'fz_pagos_por_clasificar').eq('origen_id', p.id);
+    const aplicacionesPpc = (await cargaAplicacionesPpc)[p.id];
     if (aplicacionesPpc && aplicacionesPpc.length) {
       // Ya se sabe a qué proveedor/factura corresponde — mismo patrón exacto que el bloque de
       // pagos a proveedores vía Bancos (ganancia/pérdida cambiaria incluida), sin duplicar código.
@@ -19138,11 +19172,10 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   // Nunca toca la subcuenta de Ventas/Ingreso (eso lo sigue reconociendo el Estado de Resultados
   // leyendo fz_ventas directo, sin ningún cambio aquí).
   const subVentasPendientesDepositar = modoFinanciero ? await subRealizacion('Ventas pendientes de depositar', 'activo') : null;
-  const { data: conceptosVentaBanco } = modoFinanciero
-    ? await sb.from('fz_conceptos').select('id,nombre,banco_cuenta_id,moneda_id').eq('business_id', businessId).or('banco_cuenta_id.not.is.null,moneda_id.not.is.null')
-    : { data: [] };
+  const resVentasConcepto = modoFinanciero ? await cargaVentasConcepto : { conceptos: { data: [] }, ventas: { data: [] } };
+  const conceptosVentaBanco = resVentasConcepto.conceptos.data;
   if (conceptosVentaBanco && conceptosVentaBanco.length) {
-    const { data: ventasConDatos } = await conDesde(sb.from('fz_ventas').select('id,fecha,recon_data').eq('business_id', businessId).lte('fecha', hastaFecha));
+    const ventasConDatos = resVentasConcepto.ventas.data;
     (ventasConDatos||[]).forEach(v => {
       conceptosVentaBanco.forEach(cv => {
         const entradaRecon = (v.recon_data||{})[cv.id];
@@ -19162,10 +19195,10 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   // Moneda extranjera: el reconocimiento contable siempre es en MXN (moneda funcional), usando
   // el tipo de cambio de reconocimiento — el importe/moneda original se conserva en la propia
   // factura para trazabilidad, nunca se pierde, solo no se usa directo para la cuenta Clientes.
-  const { data: facturasCli } = await conDesde(sb.from('fz_facturas_clientes').select('*').eq('business_id', businessId).lte('fecha', hastaFecha));
+  const { data: facturasCli } = await cargaFacturasCli;
   const facturasCliMapGlobal = Object.fromEntries((facturasCli||[]).map(f => [f.id, f]));
   if ((facturasCli||[]).length) {
-    const { data: lineasCli } = await sb.from('fz_facturas_clientes_lineas').select('*').in('factura_id', facturasCli.map(f=>f.id));
+    const { data: lineasCli } = await cargaLineasCli;
     for (const f of facturasCli) {
       const tc = Number(f.tipo_cambio) || 1;
       const base = { modulo: 'Factura de Cliente', tipoOrigen: 'factura_cliente', id: f.id, fecha: f.fecha, referencia: `Folio #${f.folio}${f.moneda==='USD'?` (USD ${fmt(f.total)} @ TC ${tc})`:''}`, detalle: nombreCliente(f.cliente_id) };
@@ -19182,18 +19215,19 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   // construcción (mismo monto en ambos lados). Los traspasos se revisan aparte, por pares
   // (misma traspaso_id, dos movimientos en tablas distintas) porque ahí sí puede haber diferencia
   // real si el tipo de cambio usado en cada lado no fue idéntico.
-  const { data: todosCobrosAplicados } = await sb.from('fz_cobros_aplicados').select('*').eq('business_id', businessId).lte('fecha', hastaFecha);
+  const { data: todosCobrosAplicados } = await cargaCobros;
   const cobrosPorOrigen = {};
   (todosCobrosAplicados||[]).forEach(c => { const k = `${c.origen_tabla}|${c.origen_id}`; (cobrosPorOrigen[k] = cobrosPorOrigen[k]||[]).push(c); });
-  const { data: todosPagosAplicados } = await sb.from('fz_pagos_aplicados').select('*').eq('business_id', businessId).lte('fecha', hastaFecha);
+  const { data: todosPagosAplicados } = await cargaPagos;
   const pagosPorOrigen = {};
   (todosPagosAplicados||[]).forEach(p => { const k = `${p.origen_tabla}|${p.origen_id}`; (pagosPorOrigen[k] = pagosPorOrigen[k]||[]).push(p); });
 
-  const { data: todasAplicacionesFiscales } = await sb.from('fz_aplicaciones_pago_fiscal').select('*').eq('business_id', businessId).lte('fecha', hastaFecha).is('revertido_at', null);
+  const resAplicacionesFiscales = await cargaAplicacionesFiscales;
+  const todasAplicacionesFiscales = resAplicacionesFiscales.aplicaciones.data;
   const aplicacionesFiscalesPorOrigen = {};
   (todasAplicacionesFiscales||[]).forEach(a => { const k = `${a.origen_tabla}|${a.origen_id}`; (aplicacionesFiscalesPorOrigen[k] = aplicacionesFiscalesPorOrigen[k]||[]).push(a); });
   const idsPagosImpuestoNecesarios = [...new Set((todasAplicacionesFiscales||[]).map(a=>a.pago_impuesto_id))];
-  const { data: pagosImpuestoRefs } = idsPagosImpuestoNecesarios.length ? await sb.from('fz_pagos_impuestos').select('id,tipo_impuesto,concepto').in('id', idsPagosImpuestoNecesarios) : { data: [] };
+  const pagosImpuestoRefs = resAplicacionesFiscales.refs.data;
   const pagoImpuestoMapGlobal = Object.fromEntries((pagosImpuestoRefs||[]).map(p=>[p.id,p]));
   // Se resuelven de antemano las subcuentas de cada obligación fiscal que pudiera pagarse — el
   // mismo nombre/cuenta que ya usa el resto del motor de realización, para que compartan clave.
@@ -19448,10 +19482,7 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
       }
     });
   };
-  const [bancosMovQ, efvoMovQ] = await Promise.all([
-    fetchTodasLasPaginas(() => conDesde(sb.from('fz_bancos_mov').select('*').eq('business_id', businessId).lte('fecha', hastaFecha)).order('id')),
-    fetchTodasLasPaginas(() => conDesde(sb.from('fz_efectivo_mov').select('*').eq('business_id', businessId).lte('fecha', hastaFecha)).order('id')),
-  ]);
+  const [bancosMovQ, efvoMovQ] = await cargaBancosEfectivo;
   registrarParaPareja([...(bancosMovQ.data||[]), ...(efvoMovQ.data||[])]);
 
   if (modoFinanciero) {
@@ -19463,8 +19494,10 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
     const movsForaneos = (efvoMovQ.data||[]).filter(m => monedasForaneas.some(x => x.id === m.moneda_id));
     const idsVentasDivisas = [...new Set(movsForaneos.filter(m => m.venta_id).map(m => m.venta_id))];
     const reconPorVenta = {};
-    for (let i = 0; i < idsVentasDivisas.length; i += 100) {
-      const { data: vs } = await sb.from('fz_ventas').select('id,recon_data').in('id', idsVentasDivisas.slice(i, i + 100));
+    (resVentasConcepto.ventas.data || []).forEach(v => { reconPorVenta[v.id] = v.recon_data || {}; }); // mismas filas de fz_ventas ya traídas: no se piden otra vez
+    const idsVentasFaltantes = idsVentasDivisas.filter(id => !(id in reconPorVenta));
+    for (let i = 0; i < idsVentasFaltantes.length; i += 100) {
+      const { data: vs } = await sb.from('fz_ventas').select('id,recon_data').in('id', idsVentasFaltantes.slice(i, i + 100));
       (vs||[]).forEach(v => { reconPorVenta[v.id] = v.recon_data || {}; });
     }
     for (const mon of monedasForaneas) {
@@ -20487,7 +20520,7 @@ async function computeResumenNegocio(businessId, periodo, datosAnio = null) {
 
   const datosGC0 = datosAnio ? filtrarDatosGastosCostosPorMes(datosAnio.datosGCAnio, periodo) : await fetchDatosGastosCostos(businessId, periodo);
   const [iPoliza, gananciaCambiaria] = await Promise.all([
-    computeIngresosPoliza(businessId, periodo, subcuentas, mayores, true, datosAnio?.filasMotorAnio),
+    computeIngresosPoliza(businessId, periodo, subcuentas, mayores, true, datosAnio ? datosAnio.filasMotorAnio : datosGC0.filasMotor), // mismos renglones: no se vuelve a correr el motor
     computeGananciaCambiaria(businessId, periodo, datosAnio?.cobrosAnio),
   ]);
   const [gClas, gCostos] = await Promise.all([
