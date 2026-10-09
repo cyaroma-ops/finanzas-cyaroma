@@ -4752,6 +4752,22 @@ async function obtenerOCrearSubcuentaEjercicioResultado(businessId, esUtilidad, 
 // inmediatamente antes de escribir, para no confiar en datos que pudieron cambiar desde que se
 // mostró la vista previa). Es el MISMO motor que Balanza/Estado de Resultados
 // (getLibroPartidaDobleConOrigen) — nunca una fórmula paralela.
+// Totales de cargos y abonos de un periodo para validar el cuadre antes de cerrar. Devuelve también los renglones del libro.
+// En un negocio Financiero se suman, igual que en la Balanza financiera, las partidas del Estado de Resultados que no viven en
+// el libro (Ventas, sobrante/faltante de caja, gastos capturados en Ventas, gastos manuales): sin ellas el libro por sí solo
+// nunca cuadra cuando hay ventas, y ningún periodo podría cerrarse.
+async function totalesCargoAbonoDelPeriodo(businessId, start, end) {
+  const { filas } = await getLibroPartidaDobleConOrigen(businessId, end, start);
+  let totalCargo = filas.reduce((a, f) => a + f.cargo, 0), totalAbono = filas.reduce((a, f) => a + f.abono, 0);
+  const negocio = (STATE.businesses || []).find(x => x.id === businessId);
+  if (esNegocioFinanciero(negocio)) {
+    const inicioAnio = `${end.slice(0, 4)}-01-01`;
+    const filasER = await construirFilasPartidasEstadoResultados(negocio, end, inicioAnio, end.slice(0, 7), { sinAnteriores: true });
+    filasER.filter(f => f.fecha >= start && f.fecha <= end).forEach(f => { totalCargo += f.cargo; totalAbono += f.abono; });
+  }
+  return { filas, totalCargo, totalAbono };
+}
+
 async function prepararCierreEjercicio(businessId, ejercicio) {
   const errores = [];
   if (!/^\d{4}$/.test(ejercicio)) {
@@ -4762,7 +4778,7 @@ async function prepararCierreEjercicio(businessId, ejercicio) {
 
   const desde = `${ejercicio}-01-01`, hasta = `${ejercicio}-12-31`;
   const [{ filas, totalCargo, totalAbono }, subcuentas] = await Promise.all([
-    getLibroPartidaDobleConOrigen(businessId, hasta, desde),
+    totalesCargoAbonoDelPeriodo(businessId, desde, hasta),
     loadSubcuentas(businessId),
   ]);
   const nombrePorSubcuenta = Object.fromEntries(subcuentas.map(s => [s.id, s.nombre]));
@@ -4780,6 +4796,14 @@ async function prepararCierreEjercicio(businessId, ejercicio) {
   const costos = redondearMoneda(Object.values(netoPorSubcuenta).filter(l=>l.tipo==='costo').reduce((s,l)=>s+l.neto,0));
   const gastos = redondearMoneda(Object.values(netoPorSubcuenta).filter(l=>l.tipo==='gasto').reduce((s,l)=>s+l.neto,0));
   const resultado = redondearMoneda(ingresos - costos - gastos);
+  const negocioCierre = (STATE.businesses || []).find(x => x.id === businessId);
+  if (esNegocioFinanciero(negocioCierre)) {
+    // El cierre cancela las cuentas del libro. Si el Estado de Resultados trae partidas que no viven en el libro (ventas, gastos
+    // capturados en Ventas, gastos manuales, gastos sin clasificar, sobrante/faltante), quedarían fuera del cierre y el Capital
+    // saldría mal: por eso solo se cierra si ambos resultados coinciden.
+    const utilidadER = redondearMoneda(await computeUtilidadAcumulada(businessId, `${ejercicio}-12`));
+    if (Math.abs(utilidadER - resultado) > 0.01) errores.push(`El resultado del libro (${fmt(resultado)}) no coincide con el del Estado de Resultados del ejercicio (${fmt(utilidadER)}): hay partidas del Estado de Resultados que no viven en el libro (ventas, gastos capturados en Ventas, gastos manuales, gastos sin clasificar o sobrante/faltante de caja) por ${fmt(utilidadER - resultado)}. El cierre todavía no las incluye, así que no se puede cerrar con seguridad.`);
+  }
   const tipoResultado = resultado >= 0 ? 'utilidad' : 'perdida';
   const esUtilidad = resultado >= 0;
 
@@ -9200,7 +9224,7 @@ async function renderPreviewCierreMensual(businessId, periodo) {
   if (!periodo) { box.innerHTML = ''; return; }
   box.innerHTML = `<p style="font-size:12px;color:var(--muted);padding:10px 0;">Calculando vista previa…</p>`;
   const { start, end } = monthBounds(periodo);
-  const { totalCargo, totalAbono } = await getLibroPartidaDobleConOrigen(businessId, end, start);
+  const { totalCargo, totalAbono } = await totalesCargoAbonoDelPeriodo(businessId, start, end);
   const cuadrado = Math.abs(totalCargo - totalAbono) < 0.01;
   const diferencia = redondearMoneda(totalCargo - totalAbono);
   const yaCerrado = await periodoEstaCerrado(businessId, end);
@@ -11671,12 +11695,12 @@ let STATE_renderTokenBalanza = 0;
 // resultados y el resultado de ejercicios anteriores sin cierre. Se calculan con las MISMAS fuentes y reglas del Estado
 // de Resultados y del Balance General, así que la Balanza cuadra exactamente cuando el Balance cuadra y, si no cuadra,
 // la diferencia es la misma que marca el Balance. Solo se usan en negocios Financieros; no modifica el libro ni el motor.
-async function construirFilasPartidasEstadoResultados(b, end, inicioAnio, hastaYm) {
+async function construirFilasPartidasEstadoResultados(b, end, inicioAnio, hastaYm, opciones = {}) {
   const [ventasQ, conceptosVenta, conceptos, conceptosSistema, subcuentas, mayores, plQ, resultadosAnteriores] = await Promise.all([
     sb.from('fz_ventas').select('*').eq('business_id', b.id).gte('fecha', inicioAnio).lte('fecha', end),
     loadConceptosVenta(b.id), loadConceptos(b.id), loadConceptosSistema(b.id), loadSubcuentas(b.id), loadCuentasMayor(b.id),
     sb.from('fz_pl_gastos').select('*').eq('business_id', b.id).gte('mes', inicioAnio.slice(0, 7)).lte('mes', end.slice(0, 7)),
-    computeResultadoEjerciciosAnteriores(b.id, hastaYm),
+    opciones.sinAnteriores ? Promise.resolve(0) : computeResultadoEjerciciosAnteriores(b.id, hastaYm),
   ]);
   const v = ventasQ.data || [];
   const porCatPL = { efectivo: conceptos.filter(c=>c.categoria==='efectivo'), tarjetas: conceptos.filter(c=>c.categoria==='tarjetas'), bancos: conceptos.filter(c=>c.categoria==='bancos'), cxc: conceptos.filter(c=>c.categoria==='cxc'), propinas: conceptos.filter(c=>c.categoria==='propinas') };
@@ -19599,7 +19623,8 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   const traspasoGrupos = {};
   traspasos.forEach(m => { (traspasoGrupos[m.traspaso_id] = traspasoGrupos[m.traspaso_id] || []).push(m); });
 
-  return { filas, traspasoGrupos, polizas: polizaMap, mayores, subcuentas, unidadesEfectivoPorMoneda };
+  const totalCargo = filas.reduce((a, f) => a + f.cargo, 0), totalAbono = filas.reduce((a, f) => a + f.abono, 0);
+  return { filas, totalCargo, totalAbono, traspasoGrupos, polizas: polizaMap, mayores, subcuentas, unidadesEfectivoPorMoneda };
 }
 
 // Agrupa por documento de origen y busca cuáles no cuadran internamente (Cargo ≠ Abono dentro
