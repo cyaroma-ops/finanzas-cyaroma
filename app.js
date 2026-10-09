@@ -5,6 +5,67 @@
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+/* ---------- PAGINACIÓN AUTOMÁTICA ----------
+   Supabase corta CUALQUIER lista en 1,000 filas sin avisar ni dar error: un negocio con más de 1,000 movimientos veía
+   saldos incompletos en cualquier pantalla que leyera el historial completo. Aquí se resuelve en UN solo lugar, para las
+   tablas que pueden crecer: toda consulta de lista (select) a esas tablas devuelve TODAS sus filas.
+     · Si la consulta devuelve menos de 1,000 filas, nada cambia (una sola petición, mismo orden que siempre).
+     · Si devuelve exactamente 1,000 (señal de que el servidor la cortó), se repite completa, página por página, con un orden
+       que termina en "id" para que ninguna fila se pierda ni se repita.
+     · No se tocan las consultas que ya piden su propio rango o límite, un solo registro (single / maybeSingle) o solo el
+       conteo (head), ni los insert / update / delete.
+   PAGINACION_AUTOMATICA = false vuelve al comportamiento anterior. */
+const PAGINACION_AUTOMATICA = true;
+const TABLAS_PAGINADAS = new Set(['fz_proveedores', 'fz_ventas', 'fz_polizas', 'fz_polizas_lineas', 'fz_pagos_aplicados', 'fz_facturas_clientes',
+  'fz_bancos_mov', 'fz_efectivo_mov', 'fz_cobros_aplicados', 'fz_adjuntos', 'fz_pl_gastos']);
+function activarPaginacionAutomatica(cliente) {
+  const PAGINA = 1000;
+  const fromOriginal = cliente.from.bind(cliente);
+  cliente.from = (tabla) => {
+    const qb = fromOriginal(tabla);
+    if (!PAGINACION_AUTOMATICA || !TABLAS_PAGINADAS.has(tabla)) return qb;
+    const selectOriginal = qb.select.bind(qb);
+    qb.select = (columnas, opciones) => {
+      const fb = selectOriginal(columnas, opciones);
+      if (opciones && opciones.head) return fb; // solo conteo: no trae filas
+      let manual = false; // la consulta ya pidió su propio rango, límite o un solo registro
+      const rangoOriginal = fb.range.bind(fb);
+      const ordenOriginal = fb.order.bind(fb);
+      ['range', 'limit', 'single', 'maybeSingle'].forEach(nombre => {
+        const original = fb[nombre];
+        if (typeof original !== 'function') return;
+        fb[nombre] = (...args) => { manual = true; return original.apply(fb, args); };
+      });
+      const thenOriginal = fb.then.bind(fb);
+      fb.then = (resolver, rechazo) => {
+        if (manual) return thenOriginal(resolver, rechazo);
+        return (async () => {
+          rangoOriginal(0, PAGINA - 1);
+          const primera = await thenOriginal();
+          if (primera.error || !Array.isArray(primera.data) || primera.data.length < PAGINA) return primera; // no se cortó: igual que siempre
+          // Se cortó en 1,000: se repite completa con un orden estable (el orden de la consulta + id).
+          ordenOriginal('id', { ascending: true });
+          let todas = [], desde = 0, pagina = 0;
+          while (true) {
+            rangoOriginal(desde, desde + PAGINA - 1);
+            const res = await thenOriginal();
+            if (res.error) return res;
+            todas = todas.concat(res.data || []);
+            pagina++;
+            if ((res.data || []).length < PAGINA) break;
+            desde += PAGINA;
+          }
+          console.info(`[paginación] ${tabla}: ${todas.length} filas en ${pagina} páginas`);
+          return { data: todas, error: null, count: primera.count ?? null, status: 200, statusText: 'OK' };
+        })().then(resolver, rechazo);
+      };
+      return fb;
+    };
+    return qb;
+  };
+}
+activarPaginacionAutomatica(sb);
+
 const STATE = {
   user: null,
   businesses: [],
@@ -14183,7 +14244,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   const [subcuentas, mayores, facturasPend, cuentaInfo, facturasClientesPend] = await Promise.all([
     loadSubcuentas(contexto.businessId),
     loadCuentasMayor(contexto.businessId),
-    sb.from('fz_proveedores').select('id,proveedor,proveedor_id,folio,fecha,factura,importe,importe_pagado,estatus,moneda,tipo_cambio,fecha_vencimiento').eq('business_id', contexto.businessId).order('fecha', { ascending: false }).limit(5000).then(r => r.data || []),
+    sb.from('fz_proveedores').select('id,proveedor,proveedor_id,folio,fecha,factura,importe,importe_pagado,estatus,moneda,tipo_cambio,fecha_vencimiento').eq('business_id', contexto.businessId).order('fecha', { ascending: false }).then(r => r.data || []),
     contexto.tipo === 'efectivo'
       ? sb.from('fz_efectivo_monedas').select('nombre').eq('id', contexto.refId).single().then(r => r.data)
       : sb.from('fz_bancos_cuentas').select('nombre').eq('id', contexto.refId).single().then(r => r.data),
@@ -15062,7 +15123,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
     getMonedaLedgerRows(businessId, moneda, conceptosEfectivo, STATE.currentMonth),
     loadSubcuentas(businessId),
     loadCuentasMayor(businessId),
-    sb.from('fz_proveedores').select('id,proveedor,proveedor_id,folio,factura,importe,importe_pagado,estatus,fecha').eq('business_id', businessId).order('proveedor').order('fecha').limit(5000).then(r => r.data || []),
+    sb.from('fz_proveedores').select('id,proveedor,proveedor_id,folio,factura,importe,importe_pagado,estatus,fecha').eq('business_id', businessId).order('proveedor').order('fecha').then(r => r.data || []),
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
     loadFacturasClientesPendConNombre(businessId),
@@ -15277,7 +15338,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     getBancoLedgerRows(businessId, cuentaArr, conceptosTarjetas, STATE.currentMonth),
     loadSubcuentas(businessId),
     loadCuentasMayor(businessId),
-    sb.from('fz_proveedores').select('id,proveedor,proveedor_id,folio,factura,importe,importe_pagado,estatus,fecha').eq('business_id', businessId).order('proveedor').order('fecha').limit(5000).then(r => r.data || []),
+    sb.from('fz_proveedores').select('id,proveedor,proveedor_id,folio,factura,importe,importe_pagado,estatus,fecha').eq('business_id', businessId).order('proveedor').order('fecha').then(r => r.data || []),
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
     loadFacturasClientesPendConNombre(businessId),
