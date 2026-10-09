@@ -22593,6 +22593,37 @@ function revDepositosVentas(ctx) {
   return r;
 }
 
+// ---------- GRUPOS DE PAGOS QUE COMPARTEN FACTURAS ----------
+// Caso típico: las propinas por repartir. Cada día genera facturas de "Propinas por repartir" y a cada empleado se le paga su parte como un
+// pago ligado a varias de ellas; la factura ya figura pagada (completa o parcial) por la SUMA de esos pagos, pero nadie guardó cuánto aplicó
+// cada pago a cada factura. No se puede saber cuál pago cubrió qué factura, pero si las cantidades cuadran EXACTAMENTE (lo que los pagos
+// suman = lo que las facturas dicen tener pagado sin aplicar) existe un reparto que respeta todas las ligas, y para el Balance es indiferente
+// porque el fondo es uno solo. Se calcula con flujo máximo sobre las ligas existentes (un pago solo puede aplicarse a las facturas a las que ya está
+// ligado), en centavos enteros. Si no cuadra exacto, NO se hace nada.
+function asignarPagosAFacturas(pagos, facturas, enlaces) {
+  const n = 2 + pagos.length + facturas.length, S = 0, T = 1, GRANDE = 1e12;
+  const idxP = new Map(pagos.map((p, i) => [p.k, 2 + i])), idxF = new Map(facturas.map((f, i) => [f.k, 2 + pagos.length + i]));
+  const cap = Array.from({ length: n }, () => new Map());
+  const agregar = (u, v, c) => { cap[u].set(v, (cap[u].get(v) || 0) + c); if (!cap[v].has(u)) cap[v].set(u, 0); };
+  pagos.forEach(p => agregar(S, idxP.get(p.k), p.cents));
+  facturas.forEach(f => agregar(idxF.get(f.k), T, f.cents));
+  const unicos = [...new Set(enlaces.map(([a, b]) => a + '\u0001' + b))].map(x => x.split('\u0001'));
+  unicos.forEach(([kp, kf]) => { if (idxP.has(kp) && idxF.has(kf)) agregar(idxP.get(kp), idxF.get(kf), GRANDE); });
+  let flujo = 0;
+  for (;;) {
+    const prev = new Array(n).fill(-1); prev[S] = S; const cola = [S];
+    while (cola.length && prev[T] === -1) { const u = cola.shift(); for (const [v, c] of cap[u]) if (c > 0 && prev[v] === -1) { prev[v] = u; cola.push(v); } }
+    if (prev[T] === -1) break;
+    let cuello = Infinity; for (let v = T; v !== S; v = prev[v]) cuello = Math.min(cuello, cap[prev[v]].get(v));
+    for (let v = T; v !== S; v = prev[v]) { cap[prev[v]].set(v, cap[prev[v]].get(v) - cuello); cap[v].set(prev[v], cap[v].get(prev[v]) + cuello); }
+    flujo += cuello;
+  }
+  const totalPagos = pagos.reduce((a, p) => a + p.cents, 0);
+  const asign = [];
+  unicos.forEach(([kp, kf]) => { const u = idxP.get(kp), v = idxF.get(kf); if (u === undefined || v === undefined) return; const usado = cap[v].get(u) || 0; if (usado > 0) asign.push({ p: kp, f: kf, cents: usado }); });
+  return { ok: flujo === totalPagos, asign };
+}
+
 // ---------- LIGAR UN PAGO A UNA FACTURA (desde la Revisión) ----------
 // El modal de edición de un pago solo ofrece facturas PENDIENTES (y las ya ligadas a ese pago): una factura que figura "Pagada"
 // no aparece, aunque sea la que corresponde, y no había otra pantalla para ligarla. Aquí se elige entre facturas de CUALQUIER estatus.
@@ -22775,15 +22806,53 @@ function revPagosProveedor(ctx) {
     if (!ids.length) situacion = ' · sin factura ligada: abre el pago y elige a qué factura corresponde';
     else if (ids.length > 1) situacion = detalleMulti || ` · ligado a ${ids.length} facturas: revisa su aplicación`;
     else { const f = facturaPorId[ids[0]]; situacion = f ? ` · ligado a la factura ${f.factura || 's/f'} (${f.estatus || 'Pendiente'}, importe ${fmt(f.importe)}, pagado ${fmt(f.importe_pagado || 0)}): los importes no coinciden con el pago` : ' · ligado a una factura que ya no existe'; }
-    items.push({ fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${nombre}: salió ${fmt(m.cargos)}, aplicado a facturas ${fmt(aplicado)}${situacion}`, monto: falta, ...(ctx.financiero && !ids.length && aplicado < 0.005 ? { elegirFactura: true, m, t } : {}) });
+    items.push({ fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${nombre}: salió ${fmt(m.cargos)}, aplicado a facturas ${fmt(aplicado)}${situacion}`, monto: falta, ...(ctx.financiero && !ids.length && aplicado < 0.005 ? { elegirFactura: true, m, t } : {}), ...(ctx.financiero && ids.length && aplicado < 0.005 ? { poolCand: { m, t, ids } } : {}) });
   });
+  // ---- Grupos de pagos que comparten facturas (p. ej. propinas por repartir) ----
+  // Se unen los pagos sin aplicar que comparten alguna factura; cada grupo se resuelve SOLO si cuadra exacto (ver asignarPagosAFacturas).
+  const poolItems = []; const poolGrupos = [];
+  const candidatos = items.filter(x => x.poolCand);
+  if (ctx.financiero && candidatos.length) {
+    const padre = new Map(); const raiz = (a) => { while (padre.get(a) !== a) { padre.set(a, padre.get(padre.get(a))); a = padre.get(a); } return a; };
+    const unir = (a, c) => { if (!padre.has(a)) padre.set(a, a); if (!padre.has(c)) padre.set(c, c); const ra = raiz(a), rc = raiz(c); if (ra !== rc) padre.set(ra, rc); };
+    const kPago = (x) => `p|${x.poolCand.t}|${x.poolCand.m.id}`;
+    candidatos.forEach(x => { if (!padre.has(kPago(x))) padre.set(kPago(x), kPago(x)); x.poolCand.ids.forEach(fid => unir(kPago(x), `f|${fid}`)); });
+    const grupos = new Map(); candidatos.forEach(x => { const r = raiz(kPago(x)); if (!grupos.has(r)) grupos.set(r, []); grupos.get(r).push(x); });
+    grupos.forEach(miembros => {
+      const idsF = [...new Set(miembros.flatMap(x => x.poolCand.ids))]; const fs = idsF.map(id => facturaPorId[id]);
+      const etiquetaG = `grupo de ${miembros.length} pago${miembros.length === 1 ? '' : 's'} y ${idsF.length} factura${idsF.length === 1 ? '' : 's'}`;
+      const noResuelve = (razon) => { miembros.forEach(x => { x.texto += ` [${etiquetaG}: ${razon}]`; }); };
+      if (miembros.length < 2 && idsF.length < 2) return; // un pago con una factura ya tiene su explicación individual
+      if (!fs.every(Boolean)) return noResuelve('una factura ligada ya no existe');
+      if (!fs.every(f => Number(f.importe) > 0 && (Number(f.tipo_cambio) || 1) === 1)) return noResuelve('incluye un crédito o una factura en otra moneda');
+      const necesidad = fs.map(f => {
+        const aplicadoF = pagosAplicados.filter(pa => pa.factura_id === f.id).reduce((acc, pa) => acc + (Number(pa.monto) || 0), 0);
+        return { f, need: revRedondeo((Number(f.importe_pagado) || 0) - aplicadoF), pagado: Number(f.importe_pagado) || 0 };
+      });
+      if (necesidad.some(n => n.need < -0.005 || n.pagado > Number(n.f.importe) + 0.01)) return noResuelve('una factura tiene aplicado más de lo que figura pagado');
+      const enGrupo = new Set(miembros.map(x => x.poolCand.m.id));
+      if (fs.some(f => lista.some(o => !enGrupo.has(o.m.id) && facturaIdsDe(o.m).includes(f.id) && !((aplicadoPor[`${o.t}|${o.m.id}`] || 0) > 0.005)))) return noResuelve('otro pago sin aplicar comparte una de sus facturas');
+      const sumaPagos = revRedondeo(miembros.reduce((acc, x) => acc + Number(x.poolCand.m.cargos), 0));
+      const sumaNeed = revRedondeo(necesidad.reduce((acc, n) => acc + n.need, 0));
+      if (Math.abs(sumaPagos - sumaNeed) >= 0.01) return noResuelve(`los pagos suman ${fmt(sumaPagos)} y lo que las facturas dicen tener pagado sin aplicar suma ${fmt(sumaNeed)}`);
+      const enlaces = miembros.flatMap(x => x.poolCand.ids.map(fid => [kPago(x), fid]));
+      const r = asignarPagosAFacturas(miembros.map(x => ({ k: kPago(x), cents: Math.round(Number(x.poolCand.m.cargos) * 100) })), necesidad.filter(n => n.need > 0.004).map(n => ({ k: n.f.id, cents: Math.round(n.need * 100) })), enlaces);
+      if (!r.ok) return noResuelve('las cantidades cuadran en total pero no hay un reparto que respete las facturas a las que cada pago está ligado');
+      const grupo = { miembros, asign: r.asign, fs };
+      poolGrupos.push(grupo);
+      miembros.forEach(x => {
+        x.texto = `${fechaCorta(x.poolCand.m.fecha)} · ${x.poolCand.m.proveedor || x.poolCand.m.descripcion || 'Pago a proveedor'}: pago de ${fmt(x.poolCand.m.cargos)} de un ${etiquetaG} de ${[...new Set(fs.map(f => f.proveedor || 'proveedor sin nombre'))].join(' / ')} cuyas cantidades cuadran exactamente; falta registrar su aplicación`;
+        x.poolOk = true; poolItems.push(x);
+      });
+    });
+  }
   items.sort((a, z) => a.fecha.localeCompare(z.fecha));
-  const total = convertibles.length + aplicables.length + multiRegistrar.length + multiAplicar.length;
+  const total = convertibles.length + aplicables.length + multiRegistrar.length + multiAplicar.length + poolItems.length;
   const r = { id: 'pagos_proveedor', titulo: 'Pagos a proveedor sin aplicar o aplicados de menos',
-    ayuda: 'Antes de presionar el botón, confirma en cada renglón que el proveedor de la factura corresponde al pago: el sistema aplica el pago a la factura con la que YA está ligado (nunca une por coincidencia de importe), así que una liga equivocada se aplicaría tal cual. El Balance baja Proveedores por lo que salió del banco, pero en el módulo de Proveedores esas facturas pueden seguir como pendientes. Cada renglón dice en qué situación está: (1) factura ya pagada por el método rápido: solo falta registrar la aplicación; (2) pago ya ligado a una factura del mismo importe que sigue pendiente: se aplica y la factura pasa a Pagada; (2b) pago ligado a varias facturas que suman exactamente el pago: se registra o se aplica a cada una por su propio importe; (3) sin factura ligada, o con importes distintos: abre el pago y elige o ajusta su factura (se crea el crédito a favor si pagaste de más). En el caso (1) NO guardes el movimiento en Bancos mientras tanto, porque crearía un crédito a favor falso.', items };
+    ayuda: 'Antes de presionar el botón, confirma en cada renglón que el proveedor de la factura corresponde al pago: el sistema aplica el pago a la factura con la que YA está ligado (nunca une por coincidencia de importe), así que una liga equivocada se aplicaría tal cual. El Balance baja Proveedores por lo que salió del banco, pero en el módulo de Proveedores esas facturas pueden seguir como pendientes. Cada renglón dice en qué situación está: (1) factura ya pagada por el método rápido: solo falta registrar la aplicación; (2) pago ya ligado a una factura del mismo importe que sigue pendiente: se aplica y la factura pasa a Pagada; (2b) pago ligado a varias facturas que suman exactamente el pago: se registra o se aplica a cada una por su propio importe; (2c) grupo de pagos que comparten facturas (como las propinas por repartir): si las cantidades cuadran exactamente, se registra cuánto aplicó cada pago a cada factura; (3) sin factura ligada, o con importes distintos: abre el pago y elige o ajusta su factura (se crea el crédito a favor si pagaste de más). En el caso (1) NO guardes el movimiento en Bancos mientras tanto, porque crearía un crédito a favor falso.', items };
   if (total && ctx.financiero) r.accion = {
     etiqueta: `Aplicar ${total} pago${total === 1 ? '' : 's'} a su factura`,
-    confirmar: `Se registrará la aplicación de ${total} pago(s) a las facturas con las que ya están ligados: ${convertibles.length + multiRegistrar.length} cuyas facturas ya figuran Pagadas (solo se guarda la aplicación; no cambia ningún saldo, estatus ni importe pagado) y ${aplicables.length + multiAplicar.length} cuyas facturas siguen pendientes en Proveedores (pasan a Pagadas con ese pago; en los pagos de varias facturas, cada una por su propio importe). El Balance no cambia: ya cuenta esos pagos. ¿Continuar?`,
+    confirmar: `Se registrará la aplicación de ${total} pago(s) a las facturas con las que ya están ligados: ${convertibles.length + multiRegistrar.length} cuyas facturas ya figuran Pagadas (solo se guarda la aplicación; no cambia ningún saldo, estatus ni importe pagado) y ${aplicables.length + multiAplicar.length} cuyas facturas siguen pendientes en Proveedores (pasan a Pagadas con ese pago; en los pagos de varias facturas, cada una por su propio importe). ${poolItems.length ? `Además, ${poolItems.length} pago(s) de grupos que comparten facturas (como las propinas): solo se guarda cuánto aplicó cada pago a cada factura, sin cambiar ninguna factura. ` : ''}El Balance no cambia: ya cuenta esos pagos. ¿Continuar?`,
     ejecutar: async () => {
       const fechaCorte = await obtenerFechaCorteRealizacion(b.id);
       const cache = new Map();
@@ -22803,7 +22872,22 @@ function revPagosProveedor(ctx) {
       }
       // pagos de varias facturas pendientes: el flujo normal las paga completas (suman exactamente el pago)
       for (const x of multiAplicar) await aplicarPagoFacturas(x.fs.map(fa => fa.id), Number(x.m.cargos), x.m.fecha, b.id, { origen_tabla: x.t, origen_id: x.m.id });
-      return `${total} pago(s) aplicado(s) (${convertibles.length + multiRegistrar.length} solo registrados, ${aplicables.length + multiAplicar.length} que estaban pendientes).`;
+      // grupos que comparten facturas: se guarda el reparto calculado (cada pago, a las facturas a las que ya estaba ligado)
+      for (const g of poolGrupos) {
+        for (const x of g.miembros) {
+          const { data: yaTiene } = await sb.from('fz_pagos_aplicados').select('id').eq('origen_tabla', x.poolCand.t).eq('origen_id', x.poolCand.m.id).limit(1);
+          if ((yaTiene || []).length) continue; // alguien lo aplicó mientras tanto: no se duplica
+          const suyas = g.asign.filter(a => a.p === `p|${x.poolCand.t}|${x.poolCand.m.id}`);
+          for (const a of suyas) {
+            const { error } = await sb.from('fz_pagos_aplicados').insert({ business_id: b.id, factura_id: a.f, monto: a.cents / 100, origen_tabla: x.poolCand.t, origen_id: x.poolCand.m.id, fecha: x.poolCand.m.fecha, tipo_cambio: null });
+            if (error) throw error;
+            await sincronizarRealizacionFactura(a.f, 'proveedor', b.id, x.poolCand.m.fecha, fechaCorte, cache);
+          }
+          const idsAplicadas = suyas.map(a => a.f);
+          if (idsAplicadas.length) await sb.from(x.poolCand.t).update({ proveedor_factura_ids: idsAplicadas, proveedor_factura_id: idsAplicadas[0] }).eq('id', x.poolCand.m.id);
+        }
+      }
+      return `${total} pago(s) aplicado(s) (${convertibles.length + multiRegistrar.length + poolItems.length} solo registrados, ${aplicables.length + multiAplicar.length} que estaban pendientes).`;
     },
   };
   return r;
