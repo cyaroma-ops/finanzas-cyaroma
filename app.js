@@ -18247,6 +18247,17 @@ async function syncPagoProveedor(businessId, facturaId) {
     ...(emQ.data || []).filter(m => facturaIdsDe(m).length === 1 && facturaIdsDe(m)[0] === facturaId).map(m => ({ ...m, _t: 'fz_efectivo_mov' })),
   ];
 
+  // PROTECCIÓN: este método solo es dueño de los movimientos que ÉL crea ("Pago factura … — proveedor", por el importe de la
+  // factura). Un pago ligado a la factura por otra vía (el modal de Bancos, un pago importado del banco, uno por varias facturas…)
+  // es un pago REAL y NO se borra, no se reescribe y no se duplica desde aquí: antes, cambiar el estatus de la factura lo borraba
+  // o le cambiaba el importe por el de la factura. Se corrige en Bancos/Efectivo.
+  const esDelMetodoRapido = (m) => String(m.descripcion || '').startsWith('Pago factura ') && Math.abs((Number(m.cargos) || 0) - (Number(factura.importe) || 0)) < 0.01;
+  const ajenos = movesUnicos.filter(m => !esDelMetodoRapido(m));
+  if (ajenos.length) {
+    toast(`Esta factura ya tiene un pago ligado (${ajenos.map(m => fmt(m.cargos)).join(', ')}) que no se creó con "Pagado desde", así que NO se modificó ni se borró. Si quieres cambiarlo, hazlo desde ese pago en Bancos/Efectivo.`, 'error');
+    return;
+  }
+
   // Además del movimiento, el método rápido guarda la APLICACIÓN del pago a la factura (la misma que guarda el
   // modal del banco). Sin ella el modal de Bancos mostraba "aplicado $0" y ofrecía crear un crédito a favor
   // falso. Solo negocios financieros y facturas en pesos: en Fiscal Contable la aplicación dispara la
