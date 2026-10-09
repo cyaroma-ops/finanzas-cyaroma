@@ -14414,9 +14414,15 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   // Una factura LIGADA a este pago no significa que su aplicación esté guardada: si falta, lo que se ve (factura marcada, "sobrará
   // crédito…") es solo una vista previa y NO se guarda hasta presionar Guardar. Se avisa para que no parezca que ya quedó aplicada.
   const ligadasSinAplicacionMov = movimientoExistente ? facturaIdsDe(movimientoExistente).filter(id => !((yaAplicadoPorFactura[id] || 0) > 0.004)) : [];
-  const avisoLigadasMov = ligadasSinAplicacionMov.length
-    ? `<div style="background:#fdf3e3;color:var(--gold);border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:12px;line-height:1.45;"><strong>Aviso:</strong> este pago está ligado a ${ligadasSinAplicacionMov.length === 1 ? 'una factura' : ligadasSinAplicacionMov.length + ' facturas'} (grupo ★), pero todavía <strong>no tiene la aplicación guardada</strong>. Lo que ves es una vista previa: presiona <strong>Guardar</strong> para aplicarla.</div>`
-    : '';
+  // Dos situaciones distintas: (a) la factura aún tiene saldo → Guardar aplica el pago y es lo correcto; (b) la factura YA figura pagada por
+  // completo pero este pago no tiene su aplicación → Guardar tomaría todo el pago como sobrante y crearía un crédito a favor FALSO; ahí la
+  // aplicación se registra desde la Revisión de consistencia, sin tocar la factura.
+  const facturaPorIdMov = {}; facturasPend.forEach(f => { facturaPorIdMov[f.id] = f; });
+  const yaPagadasSinAplicarMov = ligadasSinAplicacionMov.map(id => facturaPorIdMov[id]).filter(f => f && (Number(f.importe) - (Number(f.importe_pagado) || 0)) < 0.01);
+  const avisoLigadasMov = !ligadasSinAplicacionMov.length ? ''
+    : (yaPagadasSinAplicarMov.length
+      ? `<div style="background:#fbeaea;color:var(--red);border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:12px;line-height:1.45;"><strong>⚠ No presiones Guardar aquí.</strong> La factura ${yaPagadasSinAplicarMov.map(f => revEsc(f.factura || 's/f')).join(', ')} ya figura <strong>pagada por completo</strong>, pero este pago no tiene su aplicación guardada. Si guardas, todo el pago se tomaría como sobrante y se crearía un <strong>crédito a favor falso</strong>. Registra la aplicación desde <strong>Revisión de consistencia</strong> (botón "Aplicar … a su factura").</div>`
+      : `<div style="background:#fdf3e3;color:var(--gold);border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:12px;line-height:1.45;"><strong>Aviso:</strong> este pago está ligado a ${ligadasSinAplicacionMov.length === 1 ? 'una factura' : ligadasSinAplicacionMov.length + ' facturas'} (grupo ★), pero todavía <strong>no tiene la aplicación guardada</strong>. Lo que ves es una vista previa: presiona <strong>Guardar</strong> para aplicarla.</div>`);
   movFacturasBox.innerHTML = avisoLigadasMov + nombresProveedorMov.map(prov => `
     <div class="mf-grupo factura-provgroup" data-prov="${prov.toLowerCase()}" style="margin-bottom:8px;">
       <div class="mf-grupo-head" style="padding:6px 10px;"><span class="mf-grupo-nombre" style="font-size:11.5px;">${prov}</span><span class="mf-grupo-meta" style="font-size:10.5px;">${porProveedor[prov].length}</span></div>
