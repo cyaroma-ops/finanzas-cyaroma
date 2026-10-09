@@ -14406,12 +14406,18 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   const catalogoNombresProv = await cargarCatalogoProveedoresNombres(contexto.businessId);
   const pendientes = facturasPend.filter(f => f.estatus !== 'Pagado' || idsProvYaVinculados.includes(f.id));
   const porProveedor = {};
-  const GRUPO_APLICADAS_MOV = '★ Aplicadas a este pago';
+  const GRUPO_APLICADAS_MOV = '★ Ligadas a este pago';
   pendientes.forEach(f => { const key = idsProvYaVinculados.includes(f.id) ? GRUPO_APLICADAS_MOV : (f.proveedor || '(sin proveedor)'); (porProveedor[key] = porProveedor[key] || []).push(f); });
   Object.values(porProveedor).forEach(lista => lista.sort((a,b) => a.fecha.localeCompare(b.fecha)));
   const nombresProveedorMov = Object.keys(porProveedor).sort((a,b) => a === GRUPO_APLICADAS_MOV ? -1 : (b === GRUPO_APLICADAS_MOV ? 1 : a.localeCompare(b)));
   const movFacturasBox = document.getElementById('movFacturasList');
-  movFacturasBox.innerHTML = nombresProveedorMov.map(prov => `
+  // Una factura LIGADA a este pago no significa que su aplicación esté guardada: si falta, lo que se ve (factura marcada, "sobrará
+  // crédito…") es solo una vista previa y NO se guarda hasta presionar Guardar. Se avisa para que no parezca que ya quedó aplicada.
+  const ligadasSinAplicacionMov = movimientoExistente ? facturaIdsDe(movimientoExistente).filter(id => !((yaAplicadoPorFactura[id] || 0) > 0.004)) : [];
+  const avisoLigadasMov = ligadasSinAplicacionMov.length
+    ? `<div style="background:#fdf3e3;color:var(--gold);border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:12px;line-height:1.45;"><strong>Aviso:</strong> este pago está ligado a ${ligadasSinAplicacionMov.length === 1 ? 'una factura' : ligadasSinAplicacionMov.length + ' facturas'} (grupo ★), pero todavía <strong>no tiene la aplicación guardada</strong>. Lo que ves es una vista previa: presiona <strong>Guardar</strong> para aplicarla.</div>`
+    : '';
+  movFacturasBox.innerHTML = avisoLigadasMov + nombresProveedorMov.map(prov => `
     <div class="mf-grupo factura-provgroup" data-prov="${prov.toLowerCase()}" style="margin-bottom:8px;">
       <div class="mf-grupo-head" style="padding:6px 10px;"><span class="mf-grupo-nombre" style="font-size:11.5px;">${prov}</span><span class="mf-grupo-meta" style="font-size:10.5px;">${porProveedor[prov].length}</span></div>
       <div class="mf-tabla-wrap"><table class="mf-tabla" style="font-size:11.5px;">
