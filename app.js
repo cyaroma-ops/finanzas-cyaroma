@@ -598,6 +598,20 @@ async function consultarFacturasProveedor(businessId, columnas, ordenar) {
 // "Aplica IVA"…) heredaban la regla de los campos de texto (ancho 100% + relleno de 11px 13px + borde). En Chrome/Edge el relleno se ignora
 // en una casilla; Firefox sí lo respeta, y en una celda de 20 px la casilla se quedaba con ANCHO CERO: se veía solo la fila gris y no se
 // podía marcar nada. Aquí se les devuelve su tamaño natural. Los campos de texto no cambian.
+(function ajustarRevisionDeConsistencia() {
+  if (document.getElementById('estiloRevisionConsistencia')) return;
+  const st = document.createElement('style'); st.id = 'estiloRevisionConsistencia';
+  st.textContent = '#revCuerpo{min-width:0;max-width:100%;}'
+    + '#revCuerpo .card{max-width:100%;min-width:0;overflow:hidden;box-sizing:border-box;}'
+    + '#revCuerpo .card-head{flex-wrap:wrap;gap:8px;min-width:0;}'
+    + '#revCuerpo .card-head h3{min-width:0;max-width:100%;white-space:normal;overflow-wrap:anywhere;word-break:break-word;}'
+    + '#revCuerpo .tabla-operativa,#revCuerpo .tabla-operativa tbody,#revCuerpo .tabla-operativa tr{max-width:100%;min-width:0;box-sizing:border-box;}'
+    + '#revCuerpo .tabla-operativa td{white-space:normal;overflow-wrap:anywhere;word-break:break-word;min-width:0;max-width:100%;}'
+    + '#revCuerpo .card p,#revCuerpo .card div{overflow-wrap:anywhere;word-break:break-word;}'
+    + '#revCuerpo .btn{white-space:normal;max-width:100%;text-align:center;}';
+  document.head.appendChild(st);
+})();
+
 (function corregirCasillasEnCampos() {
   if (document.getElementById('estiloCasillasEnCampos')) return;
   const st = document.createElement('style'); st.id = 'estiloCasillasEnCampos';
@@ -22529,37 +22543,53 @@ function revVentasCategorias(ctx) {
   };
 }
 
-// Propinas por repartir que perdieron su marca de venta (origen_venta_id). Sin ella el motor las toma por una factura de gasto normal:
-// lo no desglosado va a "Sin clasificar" y BAJA LA UTILIDAD, siendo dinero de los empleados. Aquí se les RESTAURA la marca (no se crea ni se
-// borra nada) solo si coinciden exactamente con la propina conciliada de ese día: mismo día, mismo concepto y mismo importe, sin otra
-// propina marcada para esa venta y concepto, y sin que haya dos candidatas.
-function revPropinasSinMarca(ctx) {
-  if (!ctx.financiero) return null;
-  const { ventas, porCat, proveedores, b } = ctx;
-  const base = { id: 'propinas_sin_marca', titulo: 'Propinas por repartir sin su marca de venta (cuentan como gasto)',
-    ayuda: 'Cada propina conciliada se provisiona como cuenta por pagar de "Propinas por repartir" y lleva la marca de la venta que la originó. Sin esa marca, el sistema la toma por una factura de gasto normal: lo que no está desglosado va a "Sin clasificar" y baja la utilidad, aunque es dinero de los empleados. Si coincide exactamente con la propina conciliada de ese día, aquí se le restaura la marca (no se crea ni se borra nada).' };
+// Propinas por repartir SIN la marca de venta (origen_venta_id). Sin ella el motor las toma por una factura de gasto normal: lo no
+// desglosado va a "Sin clasificar" y BAJA LA UTILIDAD, siendo dinero de los empleados. Hay dos situaciones muy distintas:
+//   · HUÉRFANA: no existe otra propina con marca para esa venta y concepto → se le RESTAURA la marca (no se crea ni se borra nada).
+//   · DUPLICADA: la venta ya tiene su propina CON marca por el mismo importe → la copia sin marca cuenta DOS veces la cuenta por pagar y
+//     además suma gasto; restaurarle la marca duplicaría la provisión. Se puede ELIMINAR solo si es una copia limpia (Pendiente, sin pagos,
+//     sin aplicaciones, sin pagos ligados y sin desglose).
+function analizarPropinasSinMarca(ctx) {
+  const { ventas, porCat, proveedores, pagosAplicados, bancosMov, efectivoMov } = ctx;
   const esProp = (f) => String(f.proveedor || '').trim().toLowerCase() === 'propinas por repartir';
   const sinMarca = proveedores.filter(f => esProp(f) && !f.origen_venta_id && Number(f.importe) > 0);
-  if (!sinMarca.length) return { ...base, items: [] };
   const propinas = porCat.propinas || [];
   const marcadas = proveedores.filter(f => f.origen_venta_id);
   const conteo = {};
   const analizadas = sinMarca.map(f => {
     const c = propinas.find(x => f.factura === `Propina ${x.nombre} ${f.fecha}`);
     const vs = ventas.filter(x => x.fecha === f.fecha);
-    let razon = '';
-    if (!c) razon = 'su nombre no corresponde a un concepto de propinas de ese día';
-    else if (vs.length !== 1) razon = vs.length ? 'hay varias ventas ese día' : 'no hay venta capturada ese día';
-    else {
-      const monto = revRedondeo(Number((vs[0].recon_data || {})[c.id]?.monto) || 0);
-      if (Math.abs(monto - Number(f.importe)) >= 0.01) razon = `la venta concilió ${fmt(monto)} y la factura es de ${fmt(f.importe)}`;
-      else if (marcadas.some(m => m.origen_venta_id === vs[0].id && m.origen_concepto_id === c.id)) razon = 'ya existe otra propina con marca para esa venta y concepto';
+    const r = { f, c, v: vs[0], tipo: 'manual', razon: '' };
+    if (!c) { r.razon = 'su nombre no corresponde a un concepto de propinas de ese día'; return r; }
+    if (vs.length !== 1) { r.razon = vs.length ? 'hay varias ventas ese día' : 'no hay venta capturada ese día'; return r; }
+    const monto = revRedondeo(Number((vs[0].recon_data || {})[c.id]?.monto) || 0);
+    if (Math.abs(monto - Number(f.importe)) >= 0.01) { r.razon = `la venta concilió ${fmt(monto)} y la factura es de ${fmt(f.importe)}`; return r; }
+    const delDia = marcadas.filter(m => m.origen_venta_id === vs[0].id && m.origen_concepto_id === c.id);
+    if (delDia.length) {
+      const sumaMarcadas = revRedondeo(delDia.reduce((acc, m) => acc + (Number(m.importe) || 0), 0));
+      if (Math.abs(sumaMarcadas - monto) >= 0.01) { r.razon = `ya existe otra propina con marca por ${fmt(sumaMarcadas)} y la venta concilió ${fmt(monto)}`; return r; }
+      r.tipo = 'duplicada';
+      r.razon = (Number(f.importe_pagado) > 0 || f.estatus !== 'Pendiente') ? 'ya tiene pagos'
+        : pagosAplicados.some(pa => pa.factura_id === f.id) ? 'ya tiene aplicaciones de pago'
+        : [...bancosMov, ...efectivoMov].some(m => facturaIdsDe(m).includes(f.id)) ? 'hay un pago ligado a ella'
+        : desgloseLineas(f.desglose).length ? 'tiene un desglose capturado' : '';
+      r.original = fmt(sumaMarcadas);
+      return r;
     }
-    if (c && vs.length === 1) { const k = `${vs[0].id}|${c.id}`; conteo[k] = (conteo[k] || 0) + 1; }
-    return { f, c, v: vs[0], razon };
+    const k = `${vs[0].id}|${c.id}`; conteo[k] = (conteo[k] || 0) + 1; r.k = k; r.tipo = 'huerfana';
+    return r;
   });
-  analizadas.forEach(a => { if (!a.razon && a.c && a.v && conteo[`${a.v.id}|${a.c.id}`] > 1) a.razon = 'hay varias propinas sin marca para el mismo día y concepto'; });
-  const items = analizadas.map(a => ({ fecha: a.f.fecha, texto: `${fechaCorta(a.f.fecha)} · ${a.f.factura}: ` + (a.razon ? `no se puede restaurar sola (${a.razon})` : 'coincide exactamente con la propina conciliada de ese día; falta su marca y hoy cuenta como gasto sin clasificar'), monto: Number(a.f.importe), ...(a.razon ? {} : { ok: true, f: a.f, c: a.c, v: a.v }) }))
+  analizadas.forEach(a => { if (a.tipo === 'huerfana' && conteo[a.k] > 1) { a.tipo = 'manual'; a.razon = 'hay varias propinas sin marca para el mismo día y concepto'; } });
+  return analizadas;
+}
+
+function revPropinasSinMarca(ctx) {
+  if (!ctx.financiero) return null;
+  const { b } = ctx;
+  const base = { id: 'propinas_sin_marca', titulo: 'Propinas por repartir sin su marca de venta (cuentan como gasto)',
+    ayuda: 'Cada propina conciliada se provisiona como cuenta por pagar de "Propinas por repartir" y lleva la marca de la venta que la originó. Sin esa marca, el sistema la toma por una factura de gasto normal: lo que no está desglosado va a "Sin clasificar" y baja la utilidad, aunque es dinero de los empleados. Si coincide exactamente con la propina conciliada de ese día y no existe otra con marca, aquí se le restaura la marca (no se crea ni se borra nada). Las copias de propinas que ya existen con su marca están en la revisión "Propinas por repartir duplicadas".' };
+  const analizadas = analizarPropinasSinMarca(ctx).filter(a => a.tipo !== 'duplicada');
+  const items = analizadas.map(a => ({ fecha: a.f.fecha, texto: `${fechaCorta(a.f.fecha)} · ${a.f.factura}: ` + (a.tipo === 'huerfana' ? 'coincide exactamente con la propina conciliada de ese día; falta su marca y hoy cuenta como gasto sin clasificar' : `no se puede restaurar sola (${a.razon})`), monto: Number(a.f.importe), ...(a.tipo === 'huerfana' ? { ok: true, f: a.f, c: a.c, v: a.v } : {}) }))
     .sort((a, z) => a.fecha.localeCompare(z.fecha));
   const arreglables = items.filter(x => x.ok);
   const r = { ...base, items };
@@ -22574,6 +22604,39 @@ function revPropinasSinMarca(ctx) {
         if (error) throw error; hechas++;
       }
       return `${hechas} propina(s) marcada(s)${cerradas ? ` (${cerradas} en meses cerrados no se tocaron)` : ''}.`;
+    },
+  };
+  return r;
+}
+
+function revPropinasDuplicadas(ctx) {
+  if (!ctx.financiero) return null;
+  const { b } = ctx;
+  const base = { id: 'propinas_duplicadas', titulo: 'Propinas por repartir duplicadas (esa propina ya existe con su marca)',
+    ayuda: 'La venta de ese día ya tiene su propina provisionada y marcada por el mismo importe; esta es una COPIA sin marca. Hoy duplica la cuenta por pagar de "Propinas por repartir" y además cuenta como gasto sin clasificar, así que baja la utilidad y sube Proveedores por pagar. Si la copia está limpia (Pendiente, sin pagos, sin aplicaciones, sin pagos ligados y sin desglose) se puede eliminar; la propina original queda intacta. Si tiene pagos o desglose, se deja a revisión.' };
+  const analizadas = analizarPropinasSinMarca(ctx).filter(a => a.tipo === 'duplicada');
+  const items = analizadas.map(a => ({ fecha: a.f.fecha, texto: `${fechaCorta(a.f.fecha)} · ${a.f.factura}: copia duplicada (la propina original con marca es de ${a.original})` + (a.razon ? `; no se puede eliminar sola (${a.razon})` : '; se puede eliminar'), monto: Number(a.f.importe), ...(a.razon ? {} : { ok: true, f: a.f }) }))
+    .sort((a, z) => a.fecha.localeCompare(z.fecha));
+  const borrables = items.filter(x => x.ok);
+  const r = { ...base, items };
+  if (borrables.length) r.accion = {
+    etiqueta: `Eliminar ${borrables.length} propina${borrables.length === 1 ? '' : 's'} duplicada${borrables.length === 1 ? '' : 's'}`,
+    confirmar: `Se eliminarán ${borrables.length} copia(s) duplicada(s) de propinas por ${fmt(borrables.reduce((a, x) => a + Number(x.f.importe), 0))}. La propina original de cada venta (con su marca) NO se toca. Efecto: Proveedores por pagar baja ${fmt(borrables.reduce((a, x) => a + Number(x.f.importe), 0))} (estaba contado dos veces) y la utilidad sube lo mismo (dejan de contar como gasto sin clasificar). Los meses cerrados no se tocan. ¿Continuar?`,
+    ejecutar: async () => {
+      let hechas = 0, cerradas = 0, omitidas = 0;
+      for (const x of borrables) {
+        if (await bloqueadoPorCierre(b.id, x.f.fecha)) { cerradas++; continue; }
+        // Se vuelve a comprobar en la base que sigue siendo una copia limpia
+        const { data: fresca } = await sb.from('fz_proveedores').select('id,estatus,importe_pagado,origen_venta_id,proveedor,factura,importe').eq('id', x.f.id).maybeSingle();
+        const { data: apl } = await sb.from('fz_pagos_aplicados').select('id').eq('factura_id', x.f.id).limit(1);
+        if (!fresca || fresca.origen_venta_id || fresca.estatus !== 'Pendiente' || Number(fresca.importe_pagado) > 0 || (apl || []).length) { omitidas++; continue; }
+        await sb.from('fz_adjuntos').delete().eq('tabla', 'fz_proveedores').eq('registro_id', x.f.id);
+        const { error } = await sb.from('fz_proveedores').delete().eq('id', x.f.id);
+        if (error) throw error;
+        registrarAuditoria(b.id, 'eliminar', 'Proveedores', `${fresca.proveedor || 'Propinas por repartir'} · factura ${fresca.factura || 's/f'} · ${fmt(fresca.importe || 0)} (copia duplicada de una propina ya provisionada, eliminada desde la Revisión)`);
+        hechas++;
+      }
+      return `${hechas} propina(s) duplicada(s) eliminada(s)${cerradas ? ` · ${cerradas} en meses cerrados no se tocaron` : ''}${omitidas ? ` · ${omitidas} ya no eran una copia limpia y se dejaron` : ''}.`;
     },
   };
   return r;
@@ -23050,7 +23113,7 @@ function revFacturasSinDesglose(ctx) {
     const dr = desgloseLineas(f.desglose).reduce((a, l) => a + (Number(l.monto) || 0) * tc, 0) + ((f.aplica_iva && Number(f.iva_monto)) ? Number(f.iva_monto) * tc : 0);
     const cr = ((f.aplica_retencion && Number(f.retencion_isr_monto)) ? Number(f.retencion_isr_monto) * tc : 0) + ((f.aplica_retencion && Number(f.retencion_iva_monto)) ? Number(f.retencion_iva_monto) * tc : 0) + (Number(f.importe) || 0) * tc;
     const falta = revRedondeo(cr - dr);
-    if (Math.abs(falta) >= 0.01) items.push({ fecha: f.fecha, texto: `${fechaCorta(f.fecha)} · ${f.proveedor || '?'} · factura ${f.factura || 's/f'}`, monto: falta, ...(String(f.proveedor || '').trim().toLowerCase() === 'propinas por repartir' ? { texto: `${fechaCorta(f.fecha)} · ${f.proveedor} · factura ${f.factura || 's/f'} — propina sin su marca de venta: hoy cuenta como gasto (ver la revisión de propinas sin marca)` } : {}) });
+    if (Math.abs(falta) >= 0.01) items.push({ fecha: f.fecha, texto: `${fechaCorta(f.fecha)} · ${f.proveedor || '?'} · factura ${f.factura || 's/f'}`, monto: falta, ...(String(f.proveedor || '').trim().toLowerCase() === 'propinas por repartir' ? { texto: `${fechaCorta(f.fecha)} · ${f.proveedor} · factura ${f.factura || 's/f'} — propina sin su marca de venta: hoy cuenta como gasto (ver las revisiones de propinas sin marca o duplicadas)` } : {}) });
   });
   items.sort((a, z) => a.fecha.localeCompare(z.fecha));
   return { id: 'facturas_desglose', titulo: 'Facturas sin desglose completo',
@@ -23099,7 +23162,7 @@ function revSalidasSinClasificar(ctx) {
 
 async function ejecutarRevisionConsistencia(b) {
   const ctx = await cargarContextoRevision(b);
-  const checks = [revVentasCategorias, revPropinas, revPropinasSinMarca, revDepositosVentas, revPagosProveedor, revVinculosPagoFactura, revVinculosCobroFactura, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar];
+  const checks = [revVentasCategorias, revPropinas, revPropinasSinMarca, revPropinasDuplicadas, revDepositosVentas, revPagosProveedor, revVinculosPagoFactura, revVinculosCobroFactura, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar];
   const out = [];
   for (const fn of checks) {
     try { const r = fn(ctx); if (r) out.push(r); }
