@@ -22555,7 +22555,7 @@ function revPagosProveedor(ctx) {
       const f = facturaPorId[ids[0]];
       if (f && Number(f.importe) > 0 && (Number(f.tipo_cambio) || 1) === 1 && f.estatus === 'Pagado'
           && Math.abs((Number(f.importe_pagado) || 0) - Number(m.cargos)) < 0.01 && Math.abs(Number(f.importe) - Number(m.cargos)) < 0.01) {
-        const it = { fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${nombre}: factura ${f.factura || 's/f'} ya pagada con "Pagado desde"; falta registrar la aplicación`, monto: revRedondeo(m.cargos), m, t, f };
+        const it = { fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${nombre}: factura ${f.factura || 's/f'} de ${f.proveedor || 'proveedor sin nombre'} ya pagada con "Pagado desde"; falta registrar la aplicación`, monto: revRedondeo(m.cargos), m, t, f };
         items.push(it); convertibles.push(it); return;
       }
     }
@@ -22565,7 +22565,7 @@ function revPagosProveedor(ctx) {
       const f = facturaPorId[ids[0]];
       if (f && Number(f.importe) > 0 && (Number(f.tipo_cambio) || 1) === 1
           && Math.abs(Number(f.importe) - Number(m.cargos)) < 0.01 && Math.abs((Number(f.importe) - (Number(f.importe_pagado) || 0)) - Number(m.cargos)) < 0.01) {
-        const it = { fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${nombre}: pago de ${fmt(m.cargos)} ya ligado a la factura ${f.factura || 's/f'}, que sigue ${String(f.estatus || 'Pendiente').toLowerCase()} en Proveedores (pagado ${fmt(f.importe_pagado || 0)}); falta aplicarlo`, monto: revRedondeo(m.cargos), m, t, f };
+        const it = { fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${nombre}: pago de ${fmt(m.cargos)} ya ligado a la factura ${f.factura || 's/f'} de ${f.proveedor || 'proveedor sin nombre'}, que sigue ${String(f.estatus || 'Pendiente').toLowerCase()} en Proveedores (pagado ${fmt(f.importe_pagado || 0)}); falta aplicarlo`, monto: revRedondeo(m.cargos), m, t, f };
         items.push(it); aplicables.push(it); return;
       }
     }
@@ -22579,7 +22579,7 @@ function revPagosProveedor(ctx) {
   items.sort((a, z) => a.fecha.localeCompare(z.fecha));
   const total = convertibles.length + aplicables.length;
   const r = { id: 'pagos_proveedor', titulo: 'Pagos a proveedor sin aplicar o aplicados de menos',
-    ayuda: 'El Balance baja Proveedores por lo que salió del banco, pero en el módulo de Proveedores esas facturas pueden seguir como pendientes. Cada renglón dice en qué situación está: (1) factura ya pagada por el método rápido: solo falta registrar la aplicación; (2) pago ya ligado a una factura del mismo importe que sigue pendiente: se aplica y la factura pasa a Pagada; (3) sin factura ligada, o con importes distintos: abre el pago y elige o ajusta su factura (se crea el crédito a favor si pagaste de más). En el caso (1) NO guardes el movimiento en Bancos mientras tanto, porque crearía un crédito a favor falso.', items };
+    ayuda: 'Antes de presionar el botón, confirma en cada renglón que el proveedor de la factura corresponde al pago: el sistema aplica el pago a la factura con la que YA está ligado (nunca une por coincidencia de importe), así que una liga equivocada se aplicaría tal cual. El Balance baja Proveedores por lo que salió del banco, pero en el módulo de Proveedores esas facturas pueden seguir como pendientes. Cada renglón dice en qué situación está: (1) factura ya pagada por el método rápido: solo falta registrar la aplicación; (2) pago ya ligado a una factura del mismo importe que sigue pendiente: se aplica y la factura pasa a Pagada; (3) sin factura ligada, o con importes distintos: abre el pago y elige o ajusta su factura (se crea el crédito a favor si pagaste de más). En el caso (1) NO guardes el movimiento en Bancos mientras tanto, porque crearía un crédito a favor falso.', items };
   if (total && ctx.financiero) r.accion = {
     etiqueta: `Aplicar ${total} pago${total === 1 ? '' : 's'} a su factura`,
     confirmar: `Se registrará la aplicación de ${total} pago(s) a la factura con la que ya están ligados: ${convertibles.length} cuya factura ya figura Pagada (solo se guarda la aplicación; no cambia ningún saldo, estatus ni importe pagado) y ${aplicables.length} cuya factura sigue pendiente en Proveedores (la factura pasa a Pagada con ese pago). El Balance no cambia: ya cuenta esos pagos. ¿Continuar?`,
