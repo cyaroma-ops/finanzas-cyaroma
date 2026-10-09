@@ -11424,6 +11424,39 @@ async function renderAuxiliares() {
   });
 }
 
+// DOCUMENTOS "DE UN SOLO LADO" POR DISEÑO (solo negocios Financieros). No son error; su contrapartida está en otro lado:
+//  · la venta conciliada que espera su depósito → su contrapartida es el depósito en Bancos/Efectivo (cuenta "Ventas pendientes de depositar");
+//  · la propina por repartir → su contrapartida es esa misma venta;
+//  · el "Crédito a favor (pago del …)" que nace de un pago en exceso y el PAGO que lo originó → juntos se compensan a cero.
+// Mismo criterio para Diarios y Pólizas y para el diagnóstico de la Balanza.
+async function cargarInfoDocumentosPorDiseno(businessId) {
+  const [prop, conOrigen, porLeyenda] = await Promise.all([
+    sb.from('fz_proveedores').select('id').eq('business_id', businessId).not('origen_venta_id', 'is', null),
+    sb.from('fz_proveedores').select('id,origen_id').eq('business_id', businessId).not('origen_id', 'is', null),
+    sb.from('fz_proveedores').select('id,origen_id').eq('business_id', businessId).like('factura', 'Crédito a favor (pago del%'),
+  ]);
+  const creditos = new Map(); // id de la factura de crédito -> id del movimiento que la originó (si se conoce)
+  [...(conOrigen.data || []), ...(porLeyenda.data || [])].forEach(f => creditos.set(f.id, f.origen_id || creditos.get(f.id) || null));
+  return { propinas: new Set((prop.data || []).map(x => x.id)), creditos };
+}
+// Marca en cada documento (con .tipoOrigen, .id, .fecha y .diferencia = cargos − abonos) si es de un solo lado POR DISEÑO.
+function marcarDocumentosPorDiseno(documentos, info) {
+  const porClave = new Map(documentos.map(d => [d.tipoOrigen + ':' + d.id, d]));
+  documentos.forEach(d => {
+    if (d.tipoOrigen === 'venta_recibido') d.unLadoPorDiseno = true;
+    else if (d.tipoOrigen === 'factura_proveedor' && info.propinas.has(d.id)) d.unLadoPorDiseno = true;
+  });
+  // El par pago en exceso + crédito a favor se marca SOLO si de verdad se compensa a cero; si no cuadra, los dos quedan a la vista.
+  info.creditos.forEach((origenId, facturaId) => {
+    const credito = porClave.get('factura_proveedor:' + facturaId);
+    if (!credito) return;
+    const candidatos = origenId
+      ? ['banco_mov', 'efectivo_mov'].map(t => porClave.get(t + ':' + origenId)).filter(Boolean)
+      : documentos.filter(d => (d.tipoOrigen === 'banco_mov' || d.tipoOrigen === 'efectivo_mov') && d.fecha === credito.fecha && Math.abs(d.diferencia + credito.diferencia) <= 0.01);
+    if (candidatos.length === 1 && Math.abs(candidatos[0].diferencia + credito.diferencia) <= 0.01) { credito.unLadoPorDiseno = true; candidatos[0].unLadoPorDiseno = true; }
+  });
+}
+
 async function renderDiariosPolizasVista() {
   const el = document.getElementById('diariospolizas-vista');
   const b = biz();
@@ -11433,7 +11466,11 @@ async function renderDiariosPolizasVista() {
   const { start: inicioMes, end: finMes } = monthBounds(STATE.currentMonth);
   const desde = STATE_dpFiltros.desde || inicioMes;
   const hasta = STATE_dpFiltros.hasta || finMes;
-  const { filas } = await getLibroPartidaDobleConOrigen(b.id, hasta, desde);
+  const esFinDp = esNegocioFinanciero(b);
+  const [{ filas }, infoDiseno] = await Promise.all([
+    getLibroPartidaDobleConOrigen(b.id, hasta, desde),
+    esFinDp ? cargarInfoDocumentosPorDiseno(b.id) : Promise.resolve(null),
+  ]);
 
   const grupos = {};
   filas.filter(f => f.fecha >= desde && f.fecha <= hasta).forEach(f => {
@@ -11449,12 +11486,13 @@ async function renderDiariosPolizasVista() {
     const esAuto = g.tipoOrigen !== 'poliza' || (g.detalle||'').includes('[Auto]');
     return { ...g, generacion: esAuto ? 'Automática' : 'Manual', diferencia: g.cargo - g.abono };
   });
+  if (esFinDp && infoDiseno) marcarDocumentosPorDiseno(documentos, infoDiseno); // antes de filtrar: el par crédito–pago se busca entre todos
   documentos.sort((a,b) => a.fecha.localeCompare(b.fecha) || a.referencia.localeCompare(b.referencia));
 
   // Filtros
   if (STATE_dpFiltros.origen !== 'todos') documentos = documentos.filter(d => d.tipoOrigen === STATE_dpFiltros.origen);
   if (STATE_dpFiltros.tipo !== 'todas') documentos = documentos.filter(d => (STATE_dpFiltros.tipo === 'manual' ? d.generacion==='Manual' : d.generacion==='Automática'));
-  if (STATE_dpFiltros.cuadre !== 'todas') documentos = documentos.filter(d => (STATE_dpFiltros.cuadre === 'cuadradas' ? Math.abs(d.diferencia)<=0.001 : Math.abs(d.diferencia)>0.001));
+  if (STATE_dpFiltros.cuadre !== 'todas') documentos = documentos.filter(d => (STATE_dpFiltros.cuadre === 'cuadradas' ? Math.abs(d.diferencia)<=0.001 : (Math.abs(d.diferencia)>0.001 && !d.unLadoPorDiseno)));
   if (STATE_dpFiltros.buscar.trim()) {
     const q = STATE_dpFiltros.buscar.trim().toLowerCase();
     documentos = documentos.filter(d => (d.referencia||'').toLowerCase().includes(q) || (d.detalle||'').toLowerCase().includes(q));
@@ -11483,7 +11521,7 @@ async function renderDiariosPolizasVista() {
           <tfoot><tr class="total-row"><td>TOTAL</td><td class="num">${fmt(d.cargo)}</td><td class="num">${fmt(d.abono)}</td></tr></tfoot>
         </table>
       </div>
-      ${!cuadra ? `<p style="font-size:12.5px;font-weight:700;color:var(--red);">Diferencia: ${fmt(Math.abs(d.diferencia))} — ${d.diferencia<0?'Abonos exceden Cargos':'Cargos exceden Abonos'} por ${fmt(Math.abs(d.diferencia))}</p>` : ''}
+      ${!cuadra && d.unLadoPorDiseno ? `<p style="font-size:12px;color:var(--muted);">Documento de un solo lado por diseño: ${d.tipoOrigen === 'venta_recibido' ? 'es lo vendido que espera su depósito; su contrapartida es el depósito en Bancos o Efectivo (cuenta "Ventas pendientes de depositar").' : (d.tipoOrigen === 'factura_proveedor' && !String(d.referencia || '').startsWith('Cr') ? 'es la propina por repartir; su contrapartida es la venta conciliada.' : 'es un pago en exceso a un proveedor y su crédito a favor; juntos se compensan a cero.')} No es un error.</p>` : !cuadra ? `<p style="font-size:12.5px;font-weight:700;color:var(--red);">Diferencia: ${fmt(Math.abs(d.diferencia))} — ${d.diferencia<0?'Abonos exceden Cargos':'Cargos exceden Abonos'} por ${fmt(Math.abs(d.diferencia))}</p>` : ''}
       <button class="btn btn-ghost btn-sm dp-ver-documento" data-idx="${idx}" style="margin-top:6px;">Ver documento</button>
     </div>`;
   };
@@ -19579,11 +19617,11 @@ async function diagnosticarDescuadreBalanza(businessId, hastaFecha) {
   });
   let documentosDescuadrados = Object.values(grupos).filter(g => Math.abs(g.cargo - g.abono) > 0.001);
   if (esNegocioFinanciero((STATE.businesses || []).find(x => x.id === businessId))) {
-    // En un negocio Financiero hay documentos de un solo lado por diseño y NO son error: el depósito de Ventas pendiente
-    // de depositar (su contrapartida son las partidas de Ventas de la Balanza) y las propinas por repartir.
-    const { data: facturasDePropina } = await sb.from('fz_proveedores').select('id').eq('business_id', businessId).not('origen_venta_id', 'is', null);
-    const idsPropina = new Set((facturasDePropina || []).map(x => x.id));
-    documentosDescuadrados = documentosDescuadrados.filter(g => g.tipoOrigen !== 'venta_recibido' && !(g.tipoOrigen === 'factura_proveedor' && idsPropina.has(g.id)));
+    // En un negocio Financiero hay documentos de un solo lado por diseño y NO son error (ventas esperando depósito, propinas
+    // por repartir, y el par pago en exceso + crédito a favor, que se compensa a cero). Ver marcarDocumentosPorDiseno.
+    const todos = Object.values(grupos).map(g => ({ ...g, diferencia: g.cargo - g.abono }));
+    marcarDocumentosPorDiseno(todos, await cargarInfoDocumentosPorDiseno(businessId));
+    documentosDescuadrados = todos.filter(g => Math.abs(g.diferencia) > 0.001 && !g.unLadoPorDiseno);
   }
 
   const paresTraspasoDescuadrados = [];
