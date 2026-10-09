@@ -22792,7 +22792,7 @@ function revDepositosVentas(ctx) {
 // suman = lo que las facturas dicen tener pagado sin aplicar) existe un reparto que respeta todas las ligas, y para el Balance es indiferente
 // porque el fondo es uno solo. Se calcula con flujo máximo sobre las ligas existentes (un pago solo puede aplicarse a las facturas a las que ya está
 // ligado), en centavos enteros. Si no cuadra exacto, NO se hace nada.
-function asignarPagosAFacturas(pagos, facturas, enlaces) {
+function asignarPagosAFacturas(pagos, facturas, enlaces, tolCents = 0) {
   const n = 2 + pagos.length + facturas.length, S = 0, T = 1, GRANDE = 1e12;
   const idxP = new Map(pagos.map((p, i) => [p.k, 2 + i])), idxF = new Map(facturas.map((f, i) => [f.k, 2 + pagos.length + i]));
   const cap = Array.from({ length: n }, () => new Map());
@@ -22813,7 +22813,9 @@ function asignarPagosAFacturas(pagos, facturas, enlaces) {
   const totalPagos = pagos.reduce((a, p) => a + p.cents, 0);
   const asign = [];
   unicos.forEach(([kp, kf]) => { const u = idxP.get(kp), v = idxF.get(kf); if (u === undefined || v === undefined) return; const usado = cap[v].get(u) || 0; if (usado > 0) asign.push({ p: kp, f: kf, cents: usado }); });
-  return { ok: flujo === totalPagos, asign };
+  const totalFacturas = facturas.reduce((a, f) => a + f.cents, 0);
+  // todo lo que pueda aplicarse se aplicó, y lo que sobra o falta no pasa de la tolerancia (centavos de redondeo)
+  return { ok: flujo === Math.min(totalPagos, totalFacturas) && Math.abs(totalPagos - totalFacturas) <= tolCents, asign };
 }
 
 // ---------- LIGAR UN PAGO A UNA FACTURA (desde la Revisión) ----------
@@ -23039,16 +23041,26 @@ function revPagosProveedor(ctx) {
       creditosG.forEach(c => { const d = duenoCredito.get(c.id); fondos.set(d, (fondos.get(d) || 0) + Math.abs(Number(c.importe))); });
       const sumaPagos = revRedondeo([...fondos.values()].reduce((acc, v) => acc + v, 0));
       const sumaNeed = revRedondeo(necesidad.reduce((acc, n) => acc + n.need, 0));
-      if (Math.abs(sumaPagos - sumaNeed) >= 0.01) return noResuelve(`los pagos${creditosG.length ? ' (con sus créditos a favor)' : ''} suman ${fmt(sumaPagos)} y lo que las facturas dicen tener pagado sin aplicar suma ${fmt(sumaNeed)}`);
+      // El reparto de propinas entre empleados se redondea al centavo, así que la suma de los pagos puede diferir de lo pagado en las facturas por unos
+      // centavos. Se tolera $0.01 por pago con tope de $0.10; más que eso se deja a revisión.
+      const tolG = Math.min(0.10, 0.01 * Math.max(1, miembros.length));
+      const difG = revRedondeo(sumaPagos - sumaNeed);
+      if (Math.abs(difG) > tolG + 0.0001) return noResuelve(`los pagos${creditosG.length ? ' (con sus créditos a favor)' : ''} suman ${fmt(sumaPagos)} y lo que las facturas dicen tener pagado sin aplicar suma ${fmt(sumaNeed)}`);
       const idsReales = new Set(realesG.map(f => f.id));
       const enlaces = miembros.flatMap(x => x.poolCand.ids.filter(fid => idsReales.has(fid)).map(fid => [kPago(x), fid]));
-      const r = asignarPagosAFacturas(miembros.map(x => ({ k: kPago(x), cents: Math.round(fondos.get(x) * 100) })), necesidad.filter(n => n.need > 0.004).map(n => ({ k: n.f.id, cents: Math.round(n.need * 100) })), enlaces);
+      const r = asignarPagosAFacturas(miembros.map(x => ({ k: kPago(x), cents: Math.round(fondos.get(x) * 100) })), necesidad.filter(n => n.need > 0.004).map(n => ({ k: n.f.id, cents: Math.round(n.need * 100) })), enlaces, Math.round(tolG * 100));
       if (!r.ok) return noResuelve('las cantidades cuadran en total pero no hay un reparto que respete las facturas a las que cada pago está ligado');
+      // Centavos de redondeo: si a un pago le SOBRA, queda como CRÉDITO A FAVOR (baja Proveedores); si a una factura le FALTA, queda como SALDO PENDIENTE
+      // (se sigue debiendo). Igual que el flujo normal, pero sin esconder el centavo.
+      const fondosCents = {}; miembros.forEach(x => { fondosCents[kPago(x)] = Math.round(fondos.get(x) * 100); });
+      const needCents = {}; necesidad.forEach(n => { needCents[n.f.id] = Math.round(n.need * 100); });
+      const sobraTotal = Object.values(fondosCents).reduce((acc, v) => acc + v, 0) - r.asign.reduce((acc, a) => acc + a.cents, 0);
+      if (sobraTotal > 0 && new Set(realesG.map(f => f.proveedor)).size > 1) return noResuelve('sobran centavos y las facturas son de varios proveedores');
       creditosG.forEach(c => r.asign.push({ p: kPago(duenoCredito.get(c.id)), f: c.id, cents: Math.round(Math.abs(Number(c.importe)) * 100) }));
-      const grupo = { miembros, asign: r.asign, fs };
+      const grupo = { miembros, asign: r.asign, fs, dif: difG, fondosCents, needCents, realesIds: realesG.map(f => f.id), reales: realesG };
       poolGrupos.push(grupo);
       miembros.forEach(x => {
-        x.texto = `${fechaCorta(x.poolCand.m.fecha)} · ${x.poolCand.m.proveedor || x.poolCand.m.descripcion || 'Pago a proveedor'}: pago de ${fmt(x.poolCand.m.cargos)} de un ${etiquetaG} de ${[...new Set(fs.map(f => f.proveedor || 'proveedor sin nombre'))].join(' / ')} cuyas cantidades cuadran exactamente; falta registrar su aplicación`;
+        x.texto = `${fechaCorta(x.poolCand.m.fecha)} · ${x.poolCand.m.proveedor || x.poolCand.m.descripcion || 'Pago a proveedor'}: pago de ${fmt(x.poolCand.m.cargos)} de un ${etiquetaG} de ${[...new Set(fs.map(f => f.proveedor || 'proveedor sin nombre'))].join(' / ')} cuyas cantidades cuadran${Math.abs(difG) >= 0.005 ? ` con una diferencia de ${fmt(Math.abs(difG))} por redondeo (${difG > 0 ? 'los pagos suman un poco más: lo que sobra queda como crédito a favor' : 'a las facturas les falta ese resto: queda como saldo pendiente'})` : ' exactamente'}; falta registrar su aplicación`;
         x.poolOk = true; poolItems.push(x);
       });
     });
@@ -23056,10 +23068,10 @@ function revPagosProveedor(ctx) {
   items.sort((a, z) => a.fecha.localeCompare(z.fecha));
   const total = convertibles.length + aplicables.length + multiRegistrar.length + multiAplicar.length + poolItems.length;
   const r = { id: 'pagos_proveedor', titulo: 'Pagos a proveedor sin aplicar o aplicados de menos',
-    ayuda: 'Antes de presionar el botón, confirma en cada renglón que el proveedor de la factura corresponde al pago: el sistema aplica el pago a la factura con la que YA está ligado (nunca une por coincidencia de importe), así que una liga equivocada se aplicaría tal cual. El Balance baja Proveedores por lo que salió del banco, pero en el módulo de Proveedores esas facturas pueden seguir como pendientes. Cada renglón dice en qué situación está: (1) factura ya pagada por el método rápido: solo falta registrar la aplicación; (2) pago ya ligado a una factura del mismo importe que sigue pendiente: se aplica y la factura pasa a Pagada; (2b) pago ligado a varias facturas que suman exactamente el pago: se registra o se aplica a cada una por su propio importe; (2c) grupo de pagos que comparten facturas (como las propinas por repartir): si las cantidades cuadran exactamente, se registra cuánto aplicó cada pago a cada factura, y el crédito a favor que algún pago haya usado se registra como usado; (3) sin factura ligada, o con importes distintos: abre el pago y elige o ajusta su factura (se crea el crédito a favor si pagaste de más). En el caso (1) NO guardes el movimiento en Bancos mientras tanto, porque crearía un crédito a favor falso.', items };
+    ayuda: 'Antes de presionar el botón, confirma en cada renglón que el proveedor de la factura corresponde al pago: el sistema aplica el pago a la factura con la que YA está ligado (nunca une por coincidencia de importe), así que una liga equivocada se aplicaría tal cual. El Balance baja Proveedores por lo que salió del banco, pero en el módulo de Proveedores esas facturas pueden seguir como pendientes. Cada renglón dice en qué situación está: (1) factura ya pagada por el método rápido: solo falta registrar la aplicación; (2) pago ya ligado a una factura del mismo importe que sigue pendiente: se aplica y la factura pasa a Pagada; (2b) pago ligado a varias facturas que suman exactamente el pago: se registra o se aplica a cada una por su propio importe; (2c) grupo de pagos que comparten facturas (como las propinas por repartir): si las cantidades cuadran exactamente (o con una diferencia de unos centavos por redondeo), se registra cuánto aplicó cada pago a cada factura, y el crédito a favor que algún pago haya usado se registra como usado; (3) sin factura ligada, o con importes distintos: abre el pago y elige o ajusta su factura (se crea el crédito a favor si pagaste de más). En el caso (1) NO guardes el movimiento en Bancos mientras tanto, porque crearía un crédito a favor falso.', items };
   if (total && ctx.financiero) r.accion = {
     etiqueta: `Aplicar ${total} pago${total === 1 ? '' : 's'} a su factura`,
-    confirmar: `Se registrará la aplicación de ${total} pago(s) a las facturas con las que ya están ligados: ${convertibles.length + multiRegistrar.length} cuyas facturas ya figuran Pagadas (solo se guarda la aplicación; no cambia ningún saldo, estatus ni importe pagado) y ${aplicables.length + multiAplicar.length} cuyas facturas siguen pendientes en Proveedores (pasan a Pagadas con ese pago; en los pagos de varias facturas, cada una por su propio importe). ${poolItems.length ? `Además, ${poolItems.length} pago(s) de grupos que comparten facturas (como las propinas): solo se guarda cuánto aplicó cada pago a cada factura, sin cambiar ninguna factura. ` : ''}El Balance no cambia: ya cuenta esos pagos. ¿Continuar?`,
+    confirmar: `Se registrará la aplicación de ${total} pago(s) a las facturas con las que ya están ligados: ${convertibles.length + multiRegistrar.length} cuyas facturas ya figuran Pagadas (solo se guarda la aplicación; no cambia ningún saldo, estatus ni importe pagado) y ${aplicables.length + multiAplicar.length} cuyas facturas siguen pendientes en Proveedores (pasan a Pagadas con ese pago; en los pagos de varias facturas, cada una por su propio importe). ${poolItems.length ? `Además, ${poolItems.length} pago(s) de grupos que comparten facturas (como las propinas): solo se guarda cuánto aplicó cada pago a cada factura, sin cambiar ninguna factura. ${poolGrupos.some(g => Math.abs(g.dif) >= 0.005) ? 'Algunos grupos tienen una diferencia de centavos por redondeo: si a un pago le sobra, se registra como crédito a favor (baja Proveedores); si a una factura le falta, queda como saldo pendiente (sigue por pagar). El Balance no cambia. ' : ''}` : ''}El Balance no cambia: ya cuenta esos pagos. ¿Continuar?`,
     ejecutar: async () => {
       const fechaCorte = await obtenerFechaCorteRealizacion(b.id);
       const cache = new Map();
@@ -23092,6 +23104,31 @@ function revPagosProveedor(ctx) {
           }
           const idsAplicadas = suyas.map(a => a.f);
           if (idsAplicadas.length) await sb.from(x.poolCand.t).update({ proveedor_factura_ids: idsAplicadas, proveedor_factura_id: idsAplicadas[0] }).eq('id', x.poolCand.m.id);
+          // lo que SOBRA de este pago (centavos de redondeo) queda como crédito a favor, como lo hace el flujo normal
+          const kP = `p|${x.poolCand.t}|${x.poolCand.m.id}`;
+          const aplicadoReal = suyas.filter(a => g.realesIds.includes(a.f)).reduce((acc, a) => acc + a.cents, 0);
+          const sobra = (g.fondosCents[kP] || 0) - aplicadoReal;
+          if (sobra >= 1) {
+            const { data: yaCredito } = await sb.from('fz_proveedores').select('id').eq('origen_tabla', x.poolCand.t).eq('origen_id', x.poolCand.m.id).lt('importe', 0).limit(1);
+            const base = g.reales[0];
+            if (!(yaCredito || []).length && base) {
+              const { error: eC } = await sb.from('fz_proveedores').insert({ business_id: b.id, proveedor_id: base.proveedor_id, proveedor: base.proveedor, fecha: x.poolCand.m.fecha, factura: `Crédito a favor (pago del ${x.poolCand.m.fecha})`, importe: -(sobra / 100), estatus: 'Pendiente', origen_tabla: x.poolCand.t, origen_id: x.poolCand.m.id });
+              if (eC) throw eC;
+            }
+          }
+        }
+        // lo que FALTA a una factura (centavos de redondeo) queda como saldo pendiente: su pagado baja a lo realmente aplicado
+        for (const fid of g.realesIds) {
+          const recibido = g.asign.filter(a => a.f === fid).reduce((acc, a) => acc + a.cents, 0);
+          const falta = (g.needCents[fid] || 0) - recibido;
+          if (falta >= 1) {
+            const { data: fa } = await sb.from('fz_proveedores').select('id,importe,importe_pagado,estatus').eq('id', fid).maybeSingle();
+            if (!fa) continue;
+            const nuevoPagado = revRedondeo((Number(fa.importe_pagado) || 0) - falta / 100);
+            const estatus = nuevoPagado >= Number(fa.importe) - 0.005 ? 'Pagado' : (nuevoPagado > 0.004 ? 'Parcial' : 'Pendiente');
+            const { error: eF } = await sb.from('fz_proveedores').update({ importe_pagado: nuevoPagado, estatus }).eq('id', fid);
+            if (eF) throw eF;
+          }
         }
       }
       return `${total} pago(s) aplicado(s) (${convertibles.length + multiRegistrar.length + poolItems.length} solo registrados, ${aplicables.length + multiAplicar.length} que estaban pendientes).`;
