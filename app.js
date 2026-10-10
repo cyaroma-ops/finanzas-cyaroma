@@ -14933,6 +14933,10 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     const idsFacturas = tipoElegido === 'proveedor' ? Array.from(document.querySelectorAll('.mov-factura-check:checked')).map(c => c.value) : [];
     const idsFacturasCliente = esClasifCliente ? Array.from(document.querySelectorAll('.mov-factura-cliente-check:checked')).map(c => c.value) : [];
 
+    // Facturas en moneda extranjera: este formulario todavía no las maneja (las guardaría como si fueran pesos y hasta crearía un crédito a favor falso).
+    // Se pagan con «Registrar pago» dentro de Proveedores (o el cobro en Clientes), que sí capturan la moneda y el tipo de cambio.
+    const monedasExtranjerasSel = [...idsFacturas.map(id => (mapaFacturaProvMov[id] || {}).moneda), ...idsFacturasCliente.map(id => (mapaFacturaClienteMov[id] || {}).moneda)].filter(mo => mo && mo !== 'MXN');
+    if (monedasExtranjerasSel.length) { toast(`Hay facturas en ${[...new Set(monedasExtranjerasSel)].join('/')}: este formulario todavía no las maneja y las guardaría como pesos. Regístralo con «Registrar pago» en Proveedores (o el cobro en Clientes), que sí captura la moneda y el tipo de cambio.`, 'error'); return; }
     // Multimoneda — solo aplica a las clasificaciones cliente/proveedor con al menos una factura
     // marcada. Gasto/traspaso/otro nunca entran aquí, se comportan exactamente igual que antes.
     let montoCuentaOverride = null, tcHistoricoMov = null, equivalenteMxnMov = null;
@@ -22729,11 +22733,11 @@ async function cargarContextoRevision(b) {
     if (error) throw new Error(`${tabla}: ${error.message}`);
     return data || [];
   };
-  const [ventas, conceptos, conceptosVenta, conceptosSistema, proveedores, bancosMov, efectivoMov, pagosAplicados, polizas, lineas, monedas, cobrosAplicados, facturasClientes, clientes] = await Promise.all([
+  const [ventas, conceptos, conceptosVenta, conceptosSistema, proveedores, bancosMov, efectivoMov, pagosAplicados, polizas, lineas, monedas, cobrosAplicados, facturasClientes, clientes, bancosCuentas] = await Promise.all([
     pag('fz_ventas'), loadConceptos(b.id), loadConceptosVenta(b.id), loadConceptosSistema(b.id),
     pag('fz_proveedores'), pag('fz_bancos_mov'), pag('fz_efectivo_mov'), pag('fz_pagos_aplicados'),
     pag('fz_polizas'), pag('fz_polizas_lineas', 'id,poliza_id,cargo,abono,cuenta_tipo,proveedor_factura_id'), pag('fz_efectivo_monedas'),
-    pag('fz_cobros_aplicados'), pag('fz_facturas_clientes', 'id,folio,numero_factura,total,cliente_id,fecha,importe_pagado,estatus,moneda'), pag('fz_clientes'), // todos los clientes, activos o no: un crédito de un cliente dado de baja también debe mostrar su nombre
+    pag('fz_cobros_aplicados'), pag('fz_facturas_clientes', 'id,folio,numero_factura,total,cliente_id,fecha,importe_pagado,estatus,moneda'), pag('fz_clientes'), pag('fz_bancos_cuentas', 'id,moneda'), // todos los clientes, activos o no: un crédito de un cliente dado de baja también debe mostrar su nombre
   ]);
   const porCat = {
     efectivo: conceptos.filter(c => c.categoria === 'efectivo'), tarjetas: conceptos.filter(c => c.categoria === 'tarjetas'),
@@ -22749,7 +22753,7 @@ async function cargarContextoRevision(b) {
     docsLibro = Object.values(grupos).map(g => ({ ...g, diferencia: g.cargo - g.abono }));
     if (esNegocioFinanciero(b)) marcarDocumentosPorDiseno(docsLibro, await cargarInfoDocumentosPorDiseno(b.id));
   } catch (e) { errorLibro = e.message || String(e); }
-  return { b, financiero: ventasAfectaFueraDeSuRegistro(b.id), ventas, conceptos, conceptosVenta, conceptosSistema, porCat,
+  return { b, bancosCuentas, financiero: ventasAfectaFueraDeSuRegistro(b.id), ventas, conceptos, conceptosVenta, conceptosSistema, porCat,
            proveedores, bancosMov, efectivoMov, pagosAplicados, polizas, lineas, monedas, cobrosAplicados, facturasClientes, clientes, docsLibro, errorLibro };
 }
 
@@ -23178,7 +23182,7 @@ async function registrarGrupoPagos(g, b, facturaPorId, fechaCorte, cache) {
 }
 
 function revPagosProveedor(ctx) {
-  const { bancosMov, efectivoMov, pagosAplicados, proveedores, monedas, b } = ctx;
+  const { bancosMov, efectivoMov, pagosAplicados, proveedores, monedas, b, bancosCuentas } = ctx;
   ctx.deficitGrupos = []; // grupos a los que les falta dinero: los usa la revisión de pagos reubicables
   ctx.gruposFaltante = []; // y su reparto propuesto: lo usa la revisión de grupos con faltante
   const esPesos = (id) => { const n = (monedas.find(x => x.id === id)?.nombre || '').toLowerCase(); return n.includes('mxn') || n.includes('peso'); };
@@ -23186,10 +23190,20 @@ function revPagosProveedor(ctx) {
     ...bancosMov.map(m => ({ m, t: 'fz_bancos_mov' })),
     ...efectivoMov.filter(m => esPesos(m.moneda_id)).map(m => ({ m, t: 'fz_efectivo_mov' })),
   ].filter(x => x.m.tipo_salida === 'proveedor' && Number(x.m.cargos) > 0);
-  const aplicadoPor = {};
-  pagosAplicados.forEach(p => { const k = `${p.origen_tabla}|${p.origen_id}`; aplicadoPor[k] = (aplicadoPor[k] || 0) + (Number(p.monto) || 0); });
-  const creditos = proveedores.filter(f => Number(f.importe) < 0);
   const facturaPorId = Object.fromEntries(proveedores.map(f => [f.id, f]));
+  const movPorClave = {}; lista.forEach(x => { movPorClave[`${x.t}|${x.m.id}`] = x; });
+  const monedaDeCuentaBanco = (m) => ((bancosCuentas || []).find(c => c.id === m.cuenta_id) || {}).moneda || 'MXN';
+  const aplicadoPor = {};
+  pagosAplicados.forEach(p => {
+    const k = `${p.origen_tabla}|${p.origen_id}`; let monto = Number(p.monto) || 0;
+    const f = facturaPorId[p.factura_id], x = movPorClave[k];
+    // Un pago desde una cuenta en PESOS a una factura en DIVISA (p. ej. USD): la aplicación queda en la moneda de la factura y el pago en pesos.
+    // Se compara en pesos con el tipo de cambio REAL del pago (el de la aplicación; si falta, el del movimiento; si falta, el de la factura).
+    // Con una cuenta en la misma divisa de la factura no hay conversión.
+    if (f && f.moneda && f.moneda !== 'MXN' && x && (x.t === 'fz_efectivo_mov' || monedaDeCuentaBanco(x.m) === 'MXN')) monto = monto * (Number(p.tipo_cambio) || Number(x.m.tipo_cambio_historico) || Number(f.tipo_cambio) || 1);
+    aplicadoPor[k] = (aplicadoPor[k] || 0) + monto;
+  });
+  const creditos = proveedores.filter(f => Number(f.importe) < 0);
   const items = []; const convertibles = []; const aplicables = []; const multiRegistrar = []; const multiAplicar = []; const ocultos = [];
   lista.forEach(({ m, t }) => {
     const aplicado = revRedondeo(aplicadoPor[`${t}|${m.id}`] || 0);
@@ -23198,6 +23212,10 @@ function revPagosProveedor(ctx) {
     const credito = creditos.some(c => (c.origen_tabla === t && c.origen_id === m.id) || (!c.origen_id && c.factura === `Crédito a favor (pago del ${m.fecha})`));  // la leyenda con la fecha solo vale para créditos VIEJOS sin origen; un crédito con origen es de UN pago, no de todos los de ese día
     if (credito) { const idsH = facturaIdsDe(m); if (aplicado < 0.005 && idsH.length) ocultos.push({ m, t, ids: idsH }); return; } // el excedente ya tiene su crédito a favor
     const nombre = m.proveedor || m.descripcion || 'Pago a proveedor';
+    if (facturaIdsDe(m).some(id => { const f = facturaPorId[id]; return f && f.moneda && f.moneda !== 'MXN'; })) {
+      items.push({ fecha: m.fecha, monto: falta, texto: `${fechaCorta(m.fecha)} · ${nombre}: salió ${fmt(m.cargos)} (pesos); lo aplicado a sus facturas en divisa equivale a ${fmt(aplicado)} al tipo de cambio de cada aplicación · quedan ${fmt(falta)} sin explicar: revisa en Proveedores el monto y el tipo de cambio de este pago (esta revisión no lo corrige sola)` });
+      return;
+    }
     // Método rápido de Proveedores: la factura se marcó "Pagado" con su "Pagado desde" y el sistema creó este
     // movimiento ligado a ella (proveedor_factura_ids) SIN guardar la aplicación. El Balance lo cuenta bien
     // (baja Proveedores por lo que salió); solo falta el registro de la aplicación, y por eso el modal del
