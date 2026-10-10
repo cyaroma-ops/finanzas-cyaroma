@@ -22576,8 +22576,17 @@ async function cargarContextoRevision(b) {
     bancos: conceptos.filter(c => c.categoria === 'bancos'), cxc: conceptos.filter(c => c.categoria === 'cxc'),
     propinas: conceptos.filter(c => c.categoria === 'propinas'),
   };
+  // Documentos del libro contable (para ver descuadres, incluidos los de centavos que un solo documento "por diseño" esconde). Si el libro no se puede leer, la revisión lo dice.
+  let docsLibro = null, errorLibro = null;
+  try {
+    const { filas } = await getLibroPartidaDobleConOrigen(b.id, todayStr());
+    const grupos = {};
+    filas.forEach(f => { const k = f.tipoOrigen + ':' + f.id; const g = grupos[k] = grupos[k] || { modulo: f.modulo, tipoOrigen: f.tipoOrigen, id: f.id, fecha: f.fecha, referencia: f.referencia, detalle: f.detalle, cargo: 0, abono: 0 }; g.cargo += f.cargo; g.abono += f.abono; });
+    docsLibro = Object.values(grupos).map(g => ({ ...g, diferencia: g.cargo - g.abono }));
+    if (esNegocioFinanciero(b)) marcarDocumentosPorDiseno(docsLibro, await cargarInfoDocumentosPorDiseno(b.id));
+  } catch (e) { errorLibro = e.message || String(e); }
   return { b, financiero: ventasAfectaFueraDeSuRegistro(b.id), ventas, conceptos, conceptosVenta, conceptosSistema, porCat,
-           proveedores, bancosMov, efectivoMov, pagosAplicados, polizas, lineas, monedas, cobrosAplicados, facturasClientes };
+           proveedores, bancosMov, efectivoMov, pagosAplicados, polizas, lineas, monedas, cobrosAplicados, facturasClientes, docsLibro, errorLibro };
 }
 
 // Cada revisión devuelve { id, titulo, ayuda, items:[{texto, monto?}], nota?, accion?:{etiqueta, ejecutar} } o null si no aplica.
@@ -23306,6 +23315,59 @@ function revCreditosDuplicados(ctx) {
   return r;
 }
 
+// Facturas de proveedor cuyo PAGADO no coincide con lo que realmente se les aplicó: (1) figuran pagadas y no tienen ningún pago ligado ni aplicado; (2) las aplicaciones suman
+// más de lo que la factura figura pagada; (3) su estatus no corresponde con lo pagado. Solo lee: no cambia nada. Los pagos que SÍ están ligados pero sin aplicar los ve la revisión
+// de "Pagos a proveedor sin aplicar", y no se repiten aquí.
+function revFacturasPagoIncoherente(ctx) {
+  if (!ctx.financiero) return null;
+  const { proveedores, pagosAplicados, bancosMov, efectivoMov } = ctx;
+  const base = { id: 'facturas_pago_incoherente', titulo: 'Facturas de proveedor con lo pagado distinto de lo aplicado',
+    ayuda: 'Compara lo que cada factura dice tener pagado contra lo que realmente se le aplicó. (1) "Pagada sin ningún pago": la factura figura pagada pero ningún pago está ligado a ella ni aplicado; el Balance cuenta su pasivo completo, así que el módulo de Proveedores está desfasado: registra el pago que falta o corrige lo pagado. (2) "Aplicado de más": las aplicaciones suman más de lo que la factura figura pagada. (3) "Estatus incoherente": el estatus no corresponde con el monto pagado. Los pagos que sí están ligados pero sin aplicar aparecen en "Pagos a proveedor sin aplicar". Esta revisión solo lee; no cambia nada. Las facturas en moneda extranjera no se comparan.' };
+  const ligadas = new Set();
+  [...bancosMov, ...efectivoMov].filter(m => m.tipo_salida === 'proveedor').forEach(m => {
+    const ids = Array.isArray(m.proveedor_factura_ids) && m.proveedor_factura_ids.length ? m.proveedor_factura_ids : (m.proveedor_factura_id ? [m.proveedor_factura_id] : []);
+    ids.forEach(id => ligadas.add(id));
+  });
+  const aplicado = {}; pagosAplicados.forEach(a => { aplicado[a.factura_id] = (aplicado[a.factura_id] || 0) + (Number(a.monto) || 0); });
+  const items = [];
+  proveedores.forEach(f => {
+    const imp = Number(f.importe) || 0;
+    if (imp <= 0 || (f.moneda && f.moneda !== 'MXN')) return;
+    const pagado = Number(f.importe_pagado) || 0, apl = aplicado[f.id] || 0;
+    const etiqueta = `${fechaCorta(f.fecha)} · ${f.proveedor || 'Proveedor'} · ${f.factura || 's/f'}`;
+    if (pagado - apl > 0.005 && !ligadas.has(f.id)) items.push({ fecha: f.fecha, monto: revRedondeo(pagado - apl), texto: `${etiqueta}: pagada sin ningún pago. Figura pagada ${fmt(pagado)} (${f.estatus}) y no tiene ningún pago ligado; aplicado ${fmt(apl)}` });
+    else if (apl - pagado > 0.005) items.push({ fecha: f.fecha, monto: revRedondeo(apl - pagado), texto: `${etiqueta}: aplicado de más. Las aplicaciones suman ${fmt(apl)} y la factura figura pagada por ${fmt(pagado)} (${f.estatus})` });
+    const estatusMal = (f.estatus === 'Pagado' && pagado < imp - 0.005) || (f.estatus === 'Pendiente' && pagado > 0.005) || (f.estatus === 'Parcial' && (pagado <= 0.005 || pagado >= imp - 0.005));
+    if (estatusMal) items.push({ fecha: f.fecha, monto: revRedondeo(imp - pagado), texto: `${etiqueta}: estatus incoherente. Es ${f.estatus} con importe ${fmt(imp)} y pagado ${fmt(pagado)}` });
+  });
+  items.sort((a, z) => a.fecha.localeCompare(z.fecha));
+  return { ...base, items: items.slice(0, 120), ...(items.length > 120 ? { nota: `Se muestran 120 de ${items.length}.` } : {}) };
+}
+
+// Libro contable: (A) documentos descuadrados que NO son de un solo lado por diseño (los mismos que lista la Balanza) y (B) CENTAVOS que no se compensan: los documentos de un solo lado
+// por diseño (un pago en exceso y su crédito a favor) se anulan entre sí; si en una fecha no se anulan, el Balance queda descuadrado por esa diferencia aunque ningún documento
+// "se vea" mal por sí solo. Solo lee: no cambia nada.
+function revDescuadreLibro(ctx) {
+  const base = { id: 'descuadre_libro', titulo: 'Libro contable: documentos descuadrados y centavos que no se compensan',
+    ayuda: 'Lee los documentos del libro. (A) Documentos descuadrados que no son de un solo lado por diseño (los mismos del diagnóstico de la Balanza). (B) Centavos que no se compensan: por diseño, un pago en exceso y su crédito a favor son de un solo lado y se anulan entre sí; si en una fecha no se anulan (por ejemplo, un crédito duplicado), el Balance queda descuadrado por esa diferencia sin que ningún documento se vea mal por sí solo. Si el Balance marca un descuadre y esta revisión sale vacía, la diferencia está entre la utilidad del libro y la del Estado de Resultados: ver las verificaciones de la Balanza. Esta revisión solo lee; no cambia nada.' };
+  if (ctx.errorLibro) return { ...base, items: [], nota: `No se pudo leer el libro contable: ${ctx.errorLibro}` };
+  const docs = ctx.docsLibro || [];
+  const sueltos = docs.filter(d => Math.abs(d.diferencia) > 0.001 && !d.unLadoPorDiseno);
+  const enSueltos = new Set(sueltos);
+  const chicos = docs.filter(d => Math.abs(d.diferencia) > 0.001 && Math.abs(d.diferencia) < 1 && !enSueltos.has(d));
+  const items = sueltos.map(d => ({ fecha: d.fecha, monto: revRedondeo(d.diferencia), texto: `${fechaCorta(d.fecha)} · ${d.modulo}: ${String(d.referencia || d.detalle || '').slice(0, 60)}: cargos ${fmt(d.cargo)} − abonos ${fmt(d.abono)} = ${fmt(d.diferencia)}` }));
+  const porFecha = new Map();
+  chicos.forEach(d => { if (!porFecha.has(d.fecha)) porFecha.set(d.fecha, []); porFecha.get(d.fecha).push(d); });
+  porFecha.forEach((ds, fecha) => {
+    const neto = revRedondeo(ds.reduce((acc, d) => acc + d.diferencia, 0));
+    if (Math.abs(neto) < 0.005) return; // se compensan: es lo normal
+    const detalle = ds.map(d => `${d.modulo} ${d.diferencia > 0 ? '+' : ''}${revRedondeo(d.diferencia).toFixed(2)}`).join(', ');
+    items.push({ fecha, monto: neto, texto: `${fechaCorta(fecha)} · centavos que no se compensan: ${ds.length} documento(s) (${detalle}) dejan ${neto > 0 ? '+' : ''}${neto.toFixed(2)} de diferencia` });
+  });
+  items.sort((a, z) => a.fecha.localeCompare(z.fecha));
+  return { ...base, items: items.slice(0, 80), ...(items.length > 80 ? { nota: `Se muestran 80 de ${items.length}.` } : {}) };
+}
+
 // Un pago YA aplicado por completo, pero a facturas de hace semanas (el sistema aplica un pago a la factura pendiente más vieja), cuyo monto es EXACTAMENTE lo que
 // le falta a los grupos de pagos de su misma fecha: casi seguro es un pago de esa corrida que se aplicó a la factura equivocada. Se propone reubicarlo. Siempre con
 // confirmación, y solo si hay UNA combinación posible; si es ambiguo, no se propone nada.
@@ -23552,7 +23614,7 @@ function revSalidasSinClasificar(ctx) {
 
 async function ejecutarRevisionConsistencia(b) {
   const ctx = await cargarContextoRevision(b);
-  const checks = [revVentasCategorias, revPropinas, revPropinasSinMarca, revPropinasDuplicadas, revDepositosVentas, revPagosProveedor, revPagosReubicables, revGruposConFaltante, revCreditosDuplicados, revVinculosPagoFactura, revVinculosCobroFactura, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar];
+  const checks = [revVentasCategorias, revPropinas, revPropinasSinMarca, revPropinasDuplicadas, revDepositosVentas, revPagosProveedor, revPagosReubicables, revGruposConFaltante, revCreditosDuplicados, revFacturasPagoIncoherente, revDescuadreLibro, revVinculosPagoFactura, revVinculosCobroFactura, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar];
   const out = [];
   for (const fn of checks) {
     try { const r = fn(ctx); if (r) out.push(r); }
