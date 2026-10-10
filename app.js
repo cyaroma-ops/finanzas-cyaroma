@@ -22978,8 +22978,11 @@ async function registrarGrupoPagos(g, b, facturaPorId, fechaCorte, cache) {
     const sobra = (g.fondosCents[kP] || 0) - aplicadoReal - ((g.aCreditoCents || {})[kP] || 0);
     if (sobra >= 1) {
       const { data: yaCredito } = await sb.from('fz_proveedores').select('id').eq('origen_tabla', x.poolCand.t).eq('origen_id', x.poolCand.m.id).lt('importe', 0).limit(1);
+      // un crédito VIEJO (sin origen) con la leyenda de este pago y el mismo monto YA es el crédito de este sobrante, aunque ya se haya usado: no se crea otro
+      const { data: credLegado } = await sb.from('fz_proveedores').select('id,importe,origen_id').eq('business_id', b.id).eq('factura', `Crédito a favor (pago del ${x.poolCand.m.fecha})`).lt('importe', 0);
+      const yaCubierto = (credLegado || []).some(c2 => !c2.origen_id && Math.abs(Math.abs(Number(c2.importe)) - sobra / 100) <= 0.02);
       const base = g.reales[0];
-      if (!(yaCredito || []).length && base) {
+      if (!(yaCredito || []).length && !yaCubierto && base) {
         const { error: eC } = await sb.from('fz_proveedores').insert({ business_id: b.id, proveedor_id: base.proveedor_id, proveedor: base.proveedor, fecha: x.poolCand.m.fecha, factura: `Crédito a favor (pago del ${x.poolCand.m.fecha})`, importe: -(sobra / 100), estatus: 'Pendiente', origen_tabla: x.poolCand.t, origen_id: x.poolCand.m.id });
         if (eC) throw eC;
       }
@@ -23134,7 +23137,8 @@ function revPagosProveedor(ctx) {
       // concentrado en UN solo pago, que es lo que el motor reconoce (repartirlo entre varios movería el Balance). Si el crédito ya tiene aplicaciones, no se toca.
       const idsFSet = new Set(fs.map(f => f.id)); const proveedoresG = new Set(realesG.map(f => f.proveedor));
       const donantesDe = (c) => c.origen_id ? miembros.filter(x => c.origen_tabla === x.poolCand.t && c.origen_id === x.poolCand.m.id) : miembros.filter(x => c.factura === `Crédito a favor (pago del ${x.poolCand.m.fecha})`);
-      const nacidos = creditos.filter(c => c.estatus === 'Pendiente' && !idsFSet.has(c.id) && proveedoresG.has(c.proveedor) && !pagosAplicados.some(pa => pa.factura_id === c.id) && donantesDe(c).length);
+      // (aunque el crédito ya se haya USADO en otro grupo, sigue siendo el crédito del sobrante de SU pago: si no se reconoce, el sobrante se tomaría por redondeo y se crearía un segundo crédito igual)
+      const nacidos = creditos.filter(c => !idsFSet.has(c.id) && proveedoresG.has(c.proveedor) && donantesDe(c).length);
       const fondos = new Map(miembros.map(x => [x, revRedondeo(Number(x.poolCand.m.cargos) - (x.poolCand.parcial || 0))]));
       creditosG.forEach(c => { const d = duenoCredito.get(c.id); fondos.set(d, (fondos.get(d) || 0) + Math.abs(Number(c.importe))); });
       const sumaPagos = revRedondeo([...fondos.values()].reduce((acc, v) => acc + v, 0));
@@ -23250,6 +23254,52 @@ function revGruposConFaltante(ctx) {
         for (const { g } of items) await registrarGrupoPagos(g.grupo, b, facturaPorId, fechaCorte, cache);
         registrarAuditoria(b.id, 'editar', 'Proveedores', `${items.length} grupo(s) de pagos registrados dejando ${fmt(total)} como saldo pendiente (Revisión de consistencia)`);
         return `${items.length} grupo(s) registrado(s); ${fmt(total)} quedó como saldo pendiente en sus facturas.`;
+      },
+    };
+  }
+  return r;
+}
+
+// Créditos a favor DUPLICADOS: el mismo sobrante de un pago quedó con dos créditos iguales y con la misma leyenda: el viejo (sin origen), que ya se USÓ (Pagado o con aplicaciones),
+// y uno NUEVO ligado al pago por su origen, sin usar. El libro cuenta los dos como un cargo a Proveedores, y uno solo está respaldado: el Balance queda descuadrado por ese monto.
+// Se elimina el NUEVO (sin usar, sin aplicaciones); el viejo cubre el sobrante del pago por su leyenda, que es como el motor ya lo reconocía.
+function revCreditosDuplicados(ctx) {
+  if (!ctx.financiero) return null;
+  const { proveedores, pagosAplicados, b } = ctx;
+  const base = { id: 'creditos_duplicados', titulo: 'Créditos a favor duplicados (un sobrante con dos créditos iguales)',
+    ayuda: 'Un mismo sobrante de un pago quedó con DOS créditos a favor iguales y con la misma leyenda: uno viejo, sin origen, que ya se usó en otro pago, y uno nuevo, ligado al pago, sin usar. El libro cuenta los dos como un cargo a Proveedores, pero solo uno tiene respaldo, y por eso el Balance queda descuadrado por ese monto (aparece como una diferencia de centavos en el libro). Se elimina el nuevo (sin usar y sin aplicaciones); el viejo sigue cubriendo el sobrante del pago. El Balance vuelve a cuadrar y no cambia ninguna otra cifra.' };
+  const creditos = proveedores.filter(f => Number(f.importe) < 0);
+  const usado = (c) => c.estatus === 'Pagado' || (Number(c.importe_pagado) || 0) > 0.009 || pagosAplicados.some(pa => pa.factura_id === c.id);
+  const porLeyenda = new Map();
+  creditos.forEach(c => { const k = `${c.proveedor_id || c.proveedor}|${c.factura}`; if (!porLeyenda.has(k)) porLeyenda.set(k, []); porLeyenda.get(k).push(c); });
+  const sobrantes = [];
+  porLeyenda.forEach(cs => {
+    if (cs.length < 2) return;
+    cs.filter(c => c.origen_id && !usado(c)).forEach(nuevo => {
+      const viejo = cs.find(v => v !== nuevo && !v.origen_id && usado(v) && Math.abs(Math.abs(Number(v.importe)) - Math.abs(Number(nuevo.importe))) <= 0.005);
+      if (viejo) sobrantes.push({ nuevo, viejo });
+    });
+  });
+  const items = sobrantes.map(x => ({ fecha: x.nuevo.fecha, texto: `${fechaCorta(x.nuevo.fecha)} · ${x.nuevo.proveedor || 'Proveedor'}: dos créditos a favor de ${fmt(Math.abs(Number(x.nuevo.importe)))} con la leyenda "${x.nuevo.factura}": el viejo (${x.viejo.estatus}, ya usado) y uno nuevo ligado al pago (${x.nuevo.estatus}, sin usar). El nuevo sobra y descuadra el Balance en ${fmt(Math.abs(Number(x.nuevo.importe)))}`, monto: Math.abs(Number(x.nuevo.importe)), x })).sort((a, z) => a.fecha.localeCompare(z.fecha));
+  const r = { ...base, items };
+  if (items.length) {
+    const total = items.reduce((acc, i) => acc + i.monto, 0);
+    r.accion = {
+      etiqueta: `Eliminar ${items.length} crédito${items.length === 1 ? '' : 's'} duplicado${items.length === 1 ? '' : 's'} (${fmt(total)})`,
+      confirmar: `Se eliminará(n) ${items.length} crédito(s) a favor NUEVO(s), sin usar y sin aplicaciones, que duplican a otro crédito viejo ya usado (${fmt(total)} en total). El viejo sigue cubriendo el sobrante del pago, y el Balance vuelve a cuadrar por ese monto. Los meses cerrados no se tocan. ¿Continuar?`,
+      ejecutar: async () => {
+        let hechos = 0, cerrados = 0, omitidos = 0;
+        for (const { x } of items) {
+          if (await bloqueadoPorCierre(b.id, x.nuevo.fecha)) { cerrados++; continue; }
+          const { data: fr } = await sb.from('fz_proveedores').select('id,estatus,importe_pagado').eq('id', x.nuevo.id).maybeSingle();
+          const { data: aps } = await sb.from('fz_pagos_aplicados').select('id').eq('factura_id', x.nuevo.id).limit(1);
+          if (!fr || fr.estatus === 'Pagado' || (Number(fr.importe_pagado) || 0) > 0.009 || (aps || []).length) { omitidos++; continue; } // alguien lo usó mientras tanto
+          const { error } = await sb.from('fz_proveedores').delete().eq('id', x.nuevo.id);
+          if (error) throw error;
+          registrarAuditoria(b.id, 'eliminar', 'Proveedores', `Crédito a favor duplicado de ${fmt(Math.abs(Number(x.nuevo.importe)))} (${x.nuevo.factura}) eliminado: ya existía el crédito viejo que cubre ese sobrante (Revisión de consistencia)`);
+          hechos++;
+        }
+        return `${hechos} crédito(s) duplicado(s) eliminado(s)${cerrados ? ` · ${cerrados} en meses cerrados no se tocaron` : ''}${omitidos ? ` · ${omitidos} ya se habían usado y se dejaron` : ''}.`;
       },
     };
   }
@@ -23502,7 +23552,7 @@ function revSalidasSinClasificar(ctx) {
 
 async function ejecutarRevisionConsistencia(b) {
   const ctx = await cargarContextoRevision(b);
-  const checks = [revVentasCategorias, revPropinas, revPropinasSinMarca, revPropinasDuplicadas, revDepositosVentas, revPagosProveedor, revPagosReubicables, revGruposConFaltante, revVinculosPagoFactura, revVinculosCobroFactura, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar];
+  const checks = [revVentasCategorias, revPropinas, revPropinasSinMarca, revPropinasDuplicadas, revDepositosVentas, revPagosProveedor, revPagosReubicables, revGruposConFaltante, revCreditosDuplicados, revVinculosPagoFactura, revVinculosCobroFactura, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar];
   const out = [];
   for (const fn of checks) {
     try { const r = fn(ctx); if (r) out.push(r); }
