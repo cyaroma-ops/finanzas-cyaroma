@@ -22732,7 +22732,7 @@ async function cargarContextoRevision(b) {
   const [ventas, conceptos, conceptosVenta, conceptosSistema, proveedores, bancosMov, efectivoMov, pagosAplicados, polizas, lineas, monedas, cobrosAplicados, facturasClientes, clientes] = await Promise.all([
     pag('fz_ventas'), loadConceptos(b.id), loadConceptosVenta(b.id), loadConceptosSistema(b.id),
     pag('fz_proveedores'), pag('fz_bancos_mov'), pag('fz_efectivo_mov'), pag('fz_pagos_aplicados'),
-    pag('fz_polizas'), pag('fz_polizas_lineas', 'id,poliza_id,cargo,abono'), pag('fz_efectivo_monedas'),
+    pag('fz_polizas'), pag('fz_polizas_lineas', 'id,poliza_id,cargo,abono,cuenta_tipo,proveedor_factura_id'), pag('fz_efectivo_monedas'),
     pag('fz_cobros_aplicados'), pag('fz_facturas_clientes', 'id,folio,numero_factura,total,cliente_id,fecha,importe_pagado,estatus,moneda'), pag('fz_clientes'), // todos los clientes, activos o no: un crédito de un cliente dado de baja también debe mostrar su nombre
   ]);
   const porCat = {
@@ -23484,23 +23484,25 @@ function revCreditosDuplicados(ctx) {
 // de "Pagos a proveedor sin aplicar", y no se repiten aquí.
 function revFacturasPagoIncoherente(ctx) {
   if (!ctx.financiero) return null;
-  const { proveedores, pagosAplicados, bancosMov, efectivoMov } = ctx;
+  const { proveedores, pagosAplicados, bancosMov, efectivoMov, lineas } = ctx;
   const base = { id: 'facturas_pago_incoherente', titulo: 'Facturas de proveedor con lo pagado distinto de lo aplicado',
-    ayuda: 'Compara lo que cada factura dice tener pagado contra lo que realmente se le aplicó. (1) "Pagada sin ningún pago": la factura figura pagada pero ningún pago está ligado a ella ni aplicado; el Balance cuenta su pasivo completo, así que el módulo de Proveedores está desfasado: registra el pago que falta o corrige lo pagado. (2) "Aplicado de más": las aplicaciones suman más de lo que la factura figura pagada. (3) "Estatus incoherente": el estatus no corresponde con el monto pagado. Los pagos que sí están ligados pero sin aplicar aparecen en "Pagos a proveedor sin aplicar". Esta revisión solo lee; no cambia nada. Las facturas en moneda extranjera no se comparan.' };
+    ayuda: 'Compara lo que cada factura dice tener pagado contra lo que realmente se le aplicó. (1) "Pagada sin ningún pago": la factura figura pagada pero ningún pago está ligado a ella ni aplicado; el Balance cuenta su pasivo completo, así que el módulo de Proveedores está desfasado: registra el pago que falta o corrige lo pagado. (2) "Aplicado de más": las aplicaciones suman más de lo que la factura figura pagada. (3) "Estatus incoherente": el estatus no corresponde con el monto pagado. Un pago hecho con una póliza de diario cuya línea está ligada a la factura también cuenta como pago. Los pagos que sí están ligados pero sin aplicar aparecen en "Pagos a proveedor sin aplicar". Las facturas en moneda extranjera no se comparan.' };
   const ligadas = new Set();
   [...bancosMov, ...efectivoMov].filter(m => m.tipo_salida === 'proveedor').forEach(m => {
     const ids = Array.isArray(m.proveedor_factura_ids) && m.proveedor_factura_ids.length ? m.proveedor_factura_ids : (m.proveedor_factura_id ? [m.proveedor_factura_id] : []);
     ids.forEach(id => ligadas.add(id));
   });
   const aplicado = {}; pagosAplicados.forEach(a => { aplicado[a.factura_id] = (aplicado[a.factura_id] || 0) + (Number(a.monto) || 0); });
+  // pagos hechos con PÓLIZA DE DIARIO: la línea (cuenta_tipo proveedor) liga la factura y su cargo es lo pagado (misma regla que sincronizarPagoDesdePolizas)
+  const porPolizas = {}; (lineas || []).forEach(l => { if (l.cuenta_tipo === 'proveedor' && l.proveedor_factura_id) porPolizas[l.proveedor_factura_id] = (porPolizas[l.proveedor_factura_id] || 0) + (Number(l.cargo) || 0); });
   const items = [];
   proveedores.forEach(f => {
     const imp = Number(f.importe) || 0;
     if (imp <= 0 || (f.moneda && f.moneda !== 'MXN')) return;
-    const pagado = Number(f.importe_pagado) || 0, apl = aplicado[f.id] || 0;
+    const pagado = Number(f.importe_pagado) || 0, apl = aplicado[f.id] || 0, pol = porPolizas[f.id] || 0, respaldo = apl + pol;
     const etiqueta = `${fechaCorta(f.fecha)} · ${f.proveedor || 'Proveedor'} · ${f.factura || 's/f'}`;
-    if (pagado - apl > 0.005 && !ligadas.has(f.id)) items.push({ tipo: 'sin_pago', f, pagado, apl, fecha: f.fecha, monto: revRedondeo(pagado - apl), texto: `${etiqueta}: pagada sin ningún pago. Figura pagada ${fmt(pagado)} (${f.estatus}) y no tiene ningún pago ligado; aplicado ${fmt(apl)}` });
-    else if (apl - pagado > 0.005) items.push({ fecha: f.fecha, monto: revRedondeo(apl - pagado), texto: `${etiqueta}: aplicado de más. Las aplicaciones suman ${fmt(apl)} y la factura figura pagada por ${fmt(pagado)} (${f.estatus})` });
+    if (pagado - respaldo > 0.005 && !ligadas.has(f.id)) items.push({ tipo: 'sin_pago', f, pagado, apl, pol, fecha: f.fecha, monto: revRedondeo(pagado - respaldo), texto: `${etiqueta}: pagada sin ningún pago. Figura pagada ${fmt(pagado)} (${f.estatus}) y no tiene ningún pago ligado; aplicado ${fmt(apl)}${pol > 0.004 ? ` y en pólizas ${fmt(pol)}` : ''}` });
+    else if (respaldo - pagado > 0.005) items.push({ fecha: f.fecha, monto: revRedondeo(respaldo - pagado), texto: `${etiqueta}: aplicado de más. Las aplicaciones${pol > 0.004 ? ' y las pólizas' : ''} suman ${fmt(respaldo)} y la factura figura pagada por ${fmt(pagado)} (${f.estatus})` });
     const estatusMal = (f.estatus === 'Pagado' && pagado < imp - 0.005) || (f.estatus === 'Pendiente' && pagado > 0.005) || (f.estatus === 'Parcial' && (pagado <= 0.005 || pagado >= imp - 0.005));
     if (estatusMal) items.push({ fecha: f.fecha, monto: revRedondeo(imp - pagado), texto: `${etiqueta}: estatus incoherente. Es ${f.estatus} con importe ${fmt(imp)} y pagado ${fmt(pagado)}` });
   });
@@ -23522,7 +23524,8 @@ function revFacturasPagoIncoherente(ctx) {
           if (await bloqueadoPorCierre(b.id, it.f.fecha)) { cerradas++; continue; }
           const { data: fr } = await sb.from('fz_proveedores').select('id,importe,importe_pagado,estatus').eq('id', it.f.id).maybeSingle();
           const { data: aps } = await sb.from('fz_pagos_aplicados').select('monto').eq('factura_id', it.f.id);
-          const aplicadoAhora = revRedondeo((aps || []).reduce((acc, a) => acc + (Number(a.monto) || 0), 0));
+          const { data: lps } = await sb.from('fz_polizas_lineas').select('cargo').eq('business_id', b.id).eq('cuenta_tipo', 'proveedor').eq('proveedor_factura_id', it.f.id);
+          const aplicadoAhora = revRedondeo((aps || []).reduce((acc, a) => acc + (Number(a.monto) || 0), 0) + (lps || []).reduce((acc, l) => acc + (Number(l.cargo) || 0), 0)); // aplicaciones + pólizas ligadas
           const pagadoAhora = Number(fr && fr.importe_pagado) || 0;
           // se vuelve a comprobar: sigue igual que en pantalla, ningún pago se le ligó mientras tanto y de verdad hay pagado sin respaldo
           if (!fr || ligadasAhora.has(it.f.id) || Math.abs(pagadoAhora - it.pagado) > 0.005 || pagadoAhora - aplicadoAhora < 0.005) { omitidas++; continue; }
