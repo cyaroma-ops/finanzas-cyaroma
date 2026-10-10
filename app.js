@@ -13920,6 +13920,43 @@ async function clasificarPagoPendiente(pagoId, businessId, { tipo, refId, subcue
   return { ok: true };
 }
 
+// Aplica créditos a favor de un cliente (la parte sin factura de un cobro anterior) a las facturas elegidas de ese mismo cliente, de la más antigua a la más nueva. Lo cobrado ya
+// existía: solo se reparte entre más facturas, así que el cobro original, el Banco y el Balance no cambian (los créditos solo existen en negocios financieros). Si el cobro que se
+// está guardando ya había aplicado algo a esas facturas (edición), ese monto cuenta como disponible en su saldo (se revierte al reaplicar). Devuelve cuánto crédito se usó.
+async function consumirCreditosCliente(businessId, creditos, idsFacturas, yaAplicadoPorFactura, fechaPago) {
+  const { data: facts } = await sb.from('fz_facturas_clientes').select('*').in('id', idsFacturas);
+  const pend = (facts || []).filter(f => !f.moneda || f.moneda === 'MXN').sort((a, z) => String(a.fecha).localeCompare(String(z.fecha)) || (Number(a.folio) || 0) - (Number(z.folio) || 0));
+  const saldoEf = (f) => revRedondeo(Number(f.total) - Math.max(0, (Number(f.importe_pagado) || 0) - ((yaAplicadoPorFactura || {})[f.id] || 0)));
+  let usadoTotal = 0;
+  for (const cr of creditos) {
+    const { data: filas } = await sb.from('fz_cobros_aplicados').select('id,factura_id,monto').eq('origen_tabla', cr.tabla).eq('origen_id', cr.origenId);
+    const filasCred = (filas || []).filter(a => !a.factura_id);
+    let resto = revRedondeo(filasCred.reduce((acc, a) => acc + (Number(a.monto) || 0), 0));
+    if (resto < 0.01) continue;
+    const nuevos = []; let usado = 0;
+    for (const f of pend) {
+      if (resto < 0.01) break;
+      const saldo = saldoEf(f); if (saldo <= 0.009) continue;
+      const x = revRedondeo(Math.min(resto, saldo));
+      const nuevoPagado = revRedondeo((Number(f.importe_pagado) || 0) + x);
+      const { error: eF } = await sb.from('fz_facturas_clientes').update({ importe_pagado: nuevoPagado, estatus: nuevoPagado >= Number(f.total) - 0.01 ? 'Pagado' : 'Parcial', fecha_pago: fechaPago }).eq('id', f.id);
+      if (eF) throw eF;
+      const { error: eA } = await sb.from('fz_cobros_aplicados').insert({ business_id: businessId, factura_id: f.id, monto: x, origen_tabla: cr.tabla, origen_id: cr.origenId, fecha: cr.fecha, tipo_cambio: null });
+      if (eA) throw eA;
+      f.importe_pagado = nuevoPagado; nuevos.push(f.id); resto = revRedondeo(resto - x); usado = revRedondeo(usado + x);
+    }
+    if (!nuevos.length) continue;
+    const idsBorrar = filasCred.map(a => a.id);
+    if (idsBorrar.length) await sb.from('fz_cobros_aplicados').delete().in('id', idsBorrar);
+    if (resto >= 0.01) await sb.from('fz_cobros_aplicados').insert({ business_id: businessId, factura_id: null, monto: resto, origen_tabla: cr.tabla, origen_id: cr.origenId, fecha: cr.fecha, notas: 'Crédito a favor del cliente' });
+    const { data: movOrig } = await sb.from(cr.tabla).select('id,cliente_factura_ids,cliente_factura_id').eq('id', cr.origenId).maybeSingle();
+    if (movOrig) { const ligados = [...new Set([...facturaIdsClienteDe(movOrig), ...nuevos])]; await sb.from(cr.tabla).update({ cliente_factura_ids: ligados, cliente_factura_id: ligados[0] || null }).eq('id', cr.origenId); }
+    registrarAuditoria(businessId, 'editar', 'Clientes', `Crédito a favor del cliente de ${fmt(usado)} (cobro original) aplicado a ${nuevos.length} factura(s) desde un cobro nuevo`);
+    usadoTotal = revRedondeo(usadoTotal + usado);
+  }
+  return usadoTotal;
+}
+
 async function aplicarCobroFacturas(idsSeleccionados, montoDisponibleInicial, fecha, businessId, origenInfo) {
   // Corte de realización consultado UNA sola vez para todo este lote (optimización).
   const fechaCorte = await obtenerFechaCorteRealizacion(businessId);
@@ -14556,6 +14593,16 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   movSelectProv.onchange = () => { movBuscarProv.value = ''; aplicarFiltroProveedorMov(); };
 
   const mapaFacturaProvMov = Object.fromEntries(pendientes.map(f => [f.id, f]));
+  // Botón "Usar $X": cuando el monto capturado no coincide con el NETO de lo marcado (facturas menos créditos), un clic lo pone en el campo (como si lo hubieras escrito).
+  // En Cobros de cliente es la forma práctica: la opción "Cobro de cliente" solo existe cuando ya capturaste un depósito, así que el monto nunca está vacío al marcar.
+  const ofrecerUsarNeto = (resumenId, campoId, neto, monto, etiqueta) => {
+    const cont = document.getElementById(resumenId);
+    if (!cont || !(neto > 0.009) || Math.abs(monto - neto) < 0.01) return;
+    const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'btn btn-sm'; btn.style.marginTop = '6px';
+    btn.textContent = `Usar ${fmt(neto)} como ${etiqueta}`;
+    btn.onclick = () => { const c = document.getElementById(campoId); c.value = neto.toFixed(2); c.dispatchEvent(new Event('input')); };
+    cont.appendChild(btn);
+  };
   const actualizarResumenMovFacturas = () => {
     const marcadas = Array.from(document.querySelectorAll('.mov-factura-check:checked'));
     const totalSeleccionado = marcadas.reduce((s,c)=>s+(Number(c.dataset.importe)||0),0);
@@ -14572,6 +14619,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
       ${esExtranjera ? `<div class="mf-resumen-linea" style="margin-bottom:5px;"><span class="mf-label">Equivalente en MXN</span><span class="mf-valor">MXN ${fmt(montoMovimiento * tcActual)}</span></div>` : ''}
       <div class="mf-resumen-estado ${monedas.length>1?'error':(cuadra?'ok':'warn')}" style="margin-top:4px;padding:6px 9px;font-size:11.5px;">${monedas.length>1?'✕ Monedas distintas':(cuadra?'✓ Diferencia $0.00':(diferencia>0?'Sobrará como crédito a favor: '+fmt(Math.abs(diferencia)):'Quedará pendiente/parcial: '+fmt(Math.abs(diferencia))))}</div>
     `;
+    if (marcadas.length) ofrecerUsarNeto('movFacturasResumen', 'movCargos', esExtranjera ? 0 : totalSeleccionado, montoMovimiento, 'monto');
     const tcWrap = document.getElementById('movFacturasTcWrap');
     const tcAviso = document.getElementById('movFacturasTcAviso');
     const tcCampo = document.getElementById('movFacturasTcCampo');
@@ -14594,8 +14642,21 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   };
   document.getElementById('movFacturasTc').dataset.tocado = '';
   document.getElementById('movFacturasTc').oninput = (e) => { e.target.dataset.tocado = '1'; actualizarResumenMovFacturas(); };
-  document.querySelectorAll('.mov-factura-check').forEach(chk => chk.addEventListener('change', actualizarResumenMovFacturas));
-  document.getElementById('movCargos').oninput = actualizarResumenMovFacturas;
+  // Monto SUGERIDO: al marcar facturas (y créditos) de un pago NUEVO en pesos, si el monto está vacío o lo puso esta misma sugerencia, se rellena con el NETO (facturas menos créditos).
+  // Si el usuario ya escribió un monto, no se toca; al editar un pago ya guardado, tampoco.
+  const sugerirNetoProveedor = () => {
+    if (movimientoExistente) return;
+    const campo = document.getElementById('movCargos');
+    if ((Number(campo.value) || 0) > 0 && campo.dataset.auto !== '1') return;
+    if ((Number(document.getElementById('movDepositos').value) || 0) > 0) return;
+    const marcadas = Array.from(document.querySelectorAll('.mov-factura-check:checked'));
+    if (!marcadas.length) { if (campo.dataset.auto === '1') { campo.value = campo.dataset.antes ?? ''; campo.dataset.auto = ''; } return; }
+    if (!marcadas.every(c => (mapaFacturaProvMov[c.value]?.moneda || 'MXN') === 'MXN')) return;
+    const neto = Math.round(marcadas.reduce((acc, c) => acc + (Number(c.dataset.importe) || 0), 0) * 100) / 100;
+    if (neto > 0) { if (campo.dataset.auto !== '1') campo.dataset.antes = campo.value; campo.value = neto.toFixed(2); campo.dataset.auto = '1'; }
+  };
+  document.querySelectorAll('.mov-factura-check').forEach(chk => chk.addEventListener('change', () => { sugerirNetoProveedor(); actualizarResumenMovFacturas(); }));
+  document.getElementById('movCargos').oninput = (e) => { e.target.dataset.auto = ''; actualizarResumenMovFacturas(); };
   actualizarResumenMovFacturas();
 
   // Espejo, del lado de clientes: facturas pendientes de cobro
@@ -14609,6 +14670,34 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     Object.keys(yaAplicadoPorFacturaCli).forEach(id => { if (!idsClienteYaVinculados.includes(id)) idsClienteYaVinculados.push(id); });
   }
   const pendientesCliente = facturasClientesPend.filter(f => f.estatus !== 'Pagado' || idsClienteYaVinculados.includes(f.id));
+  // CRÉDITOS A FAVOR DE CLIENTES (solo negocios financieros): excedentes de cobros anteriores, que se ofrecen como casillas marcables junto a las facturas del MISMO cliente.
+  // El cliente de cada crédito es el de las facturas que ese cobro ya tenía aplicadas; si no se puede identificar, no se ofrece (se aplica desde la Revisión).
+  const creditosClienteMov = [];
+  if (ventasAfectaFueraDeSuRegistro(contexto.businessId)) {
+    const { data: filasCredCli } = await sb.from('fz_cobros_aplicados').select('id,monto,origen_tabla,origen_id,fecha').eq('business_id', contexto.businessId).is('factura_id', null);
+    const miMovCred = movimientoExistente ? movimientoExistente.id : null;
+    const porOrigenCred = {};
+    (filasCredCli || []).filter(a => a.origen_id && a.origen_id !== miMovCred).forEach(a => { const k = a.origen_tabla + '|' + a.origen_id; const g = porOrigenCred[k] = porOrigenCred[k] || { tabla: a.origen_tabla, origenId: a.origen_id, fecha: a.fecha, monto: 0 }; g.monto += Number(a.monto) || 0; });
+    const clavesCred = Object.keys(porOrigenCred);
+    if (clavesCred.length) {
+      const origenIdsCred = [...new Set(clavesCred.map(k => porOrigenCred[k].origenId))];
+      const [{ data: appsCred }, { data: movsCredB }, { data: movsCredE }] = await Promise.all([
+        sb.from('fz_cobros_aplicados').select('factura_id,origen_tabla,origen_id').in('origen_id', origenIdsCred).not('factura_id', 'is', null),
+        sb.from('fz_bancos_mov').select('id,descripcion').in('id', origenIdsCred),
+        sb.from('fz_efectivo_mov').select('id,descripcion').in('id', origenIdsCred),
+      ]);
+      const facturaCliPorIdCred = Object.fromEntries(facturasClientesPend.map(f => [f.id, f]));
+      const descPorIdCred = Object.fromEntries([...(movsCredB || []), ...(movsCredE || [])].map(m => [m.id, m.descripcion]));
+      clavesCred.forEach(k => {
+        const c = porOrigenCred[k];
+        const clientesCred = new Set((appsCred || []).filter(a => a.origen_tabla === c.tabla && a.origen_id === c.origenId).map(a => (facturaCliPorIdCred[a.factura_id] || {}).cliente_id).filter(Boolean));
+        if (clientesCred.size !== 1 || c.monto < 0.01) return;
+        const clienteIdCred = [...clientesCred][0];
+        const nombreCred = (facturasClientesPend.find(f => f.cliente_id === clienteIdCred) || {}).clienteNombre || '(cliente eliminado)';
+        creditosClienteMov.push({ key: k, tabla: c.tabla, origenId: c.origenId, fecha: c.fecha, monto: Math.round(c.monto * 100) / 100, clienteId: clienteIdCred, clienteNombre: nombreCred, descripcion: descPorIdCred[c.origenId] || 'Cobro' });
+      });
+    }
+  }
   const porClienteMov = {};
   const GRUPO_APLICADAS_COBRO_MOV = '★ Aplicadas a este cobro';
   pendientesCliente.forEach(f => { const key = idsClienteYaVinculados.includes(f.id) ? GRUPO_APLICADAS_COBRO_MOV : (f.clienteNombre || '(sin cliente)'); (porClienteMov[key] = porClienteMov[key] || []).push(f); });
@@ -14631,6 +14720,12 @@ async function openMovimientoModal(contexto, movimientoExistente) {
             <td class="mf-num">${fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}${yaAplicadoPorFacturaCli[f.id] ? `<div style="font-size:10px;color:var(--muted);">este cobro aplicó ${fmt(yaAplicadoPorFacturaCli[f.id])}</div>` : ''}</td>
           </tr>`;
         }).join('')}
+        ${cli === GRUPO_APLICADAS_COBRO_MOV ? '' : creditosClienteMov.filter(c => c.clienteNombre === cli).map(c => `<tr class="mf-credito-fila">
+            <td style="width:20px;"><input type="checkbox" class="mov-credito-cliente-check" value="${c.key}" data-importe="${-c.monto}" data-cliente="${c.clienteNombre}"></td>
+            <td>${fechaCorta(c.fecha)}</td>
+            <td colspan="3" style="color:var(--green);">Crédito a favor · ${c.descripcion}</td>
+            <td class="mf-num" style="color:var(--green);">crédito ${fmt(c.monto)}</td>
+          </tr>`).join('')}
         </tbody>
       </table></div>
     </div>`).join('') || `<div class="empty" style="padding:8px;">No hay facturas pendientes de cobro.</div>`;
@@ -14655,7 +14750,11 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   const mapaFacturaClienteMov = Object.fromEntries(pendientesCliente.map(f => [f.id, f]));
   const actualizarResumenMovFacturasCliente = () => {
     const marcadas = Array.from(document.querySelectorAll('.mov-factura-cliente-check:checked'));
-    const totalSeleccionado = marcadas.reduce((s,c)=>s+(Number(c.dataset.importe)||0),0);
+    const marcadasCred = Array.from(document.querySelectorAll('.mov-credito-cliente-check:checked'));
+    const totalFacturasMarcadas = marcadas.reduce((s,c)=>s+(Number(c.dataset.importe)||0),0);
+    const totalCreditosMarcados = marcadasCred.reduce((s,c)=>s+(-(Number(c.dataset.importe)||0)),0);
+    const creditoAplicable = Math.min(totalCreditosMarcados, totalFacturasMarcadas); // un crédito no baja el total por debajo de cero
+    const totalSeleccionado = Math.round((totalFacturasMarcadas - creditoAplicable) * 100) / 100;
     const montoMovimiento = Number(document.getElementById('movDepositos').value) || 0;
     const diferencia = montoMovimiento - totalSeleccionado;
     const cuadra = Math.abs(diferencia) < 0.01;
@@ -14670,10 +14769,12 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     const tcActual = leerMonto(document.getElementById('movFacturasClienteTc').value) || 1;
     document.getElementById('movFacturasClienteResumen').innerHTML = `
       <div class="mf-resumen-linea" style="margin-bottom:5px;"><span class="mf-label">Depósito capturado</span><span class="mf-valor">${fmt(montoMovimiento)}</span></div>
-      <div class="mf-resumen-linea" style="margin-bottom:5px;"><span class="mf-label">Total seleccionado (${marcadas.length})</span><span class="mf-valor">${fmt(totalSeleccionado)}</span></div>
+      <div class="mf-resumen-linea" style="margin-bottom:5px;"><span class="mf-label">${marcadasCred.length ? `Facturas marcadas (${marcadas.length})` : `Total seleccionado (${marcadas.length})`}</span><span class="mf-valor">${fmt(marcadasCred.length ? totalFacturasMarcadas : totalSeleccionado)}</span></div>
+      ${marcadasCred.length ? `<div class="mf-resumen-linea" style="margin-bottom:5px;"><span class="mf-label">Crédito del cliente aplicado (${marcadasCred.length})</span><span class="mf-valor">−${fmt(creditoAplicable)}</span></div><div class="mf-resumen-linea" style="margin-bottom:5px;"><span class="mf-label">Neto a cobrar</span><span class="mf-valor">${fmt(totalSeleccionado)}</span></div>${totalCreditosMarcados > totalFacturasMarcadas + 0.009 ? `<div class="mf-resumen-estado warn" style="margin-bottom:5px;padding:6px 9px;font-size:11.5px;">El crédito (${fmt(totalCreditosMarcados)}) es mayor que las facturas marcadas: el resto seguirá como crédito. Si no hay nada que cobrar, aplícalo desde la Revisión de consistencia.</div>` : ''}` : ''}
       ${esExtranjera ? `<div class="mf-resumen-linea" style="margin-bottom:5px;"><span class="mf-label">Equivalente en MXN</span><span class="mf-valor">MXN ${fmt(montoMovimiento * tcActual)}</span></div>` : ''}
-      <div class="mf-resumen-estado ${monedas.length>1?'error':(cuadra?'ok':'warn')}" style="margin-top:4px;padding:6px 9px;font-size:11.5px;">${monedas.length>1?'✕ Monedas distintas':(cuadra?'✓ Cuadra exacto':(diferencia>0?'Sobrará sin asignar: '+fmt(Math.abs(diferencia)):'Quedará pendiente/parcial: '+fmt(Math.abs(diferencia))))}</div>
+      <div class="mf-resumen-estado ${monedas.length>1?'error':(cuadra?'ok':'warn')}" style="margin-top:4px;padding:6px 9px;font-size:11.5px;">${monedas.length>1?'✕ Monedas distintas':(cuadra?'✓ Cuadra exacto':(diferencia>0?((ventasAfectaFueraDeSuRegistro(contexto.businessId) && !esExtranjera) ? 'Sobrará como crédito a favor del cliente: ' : 'Sobrará sin asignar: ')+fmt(Math.abs(diferencia)):'Quedará pendiente/parcial: '+fmt(Math.abs(diferencia))))}</div>
     `;
+    if (marcadas.length) ofrecerUsarNeto('movFacturasClienteResumen', 'movDepositos', esExtranjera ? 0 : totalSeleccionado, montoMovimiento, 'depósito');
     const tcWrap = document.getElementById('movFacturasClienteTcWrap');
     const tcAviso = document.getElementById('movFacturasClienteTcAviso');
     const tcCampo = document.getElementById('movFacturasClienteTcCampo');
@@ -14696,8 +14797,22 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   };
   document.getElementById('movFacturasClienteTc').dataset.tocado = '';
   document.getElementById('movFacturasClienteTc').oninput = (e) => { e.target.dataset.tocado = '1'; actualizarResumenMovFacturasCliente(); };
-  document.querySelectorAll('.mov-factura-cliente-check').forEach(chk => chk.addEventListener('change', actualizarResumenMovFacturasCliente));
-  document.getElementById('movDepositos').oninput = actualizarResumenMovFacturasCliente;
+  // Monto SUGERIDO (igual que en Proveedores): al marcar facturas y créditos de un cobro NUEVO en pesos, si el depósito está vacío o lo puso esta misma sugerencia, se rellena con el NETO.
+  const sugerirNetoCliente = () => {
+    if (movimientoExistente) return;
+    const campo = document.getElementById('movDepositos');
+    if ((Number(campo.value) || 0) > 0 && campo.dataset.auto !== '1') return;
+    if ((Number(document.getElementById('movCargos').value) || 0) > 0) return;
+    const marcadas = Array.from(document.querySelectorAll('.mov-factura-cliente-check:checked'));
+    if (!marcadas.length) { if (campo.dataset.auto === '1') { campo.value = campo.dataset.antes ?? ''; campo.dataset.auto = ''; } return; }
+    if (!marcadas.every(c => (mapaFacturaClienteMov[c.value]?.moneda || 'MXN') === 'MXN')) return;
+    const bruto = marcadas.reduce((acc, c) => acc + (Number(c.dataset.importe) || 0), 0);
+    const cred = Array.from(document.querySelectorAll('.mov-credito-cliente-check:checked')).reduce((acc, c) => acc + (-(Number(c.dataset.importe) || 0)), 0);
+    const neto = Math.round(Math.max(0, bruto - Math.min(cred, bruto)) * 100) / 100;
+    if (neto > 0) { if (campo.dataset.auto !== '1') campo.dataset.antes = campo.value; campo.value = neto.toFixed(2); campo.dispatchEvent(new Event('input')); campo.dataset.auto = '1'; } // el evento mantiene coherentes las opciones del selector; la marca va después porque el oninput la limpia
+  };
+  document.querySelectorAll('.mov-factura-cliente-check, .mov-credito-cliente-check').forEach(chk => chk.addEventListener('change', () => { sugerirNetoCliente(); actualizarResumenMovFacturasCliente(); }));
+  document.getElementById('movDepositos').oninput = (e) => { e.target.dataset.auto = ''; actualizarResumenMovFacturasCliente(); };
   actualizarResumenMovFacturasCliente();
 
   // El tipo disponible depende de si se capturó Cargo (sale) o Depósito (entra) —
@@ -14833,7 +14948,17 @@ async function openMovimientoModal(contexto, movimientoExistente) {
       if (!resuelto) { toast(`Esta cuenta está en una divisa distinta a la del documento (${monedaDocumento}) — este cruce todavía no está soportado.`, 'error'); return; }
       montoCuentaOverride = resuelto.montoCuenta; tcHistoricoMov = resuelto.tcHistorico; equivalenteMxnMov = resuelto.equivalenteMxn;
     }
-    // Cobro de CLIENTE mayor a lo que adeudan las facturas elegidas (solo negocios financieros, facturas en pesos): se avisa ANTES de guardar. El excedente queda como crédito a favor del cliente.
+    // Créditos a favor del cliente marcados junto con facturas de clientes (solo negocios financieros): se valida ANTES de cualquier escritura.
+    const idsCreditosCliente = esClasifCliente ? Array.from(document.querySelectorAll('.mov-credito-cliente-check:checked')).map(c => c.value) : [];
+    const creditosMarcadosCli = creditosClienteMov.filter(c => idsCreditosCliente.includes(c.key));
+    if (creditosMarcadosCli.length) {
+      if (!idsFacturasCliente.length) { toast('Marca la factura a la que se aplicará el crédito del cliente.', 'error'); return; }
+      const clientesFactSel = new Set(idsFacturasCliente.map(id => (mapaFacturaClienteMov[id] || {}).cliente_id));
+      if (clientesFactSel.size !== 1 || creditosMarcadosCli.some(c => !clientesFactSel.has(c.clienteId))) { toast('Un crédito a favor solo puede aplicarse a facturas de ese mismo cliente.', 'error'); return; }
+      for (const c of creditosMarcadosCli) { if (await bloqueadoPorCierre(contexto.businessId, c.fecha)) return; }
+    }
+    // Cobro de CLIENTE mayor a lo que adeudan las facturas elegidas (menos el crédito del cliente que se use) (solo negocios financieros, facturas en pesos): se avisa ANTES de guardar.
+    // El excedente queda como crédito a favor del cliente.
     if (esClasifCliente && idsFacturasCliente.length && depositos > 0 && ventasAfectaFueraDeSuRegistro(contexto.businessId)) { // (solo llega aquí una combinación de monedas soportada; abajo se exige que las facturas sean en pesos)
       const tablaMovAviso = contexto.tipo === 'efectivo' ? 'fz_efectivo_mov' : 'fz_bancos_mov';
       const { data: fsSel } = await sb.from('fz_facturas_clientes').select('id,total,importe_pagado,moneda').in('id', idsFacturasCliente);
@@ -14841,8 +14966,11 @@ async function openMovimientoModal(contexto, movimientoExistente) {
         const yaAplicadoAviso = {};
         if (movimientoExistente) { const { data: apAviso } = await sb.from('fz_cobros_aplicados').select('factura_id,monto').eq('origen_tabla', tablaMovAviso).eq('origen_id', movimientoExistente.id); (apAviso || []).forEach(a => { if (a.factura_id) yaAplicadoAviso[a.factura_id] = (yaAplicadoAviso[a.factura_id] || 0) + (Number(a.monto) || 0); }); }
         const capacidadAviso = fsSel.reduce((acc, f) => acc + Math.max(0, Number(f.total) - Math.max(0, (Number(f.importe_pagado) || 0) - (yaAplicadoAviso[f.id] || 0))), 0);
-        const sobraAviso = revRedondeo(depositos - capacidadAviso);
-        if (sobraAviso > 0.009 && !confirm(`El cobro (${fmt(depositos)}) es mayor que lo pendiente de las facturas elegidas (${fmt(capacidadAviso)}) por ${fmt(sobraAviso)}.\n\nEse excedente quedará registrado como CRÉDITO A FAVOR DEL CLIENTE y podrás aplicarlo después a sus facturas pendientes (Revisión de consistencia).\n\n¿Guardar así?`)) return;
+        const creditoUsableAviso = Math.min(creditosMarcadosCli.reduce((acc, c) => acc + c.monto, 0), capacidadAviso);
+        const capacidadNetaAviso = revRedondeo(capacidadAviso - creditoUsableAviso);
+        const sobraAviso = revRedondeo(depositos - capacidadNetaAviso);
+        const detalleAviso = creditoUsableAviso > 0.009 ? `${fmt(capacidadAviso)} menos ${fmt(creditoUsableAviso)} de crédito del cliente = ${fmt(capacidadNetaAviso)}` : fmt(capacidadAviso);
+        if (sobraAviso > 0.009 && !confirm(`El cobro (${fmt(depositos)}) es mayor que lo pendiente de las facturas elegidas (${detalleAviso}) por ${fmt(sobraAviso)}.\n\nEse excedente quedará registrado como CRÉDITO A FAVOR DEL CLIENTE y podrás aplicarlo después a sus facturas pendientes (Revisión de consistencia).\n\n¿Guardar así?`)) return;
       }
     }
     let legDestino = null, traspasoIdNuevo = null;
@@ -14938,6 +15066,11 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     if (movId || esClasifCliente) {
       const tcWrapVisibleCli = document.getElementById('movFacturasClienteTcCampo').style.display !== 'none';
       const tipoCambioCobroMov = tcWrapVisibleCli ? (leerMonto(document.getElementById('movFacturasClienteTc').value) || 1) : 1;
+      if (esClasifCliente && creditosMarcadosCli.length) {
+        // primero el crédito del cliente (baja el saldo de las facturas) y luego el efectivo del cobro, que ya es el NETO
+        const usadoCredCli = await consumirCreditosCliente(contexto.businessId, creditosMarcadosCli, idsFacturasCliente, yaAplicadoPorFacturaCli, fecha);
+        if (usadoCredCli > 0.009) toast(`${fmt(usadoCredCli)} de crédito a favor del cliente aplicado a la(s) factura(s).`);
+      }
       const resultado = await aplicarCobroFacturas(idsFacturasCliente, depositos, fecha, contexto.businessId, {
         origen_tabla: table, origen_id: nuevoMov.id,
         tipo_cambio_real: tipoCambioCobroMov,
