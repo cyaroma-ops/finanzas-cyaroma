@@ -13702,6 +13702,7 @@ async function confirmarYEliminarMovimiento(table, row, onDone) {
   if (creditoLigado) {
     await sb.from('fz_proveedores').delete().eq('id', creditoLigado.id);
   }
+  if (row.tipo_entrada === 'cliente' && !idsAfectadosCliente.length) await sb.from('fz_cobros_aplicados').delete().eq('origen_tabla', table).eq('origen_id', row.id); // crédito a favor del cliente sin facturas
   if (row.tipo_entrada === 'cliente' && idsAfectadosCliente.length) {
     const ok = confirm(`Este movimiento tiene un cobro aplicado a ${idsAfectadosCliente.length} factura(s) de Clientes. Al eliminarlo, se revertirá ese cobro (regresarán a Pendiente/Parcial según corresponda). ¿Continuar?`);
     if (!ok) return;
@@ -13726,6 +13727,7 @@ async function confirmarYEliminarMovimiento(table, row, onDone) {
 async function revertirCobroPorOrigen(origenTabla, origenId, businessId) {
   const { data: cobros } = await sb.from('fz_cobros_aplicados').select('*').eq('origen_tabla', origenTabla).eq('origen_id', origenId);
   for (const cobro of (cobros || [])) {
+    if (!cobro.factura_id) continue; // crédito a favor del cliente: no tiene factura
     const { data: f } = await sb.from('fz_facturas_clientes').select('total,importe_pagado').eq('id', cobro.factura_id).single();
     if (f) {
       const nuevoPagado = Math.max(0, Number(f.importe_pagado||0) - Number(cobro.monto||0));
@@ -13738,7 +13740,7 @@ async function revertirCobroPorOrigen(origenTabla, origenId, businessId) {
   // en el día de hoy (ejecución), o contamina el mes en que se hizo la edición/eliminación.
   if (businessId) {
     const fechaCorte = await obtenerFechaCorteRealizacion(businessId);
-    for (const cobro of (cobros || [])) await sincronizarRealizacionFactura(cobro.factura_id, 'cliente', businessId, cobro.fecha, fechaCorte);
+    for (const cobro of (cobros || [])) if (cobro.factura_id) await sincronizarRealizacionFactura(cobro.factura_id, 'cliente', businessId, cobro.fecha, fechaCorte);
   }
 }
 
@@ -13930,6 +13932,7 @@ async function aplicarCobroFacturas(idsSeleccionados, montoDisponibleInicial, fe
   if (origenInfo.origen_tabla && origenInfo.origen_id) {
     const { data: previos } = await sb.from('fz_cobros_aplicados').select('*').eq('origen_tabla', origenInfo.origen_tabla).eq('origen_id', origenInfo.origen_id);
     for (const prev of (previos || [])) {
+      if (!prev.factura_id) continue; // un crédito a favor del cliente no tiene factura: se borra abajo junto con el resto de lo aplicado
       const { data: fPrev } = await sb.from('fz_facturas_clientes').select('total,importe_pagado').eq('id', prev.factura_id).single();
       if (fPrev) {
         const nuevoPagado = Math.max(0, Number(fPrev.importe_pagado || 0) - Number(prev.monto || 0));
@@ -13940,7 +13943,7 @@ async function aplicarCobroFacturas(idsSeleccionados, montoDisponibleInicial, fe
     await sb.from('fz_cobros_aplicados').delete().eq('origen_tabla', origenInfo.origen_tabla).eq('origen_id', origenInfo.origen_id);
     // Cada reversión queda fechada en SU PROPIO periodo fiscal real (prev.fecha) — nunca en
     // "fecha" (la de esta operación nueva), evitando contaminar un mes distinto al histórico.
-    for (const prev of (previos || [])) await sincronizarRealizacionFactura(prev.factura_id, 'cliente', businessId, prev.fecha, fechaCorte, cacheSubcuentas);
+    for (const prev of (previos || [])) if (prev.factura_id) await sincronizarRealizacionFactura(prev.factura_id, 'cliente', businessId, prev.fecha, fechaCorte, cacheSubcuentas);
   }
 
   if (!idsSeleccionados.length) return { idsAfectados: [] };
@@ -13966,7 +13969,17 @@ async function aplicarCobroFacturas(idsSeleccionados, montoDisponibleInicial, fe
       await sincronizarRealizacionFactura(f.id, 'cliente', businessId, fecha, fechaCorte, cacheSubcuentas);
     }
   }
-  return { idsAfectados, sobrante: disponible };
+  // CRÉDITO A FAVOR DEL CLIENTE (solo negocios financieros, facturas y cobro en pesos): lo que sobra del cobro cuando las facturas elegidas no alcanzan a absorberlo se registra como
+  // una aplicación del propio cobro SIN factura. El motor ya liquida a Clientes cada aplicación, con o sin factura, así que el movimiento queda cuadrado (Banco = lo aplicado a
+  // facturas + el crédito). Vive dentro de su cobro: eliminar o editar el cobro lo deshace sin dejar nada colgado. Los negocios fiscales no cambian.
+  let creditoCliente = 0;
+  if (disponible > 0.009 && origenInfo.origen_tabla && origenInfo.origen_id && ventasAfectaFueraDeSuRegistro(businessId)
+      && facturas.every(f => !f.moneda || f.moneda === 'MXN') && (Number(origenInfo.tipo_cambio_real) || 1) === 1) {
+    const montoCredito = Math.round(disponible * 100) / 100;
+    const { error: errCred } = await sb.from('fz_cobros_aplicados').insert({ business_id: businessId, factura_id: null, monto: montoCredito, origen_tabla: origenInfo.origen_tabla, origen_id: origenInfo.origen_id, fecha, notas: 'Crédito a favor del cliente' });
+    if (errCred) toast('No se pudo registrar el crédito a favor del cliente: ' + errCred.message, 'error'); else creditoCliente = montoCredito;
+  }
+  return { idsAfectados, sobrante: disponible, creditoCliente };
 }
 
 function openFacturasCobroModal(rowId, table, facturasClientesPend, onDone) {
@@ -13979,7 +13992,7 @@ function openFacturasCobroModal(rowId, table, facturasClientesPend, onDone) {
     const yaAplicadoPorFactura = {};
     {
       const { data: appsMov } = await sb.from('fz_cobros_aplicados').select('factura_id,monto').eq('origen_tabla', table).eq('origen_id', rowId);
-      (appsMov || []).forEach(a => { yaAplicadoPorFactura[a.factura_id] = (yaAplicadoPorFactura[a.factura_id] || 0) + (Number(a.monto) || 0); });
+      (appsMov || []).forEach(a => { if (!a.factura_id) return; yaAplicadoPorFactura[a.factura_id] = (yaAplicadoPorFactura[a.factura_id] || 0) + (Number(a.monto) || 0); });
       Object.keys(yaAplicadoPorFactura).forEach(id => idsActuales.add(id));
     }
     const opciones = facturasClientesPend.filter(f => f.estatus !== 'Pagado' || idsActuales.has(f.id));
@@ -14592,7 +14605,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   const yaAplicadoPorFacturaCli = {};
   if (movimientoExistente) {
     const { data: appsMovCli } = await sb.from('fz_cobros_aplicados').select('factura_id,monto').eq('origen_tabla', contexto.tipo === 'banco' ? 'fz_bancos_mov' : 'fz_efectivo_mov').eq('origen_id', movimientoExistente.id);
-    (appsMovCli || []).forEach(a => { yaAplicadoPorFacturaCli[a.factura_id] = (yaAplicadoPorFacturaCli[a.factura_id] || 0) + (Number(a.monto) || 0); });
+    (appsMovCli || []).forEach(a => { if (!a.factura_id) return; yaAplicadoPorFacturaCli[a.factura_id] = (yaAplicadoPorFacturaCli[a.factura_id] || 0) + (Number(a.monto) || 0); });
     Object.keys(yaAplicadoPorFacturaCli).forEach(id => { if (!idsClienteYaVinculados.includes(id)) idsClienteYaVinculados.push(id); });
   }
   const pendientesCliente = facturasClientesPend.filter(f => f.estatus !== 'Pagado' || idsClienteYaVinculados.includes(f.id));
@@ -14820,6 +14833,18 @@ async function openMovimientoModal(contexto, movimientoExistente) {
       if (!resuelto) { toast(`Esta cuenta está en una divisa distinta a la del documento (${monedaDocumento}) — este cruce todavía no está soportado.`, 'error'); return; }
       montoCuentaOverride = resuelto.montoCuenta; tcHistoricoMov = resuelto.tcHistorico; equivalenteMxnMov = resuelto.equivalenteMxn;
     }
+    // Cobro de CLIENTE mayor a lo que adeudan las facturas elegidas (solo negocios financieros, facturas en pesos): se avisa ANTES de guardar. El excedente queda como crédito a favor del cliente.
+    if (esClasifCliente && idsFacturasCliente.length && depositos > 0 && ventasAfectaFueraDeSuRegistro(contexto.businessId)) { // (solo llega aquí una combinación de monedas soportada; abajo se exige que las facturas sean en pesos)
+      const tablaMovAviso = contexto.tipo === 'efectivo' ? 'fz_efectivo_mov' : 'fz_bancos_mov';
+      const { data: fsSel } = await sb.from('fz_facturas_clientes').select('id,total,importe_pagado,moneda').in('id', idsFacturasCliente);
+      if ((fsSel || []).length && fsSel.every(f => !f.moneda || f.moneda === 'MXN')) {
+        const yaAplicadoAviso = {};
+        if (movimientoExistente) { const { data: apAviso } = await sb.from('fz_cobros_aplicados').select('factura_id,monto').eq('origen_tabla', tablaMovAviso).eq('origen_id', movimientoExistente.id); (apAviso || []).forEach(a => { if (a.factura_id) yaAplicadoAviso[a.factura_id] = (yaAplicadoAviso[a.factura_id] || 0) + (Number(a.monto) || 0); }); }
+        const capacidadAviso = fsSel.reduce((acc, f) => acc + Math.max(0, Number(f.total) - Math.max(0, (Number(f.importe_pagado) || 0) - (yaAplicadoAviso[f.id] || 0))), 0);
+        const sobraAviso = revRedondeo(depositos - capacidadAviso);
+        if (sobraAviso > 0.009 && !confirm(`El cobro (${fmt(depositos)}) es mayor que lo pendiente de las facturas elegidas (${fmt(capacidadAviso)}) por ${fmt(sobraAviso)}.\n\nEse excedente quedará registrado como CRÉDITO A FAVOR DEL CLIENTE y podrás aplicarlo después a sus facturas pendientes (Revisión de consistencia).\n\n¿Guardar así?`)) return;
+      }
+    }
     let legDestino = null, traspasoIdNuevo = null;
     if (esTraspaso) {
       const destinoId = document.getElementById('movTraspasoDestino').value;
@@ -14918,6 +14943,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
         tipo_cambio_real: tipoCambioCobroMov,
       });
       if (resultado.idsAfectados.length) toast(`${resultado.idsAfectados.length} factura(s) cobrada(s).`);
+      if (resultado.creditoCliente > 0.009) toast(`${fmt(resultado.creditoCliente)} quedó como crédito a favor del cliente.`);
       await sb.from(table).update({ cliente_factura_ids: resultado.idsAfectados, cliente_factura_id: resultado.idsAfectados[0] || null }).eq('id', nuevoMov.id);
     }
 
@@ -22565,11 +22591,11 @@ async function cargarContextoRevision(b) {
     if (error) throw new Error(`${tabla}: ${error.message}`);
     return data || [];
   };
-  const [ventas, conceptos, conceptosVenta, conceptosSistema, proveedores, bancosMov, efectivoMov, pagosAplicados, polizas, lineas, monedas, cobrosAplicados, facturasClientes] = await Promise.all([
+  const [ventas, conceptos, conceptosVenta, conceptosSistema, proveedores, bancosMov, efectivoMov, pagosAplicados, polizas, lineas, monedas, cobrosAplicados, facturasClientes, clientes] = await Promise.all([
     pag('fz_ventas'), loadConceptos(b.id), loadConceptosVenta(b.id), loadConceptosSistema(b.id),
     pag('fz_proveedores'), pag('fz_bancos_mov'), pag('fz_efectivo_mov'), pag('fz_pagos_aplicados'),
     pag('fz_polizas'), pag('fz_polizas_lineas', 'id,poliza_id,cargo,abono'), pag('fz_efectivo_monedas'),
-    pag('fz_cobros_aplicados'), pag('fz_facturas_clientes', 'id,folio,numero_factura,total'),
+    pag('fz_cobros_aplicados'), pag('fz_facturas_clientes', 'id,folio,numero_factura,total,cliente_id,fecha,importe_pagado,estatus,moneda'), pag('fz_clientes'), // todos los clientes, activos o no: un crédito de un cliente dado de baja también debe mostrar su nombre
   ]);
   const porCat = {
     efectivo: conceptos.filter(c => c.categoria === 'efectivo'), tarjetas: conceptos.filter(c => c.categoria === 'tarjetas'),
@@ -22586,7 +22612,7 @@ async function cargarContextoRevision(b) {
     if (esNegocioFinanciero(b)) marcarDocumentosPorDiseno(docsLibro, await cargarInfoDocumentosPorDiseno(b.id));
   } catch (e) { errorLibro = e.message || String(e); }
   return { b, financiero: ventasAfectaFueraDeSuRegistro(b.id), ventas, conceptos, conceptosVenta, conceptosSistema, porCat,
-           proveedores, bancosMov, efectivoMov, pagosAplicados, polizas, lineas, monedas, cobrosAplicados, facturasClientes, docsLibro, errorLibro };
+           proveedores, bancosMov, efectivoMov, pagosAplicados, polizas, lineas, monedas, cobrosAplicados, facturasClientes, clientes, docsLibro, errorLibro };
 }
 
 // Cada revisión devuelve { id, titulo, ayuda, items:[{texto, monto?}], nota?, accion?:{etiqueta, ejecutar} } o null si no aplica.
@@ -23368,6 +23394,85 @@ function revDescuadreLibro(ctx) {
   return { ...base, items: items.slice(0, 80), ...(items.length > 80 ? { nota: `Se muestran 80 de ${items.length}.` } : {}) };
 }
 
+// Créditos a favor de CLIENTES (solo negocios financieros): un cobro mayor a lo que adeudaban las facturas elegidas deja el excedente como una aplicación del propio cobro SIN factura.
+// Esta revisión lo muestra y, si el cliente (identificado por las facturas de ese mismo cobro) tiene facturas pendientes en pesos, ofrece aplicarlo a ellas, de la más antigua a la más
+// nueva. Aplicarlo solo reparte lo ya cobrado entre más facturas: el cobro, el Banco y el Balance no cambian.
+function revCreditosClientes(ctx) {
+  if (!ctx.financiero) return null;
+  const { bancosMov, efectivoMov, cobrosAplicados, facturasClientes, clientes, b } = ctx;
+  const base = { id: 'creditos_clientes', titulo: 'Créditos a favor de clientes (cobros mayores a lo que adeudaban sus facturas)',
+    ayuda: 'Cuando un cliente paga de más, el excedente queda como crédito a favor del cliente, dentro del propio cobro. Aquí se ve cada crédito. Si el cliente (identificado por las facturas de ese mismo cobro) tiene facturas pendientes en pesos, el botón aplica el crédito a ellas, de la más antigua a la más nueva: solo reparte lo ya cobrado entre más facturas, así que el cobro, el Banco y el Balance no cambian. Los meses cerrados no se tocan. Si el cobro no tiene facturas y no se puede identificar al cliente, aplícalo abriendo el cobro y eligiendo sus facturas.' };
+  const facturaPorId = Object.fromEntries(facturasClientes.map(f => [f.id, f]));
+  const nombreCliente = (id) => { const c = (clientes || []).find(x => x.id === id); return c ? (c.nombre_comercial || c.razon_social || 'Cliente') : 'Cliente sin identificar'; };
+  const movs = new Map(); bancosMov.forEach(m => movs.set('fz_bancos_mov|' + m.id, m)); efectivoMov.forEach(m => movs.set('fz_efectivo_mov|' + m.id, m));
+  const porOrigen = {};
+  cobrosAplicados.filter(a => a.origen_tabla === 'fz_bancos_mov' || a.origen_tabla === 'fz_efectivo_mov').forEach(a => { const k = a.origen_tabla + '|' + a.origen_id; (porOrigen[k] = porOrigen[k] || []).push(a); });
+  const saldoDe = (f) => revRedondeo(Number(f.total) - (Number(f.importe_pagado) || 0));
+  const pendientesDe = (clienteId) => facturasClientes.filter(f => f.cliente_id === clienteId && f.estatus !== 'Pagado' && (!f.moneda || f.moneda === 'MXN') && saldoDe(f) > 0.009)
+    .sort((a, z) => String(a.fecha).localeCompare(String(z.fecha)) || (Number(a.folio) || 0) - (Number(z.folio) || 0));
+  const items = [];
+  Object.entries(porOrigen).forEach(([k, apps]) => {
+    const m = movs.get(k); if (!m || m.tipo_entrada !== 'cliente') return;
+    const credito = revRedondeo(apps.filter(a => !a.factura_id).reduce((acc, a) => acc + (Number(a.monto) || 0), 0));
+    if (credito < 0.01) return;
+    const idsCliente = [...new Set(apps.filter(a => a.factura_id).map(a => (facturaPorId[a.factura_id] || {}).cliente_id).filter(Boolean))];
+    const clienteId = idsCliente.length === 1 ? idsCliente[0] : null;
+    let resto = credito; const plan = [];
+    if (clienteId) for (const f of pendientesDe(clienteId)) { if (resto < 0.01) break; const x = revRedondeo(Math.min(resto, saldoDe(f))); plan.push({ f, monto: x }); resto = revRedondeo(resto - x); }
+    const quien = clienteId ? nombreCliente(clienteId) : 'Cliente sin identificar';
+    const texto = `${fechaCorta(m.fecha)} · ${quien}: el cobro "${m.descripcion || 'Cobro'}" dejó ${fmt(credito)} a favor del cliente. ` + (plan.length
+      ? `Se puede aplicar a: ${plan.map(x => `${x.f.numero_factura || ('#' + x.f.folio)} (${fmt(x.monto)})`).join(', ')}${resto > 0.009 ? `; quedarían ${fmt(resto)} a favor` : ''}`
+      : (clienteId ? 'El cliente no tiene facturas pendientes en pesos: el crédito queda disponible' : 'No se puede identificar al cliente (el cobro no tiene facturas): aplícalo abriendo el cobro y eligiendo sus facturas'));
+    items.push({ fecha: m.fecha, monto: credito, texto, m, t: k.split('|')[0], clienteId, plan });
+  });
+  items.sort((a, z) => a.fecha.localeCompare(z.fecha));
+  const r = { ...base, items };
+  const aplicables = items.filter(i => i.plan.length);
+  if (aplicables.length) {
+    const total = aplicables.reduce((acc, i) => acc + i.plan.reduce((a2, x) => a2 + x.monto, 0), 0);
+    r.accion = {
+      etiqueta: `Aplicar ${aplicables.length} crédito${aplicables.length === 1 ? '' : 's'} a facturas pendientes (${fmt(total)})`,
+      confirmar: `Se aplicará(n) ${fmt(total)} de crédito a favor de clientes a sus facturas pendientes más antiguas (${aplicables.length} cobro(s)). Es repartir lo ya cobrado entre más facturas: el cobro, el Banco y el Balance no cambian; las facturas pasan a Parcial o Pagado. Los meses cerrados no se tocan. ¿Continuar?`,
+      ejecutar: async () => {
+        let aplicados = 0, cerrados = 0, omitidos = 0, montoTotal = 0;
+        for (const it of aplicables) {
+          if (await bloqueadoPorCierre(b.id, it.m.fecha)) { cerrados++; continue; }
+          const { data: filas } = await sb.from('fz_cobros_aplicados').select('id,factura_id,monto').eq('origen_tabla', it.t).eq('origen_id', it.m.id);
+          const filasCredito = (filas || []).filter(a => !a.factura_id);
+          let resto = revRedondeo(filasCredito.reduce((acc, a) => acc + (Number(a.monto) || 0), 0));
+          if (resto < 0.01) { omitidos++; continue; }
+          const { data: factsCli } = await sb.from('fz_facturas_clientes').select('*').eq('cliente_id', it.clienteId);
+          const pend = (factsCli || []).filter(f => f.estatus !== 'Pagado' && (!f.moneda || f.moneda === 'MXN') && revRedondeo(Number(f.total) - (Number(f.importe_pagado) || 0)) > 0.009)
+            .sort((a, z) => String(a.fecha).localeCompare(String(z.fecha)) || (Number(a.folio) || 0) - (Number(z.folio) || 0));
+          const nuevos = []; let usado = 0;
+          for (const f of pend) {
+            if (resto < 0.01) break;
+            if (await bloqueadoPorCierre(b.id, f.fecha)) continue;
+            const x = revRedondeo(Math.min(resto, revRedondeo(Number(f.total) - (Number(f.importe_pagado) || 0))));
+            const nuevoPagado = revRedondeo((Number(f.importe_pagado) || 0) + x);
+            const { error: eF } = await sb.from('fz_facturas_clientes').update({ importe_pagado: nuevoPagado, estatus: nuevoPagado >= Number(f.total) - 0.01 ? 'Pagado' : 'Parcial', fecha_pago: it.m.fecha }).eq('id', f.id);
+            if (eF) throw eF;
+            const { error: eA } = await sb.from('fz_cobros_aplicados').insert({ business_id: b.id, factura_id: f.id, monto: x, origen_tabla: it.t, origen_id: it.m.id, fecha: it.m.fecha, tipo_cambio: null });
+            if (eA) throw eA;
+            nuevos.push(f.id); resto = revRedondeo(resto - x); usado = revRedondeo(usado + x);
+          }
+          if (!nuevos.length) { omitidos++; continue; }
+          // el crédito se reemplaza por lo que queda sin aplicar (si queda algo)
+          const idsBorrar = filasCredito.map(a => a.id);
+          if (idsBorrar.length) await sb.from('fz_cobros_aplicados').delete().in('id', idsBorrar);
+          if (resto >= 0.01) await sb.from('fz_cobros_aplicados').insert({ business_id: b.id, factura_id: null, monto: resto, origen_tabla: it.t, origen_id: it.m.id, fecha: it.m.fecha, notas: 'Crédito a favor del cliente' });
+          const ligados = [...new Set([...facturaIdsClienteDe(it.m), ...nuevos])];
+          await sb.from(it.t).update({ cliente_factura_ids: ligados, cliente_factura_id: ligados[0] || null }).eq('id', it.m.id);
+          registrarAuditoria(b.id, 'editar', 'Clientes', `Crédito a favor del cliente de ${fmt(usado)} (cobro del ${it.m.fecha}) aplicado a ${nuevos.length} factura(s) pendiente(s) (Revisión de consistencia)`);
+          aplicados++; montoTotal = revRedondeo(montoTotal + usado);
+        }
+        return `${aplicados} crédito(s) aplicado(s) por ${fmt(montoTotal)}${cerrados ? ` · ${cerrados} en meses cerrados no se tocaron` : ''}${omitidos ? ` · ${omitidos} ya no estaban como se esperaba y se dejaron` : ''}.`;
+      },
+    };
+  }
+  return r;
+}
+
 // Un pago YA aplicado por completo, pero a facturas de hace semanas (el sistema aplica un pago a la factura pendiente más vieja), cuyo monto es EXACTAMENTE lo que
 // le falta a los grupos de pagos de su misma fecha: casi seguro es un pago de esa corrida que se aplicó a la factura equivocada. Se propone reubicarlo. Siempre con
 // confirmación, y solo si hay UNA combinación posible; si es ambiguo, no se propone nada.
@@ -23516,7 +23621,7 @@ function revVinculosCobroFactura(ctx) {
   const facturaPorId = Object.fromEntries(facturasClientes.map(f => [f.id, f]));
   const nombreFactura = (id) => { const f = facturaPorId[id]; return f ? (f.numero_factura || ('#' + f.folio)) : 's/f'; };
   const porOrigen = {};
-  cobrosAplicados.filter(p => p.origen_tabla === 'fz_bancos_mov' || p.origen_tabla === 'fz_efectivo_mov').forEach(p => { (porOrigen[p.origen_tabla + '|' + p.origen_id] = porOrigen[p.origen_tabla + '|' + p.origen_id] || []).push(p); });
+  cobrosAplicados.filter(p => p.factura_id && (p.origen_tabla === 'fz_bancos_mov' || p.origen_tabla === 'fz_efectivo_mov')).forEach(p => { (porOrigen[p.origen_tabla + '|' + p.origen_id] = porOrigen[p.origen_tabla + '|' + p.origen_id] || []).push(p); });
   const reparables = []; const huerfanas = []; const rotas = [];
   Object.entries(porOrigen).forEach(([k, apps]) => {
     const m = movs.get(k); const t = k.split('|')[0];
@@ -23614,7 +23719,7 @@ function revSalidasSinClasificar(ctx) {
 
 async function ejecutarRevisionConsistencia(b) {
   const ctx = await cargarContextoRevision(b);
-  const checks = [revVentasCategorias, revPropinas, revPropinasSinMarca, revPropinasDuplicadas, revDepositosVentas, revPagosProveedor, revPagosReubicables, revGruposConFaltante, revCreditosDuplicados, revFacturasPagoIncoherente, revDescuadreLibro, revVinculosPagoFactura, revVinculosCobroFactura, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar];
+  const checks = [revVentasCategorias, revPropinas, revPropinasSinMarca, revPropinasDuplicadas, revDepositosVentas, revPagosProveedor, revPagosReubicables, revGruposConFaltante, revCreditosDuplicados, revFacturasPagoIncoherente, revDescuadreLibro, revVinculosPagoFactura, revCreditosClientes, revVinculosCobroFactura, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar];
   const out = [];
   for (const fn of checks) {
     try { const r = fn(ctx); if (r) out.push(r); }
