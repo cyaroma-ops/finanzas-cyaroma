@@ -4889,13 +4889,15 @@ async function prepararCierreEjercicio(businessId, ejercicio) {
   const costos = redondearMoneda(Object.values(netoPorSubcuenta).filter(l=>l.tipo==='costo').reduce((s,l)=>s+l.neto,0));
   const gastos = redondearMoneda(Object.values(netoPorSubcuenta).filter(l=>l.tipo==='gasto').reduce((s,l)=>s+l.neto,0));
   const resultado = redondearMoneda(ingresos - costos - gastos);
+  // La póliza cancela las subcuentas del libro; los resultados que no son subcuentas (ventas, gastos capturados en Ventas, faltantes de caja, gastos manuales, gastos sin clasificar)
+  // no pueden ir en ella. Antes, el cierre se negaba cuando había alguno. Ahora se cierra y esa parte sigue en Capital como resultado de ejercicios anteriores
+  // (computeResultadoEjerciciosAnteriores cuenta el remanente de los años cerrados), así que el Balance no cambia. Aquí se informa el resultado TOTAL y su parte fuera del libro.
+  let fueraDelLibro = 0, resultadoTotal = resultado;
   const negocioCierre = (STATE.businesses || []).find(x => x.id === businessId);
   if (esNegocioFinanciero(negocioCierre)) {
-    // El cierre cancela las cuentas del libro. Si el Estado de Resultados trae partidas que no viven en el libro (ventas, gastos
-    // capturados en Ventas, gastos manuales, gastos sin clasificar, sobrante/faltante), quedarían fuera del cierre y el Capital
-    // saldría mal: por eso solo se cierra si ambos resultados coinciden.
     const utilidadER = redondearMoneda(await computeUtilidadAcumulada(businessId, `${ejercicio}-12`));
-    if (Math.abs(utilidadER - resultado) > 0.01) errores.push(`El resultado del libro (${fmt(resultado)}) no coincide con el del Estado de Resultados del ejercicio (${fmt(utilidadER)}): hay partidas del Estado de Resultados que no viven en el libro (ventas, gastos capturados en Ventas, gastos manuales, gastos sin clasificar o sobrante/faltante de caja) por ${fmt(utilidadER - resultado)}. El cierre todavía no las incluye, así que no se puede cerrar con seguridad.`);
+    resultadoTotal = utilidadER;
+    fueraDelLibro = redondearMoneda(utilidadER - resultado);
   }
   const tipoResultado = resultado >= 0 ? 'utilidad' : 'perdida';
   const esUtilidad = resultado >= 0;
@@ -4922,7 +4924,7 @@ async function prepararCierreEjercicio(businessId, ejercicio) {
   const totalAbonos = redondearMoneda(lineasPoliza.reduce((s,l)=>s+l.abono,0));
   const puedeCerrar = errores.length === 0 && lineasPoliza.length > 0;
 
-  return { ejercicio, resultado, tipoResultado, ingresos, costos, gastos, lineasPoliza, totalCargos, totalAbonos, balanceCuadrado, diferencia, puedeCerrar, errores, yaExiste: !!existente, destinoTexto: destino.rutaTexto };
+  return { ejercicio, resultado, tipoResultado, ingresos, costos, gastos, fueraDelLibro, resultadoTotal, lineasPoliza, totalCargos, totalAbonos, balanceCuadrado, diferencia, puedeCerrar, errores, yaExiste: !!existente, destinoTexto: destino.rutaTexto };
 }
 
 // Cierra un ejercicio completo: valida cuadre, arma UNA póliza real (visible en Pólizas/
@@ -4964,8 +4966,8 @@ async function cerrarEjercicioContable(businessId, ejercicio, usuarioEmail) {
     );
   }
   invalidarCacheCierres(businessId);
-  registrarAuditoria(businessId, 'crear', 'Configuración', `Cierre contable del ejercicio ${ejercicio} — ${esUtilidad?'utilidad':'pérdida'} de ${fmt(Math.abs(prep.resultado))}`);
-  return { estado: 'ok', polizaId: nuevaPoliza.id, resultado: prep.resultado, esUtilidad };
+  registrarAuditoria(businessId, 'crear', 'Configuración', `Cierre contable del ejercicio ${ejercicio} — ${esUtilidad?'utilidad':'pérdida'} de ${fmt(Math.abs(prep.resultado))}${Math.abs(prep.fueraDelLibro || 0) > 0.004 ? ` (póliza) y ${fmt(Math.abs(prep.fueraDelLibro))} ${prep.fueraDelLibro > 0 ? 'a favor' : 'en contra'} fuera del libro; resultado total ${fmt(prep.resultadoTotal)}` : ''}`);
+  return { estado: 'ok', polizaId: nuevaPoliza.id, resultado: prep.resultado, esUtilidad, fueraDelLibro: prep.fueraDelLibro || 0, resultadoTotal: prep.resultadoTotal };
 }
 
 // Reabre un ejercicio: encuentra la póliza automática por su marca inequívoca (nunca por texto),
@@ -9239,11 +9241,15 @@ async function renderPreviewCierreAnual(businessId, ejercicio) {
           <tr><td>Ingresos</td><td class="num" style="text-align:right;">${fmt(prep.ingresos)}</td></tr>
           <tr><td>Costos</td><td class="num" style="text-align:right;">${fmt(prep.costos)}</td></tr>
           <tr><td>Gastos</td><td class="num" style="text-align:right;">${fmt(prep.gastos)}</td></tr>
-          <tr style="border-top:1px solid var(--line);font-weight:700;"><td>${prep.tipoResultado==='utilidad'?'Utilidad':'Pérdida'}</td><td class="num" style="text-align:right;">${fmt(Math.abs(prep.resultado))}</td></tr>
+          <tr style="border-top:1px solid var(--line);font-weight:700;"><td>${Math.abs(prep.fueraDelLibro || 0) > 0.004 ? (prep.tipoResultado==='utilidad'?'Utilidad que cierra la póliza':'Pérdida que cierra la póliza') : (prep.tipoResultado==='utilidad'?'Utilidad':'Pérdida')}</td><td class="num" style="text-align:right;">${fmt(Math.abs(prep.resultado))}</td></tr>
+          ${Math.abs(prep.fueraDelLibro || 0) > 0.004 ? `
+          <tr><td>Partidas fuera del libro<div style="font-size:11px;color:var(--muted);font-weight:400;">ventas, gastos capturados en Ventas, gastos sin clasificar, faltantes de caja, gastos manuales</div></td><td class="num" style="text-align:right;">${prep.fueraDelLibro < 0 ? '−' : ''}${fmt(Math.abs(prep.fueraDelLibro))}</td></tr>
+          <tr style="border-top:1px solid var(--line);font-weight:700;"><td>${prep.resultadoTotal >= 0 ? 'Utilidad total del ejercicio' : 'Pérdida total del ejercicio'}</td><td class="num" style="text-align:right;">${fmt(Math.abs(prep.resultadoTotal))}</td></tr>` : ''}
         </table>
-        <p style="font-weight:700;color:${prep.tipoResultado==='utilidad'?'var(--green)':'var(--red)'};margin-bottom:12px;">${prep.tipoResultado==='utilidad'?'UTILIDAD DEL EJERCICIO':'PÉRDIDA DEL EJERCICIO'}</p>
+        ${Math.abs(prep.fueraDelLibro || 0) > 0.004 ? `<p style="font-size:12px;color:var(--muted);margin:0 0 10px;">Las partidas fuera del libro no son cuentas del libro, así que no pasan por la póliza: siguen en Capital como resultado de ejercicios anteriores. <strong>El Balance no cambia</strong> al cerrar.</p>` : ''}
+        <p style="font-weight:700;color:${(Math.abs(prep.fueraDelLibro || 0) > 0.004 ? prep.resultadoTotal >= 0 : prep.tipoResultado==='utilidad')?'var(--green)':'var(--red)'};margin-bottom:12px;">${(Math.abs(prep.fueraDelLibro || 0) > 0.004 ? prep.resultadoTotal >= 0 : prep.tipoResultado==='utilidad')?'UTILIDAD DEL EJERCICIO':'PÉRDIDA DEL EJERCICIO'}</p>
 
-        <p style="font-size:12px;color:var(--muted);margin-bottom:4px;">DESTINO DEL RESULTADO</p>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:4px;">${Math.abs(prep.fueraDelLibro || 0) > 0.004 ? 'DESTINO DEL RESULTADO DE LA PÓLIZA' : 'DESTINO DEL RESULTADO'}</p>
         <p style="font-size:13px;margin-bottom:12px;">${prep.destinoTexto}</p>
 
         <p style="font-size:12px;color:var(--muted);margin-bottom:4px;">VISTA PREVIA DE LA PÓLIZA</p>
@@ -9271,7 +9277,7 @@ async function renderPreviewCierreAnual(businessId, ejercicio) {
           <div class="card" style="margin:10px 0;padding:14px;">
             <p style="font-weight:700;color:var(--green);">Ejercicio ${ejercicio} cerrado correctamente</p>
             <p style="font-size:13px;">Póliza de cierre: ${r.polizaId}</p>
-            <p style="font-size:13px;">Resultado: ${r.esUtilidad?'Utilidad':'Pérdida'} ${fmt(Math.abs(r.resultado))}</p>
+            <p style="font-size:13px;">Resultado: ${Math.abs(r.fueraDelLibro || 0) > 0.004 ? `${r.resultadoTotal >= 0 ? 'Utilidad' : 'Pérdida'} total ${fmt(Math.abs(r.resultadoTotal))} (póliza: ${r.esUtilidad?'utilidad':'pérdida'} ${fmt(Math.abs(r.resultado))}; fuera del libro: ${r.fueraDelLibro < 0 ? '−' : ''}${fmt(Math.abs(r.fueraDelLibro))})` : `${r.esUtilidad?'Utilidad':'Pérdida'} ${fmt(Math.abs(r.resultado))}`}</p>
             <button class="btn btn-ghost btn-sm" id="verPolizaCierreBtn" style="margin-top:8px;">Ver póliza de cierre</button>
           </div>`;
         document.getElementById('verPolizaCierreBtn').addEventListener('click', () => { document.getElementById('modalCierrePeriodo').classList.remove('show'); irASeccion('polizas'); });
@@ -19149,11 +19155,12 @@ async function computeSaldoCuentaMayorPolizas(businessId, cuentaMayorId, subcuen
   return { subs: raices, total: raices.reduce((s,x)=>s+x.total,0) };
 }
 
-// Resultado de los ejercicios ANTERIORES al del Balance que se está viendo y que todavía no se han
-// cerrado con póliza de cierre: el Balance suma todo el tiempo (Activo/Pasivo), así que su resultado
-// debe estar también en Capital. Un año ya cerrado se omite — su resultado ya vive en Capital por la
-// propia póliza de cierre (es_cierre_anual), y sumarlo otra vez lo duplicaría. Usa la MISMA fuente
-// del Estado de Resultados para cada año (computeUtilidadAcumulada), nunca un cálculo aparte.
+// Resultado de los ejercicios ANTERIORES al del Balance que se está viendo: el Balance suma todo el tiempo (Activo/Pasivo), así que su resultado debe estar también en Capital.
+// - Un año ABIERTO aporta todo su resultado.
+// - Un año CERRADO aporta solo lo que su póliza de cierre NO pudo llevar a Capital: la póliza cancela las subcuentas del libro, pero hay resultados que no son subcuentas (ventas,
+//   gastos capturados en Ventas, faltantes de caja, gastos manuales, gastos sin clasificar). Tras cerrar, el Estado de Resultados del año queda en cero para lo que cancela la póliza,
+//   así que su resultado es exactamente ese remanente (si no hay remanente, vale cero y nada cambia). Sin esto, ese remanente desaparecía de Capital al cerrar el año.
+// Usa la MISMA fuente del Estado de Resultados para cada año (computeUtilidadAcumulada), nunca un cálculo aparte.
 async function computeResultadoEjerciciosAnteriores(businessId, hastaYm) {
   const anioActual = Number(hastaYm.slice(0, 4));
   const tablas = ['fz_proveedores', 'fz_ventas', 'fz_bancos_mov', 'fz_efectivo_mov', 'fz_polizas'];
@@ -19165,12 +19172,10 @@ async function computeResultadoEjerciciosAnteriores(businessId, hastaYm) {
   if (!anios.length) return 0;
   const primerAnio = Math.min(...anios);
   if (primerAnio >= anioActual) return 0;
-  const { data: cierres } = await sb.from('fz_polizas').select('ejercicio_cierre').eq('business_id', businessId).eq('es_cierre_anual', true);
-  const cerrados = new Set((cierres || []).map(c => Number(c.ejercicio_cierre)));
-  const aniosAbiertos = [];
-  for (let y = primerAnio; y < anioActual; y++) { if (!cerrados.has(y)) aniosAbiertos.push(y); }
+  const aniosConResultado = []; // abiertos y cerrados: un año cerrado aporta su remanente (ver arriba)
+  for (let y = primerAnio; y < anioActual; y++) aniosConResultado.push(y);
   // los años se calculan a la vez (antes, uno tras otro); solo se calcula un año si realmente tiene información
-  const resultados = await Promise.all(aniosAbiertos.map(async (y) => {
+  const resultados = await Promise.all(aniosConResultado.map(async (y) => {
     const conteos = await Promise.all(tablas.map(t => sb.from(t).select('id', { count: 'exact', head: true }).eq('business_id', businessId).gte('fecha', `${y}-01-01`).lte('fecha', `${y}-12-31`)));
     if (!conteos.some(r => (r.count || 0) > 0)) return 0;
     return computeUtilidadAcumulada(businessId, `${y}-12`);
@@ -23874,6 +23879,7 @@ async function renderRevisionConsistencia() {
     try { revs = await ejecutarRevisionConsistencia(b); }
     catch (err) { cuerpo.innerHTML = `No se pudo completar la revisión: ${revEsc(err.message || err)}`; return; }
     const conAviso = revs.filter(r => r.error || r.items.length).length;
+    try { revBadgeActualizar({ resultado: revs }); } catch (_) {} // el distintivo del menú usa EXACTAMENTE este resultado
     cuerpo.className = '';
     cuerpo.innerHTML = `
       <div style="padding:2px 4px 12px;font-size:13px;color:var(--muted);">Esta pantalla solo lee. Los botones corrigen únicamente lo que dice su etiqueta, con las mismas funciones del sistema, y piden confirmación. Revisado a las ${new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}.</div>
@@ -23913,3 +23919,122 @@ async function renderRevisionConsistencia() {
   document.getElementById('revRepetirBtn').addEventListener('click', pintar);
   await pintar();
 }
+
+// ============================================================================================================================================
+// CONTADOR DE PENDIENTES DE LA REVISIÓN DE CONSISTENCIA (distintivo del menú lateral)
+// Muestra, junto a "Revisión de consistencia", cuántas revisiones tienen algo que atender (el MISMO número que dice la pantalla de la Revisión). Se calcula en segundo
+// plano: al entrar, al cambiar de negocio y poco después de cualquier cambio que registre la bitácora; nunca bloquea la pantalla. Si la Revisión está abierta, ella le pasa
+// su resultado y no se recalcula. Mientras recalcula conserva el número anterior (no parpadea) y descarta un resultado viejo si el negocio cambió a medio cálculo.
+// ============================================================================================================================================
+const REV_BADGE = { ttlMs: 10 * 60 * 1000, minEntreCalculosMs: 20 * 1000, retrasoMs: 2500, retrasoEscrituraMs: 6000, maxTitulos: 6 };
+const REV_BADGE_ESTADO = { negocioId: null, estado: 'inicial', conAviso: 0, total: 0, renglones: 0, detalle: [], ts: 0 };
+let revBadgeCalculando = false, revBadgeReintentar = false, revBadgeTimer = null, revBadgeVersion = 0;
+
+function revBadgeInyectarEstilos() {
+  if (document.getElementById('estiloRevBadge')) return; // idempotente
+  const st = document.createElement('style'); st.id = 'estiloRevBadge';
+  st.textContent = `
+    .rev-badge{margin-left:auto;min-width:20px;height:20px;padding:0 6px;border-radius:10px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;
+      font-size:11px;font-weight:700;line-height:1;letter-spacing:.2px;font-variant-numeric:tabular-nums;color:#fff;
+      background:linear-gradient(180deg,#d95a5a,var(--red));box-shadow:0 0 0 2px rgba(8,24,48,.9),0 2px 6px rgba(201,74,74,.40);animation:revBadgePop .28s ease-out;}
+    .rev-badge[hidden]{display:none;}
+    .rev-badge.ok{min-width:18px;height:18px;padding:0;font-size:10.5px;color:#5fd6a8;background:rgba(31,157,107,.16);box-shadow:inset 0 0 0 1px rgba(95,214,168,.38);}
+    .rev-badge.cargando{min-width:7px;width:7px;height:7px;padding:0;color:transparent;background:#7f93b5;box-shadow:none;animation:revBadgePulse 1.3s ease-in-out infinite;}
+    .rev-badge.error{min-width:18px;height:18px;padding:0;font-size:11px;color:#e3b85e;background:transparent;box-shadow:inset 0 0 0 1.5px #e3b85e;}
+    .nav-item.active .rev-badge:not(.ok):not(.cargando):not(.error){box-shadow:0 0 0 2px rgba(185,138,46,.35),0 2px 6px rgba(201,74,74,.40);}
+    @keyframes revBadgePop{0%{transform:scale(.55);opacity:0}70%{transform:scale(1.14)}100%{transform:scale(1);opacity:1}}
+    @keyframes revBadgePulse{0%,100%{opacity:.30}50%{opacity:1}}
+    @media (prefers-reduced-motion:reduce){.rev-badge,.rev-badge.cargando{animation:none;}}`;
+  document.head.appendChild(st);
+}
+
+function revBadgeTiempoRelativo(ts) {
+  const min = Math.floor((Date.now() - ts) / 60000);
+  return min < 1 ? 'hace unos segundos' : (min === 1 ? 'hace 1 min' : (min < 60 ? `hace ${min} min` : `hace ${Math.floor(min / 60)} h`));
+}
+
+function revBadgePintar() {
+  const item = document.querySelector('.nav-item[data-section="revision"]');
+  if (!item) return;
+  revBadgeInyectarEstilos();
+  let el = document.getElementById('revBadge');
+  if (!el) { el = document.createElement('span'); el.id = 'revBadge'; el.className = 'rev-badge'; el.setAttribute('role', 'status'); el.setAttribute('aria-live', 'polite'); item.appendChild(el); }
+  const e = REV_BADGE_ESTADO, b = (typeof biz === 'function') ? biz() : null;
+  if (!b || e.negocioId !== b.id || e.estado === 'inicial') { el.hidden = true; item.removeAttribute('title'); return; }
+  el.hidden = false; el.className = 'rev-badge ' + e.estado;
+  if (e.estado === 'pendiente') {
+    el.textContent = e.conAviso > 99 ? '99+' : String(e.conAviso);
+    const lineas = e.detalle.slice(0, REV_BADGE.maxTitulos).map(d => `• ${d.titulo}${d.error ? ' (no se pudo revisar)' : ` (${d.n})`}`);
+    if (e.detalle.length > REV_BADGE.maxTitulos) lineas.push(`• y ${e.detalle.length - REV_BADGE.maxTitulos} más…`);
+    const resumen = `${e.conAviso} de ${e.total} revisiones con algo que atender · ${e.renglones} ${e.renglones === 1 ? 'renglón' : 'renglones'}`;
+    el.setAttribute('aria-label', resumen); item.title = `${resumen}\n${lineas.join('\n')}\nActualizado ${revBadgeTiempoRelativo(e.ts)}`;
+  } else if (e.estado === 'ok') {
+    el.textContent = '✓'; el.setAttribute('aria-label', 'Revisión de consistencia: todo en orden');
+    item.title = `Todo en orden (${e.total} revisiones) · revisado ${revBadgeTiempoRelativo(e.ts)}`;
+  } else if (e.estado === 'cargando') {
+    el.textContent = ''; el.setAttribute('aria-label', 'Revisando la información del negocio'); item.title = 'Revisando la información del negocio…';
+  } else if (e.estado === 'error') {
+    el.textContent = '!'; el.setAttribute('aria-label', 'No se pudo completar la revisión automática'); item.title = 'No se pudo completar la revisión automática. Abre la Revisión de consistencia para ver el detalle.';
+  }
+}
+
+async function revBadgeActualizar({ forzar = false, resultado = null } = {}) {
+  const b = (typeof biz === 'function') ? biz() : null;
+  if (!b) { REV_BADGE_ESTADO.estado = 'inicial'; REV_BADGE_ESTADO.negocioId = null; revBadgePintar(); return; }
+  const aplicar = (revs) => {
+    const detalle = revs.filter(r => r.error || (r.items && r.items.length)).map(r => ({ titulo: r.titulo, n: r.items ? r.items.length : 0, error: !!r.error }));
+    Object.assign(REV_BADGE_ESTADO, { negocioId: b.id, estado: detalle.length ? 'pendiente' : 'ok', conAviso: detalle.length, total: revs.length, renglones: detalle.reduce((acc, d) => acc + d.n, 0), detalle, ts: Date.now() });
+    revBadgePintar();
+  };
+  if (resultado) { revBadgeVersion++; aplicar(resultado); return; }
+  const e = REV_BADGE_ESTADO, mismoNegocio = e.negocioId === b.id && e.ts > 0;
+  if (revBadgeCalculando) { revBadgeReintentar = true; return; }
+  if (!forzar && mismoNegocio && Date.now() - e.ts < REV_BADGE.ttlMs) return;                      // todavía vale
+  if (forzar && mismoNegocio && Date.now() - e.ts < REV_BADGE.minEntreCalculosMs) return;         // no más de un cálculo cada 20 s
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;             // en segundo plano no se gasta; se calcula al volver
+  revBadgeCalculando = true; const version = ++revBadgeVersion;
+  if (!mismoNegocio) { Object.assign(REV_BADGE_ESTADO, { negocioId: b.id, estado: 'cargando', ts: 0, conAviso: 0, detalle: [] }); revBadgePintar(); }
+  try {
+    const revs = await ejecutarRevisionConsistencia(b);
+    const actual = biz();
+    if (actual && actual.id === b.id && version === revBadgeVersion) aplicar(revs); // si cambió de negocio (o la pantalla ya entregó su resultado), éste se descarta
+  } catch (err) {
+    console.warn('[revisión] no se pudo calcular el contador:', err);
+    const actual = biz();
+    if (actual && actual.id === b.id && !(e.negocioId === b.id && (e.estado === 'ok' || e.estado === 'pendiente'))) { Object.assign(REV_BADGE_ESTADO, { negocioId: b.id, estado: 'error', ts: Date.now() }); revBadgePintar(); }
+  } finally {
+    revBadgeCalculando = false;
+    if (revBadgeReintentar) { revBadgeReintentar = false; revBadgeProgramar(400); }
+  }
+}
+
+function revBadgeProgramar(retrasoMs = REV_BADGE.retrasoMs, forzar = false) {
+  clearTimeout(revBadgeTimer);
+  revBadgeTimer = setTimeout(() => {
+    const correr = () => { revBadgeActualizar({ forzar }); };
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(correr, { timeout: 5000 }); else correr();
+  }, retrasoMs);
+}
+
+// Enganches (no cambian lo que hacen las funciones originales):
+// 1) al dibujar cualquier sección (también al cambiar de negocio): se pinta lo que ya se sabe y, si es nuevo o venció, se calcula en segundo plano
+// (Cada enganche es defensivo: un contador de comodidad nunca debe poder impedir que la aplicación cargue.)
+if (typeof renderCurrentSection === 'function') {
+  const revBadgeRenderCurrentSectionOriginal = renderCurrentSection;
+  renderCurrentSection = async function (...args) {
+    try { return await revBadgeRenderCurrentSectionOriginal.apply(this, args); }
+    finally { try { revBadgePintar(); revBadgeProgramar(); } catch (_) {} }
+  };
+}
+// 2) cada escritura que deja huella en la bitácora deja el contador "obsoleto": se refresca poco después (si la Revisión está abierta, ella misma se actualiza)
+if (typeof registrarAuditoria === 'function') {
+  const revBadgeRegistrarAuditoriaOriginal = registrarAuditoria;
+  registrarAuditoria = function (...args) {
+    const r = revBadgeRegistrarAuditoriaOriginal.apply(this, args);
+    try { if (STATE.currentSection !== 'revision') revBadgeProgramar(REV_BADGE.retrasoEscrituraMs, true); } catch (_) {}
+    return r;
+  };
+}
+// 3) al volver a la pestaña
+if (typeof document !== 'undefined' && document.addEventListener) document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') revBadgeProgramar(1200); });
+
