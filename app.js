@@ -22932,7 +22932,7 @@ function revPagosProveedor(ctx) {
     const falta = revRedondeo(Number(m.cargos) - aplicado);
     if (falta < 0.005) return;
     const credito = creditos.some(c => (c.origen_tabla === t && c.origen_id === m.id) || (!c.origen_id && c.factura === `Crédito a favor (pago del ${m.fecha})`));  // la leyenda con la fecha solo vale para créditos VIEJOS sin origen; un crédito con origen es de UN pago, no de todos los de ese día
-    if (credito) { const idsH = facturaIdsDe(m); if (aplicado < 0.005 && idsH.length && creditos.some(c => c.origen_tabla === t && c.origen_id === m.id)) ocultos.push({ m, t, ids: idsH }); return; } // el excedente ya tiene su crédito a favor
+    if (credito) { const idsH = facturaIdsDe(m); if (aplicado < 0.005 && idsH.length) ocultos.push({ m, t, ids: idsH }); return; } // el excedente ya tiene su crédito a favor
     const nombre = m.proveedor || m.descripcion || 'Pago a proveedor';
     // Método rápido de Proveedores: la factura se marcó "Pagado" con su "Pagado desde" y el sistema creó este
     // movimiento ligado a ella (proveedor_factura_ids) SIN guardar la aplicación. El Balance lo cuenta bien
@@ -23041,11 +23041,12 @@ function revPagosProveedor(ctx) {
       const enGrupo = new Set(miembros.map(x => x.poolCand.m.id));
       const bloqueador = lista.find(o => !enGrupo.has(o.m.id) && fs.some(f => facturaIdsDe(o.m).includes(f.id)) && !((aplicadoPor[`${o.t}|${o.m.id}`] || 0) > 0.005));
       if (bloqueador) return noResuelve(`otro pago sin aplicar comparte una de sus facturas (${fechaCorta(bloqueador.m.fecha)} · ${bloqueador.m.proveedor || bloqueador.m.descripcion || 'pago'} · ${fmt(bloqueador.m.cargos)})`);
-      // CRÉDITOS NACIDOS de estos pagos (un pago que sobró): no son facturas del grupo; reciben el sobrante de SUS pagos. SOLO por origen (exacto): un crédito
-      // viejo sin origen no dice de cuál pago salió y repartir su sobrante sería una suposición que movería el Balance. Si ya tienen aplicaciones, no se tocan.
+      // CRÉDITOS NACIDOS de estos pagos (un pago que sobró): no son facturas del grupo; reciben el sobrante de UN pago. Con origen, es su pago. Un crédito viejo SIN
+      // origen no dice de cuál pago salió: se prueba con cada pago de esa fecha por separado y se toma el primero con el que el reparto cuadra. El sobrante va
+      // concentrado en UN solo pago, que es lo que el motor reconoce (repartirlo entre varios movería el Balance). Si el crédito ya tiene aplicaciones, no se toca.
       const idsFSet = new Set(fs.map(f => f.id)); const proveedoresG = new Set(realesG.map(f => f.proveedor));
-      const donantesDe = (c) => miembros.filter(x => c.origen_tabla === x.poolCand.t && c.origen_id === x.poolCand.m.id);
-      const nacidos = creditos.filter(c => !idsFSet.has(c.id) && proveedoresG.has(c.proveedor) && !pagosAplicados.some(pa => pa.factura_id === c.id) && donantesDe(c).length);
+      const donantesDe = (c) => c.origen_id ? miembros.filter(x => c.origen_tabla === x.poolCand.t && c.origen_id === x.poolCand.m.id) : miembros.filter(x => c.factura === `Crédito a favor (pago del ${x.poolCand.m.fecha})`);
+      const nacidos = creditos.filter(c => c.estatus === 'Pendiente' && !idsFSet.has(c.id) && proveedoresG.has(c.proveedor) && !pagosAplicados.some(pa => pa.factura_id === c.id) && donantesDe(c).length);
       const fondos = new Map(miembros.map(x => [x, Number(x.poolCand.m.cargos)]));
       creditosG.forEach(c => { const d = duenoCredito.get(c.id); fondos.set(d, (fondos.get(d) || 0) + Math.abs(Number(c.importe))); });
       const sumaPagos = revRedondeo([...fondos.values()].reduce((acc, v) => acc + v, 0));
@@ -23058,8 +23059,18 @@ function revPagosProveedor(ctx) {
       if (Math.abs(difG) > tolG + 0.0001) return noResuelve(`los pagos${creditosG.length ? ' (con sus créditos a favor)' : ''} suman ${fmt(sumaPagos)} y lo que las facturas dicen tener pagado sin aplicar${nacidos.length ? ' más los créditos por sobrante' : ''} suma ${fmt(sumaNeed + sumaNacidos)}`);
       const idsReales = new Set(realesG.map(f => f.id));
       const enlaces = miembros.flatMap(x => x.poolCand.ids.filter(fid => idsReales.has(fid)).map(fid => [kPago(x), fid]));
-      const r = asignarPagosAFacturas(miembros.map(x => ({ k: kPago(x), cents: Math.round(fondos.get(x) * 100) })), [...necesidad.filter(n => n.need > 0.004).map(n => ({ k: n.f.id, cents: Math.round(n.need * 100) })), ...nacidos.map(c => ({ k: 'c|' + c.id, cents: Math.round(Math.abs(Number(c.importe)) * 100) }))], [...enlaces, ...nacidos.flatMap(c => donantesDe(c).map(x => [kPago(x), 'c|' + c.id]))], Math.round(tolG * 100));
-      if (!r.ok) return noResuelve('las cantidades cuadran en total pero no hay un reparto que respete las facturas a las que cada pago está ligado');
+      const nodosPagos = miembros.map(x => ({ k: kPago(x), cents: Math.round(fondos.get(x) * 100) }));
+      const nodosFacturas = [...necesidad.filter(n => n.need > 0.004).map(n => ({ k: n.f.id, cents: Math.round(n.need * 100) })), ...nacidos.map(c => ({ k: 'c|' + c.id, cents: Math.round(Math.abs(Number(c.importe)) * 100) }))];
+      const opcionesDonante = nacidos.map(c => donantesDe(c).filter(x => fondos.get(x) + 0.004 >= Math.abs(Number(c.importe))).sort((a2, z2) => String(a2.poolCand.m.id).localeCompare(String(z2.poolCand.m.id))));
+      if (opcionesDonante.some(o => !o.length)) return noResuelve('un crédito por sobrante no tiene un pago de esa fecha al que le alcance');
+      let r = null, intentos = 0;
+      const probar = (i, acum) => {
+        if (r || intentos > 80) return;
+        if (i === nacidos.length) { intentos++; const res = asignarPagosAFacturas(nodosPagos, nodosFacturas, [...enlaces, ...acum], Math.round(tolG * 100)); if (res.ok) r = res; return; }
+        for (const x of opcionesDonante[i]) { probar(i + 1, [...acum, [kPago(x), 'c|' + nacidos[i].id]]); if (r) return; }
+      };
+      probar(0, []);
+      if (!r) return noResuelve('las cantidades cuadran en total pero no hay un reparto que respete las facturas a las que cada pago está ligado');
       // Centavos de redondeo: si a un pago le SOBRA, queda como CRÉDITO A FAVOR (baja Proveedores); si a una factura le FALTA, queda como SALDO PENDIENTE
       // (se sigue debiendo). Igual que el flujo normal, pero sin esconder el centavo.
       const fondosCents = {}; miembros.forEach(x => { fondosCents[kPago(x)] = Math.round(fondos.get(x) * 100); });
