@@ -13579,41 +13579,71 @@ async function openVentaDiaModal(businessId, onDone) {
 /* ---------- Revertir un pago (al eliminar el movimiento que lo aplicó) ---------- */
 async function revertirPagoAFacturas(idsAfectados, montoMovimiento, businessId, origenTabla, origenId) {
   if (!idsAfectados || !idsAfectados.length) return;
-  const { data: facturas } = await sb.from('fz_proveedores').select('*').in('id', idsAfectados);
+  // Si el pago tiene sus APLICACIONES guardadas, se revierte EXACTAMENTE lo que aplicó a cada factura. Antes se restaba el monto del pago a las facturas ligadas de la más vieja
+  // a la más nueva: en un fondo compartido (varios pagos sobre las mismas facturas, como las propinas) eso le quitaba lo pagado a la factura equivocada. Los pagos viejos SIN
+  // aplicaciones guardadas conservan el método anterior.
+  let aplicacionesPropias = [];
+  if (businessId && origenTabla && origenId) {
+    const { data: ap } = await sb.from('fz_pagos_aplicados').select('factura_id, monto, fecha').eq('origen_tabla', origenTabla).eq('origen_id', origenId);
+    aplicacionesPropias = ap || [];
+  }
+  const idsConsulta = [...new Set([...(idsAfectados || []), ...aplicacionesPropias.map(a => a.factura_id)])];
+  const { data: facturas } = await sb.from('fz_proveedores').select('*').in('id', idsConsulta);
   if (!facturas || !facturas.length) return;
   const reales = facturas.filter(f => Number(f.importe) >= 0).sort((a,b)=>a.fecha.localeCompare(b.fecha));
   const creditos = facturas.filter(f => Number(f.importe) < 0);
 
-  let porRevertir = montoMovimiento;
-  for (const f of reales) {
-    if (porRevertir <= 0.009) break;
-    const actual = Number(f.importe_pagado) || 0;
-    if (actual <= 0.009) continue;
-    const revertir = Math.min(porRevertir, actual);
-    const nuevoPagado = actual - revertir;
-    const quedaLimpio = nuevoPagado <= 0.009;
-    await sb.from('fz_proveedores').update({
-      importe_pagado: quedaLimpio ? 0 : nuevoPagado,
-      estatus: quedaLimpio ? 'Pendiente' : 'Parcial',
-      pagado_desde: quedaLimpio ? null : f.pagado_desde,
-      pagado_desde_tipo: quedaLimpio ? null : f.pagado_desde_tipo,
-      pagado_desde_cuenta_id: quedaLimpio ? null : f.pagado_desde_cuenta_id,
-      fecha_pago: quedaLimpio ? null : f.fecha_pago,
-    }).eq('id', f.id);
-    porRevertir -= revertir;
-  }
-  for (const c of creditos) {
-    if (c.estatus === 'Pagado') {
-      await sb.from('fz_proveedores').update({ estatus: 'Pendiente', fecha_pago: null }).eq('id', c.id);
+  if (aplicacionesPropias.length) {
+    const aplicadoPorFactura = {};
+    aplicacionesPropias.forEach(a => { aplicadoPorFactura[a.factura_id] = (aplicadoPorFactura[a.factura_id] || 0) + (Number(a.monto) || 0); });
+    for (const f of reales) {
+      const quitar = aplicadoPorFactura[f.id] || 0;
+      if (quitar <= 0.0001) continue;
+      const nuevoPagado = Math.max(0, (Number(f.importe_pagado) || 0) - quitar);
+      const quedaLimpio = nuevoPagado <= 0.009;
+      await sb.from('fz_proveedores').update({
+        importe_pagado: quedaLimpio ? 0 : Math.round(nuevoPagado * 100) / 100,
+        estatus: quedaLimpio ? 'Pendiente' : (nuevoPagado >= Number(f.importe) - 0.005 ? 'Pagado' : 'Parcial'),
+        pagado_desde: quedaLimpio ? null : f.pagado_desde,
+        pagado_desde_tipo: quedaLimpio ? null : f.pagado_desde_tipo,
+        pagado_desde_cuenta_id: quedaLimpio ? null : f.pagado_desde_cuenta_id,
+        fecha_pago: quedaLimpio ? null : f.fecha_pago,
+      }).eq('id', f.id);
+    }
+    for (const c of creditos) {
+      if ((aplicadoPorFactura[c.id] || 0) > 0.0001 && c.estatus === 'Pagado') await sb.from('fz_proveedores').update({ estatus: 'Pendiente', fecha_pago: null }).eq('id', c.id);
+    }
+  } else {
+    let porRevertir = montoMovimiento;
+    for (const f of reales) {
+      if (porRevertir <= 0.009) break;
+      const actual = Number(f.importe_pagado) || 0;
+      if (actual <= 0.009) continue;
+      const revertir = Math.min(porRevertir, actual);
+      const nuevoPagado = actual - revertir;
+      const quedaLimpio = nuevoPagado <= 0.009;
+      await sb.from('fz_proveedores').update({
+        importe_pagado: quedaLimpio ? 0 : nuevoPagado,
+        estatus: quedaLimpio ? 'Pendiente' : 'Parcial',
+        pagado_desde: quedaLimpio ? null : f.pagado_desde,
+        pagado_desde_tipo: quedaLimpio ? null : f.pagado_desde_tipo,
+        pagado_desde_cuenta_id: quedaLimpio ? null : f.pagado_desde_cuenta_id,
+        fecha_pago: quedaLimpio ? null : f.fecha_pago,
+      }).eq('id', f.id);
+      porRevertir -= revertir;
+    }
+    for (const c of creditos) {
+      if (c.estatus === 'Pagado') {
+        await sb.from('fz_proveedores').update({ estatus: 'Pendiente', fecha_pago: null }).eq('id', c.id);
+      }
     }
   }
-  // El registro de "pago aplicado" ligado a este movimiento debe desaparecer con él — si no se
+  // El registro de "pago aplicado" ligado a este movimiento debe desaparecer con él: si no se
   // borra, queda huérfano y el motor de realización fiscal seguiría contándolo de más.
   if (businessId && origenTabla && origenId) {
-    // Se captura la fecha real de cada aplicación ANTES de borrarla — la reversión debe quedar
+    // Se captura la fecha real de cada aplicación ANTES de borrarla: la reversión debe quedar
     // fechada en el periodo fiscal real del pago que se deshace, nunca en el día de ejecución.
-    const { data: aplicadosOrigen } = await sb.from('fz_pagos_aplicados').select('factura_id, fecha').eq('origen_tabla', origenTabla).eq('origen_id', origenId);
-    const fechaPorFactura = Object.fromEntries((aplicadosOrigen||[]).map(a => [a.factura_id, a.fecha]));
+    const fechaPorFactura = Object.fromEntries(aplicacionesPropias.map(a => [a.factura_id, a.fecha]));
     await sb.from('fz_pagos_aplicados').delete().eq('origen_tabla', origenTabla).eq('origen_id', origenId);
     const fechaCorte = await obtenerFechaCorteRealizacion(businessId);
     for (const f of facturas) await sincronizarRealizacionFactura(f.id, 'proveedor', businessId, fechaPorFactura[f.id] || todayStr(), fechaCorte);
@@ -13648,7 +13678,9 @@ async function confirmarYEliminarMovimiento(table, row, onDone) {
   if (row.tipo_salida === 'proveedor') {
     const { data: credito } = await sb.from('fz_proveedores').select('*').eq('origen_tabla', table).eq('origen_id', row.id).lt('importe', 0).maybeSingle();
     if (credito) {
-      if (Number(credito.importe_pagado) > 0.009) {
+      const { data: apsCredito } = await sb.from('fz_pagos_aplicados').select('id').eq('factura_id', credito.id).limit(1);
+      // un crédito usado por el flujo normal queda con estatus Pagado y con una aplicación (su importe_pagado no cambia): también cuenta como usado
+      if (Number(credito.importe_pagado) > 0.009 || credito.estatus === 'Pagado' || (apsCredito || []).length) {
         alert(`Este movimiento generó un crédito a favor ("${credito.factura}") que YA FUE UTILIZADO en otra operación posterior. No se puede eliminar este movimiento sin dejar esa operación inconsistente.\n\nRevisa primero dónde se aplicó ese crédito (en el detalle del proveedor) antes de intentar eliminar este pago.`);
         return;
       }
