@@ -22792,29 +22792,38 @@ function revDepositosVentas(ctx) {
 // suman = lo que las facturas dicen tener pagado sin aplicar) existe un reparto que respeta todas las ligas, y para el Balance es indiferente
 // porque el fondo es uno solo. Se calcula con flujo máximo sobre las ligas existentes (un pago solo puede aplicarse a las facturas a las que ya está
 // ligado), en centavos enteros. Si no cuadra exacto, NO se hace nada.
-function asignarPagosAFacturas(pagos, facturas, enlaces, tolCents = 0) {
+// soloPagos: modalidad para grupos a los que les FALTA respaldo (las facturas dicen tener pagado más de lo que explican sus pagos): se aplican TODOS los pagos y las
+// facturas se llenan en el orden dado (las primeras primero); lo que falte cae en las últimas. Si no, se busca el reparto exacto (con tolerancia de centavos).
+function asignarPagosAFacturas(pagos, facturas, enlaces, tolCents = 0, soloPagos = false) {
   const n = 2 + pagos.length + facturas.length, S = 0, T = 1, GRANDE = 1e12;
   const idxP = new Map(pagos.map((p, i) => [p.k, 2 + i])), idxF = new Map(facturas.map((f, i) => [f.k, 2 + pagos.length + i]));
   const cap = Array.from({ length: n }, () => new Map());
   const agregar = (u, v, c) => { cap[u].set(v, (cap[u].get(v) || 0) + c); if (!cap[v].has(u)) cap[v].set(u, 0); };
   pagos.forEach(p => agregar(S, idxP.get(p.k), p.cents));
-  facturas.forEach(f => agregar(idxF.get(f.k), T, f.cents));
+  if (!soloPagos) facturas.forEach(f => agregar(idxF.get(f.k), T, f.cents));
   const unicos = [...new Set(enlaces.map(([a, b]) => a + '\u0001' + b))].map(x => x.split('\u0001'));
   unicos.forEach(([kp, kf]) => { if (idxP.has(kp) && idxF.has(kf)) agregar(idxP.get(kp), idxF.get(kf), GRANDE); });
   let flujo = 0;
-  for (;;) {
-    const prev = new Array(n).fill(-1); prev[S] = S; const cola = [S];
-    while (cola.length && prev[T] === -1) { const u = cola.shift(); for (const [v, c] of cap[u]) if (c > 0 && prev[v] === -1) { prev[v] = u; cola.push(v); } }
-    if (prev[T] === -1) break;
-    let cuello = Infinity; for (let v = T; v !== S; v = prev[v]) cuello = Math.min(cuello, cap[prev[v]].get(v));
-    for (let v = T; v !== S; v = prev[v]) { cap[prev[v]].set(v, cap[prev[v]].get(v) - cuello); cap[v].set(prev[v], cap[v].get(prev[v]) + cuello); }
-    flujo += cuello;
-  }
+  const empujar = () => {
+    let sumado = 0;
+    for (;;) {
+      const prev = new Array(n).fill(-1); prev[S] = S; const cola = [S];
+      while (cola.length && prev[T] === -1) { const u = cola.shift(); for (const [v, c] of cap[u]) if (c > 0 && prev[v] === -1) { prev[v] = u; cola.push(v); } }
+      if (prev[T] === -1) break;
+      let cuello = Infinity; for (let v = T; v !== S; v = prev[v]) cuello = Math.min(cuello, cap[prev[v]].get(v));
+      for (let v = T; v !== S; v = prev[v]) { cap[prev[v]].set(v, cap[prev[v]].get(v) - cuello); cap[v].set(prev[v], cap[v].get(prev[v]) + cuello); }
+      sumado += cuello;
+    }
+    return sumado;
+  };
+  if (soloPagos) { for (const f of facturas) { agregar(idxF.get(f.k), T, f.cents); flujo += empujar(); } } // un destino a la vez: lo ya llenado no se vuelve a quitar
+  else flujo += empujar();
   const totalPagos = pagos.reduce((a, p) => a + p.cents, 0);
   const asign = [];
   unicos.forEach(([kp, kf]) => { const u = idxP.get(kp), v = idxF.get(kf); if (u === undefined || v === undefined) return; const usado = cap[v].get(u) || 0; if (usado > 0) asign.push({ p: kp, f: kf, cents: usado }); });
   const totalFacturas = facturas.reduce((a, f) => a + f.cents, 0);
   // todo lo que pueda aplicarse se aplicó, y lo que sobra o falta no pasa de la tolerancia (centavos de redondeo)
+  if (soloPagos) return { ok: flujo === totalPagos, asign };
   return { ok: flujo === Math.min(totalPagos, totalFacturas) && Math.abs(totalPagos - totalFacturas) <= tolCents, asign };
 }
 
@@ -22915,9 +22924,55 @@ async function abrirLigarPagoAFactura(b, item, alTerminar) {
   pintarLista(); modal.classList.add('show');
 }
 
+// Registra el reparto calculado de UN grupo de pagos que comparten facturas: guarda las aplicaciones (cada pago, a las facturas a las que ya estaba ligado),
+// deja el sobrante de centavos como crédito a favor y lo que falta a una factura como saldo pendiente (su pagado baja a lo realmente aplicado).
+async function registrarGrupoPagos(g, b, facturaPorId, fechaCorte, cache) {
+  for (const x of g.miembros) {
+    const { data: yaTiene } = await sb.from('fz_pagos_aplicados').select('id,monto,factura_id').eq('origen_tabla', x.poolCand.t).eq('origen_id', x.poolCand.m.id);
+    const sumaYa = revRedondeo((yaTiene || []).reduce((acc, a) => acc + (Number(a.monto) || 0), 0));
+    if (Math.abs(sumaYa - (x.poolCand.parcial || 0)) > 0.005) continue; // alguien lo aplicó mientras tanto: no se duplica
+    const suyas = g.asign.filter(a => a.p === `p|${x.poolCand.t}|${x.poolCand.m.id}`);
+    for (const a of suyas) {
+      const { error } = await sb.from('fz_pagos_aplicados').insert({ business_id: b.id, factura_id: a.f, monto: a.cents / 100, origen_tabla: x.poolCand.t, origen_id: x.poolCand.m.id, fecha: x.poolCand.m.fecha, tipo_cambio: null });
+      if (error) throw error;
+      await sincronizarRealizacionFactura(a.f, 'proveedor', b.id, x.poolCand.m.fecha, fechaCorte, cache);
+    }
+    // las ligas finales: las facturas a las que ya estaba aplicado (si era parcial) más las nuevas; una liga a una factura que ya no existe se quita
+    const idsAplicadas = [...new Set([...(yaTiene || []).map(a => a.factura_id), ...suyas.map(a => a.f)])].filter(id => facturaPorId[id]);
+    if (idsAplicadas.length) await sb.from(x.poolCand.t).update({ proveedor_factura_ids: idsAplicadas, proveedor_factura_id: idsAplicadas[0] }).eq('id', x.poolCand.m.id);
+    // lo que SOBRA de este pago (centavos de redondeo) queda como crédito a favor, como lo hace el flujo normal
+    const kP = `p|${x.poolCand.t}|${x.poolCand.m.id}`;
+    const aplicadoReal = suyas.filter(a => g.realesIds.includes(a.f)).reduce((acc, a) => acc + a.cents, 0);
+    const sobra = (g.fondosCents[kP] || 0) - aplicadoReal - ((g.aCreditoCents || {})[kP] || 0);
+    if (sobra >= 1) {
+      const { data: yaCredito } = await sb.from('fz_proveedores').select('id').eq('origen_tabla', x.poolCand.t).eq('origen_id', x.poolCand.m.id).lt('importe', 0).limit(1);
+      const base = g.reales[0];
+      if (!(yaCredito || []).length && base) {
+        const { error: eC } = await sb.from('fz_proveedores').insert({ business_id: b.id, proveedor_id: base.proveedor_id, proveedor: base.proveedor, fecha: x.poolCand.m.fecha, factura: `Crédito a favor (pago del ${x.poolCand.m.fecha})`, importe: -(sobra / 100), estatus: 'Pendiente', origen_tabla: x.poolCand.t, origen_id: x.poolCand.m.id });
+        if (eC) throw eC;
+      }
+    }
+  }
+  // lo que FALTA a una factura (centavos de redondeo) queda como saldo pendiente: su pagado baja a lo realmente aplicado
+  for (const fid of g.realesIds) {
+    const recibido = g.asign.filter(a => a.f === fid).reduce((acc, a) => acc + a.cents, 0);
+    const falta = (g.needCents[fid] || 0) - recibido;
+    if (falta >= 1) {
+      const { data: fa } = await sb.from('fz_proveedores').select('id,importe,importe_pagado,estatus').eq('id', fid).maybeSingle();
+      if (!fa) continue;
+      const nuevoPagado = revRedondeo((Number(fa.importe_pagado) || 0) - falta / 100);
+      const estatus = nuevoPagado >= Number(fa.importe) - 0.005 ? 'Pagado' : (nuevoPagado > 0.004 ? 'Parcial' : 'Pendiente');
+      const { error: eF } = await sb.from('fz_proveedores').update({ importe_pagado: nuevoPagado, estatus }).eq('id', fid);
+      if (eF) throw eF;
+    }
+  }
+
+}
+
 function revPagosProveedor(ctx) {
   const { bancosMov, efectivoMov, pagosAplicados, proveedores, monedas, b } = ctx;
   ctx.deficitGrupos = []; // grupos a los que les falta dinero: los usa la revisión de pagos reubicables
+  ctx.gruposFaltante = []; // y su reparto propuesto: lo usa la revisión de grupos con faltante
   const esPesos = (id) => { const n = (monedas.find(x => x.id === id)?.nombre || '').toLowerCase(); return n.includes('mxn') || n.includes('peso'); };
   const lista = [
     ...bancosMov.map(m => ({ m, t: 'fz_bancos_mov' })),
@@ -23057,8 +23112,25 @@ function revPagosProveedor(ctx) {
       const tolG = Math.min(0.10, 0.01 * Math.max(1, miembros.length));
       const sumaNacidos = revRedondeo(nacidos.reduce((acc, c) => acc + Math.abs(Number(c.importe)), 0));
       const difG = revRedondeo(sumaPagos - sumaNeed - sumaNacidos);
-      if (difG < -(tolG + 0.0001)) ctx.deficitGrupos.push({ fechas: [...new Set(miembros.map(x => x.poolCand.m.fecha))], deficit: revRedondeo(-difG), facturas: realesG.map(f => f.id), pagos: miembros.length });
-      if (Math.abs(difG) > tolG + 0.0001) return noResuelve(`los pagos${creditosG.length ? ' (con sus créditos a favor)' : ''} suman ${fmt(sumaPagos)} y lo que las facturas dicen tener pagado sin aplicar${nacidos.length ? ' más los créditos por sobrante' : ''} suma ${fmt(sumaNeed + sumaNacidos)}`);
+      if (difG < -(tolG + 0.0001)) {
+        ctx.deficitGrupos.push({ fechas: [...new Set(miembros.map(x => x.poolCand.m.fecha))], deficit: revRedondeo(-difG), facturas: realesG.map(f => f.id), pagos: miembros.length });
+        // Reparto propuesto: se aplican TODOS los pagos (lo que cada pago ya aplicó queda igual) y lo que falta cae en las facturas más recientes; los créditos por sobrante van primero.
+        const idsRealesF = new Set(realesG.map(f => f.id));
+        const enlacesF = miembros.flatMap(x => x.poolCand.ids.filter(fid => idsRealesF.has(fid)).map(fid => [kPago(x), fid]));
+        const nodosPagosF = miembros.map(x => ({ k: kPago(x), cents: Math.round(fondos.get(x) * 100) }));
+        const nodosFacF = [...nacidos.map(c => ({ k: 'c|' + c.id, cents: Math.round(Math.abs(Number(c.importe)) * 100) })), ...necesidad.filter(n => n.need > 0.004).sort((a2, z2) => String(a2.f.fecha).localeCompare(String(z2.f.fecha)) || String(a2.f.factura).localeCompare(String(z2.f.factura))).map(n => ({ k: n.f.id, cents: Math.round(n.need * 100) }))];
+        let rF = null;
+        if (!nacidos.length) rF = asignarPagosAFacturas(nodosPagosF, nodosFacF, enlacesF, 0, true);
+        else { const opc = nacidos.map(c => donantesDe(c).filter(x => fondos.get(x) + 0.004 >= Math.abs(Number(c.importe))).sort((a2, z2) => String(a2.poolCand.m.id).localeCompare(String(z2.poolCand.m.id)))); if (!opc.some(o => !o.length)) { let intF = 0; const probarF = (i, acum) => { if (rF || intF > 60) return; if (i === nacidos.length) { intF++; const res = asignarPagosAFacturas(nodosPagosF, nodosFacF, [...enlacesF, ...acum], 0, true); if (res.ok) rF = res; return; } for (const x of opc[i]) { probarF(i + 1, [...acum, [kPago(x), 'c|' + nacidos[i].id]]); if (rF) return; } }; probarF(0, []); } }
+        if (rF && rF.ok && !(creditosG.length)) {
+          const aCreditoF = {}; const asignF = rF.asign.filter(a => { if (String(a.f).startsWith('c|')) { aCreditoF[a.p] = (aCreditoF[a.p] || 0) + a.cents; return false; } return true; });
+          const fondosCentsF = {}; miembros.forEach(x => { fondosCentsF[kPago(x)] = Math.round(fondos.get(x) * 100); });
+          const needCentsF = {}; necesidad.forEach(n => { needCentsF[n.f.id] = Math.round(n.need * 100); });
+          const faltantes = necesidad.map(n => ({ f: n.f, falta: needCentsF[n.f.id] - asignF.filter(a => a.f === n.f.id).reduce((acc, a) => acc + a.cents, 0) })).filter(z => z.falta >= 1);
+          ctx.gruposFaltante.push({ grupo: { miembros, asign: asignF, fs, dif: difG, aCreditoCents: aCreditoF, fondosCents: fondosCentsF, needCents: needCentsF, realesIds: realesG.map(f => f.id), reales: realesG }, etiquetaG, sumaPagos, sumaNeed: revRedondeo(sumaNeed + sumaNacidos), faltante: revRedondeo(-difG), faltantes, fechas: [...new Set(miembros.map(x => x.poolCand.m.fecha))] });
+        }
+      }
+      if (Math.abs(difG) > tolG + 0.0001) return noResuelve(`los pagos${creditosG.length ? ' (con sus créditos a favor)' : ''} suman ${fmt(sumaPagos)} y lo que las facturas dicen tener pagado sin aplicar${nacidos.length ? ' más los créditos por sobrante' : ''} suma ${fmt(sumaNeed + sumaNacidos)}${difG < 0 ? ` (faltan ${fmt(-difG)} de respaldo: ver la revisión "Grupos con faltante")` : ''}`);
       const idsReales = new Set(realesG.map(f => f.id));
       const enlaces = miembros.flatMap(x => x.poolCand.ids.filter(fid => idsReales.has(fid)).map(fid => [kPago(x), fid]));
       const nodosPagos = miembros.map(x => ({ k: kPago(x), cents: Math.round(fondos.get(x) * 100) }));
@@ -23116,51 +23188,39 @@ function revPagosProveedor(ctx) {
       }
       // pagos de varias facturas pendientes: el flujo normal las paga completas (suman exactamente el pago)
       for (const x of multiAplicar) await aplicarPagoFacturas(x.fs.map(fa => fa.id), Number(x.m.cargos), x.m.fecha, b.id, { origen_tabla: x.t, origen_id: x.m.id });
-      // grupos que comparten facturas: se guarda el reparto calculado (cada pago, a las facturas a las que ya estaba ligado)
-      for (const g of poolGrupos) {
-        for (const x of g.miembros) {
-          const { data: yaTiene } = await sb.from('fz_pagos_aplicados').select('id,monto,factura_id').eq('origen_tabla', x.poolCand.t).eq('origen_id', x.poolCand.m.id);
-          const sumaYa = revRedondeo((yaTiene || []).reduce((acc, a) => acc + (Number(a.monto) || 0), 0));
-          if (Math.abs(sumaYa - (x.poolCand.parcial || 0)) > 0.005) continue; // alguien lo aplicó mientras tanto: no se duplica
-          const suyas = g.asign.filter(a => a.p === `p|${x.poolCand.t}|${x.poolCand.m.id}`);
-          for (const a of suyas) {
-            const { error } = await sb.from('fz_pagos_aplicados').insert({ business_id: b.id, factura_id: a.f, monto: a.cents / 100, origen_tabla: x.poolCand.t, origen_id: x.poolCand.m.id, fecha: x.poolCand.m.fecha, tipo_cambio: null });
-            if (error) throw error;
-            await sincronizarRealizacionFactura(a.f, 'proveedor', b.id, x.poolCand.m.fecha, fechaCorte, cache);
-          }
-          // las ligas finales: las facturas a las que ya estaba aplicado (si era parcial) más las nuevas; una liga a una factura que ya no existe se quita
-          const idsAplicadas = [...new Set([...(yaTiene || []).map(a => a.factura_id), ...suyas.map(a => a.f)])].filter(id => facturaPorId[id]);
-          if (idsAplicadas.length) await sb.from(x.poolCand.t).update({ proveedor_factura_ids: idsAplicadas, proveedor_factura_id: idsAplicadas[0] }).eq('id', x.poolCand.m.id);
-          // lo que SOBRA de este pago (centavos de redondeo) queda como crédito a favor, como lo hace el flujo normal
-          const kP = `p|${x.poolCand.t}|${x.poolCand.m.id}`;
-          const aplicadoReal = suyas.filter(a => g.realesIds.includes(a.f)).reduce((acc, a) => acc + a.cents, 0);
-          const sobra = (g.fondosCents[kP] || 0) - aplicadoReal - ((g.aCreditoCents || {})[kP] || 0);
-          if (sobra >= 1) {
-            const { data: yaCredito } = await sb.from('fz_proveedores').select('id').eq('origen_tabla', x.poolCand.t).eq('origen_id', x.poolCand.m.id).lt('importe', 0).limit(1);
-            const base = g.reales[0];
-            if (!(yaCredito || []).length && base) {
-              const { error: eC } = await sb.from('fz_proveedores').insert({ business_id: b.id, proveedor_id: base.proveedor_id, proveedor: base.proveedor, fecha: x.poolCand.m.fecha, factura: `Crédito a favor (pago del ${x.poolCand.m.fecha})`, importe: -(sobra / 100), estatus: 'Pendiente', origen_tabla: x.poolCand.t, origen_id: x.poolCand.m.id });
-              if (eC) throw eC;
-            }
-          }
-        }
-        // lo que FALTA a una factura (centavos de redondeo) queda como saldo pendiente: su pagado baja a lo realmente aplicado
-        for (const fid of g.realesIds) {
-          const recibido = g.asign.filter(a => a.f === fid).reduce((acc, a) => acc + a.cents, 0);
-          const falta = (g.needCents[fid] || 0) - recibido;
-          if (falta >= 1) {
-            const { data: fa } = await sb.from('fz_proveedores').select('id,importe,importe_pagado,estatus').eq('id', fid).maybeSingle();
-            if (!fa) continue;
-            const nuevoPagado = revRedondeo((Number(fa.importe_pagado) || 0) - falta / 100);
-            const estatus = nuevoPagado >= Number(fa.importe) - 0.005 ? 'Pagado' : (nuevoPagado > 0.004 ? 'Parcial' : 'Pendiente');
-            const { error: eF } = await sb.from('fz_proveedores').update({ importe_pagado: nuevoPagado, estatus }).eq('id', fid);
-            if (eF) throw eF;
-          }
-        }
-      }
+      // grupos que comparten facturas: se guarda el reparto calculado
+      for (const g of poolGrupos) await registrarGrupoPagos(g, b, facturaPorId, fechaCorte, cache);
       return `${total} pago(s) aplicado(s) (${convertibles.length + multiRegistrar.length + poolItems.length} solo registrados, ${aplicables.length + multiAplicar.length} que estaban pendientes).`;
     },
   };
+  return r;
+}
+
+// Grupos de pagos a los que les FALTA respaldo: las facturas dicen tener pagado más de lo que explican TODOS sus pagos (aun contando los parciales y los créditos por sobrante).
+// No es un pago mal aplicado: es "pagado" sin un pago detrás. Se registran los pagos tal como son y lo que no tiene respaldo queda como SALDO PENDIENTE en las facturas más
+// recientes (por pagar), que es lo que el Balance ya cuenta. Siempre con confirmación explícita.
+function revGruposConFaltante(ctx) {
+  if (!ctx.financiero) return null;
+  const { b, proveedores } = ctx;
+  const base = { id: 'grupos_faltante', titulo: 'Grupos de pagos a los que les falta respaldo (las facturas dicen tener pagado más de lo que sus pagos explican)',
+    ayuda: 'En estos grupos las facturas figuran pagadas por MÁS dinero del que suman todos sus pagos. El Balance ya cuenta ese resto como lo que todavía se debe (cada factura entra completa y cada pago solo por lo que salió), así que el módulo de Proveedores es el que está desfasado. Al registrar: cada pago queda aplicado tal como es, y lo que no tiene pago detrás queda como SALDO PENDIENTE en las facturas que sus pagos no alcanzan a cubrir (el reparto prefiere dejar pendientes las más recientes, pero un pago solo se aplica a las facturas a las que ya está ligado); su estatus pasa de Pagado a Parcial o Pendiente. Si ese dinero sí se repartió por otra vía que no está en el sistema, no presiones el botón: registra primero ese pago.' };
+  const gs = ctx.gruposFaltante || [];
+  const facturaPorId = Object.fromEntries(proveedores.map(f => [f.id, f]));
+  const items = gs.map(g => ({ fecha: g.fechas[0] || '', texto: `${g.fechas.map(fechaCorta).join(', ')} · ${g.etiquetaG}: los pagos suman ${fmt(g.sumaPagos)} y las facturas dicen tener pagado ${fmt(g.sumaNeed)}; faltan ${fmt(g.faltante)} de respaldo. Se pueden registrar los pagos y dejar ${fmt(g.faltante)} como saldo pendiente en: ${g.faltantes.map(z => `${z.f.factura || 's/f'} (${fechaCorta(z.f.fecha)}) ${fmt(z.falta / 100)}`).join('; ')}`, monto: g.faltante, g })).sort((a, z) => a.fecha.localeCompare(z.fecha));
+  const r = { ...base, items };
+  if (items.length) {
+    const total = items.reduce((acc, x) => acc + x.g.faltante, 0);
+    r.accion = {
+      etiqueta: `Registrar ${items.length} grupo${items.length === 1 ? '' : 's'} y dejar ${fmt(total)} como saldo pendiente`,
+      confirmar: `Se registrará la aplicación de los pagos de ${items.length} grupo(s) tal como son, y ${fmt(total)} que las facturas dicen tener pagado SIN un pago detrás quedará como saldo pendiente (por pagar) en las facturas que los pagos de cada grupo no alcanzan a cubrir (el detalle por factura está en cada renglón): su estatus pasará de Pagado a Parcial o Pendiente. El Balance NO cambia (ya cuenta ese resto como lo que se debe). Si ese dinero sí se repartió por otra vía que no está registrada, cancela y regístralo primero. ¿Continuar?`,
+      ejecutar: async () => {
+        const fechaCorte = await obtenerFechaCorteRealizacion(b.id); const cache = new Map();
+        for (const { g } of items) await registrarGrupoPagos(g.grupo, b, facturaPorId, fechaCorte, cache);
+        registrarAuditoria(b.id, 'editar', 'Proveedores', `${items.length} grupo(s) de pagos registrados dejando ${fmt(total)} como saldo pendiente (Revisión de consistencia)`);
+        return `${items.length} grupo(s) registrado(s); ${fmt(total)} quedó como saldo pendiente en sus facturas.`;
+      },
+    };
+  }
   return r;
 }
 
@@ -23192,17 +23252,45 @@ function revPagosReubicables(ctx) {
     for (let mask = 1; mask < (1 << gs.length); mask++) { let suma = 0; const sel = []; for (let i = 0; i < gs.length; i++) if (mask & (1 << i)) { suma += gs[i].deficit; sel.push(gs[i]); } if (Math.abs(suma - Number(m.cargos)) <= 0.05) combos.push(sel); }
     if (combos.length !== 1 || combos[0].some(g => usados.has(g))) return;
     combos[0].forEach(g => usados.add(g));
-    sugerencias.push({ m, t, apps, objetivos, grupos: combos[0] });
+    sugerencias.push({ tipo: 'reubicar', m, t, apps, objetivos, grupos: combos[0] });
   });
-  const items = sugerencias.map(sg => ({ fecha: sg.m.fecha, texto: `${fechaCorta(sg.m.fecha)} · ${sg.m.proveedor || sg.m.descripcion || 'Pago'}: pago de ${fmt(sg.m.cargos)} aplicado a ${sg.objetivos.map(f => `${f.factura || 's/f'} (${fechaCorta(f.fecha)}, ${f.estatus})`).join(', ')}; es exactamente lo que les falta a ${sg.grupos.length} grupo${sg.grupos.length === 1 ? '' : 's'} de pagos de esa misma fecha (${new Set(sg.grupos.flatMap(g => g.facturas)).size} facturas): se puede reubicar`, monto: Number(sg.m.cargos), ok: true, sg })).sort((a, z) => a.fecha.localeCompare(z.fecha));
+  // (2) Un pago con aplicación PARCIAL cuyo resto NO cabe en sus facturas ligadas (ya están pagadas): su resto no tiene a dónde ir. Si coincide con una sola corrida de su
+  // misma fecha a la que le falta al menos ese dinero, se propone ligar el resto a las facturas de esa corrida.
+  const aplicadoFactura = (id) => pagosAplicados.filter(a => a.factura_id === id).reduce((acc, a) => acc + (Number(a.monto) || 0), 0);
+  pagos.forEach(({ m, t }) => {
+    const apps = pagosAplicados.filter(a => a.origen_tabla === t && a.origen_id === m.id);
+    const falta = revRedondeo(Number(m.cargos) - apps.reduce((acc, a) => acc + (Number(a.monto) || 0), 0));
+    if (!apps.length || falta < 0.5) return;
+    const ligadas = facturaIdsDe(m).map(id => facturaPorId[id]).filter(f => f && Number(f.importe) > 0);
+    const capacidad = ligadas.reduce((acc, f) => acc + Math.max(0, (Number(f.importe_pagado) || 0) - aplicadoFactura(f.id)), 0);
+    if (capacidad + 0.005 >= falta) return; // su resto sí cabe en sus facturas: lo resuelve la aplicación normal o el grupo
+    const gs = grupos.filter(g => g.fechas.includes(m.fecha) && g.deficit + 0.05 >= falta && !usados.has(g));
+    if (gs.length !== 1) return;
+    usados.add(gs[0]);
+    sugerencias.push({ tipo: 'resto', m, t, apps, grupos: gs, falta, ligadas });
+  });
+  const nombreDe = (m) => m.proveedor || m.descripcion || 'Pago';
+  const items = sugerencias.map(sg => ({ fecha: sg.m.fecha, monto: sg.tipo === 'resto' ? sg.falta : Number(sg.m.cargos), ok: true, sg,
+    texto: sg.tipo === 'resto'
+      ? `${fechaCorta(sg.m.fecha)} · ${nombreDe(sg.m)}: salió ${fmt(sg.m.cargos)}, aplicado ${fmt(Number(sg.m.cargos) - sg.falta)}; le quedan ${fmt(sg.falta)} sin aplicar y sus facturas ligadas ya están pagadas. Coincide con la corrida de esa misma fecha a la que le faltan ${fmt(sg.grupos[0].deficit)}: se puede ligar su resto a esas facturas`
+      : `${fechaCorta(sg.m.fecha)} · ${nombreDe(sg.m)}: pago de ${fmt(sg.m.cargos)} aplicado a ${sg.objetivos.map(f => `${f.factura || 's/f'} (${fechaCorta(f.fecha)}, ${f.estatus})`).join(', ')}; es exactamente lo que les falta a ${sg.grupos.length} grupo${sg.grupos.length === 1 ? '' : 's'} de pagos de esa misma fecha (${new Set(sg.grupos.flatMap(g => g.facturas)).size} facturas): se puede reubicar` })).sort((a, z) => a.fecha.localeCompare(z.fecha));
   const r = { ...base, items };
   if (items.length) r.accion = {
     etiqueta: `Reubicar ${items.length} pago${items.length === 1 ? '' : 's'}`,
-    confirmar: `Por cada uno de los ${items.length} pago(s): (1) se quita su aplicación a la factura vieja, y esa factura vuelve a quedar con ese monto PENDIENTE (revísala después); (2) el pago queda ligado a las facturas de su corrida y se aplica con el botón de "Pagos a proveedor sin aplicar". Los meses cerrados no se tocan. El Balance no cambia. ¿Continuar?`,
+    confirmar: `${items.filter(x => x.sg.tipo === 'reubicar').length ? `Pagos aplicados a una factura vieja (${items.filter(x => x.sg.tipo === 'reubicar').length}): se quita su aplicación a esa factura, que vuelve a quedar con ese monto PENDIENTE (revísala después), y el pago queda ligado a las facturas de su corrida. ` : ''}${items.filter(x => x.sg.tipo === 'resto').length ? `Pagos con un resto sin factura (${items.filter(x => x.sg.tipo === 'resto').length}): su aplicación actual no se toca; solo se agrega una liga a las facturas de la corrida de su fecha para poder aplicar el resto. ` : ''}Después se aplican con los botones de las otras tarjetas. Los meses cerrados no se tocan. El Balance no cambia. ¿Continuar?`,
     ejecutar: async () => {
       let hechas = 0, cerradas = 0, omitidas = 0;
       for (const { sg } of items) {
         if (await bloqueadoPorCierre(b.id, sg.m.fecha)) { cerradas++; continue; }
+        if (sg.tipo === 'resto') {
+          const { data: mFr } = await sb.from(sg.t).select('id,proveedor_factura_id,proveedor_factura_ids').eq('id', sg.m.id).maybeSingle();
+          if (!mFr) { omitidas++; continue; }
+          const idsR = [...new Set([...facturaIdsDe(mFr).filter(id => facturaPorId[id]), ...sg.grupos.flatMap(g => g.facturas)])];
+          const { error: eL2 } = await sb.from(sg.t).update({ proveedor_factura_ids: idsR, proveedor_factura_id: idsR[0] || null }).eq('id', sg.m.id);
+          if (eL2) throw eL2;
+          registrarAuditoria(b.id, 'editar', 'Proveedores', `Pago de ${fmt(sg.m.cargos)} del ${sg.m.fecha}: su resto de ${fmt(sg.falta)} se ligó a las facturas de su corrida (Revisión de consistencia)`);
+          hechas++; continue;
+        }
         const { data: appsFr } = await sb.from('fz_pagos_aplicados').select('id,factura_id,monto').eq('origen_tabla', sg.t).eq('origen_id', sg.m.id);
         const sumaFr = revRedondeo((appsFr || []).reduce((acc, a) => acc + (Number(a.monto) || 0), 0));
         if (!(appsFr || []).length || Math.abs(sumaFr - Number(sg.m.cargos)) > 0.01) { omitidas++; continue; }
@@ -23382,7 +23470,7 @@ function revSalidasSinClasificar(ctx) {
 
 async function ejecutarRevisionConsistencia(b) {
   const ctx = await cargarContextoRevision(b);
-  const checks = [revVentasCategorias, revPropinas, revPropinasSinMarca, revPropinasDuplicadas, revDepositosVentas, revPagosProveedor, revPagosReubicables, revVinculosPagoFactura, revVinculosCobroFactura, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar];
+  const checks = [revVentasCategorias, revPropinas, revPropinasSinMarca, revPropinasDuplicadas, revDepositosVentas, revPagosProveedor, revPagosReubicables, revGruposConFaltante, revVinculosPagoFactura, revVinculosCobroFactura, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar];
   const out = [];
   for (const fn of checks) {
     try { const r = fn(ctx); if (r) out.push(r); }
