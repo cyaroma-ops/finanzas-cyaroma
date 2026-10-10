@@ -176,6 +176,7 @@ function codigoMonedaDeCaja(nombre, tcReporte) {
   const cod = u.match(/\b(MXN|USD|EUR|CAD|GBP|JPY|CNY|CHF|BRL|COP|ARS|CLP|PEN)\b/);
   if (cod) return cod[1];
   if (/\bPESOS?\b/.test(u)) return 'MXN';
+  if (/\bCANADIENSES?\b|\bCANADA\b/.test(u)) return 'CAD'; // antes "Dólares canadienses" caía en la regla de "dólar" y se leía como USD
   if (/\bDOLAR(ES)?\b/.test(u)) return 'USD';
   if (/\bEUROS?\b/.test(u)) return 'EUR';
   if (Number(tcReporte) === 1) return 'MXN';
@@ -12160,7 +12161,7 @@ async function renderConfiguracion() {
     ${grid(`
       ${tarjetaConfigHtml('cfgCatalogo', 'Catálogo de Cuentas', b ? `Cuenta mayor, subcuentas y su estructura contable para ${b.name}.` : 'Selecciona un negocio para configurar su catálogo.')}
       ${tarjetaConfigHtml('cfgCierre', 'Cierre de periodo', b ? `Bloquea la captura de meses ya cerrados en ${b.name}.` : 'Selecciona un negocio para gestionar sus cierres.')}
-      ${tarjetaConfigHtml('cfgTcCierre', 'Tipos de cambio de cierre', b ? `Revaluación al cierre de lo que debes y te deben en dólares u otra divisa en ${b.name}.` : 'Selecciona un negocio.')}
+      ${tarjetaConfigHtml('cfgTcCierre', 'Tipos de cambio de cierre', b ? `Revaluación al cierre de lo que debes, te deben y tienes en bancos y cajas en dólares, euros u otra divisa en ${b.name}.` : 'Selecciona un negocio.')}
       ${tarjetaConfigHtml('cfgActivosFijos', 'Activos Fijos', b ? `Equipo, mobiliario y su depreciación mensual automática en ${b.name}.` : 'Selecciona un negocio para gestionar sus activos.')}
       ${tarjetaConfigHtml('cfgPagosClasificar', 'Pagos por clasificar', b ? `Salidas de dinero pendientes de asignar a proveedor/factura y/o de clasificar hacia Banco/Efectivo en ${b.name}.` : 'Selecciona un negocio.')}
       ${esFin ? '' : tarjetaConfigHtml('cfgSaldosFavorIVA', 'Control de saldos a favor IVA', b ? `Confirmar, acreditar y solicitar devolución de saldos a favor de IVA declarados en ${b.name}.` : 'Selecciona un negocio.')}
@@ -19340,7 +19341,7 @@ async function fetchTodasLasPaginas(queryBuilderFn) {
   return { data: todas, error: null };
 }
 
-async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha = null) {
+async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha = null, opciones = {}) {
   const filas = [];
   const push = (origen, clave, tipo, cargo, abono) => {
     if (!(Number(cargo)||0) && !(Number(abono)||0)) return;
@@ -19985,7 +19986,7 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
 
   // Revaluación de cuentas por pagar y por cobrar en divisas: un asiento balanceado por moneda al cierre de cada mes con tipo de cambio capturado.
   // Sin tipos de cambio capturados no agrega nada. Misma fuente que el Estado de Resultados (calcularRevaluacionDivisas).
-  try {
+  if (!opciones.sinRevaluacion) try {
     const rv = await calcularRevaluacionDivisas(businessId, hastaFecha);
     rv.entradas.filter(e => e.asientos.length && (!desdeFecha || e.fecha >= desdeFecha)).forEach(e => {
       const base = { modulo: 'Revaluación de divisas', tipoOrigen: 'revaluacion_divisas', id: `reval-${e.moneda}-${e.fecha}`, fecha: e.fecha, referencia: `Revaluación ${e.moneda} al ${e.fecha}`, detalle: `Tipo de cambio de cierre ${e.tc}` };
@@ -20992,15 +20993,19 @@ const REVAL_CUENTAS = {
   ganancia: { cuenta: 'Ganancia cambiaria por valuación (no realizada)', clave: 'ganancia_cambiaria_valuacion', tipo: 'ingreso' },
   proveedores: { cuenta: 'Valuación de proveedores en divisas', clave: 'valuacion_proveedores_divisas', tipo: 'pasivo' },
   clientes: { cuenta: 'Valuación de clientes en divisas', clave: 'valuacion_clientes_divisas', tipo: 'activo' },
+  cuentas: { cuenta: 'Valuación de bancos y efectivo en divisas', clave: 'valuacion_cuentas_divisas', tipo: 'activo' },
 };
 // Asientos de UN cierre (balanceados): devuelve las líneas y cuánto es ganancia y cuánto pérdida.
-function asientosRevaluacion(cxp, cxc) {
+function asientosRevaluacion(cxp, cxc, cta = 0) {
   const asientos = []; let ganancia = 0, perdida = 0;
   const lin = (c, cargo, abono) => asientos.push({ ...c, cargo, abono });
   if (cxp > 0.004) { lin(REVAL_CUENTAS.perdida, cxp, 0); lin(REVAL_CUENTAS.proveedores, 0, cxp); perdida += cxp; }
   else if (cxp < -0.004) { lin(REVAL_CUENTAS.proveedores, -cxp, 0); lin(REVAL_CUENTAS.ganancia, 0, -cxp); ganancia += -cxp; }
   if (cxc > 0.004) { lin(REVAL_CUENTAS.clientes, cxc, 0); lin(REVAL_CUENTAS.ganancia, 0, cxc); ganancia += cxc; }
   else if (cxc < -0.004) { lin(REVAL_CUENTAS.perdida, -cxc, 0); lin(REVAL_CUENTAS.clientes, 0, -cxc); perdida += -cxc; }
+  // bancos y efectivo en divisas (activo): si la divisa sube, el saldo vale más pesos → ganancia
+  if (cta > 0.004) { lin(REVAL_CUENTAS.cuentas, cta, 0); lin(REVAL_CUENTAS.ganancia, 0, cta); ganancia += cta; }
+  else if (cta < -0.004) { lin(REVAL_CUENTAS.perdida, -cta, 0); lin(REVAL_CUENTAS.cuentas, 0, -cta); perdida += -cta; }
   return { asientos, ganancia: redondearMoneda(ganancia), perdida: redondearMoneda(perdida) };
 }
 async function cargarTcCierre(businessId) {
@@ -21021,34 +21026,48 @@ const REVAL_CACHE = new Map(); // comparte llamadas simultáneas o en ráfaga (3
 async function calcularRevaluacionDivisas(businessId, hastaFecha) {
   const ahora = Date.now();
   for (const [k, v] of REVAL_CACHE) if (ahora - v.t > 3000) REVAL_CACHE.delete(k);
-  const clave = `${businessId}|${hastaFecha || ''}`;
-  if (REVAL_CACHE.has(clave)) return REVAL_CACHE.get(clave).p;
-  const p = calcularRevaluacionDivisasSinCache(businessId, hastaFecha);
-  REVAL_CACHE.set(clave, { t: ahora, p });
-  return p;
+  if (!REVAL_CACHE.has(businessId)) REVAL_CACHE.set(businessId, { t: ahora, p: calcularRevaluacionDivisasSinCache(businessId) });
+  const rv = await REVAL_CACHE.get(businessId).p; // se calculan TODOS los cierres una vez; cada consumidor toma los que le tocan
+  return hastaFecha ? { ...rv, entradas: rv.entradas.filter(e => e.fecha <= hastaFecha) } : rv;
 }
-async function calcularRevaluacionDivisasSinCache(businessId, hastaFecha) {
+async function calcularRevaluacionDivisasSinCache(businessId) {
   const vacio = { entradas: [], error: null };
   const { filas: tcs, error } = await cargarTcCierre(businessId);
   if (error) return { ...vacio, error };
-  const hasta = hastaFecha || '9999-12-31';
-  const tcsHasta = tcs.filter(r => r.fecha <= hasta);
-  if (!tcsHasta.length) return vacio;
-  const monedas = [...new Set(tcsHasta.map(r => r.moneda))];
-  const leer = async (tabla, cols) => { const r = await fetchTodasLasPaginas(() => sb.from(tabla).select(cols).eq('business_id', businessId).in('moneda', monedas).lte('fecha', hasta).order('id')); if (r.error) throw new Error(`${tabla}: ${r.error.message}`); return r.data || []; };
+  if (!tcs.length) return vacio;
+  const monedas = [...new Set(tcs.map(r => r.moneda))];
+  const leer = async (tabla, cols) => { const r = await fetchTodasLasPaginas(() => sb.from(tabla).select(cols).eq('business_id', businessId).in('moneda', monedas).order('id')); if (r.error) throw new Error(`${tabla}: ${r.error.message}`); return r.data || []; };
   const [prov, cli] = await Promise.all([ leer('fz_proveedores', 'id,fecha,importe,importe_pagado,fecha_pago,moneda,tipo_cambio'), leer('fz_facturas_clientes', 'id,fecha,total,importe_pagado,moneda,tipo_cambio') ]);
   const aplicaciones = async (tabla, ids) => { const out = []; for (let i = 0; i < ids.length; i += 100) { const r = await fetchTodasLasPaginas(() => sb.from(tabla).select('factura_id,monto,fecha').eq('business_id', businessId).in('factura_id', ids.slice(i, i + 100)).order('id')); if (r.error) throw new Error(`${tabla}: ${r.error.message}`); out.push(...(r.data || [])); } return out; };
   const [aplProv, aplCli] = await Promise.all([ aplicaciones('fz_pagos_aplicados', prov.map(f => f.id)), aplicaciones('fz_cobros_aplicados', cli.map(f => f.id)) ]);
   const agrupar = (lista) => { const m = {}; lista.forEach(a => { (m[a.factura_id] = m[a.factura_id] || []).push({ fecha: String(a.fecha).slice(0, 10), monto: Number(a.monto) || 0 }); }); return m; };
   const apP = agrupar(aplProv), apC = agrupar(aplCli);
-  // saldo abierto (en la divisa del documento) al cierre E: importe − lo aplicado hasta E. Una factura vieja marcada pagada sin aplicaciones se toma como pagada en su fecha de pago.
   const saldoEn = revalSaldoEn;
+
+  // ---- Bancos y cajas en divisa: saldo en su moneda × tipo de cambio de cierre − valor en pesos que el libro ya tiene para esa cuenta ----
+  // (el valor en pesos sale del libro SIN revaluación: así queda exacto cualquiera que haya sido su forma de valuarse: costo promedio, equivalente guardado o importe directo)
+  const cuentas = await cuentasEnDivisa(businessId, monedas);
+  const financiero = ventasAfectaFueraDeSuRegistro(businessId);
+  let libroPorClave = {}, movsPorClave = {};
+  if (cuentas.length) {
+    const maxE = tcs.map(t => t.fecha).sort().pop();
+    const { filas } = await getLibroPartidaDobleConOrigen(businessId, maxE, null, { sinRevaluacion: true });
+    const claves = new Set(cuentas.map(c => c.clave));
+    filas.forEach(f => { if (claves.has(f.clave)) (libroPorClave[f.clave] = libroPorClave[f.clave] || []).push({ fecha: String(f.fecha).slice(0, 10), neto: f.cargo - f.abono }); });
+    const bancos = cuentas.filter(c => c.tabla === 'fz_bancos_mov'), cajas = cuentas.filter(c => c.tabla === 'fz_efectivo_mov');
+    const movs = async (tabla, campo, ids) => { if (!ids.length) return []; const r = await fetchTodasLasPaginas(() => sb.from(tabla).select(`${campo},fecha,depositos,cargos`).eq('business_id', businessId).in(campo, ids).order('id')); if (r.error) throw new Error(`${tabla}: ${r.error.message}`); return r.data || []; };
+    const [mb, me] = await Promise.all([ movs('fz_bancos_mov', 'cuenta_id', bancos.map(c => c.id)), movs('fz_efectivo_mov', 'moneda_id', cajas.map(c => c.id)) ]);
+    mb.forEach(m => { const k = 'banco:' + m.cuenta_id; (movsPorClave[k] = movsPorClave[k] || []).push({ fecha: String(m.fecha).slice(0, 10), neto: (Number(m.depositos) || 0) - (Number(m.cargos) || 0) }); });
+    me.forEach(m => { const k = 'efectivo:' + m.moneda_id; (movsPorClave[k] = movsPorClave[k] || []).push({ fecha: String(m.fecha).slice(0, 10), neto: (Number(m.depositos) || 0) - (Number(m.cargos) || 0) }); });
+  }
+  const sumaHasta = (lista, E) => (lista || []).reduce((a, x) => a + (x.fecha <= E ? x.neto : 0), 0);
+
   const entradas = [];
   for (const moneda of monedas) {
-    let prevP = 0, prevC = 0;
-    for (const r of tcsHasta.filter(x => x.moneda === moneda)) {
+    let prevP = 0, prevC = 0, prevA = 0;
+    for (const r of tcs.filter(x => x.moneda === moneda)) {
       const E = r.fecha;
-      let adjP = 0, adjC = 0;
+      let adjP = 0, adjC = 0, adjA = 0;
       prov.filter(f => f.moneda === moneda && String(f.fecha).slice(0, 10) <= E).forEach(f => {
         const tcHist = Number(f.tipo_cambio) || 1;
         const saldo = saldoEn(Number(f.importe) || 0, apP[f.id], Number(f.importe_pagado) || 0, String(f.fecha_pago || f.fecha).slice(0, 10), E);
@@ -21059,15 +21078,31 @@ async function calcularRevaluacionDivisasSinCache(businessId, hastaFecha) {
         const saldo = saldoEn(Number(f.total) || 0, apC[f.id], Number(f.importe_pagado) || 0, String(f.fecha).slice(0, 10), E);
         adjC += saldo * (r.tc - tcHist);
       });
-      adjP = redondearMoneda(adjP); adjC = redondearMoneda(adjC);
-      const dP = redondearMoneda(adjP - prevP), dC = redondearMoneda(adjC - prevC);
-      const { asientos, ganancia, perdida } = asientosRevaluacion(dP, dC);
-      entradas.push({ fecha: E, moneda, tc: r.tc, cxp: dP, cxc: dC, ajusteProveedores: adjP, ajusteClientes: adjC, asientos, ganancia, perdida });
-      prevP = adjP; prevC = adjC;
+      cuentas.filter(c => c.moneda === moneda).forEach(c => {
+        // el saldo inicial solo está en el libro de los negocios financieros; en los fiscales no se cuenta para que coincida con lo que el libro ya muestra
+        const unidades = (financiero ? c.saldoInicial : 0) + sumaHasta(movsPorClave[c.clave], E);
+        adjA += unidades * r.tc - sumaHasta(libroPorClave[c.clave], E);
+      });
+      adjP = redondearMoneda(adjP); adjC = redondearMoneda(adjC); adjA = redondearMoneda(adjA);
+      const dP = redondearMoneda(adjP - prevP), dC = redondearMoneda(adjC - prevC), dA = redondearMoneda(adjA - prevA);
+      const { asientos, ganancia, perdida } = asientosRevaluacion(dP, dC, dA);
+      entradas.push({ fecha: E, moneda, tc: r.tc, cxp: dP, cxc: dC, cta: dA, ajusteProveedores: adjP, ajusteClientes: adjC, ajusteCuentas: adjA, asientos, ganancia, perdida });
+      prevP = adjP; prevC = adjC; prevA = adjA;
     }
   }
   entradas.sort((a, b) => a.fecha.localeCompare(b.fecha) || a.moneda.localeCompare(b.moneda));
   return { entradas, error: null };
+}
+// Cuentas de banco y cajas de efectivo cuya moneda (una de las que tienen tipo de cambio de cierre) NO es pesos.
+async function cuentasEnDivisa(businessId, monedas) {
+  const [b, c] = await Promise.all([
+    sb.from('fz_bancos_cuentas').select('id,nombre,moneda,saldo_inicial').eq('business_id', businessId),
+    sb.from('fz_efectivo_monedas').select('id,nombre,tc_reporte,saldo_inicial').eq('business_id', businessId),
+  ]);
+  const out = [];
+  (b.data || []).forEach(x => { const m = String(x.moneda || 'MXN').toUpperCase(); if (m !== 'MXN' && monedas.includes(m)) out.push({ clave: 'banco:' + x.id, tabla: 'fz_bancos_mov', id: x.id, nombre: x.nombre, moneda: m, saldoInicial: Number(x.saldo_inicial) || 0 }); });
+  (c.data || []).forEach(x => { const m = codigoMonedaDeCaja(x.nombre, x.tc_reporte); if (m !== 'MXN' && monedas.includes(m)) out.push({ clave: 'efectivo:' + x.id, tabla: 'fz_efectivo_mov', id: x.id, nombre: x.nombre, moneda: m, saldoInicial: Number(x.saldo_inicial) || 0 }); });
+  return out;
 }
 // ============================================================================================================
 // CAPTURA DE TIPOS DE CAMBIO DE CIERRE (Configuración → Tipos de cambio de cierre)
@@ -21075,21 +21110,31 @@ async function calcularRevaluacionDivisasSinCache(businessId, hastaFecha) {
 async function abrirModalTcCierre(businessId) {
   const b = (STATE.businesses || []).find(x => x.id === businessId);
   const lectura = async (tabla) => { const r = await fetchTodasLasPaginas(() => sb.from(tabla).select('id,fecha,moneda').eq('business_id', businessId).not('moneda', 'is', null).neq('moneda', 'MXN').order('id')); return r.data || []; };
-  const [{ filas: tcs, error: errTc }, prov, cli] = await Promise.all([cargarTcCierre(businessId), lectura('fz_proveedores'), lectura('fz_facturas_clientes')]);
+  const [{ filas: tcs, error: errTc }, prov, cli, bancosC, cajasC] = await Promise.all([
+    cargarTcCierre(businessId), lectura('fz_proveedores'), lectura('fz_facturas_clientes'),
+    sb.from('fz_bancos_cuentas').select('id,moneda').eq('business_id', businessId), sb.from('fz_efectivo_monedas').select('id,nombre,tc_reporte').eq('business_id', businessId),
+  ]);
   const foraneas = [...prov, ...cli];
-  const monedas = [...new Set([...foraneas.map(f => String(f.moneda).toUpperCase()), ...tcs.map(t => t.moneda)])].sort();
+  // cuentas de banco y cajas cuya moneda no es pesos (la moneda de una caja se toma de su nombre: "USD", "Euros", "Dólares canadienses"…)
+  const cuentasForaneas = [
+    ...(bancosC.data || []).map(x => ({ tabla: 'fz_bancos_mov', campo: 'cuenta_id', id: x.id, moneda: String(x.moneda || 'MXN').toUpperCase() })),
+    ...(cajasC.data || []).map(x => ({ tabla: 'fz_efectivo_mov', campo: 'moneda_id', id: x.id, moneda: codigoMonedaDeCaja(x.nombre, x.tc_reporte) })),
+  ].filter(x => x.moneda !== 'MXN');
+  const monedas = [...new Set([...foraneas.map(f => String(f.moneda).toUpperCase()), ...tcs.map(t => t.moneda), ...cuentasForaneas.map(x => x.moneda)])].sort();
+  const primerMovimiento = async (tabla, campo, ids) => { if (!ids.length) return null; const { data } = await sb.from(tabla).select('fecha').eq('business_id', businessId).in(campo, ids).order('fecha', { ascending: true }).limit(1); return data && data[0] ? String(data[0].fecha).slice(0, 7) : null; };
+  const [pmB, pmE] = await Promise.all([ primerMovimiento('fz_bancos_mov', 'cuenta_id', cuentasForaneas.filter(x => x.tabla === 'fz_bancos_mov').map(x => x.id)), primerMovimiento('fz_efectivo_mov', 'moneda_id', cuentasForaneas.filter(x => x.tabla === 'fz_efectivo_mov').map(x => x.id)) ]);
   const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalTcCierre';
   const cerrar = () => { bg.remove(); };
   const cuerpoVacio = (texto) => `<p class="empty" style="padding:12px 0;">${texto}</p>`;
   let cuerpo;
   if (errTc) cuerpo = cuerpoVacio(`No se pudo leer la tabla de tipos de cambio (fz_tc_cierre): ${revEsc(errTc)}. Corre en Supabase el bloque «TIPOS DE CAMBIO AL CIERRE DE MES» de schema.sql y vuelve a abrir esta pantalla.`);
-  else if (!monedas.length) cuerpo = cuerpoVacio('Este negocio no tiene facturas en moneda extranjera. Cuando las tenga, aquí capturas el tipo de cambio de cierre de cada mes.');
+  else if (!monedas.length) cuerpo = cuerpoVacio('Este negocio no tiene facturas ni cuentas de banco o caja en moneda extranjera. Cuando las tenga, aquí capturas el tipo de cambio de cierre de cada mes.');
   else {
-    const primerasFechas = [...foraneas.map(f => String(f.fecha).slice(0, 7)), ...tcs.map(t => t.fecha.slice(0, 7))].sort();
+    const primerasFechas = [...foraneas.map(f => String(f.fecha).slice(0, 7)), ...tcs.map(t => t.fecha.slice(0, 7)), pmB, pmE].filter(Boolean).sort();
     const hoyYm = todayStr().slice(0, 7); const meses = [];
     for (let ym = primerasFechas[0]; ym <= hoyYm; ym = (() => { const [y, m] = ym.split('-').map(Number); return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`; })()) meses.push(ym);
     const ultimos = meses.slice(-36); // máximo 3 años a la vista
-    let rv = { entradas: [] }; try { rv = await calcularRevaluacionDivisas(businessId, monthBounds(hoyYm).end); } catch (_) {}
+    let rv = { entradas: [] }; try { rv = await calcularRevaluacionDivisas(businessId); } catch (_) {}
     const tcDe = (m, f) => (tcs.find(t => t.moneda === m && t.fecha === f) || {}).tc;
     const efectoDe = (m, f) => rv.entradas.find(e => e.moneda === m && e.fecha === f);
     const filas = [];
@@ -21097,14 +21142,14 @@ async function abrirModalTcCierre(businessId) {
       const fin = monthBounds(ym).end; const cerrado = await bloqueadoPorCierre(businessId, fin);
       filas.push(`<tr><td style="white-space:nowrap;">${ym}${cerrado ? ' <span title="Mes cerrado: no se puede cambiar" style="color:var(--muted);">🔒</span>' : ''}</td>${monedas.map(m => {
         const v = tcDe(m, fin), e = efectoDe(m, fin);
-        return `<td><input class="cell tc-cierre-input" type="text" inputmode="decimal" data-moneda="${m}" data-fecha="${fin}" data-original="${v || ''}" value="${v || ''}" ${cerrado ? 'disabled' : ''} style="width:92px;" placeholder="—">${e ? `<div style="font-size:10.5px;color:var(--muted);margin-top:2px;">Ajuste acum.: prov ${fmt(e.ajusteProveedores)} · cli ${fmt(e.ajusteClientes)}</div>` : ''}</td>`;
+        return `<td><input class="cell tc-cierre-input" type="text" inputmode="decimal" data-moneda="${m}" data-fecha="${fin}" data-original="${v || ''}" value="${v || ''}" ${cerrado ? 'disabled' : ''} style="width:92px;" placeholder="—">${e ? `<div style="font-size:10.5px;color:var(--muted);margin-top:2px;">Ajuste acum.: prov ${fmt(e.ajusteProveedores)} · cli ${fmt(e.ajusteClientes)} · cuentas ${fmt(e.ajusteCuentas)}</div>` : ''}</td>`;
       }).join('')}</tr>`);
     }
     cuerpo = `<div style="max-height:52vh;overflow:auto;"><table class="tabla-operativa"><thead><tr><th>Cierre de</th>${monedas.map(m => `<th>${m} (pesos por 1 ${m})</th>`).join('')}</tr></thead><tbody>${filas.join('')}</tbody></table></div>`;
   }
   bg.innerHTML = `<div class="modal" style="width:min(760px,95vw);">
     <h3>Tipos de cambio de cierre${b ? ' — ' + revEsc(b.name) : ''}</h3>
-    <p style="font-size:12.5px;color:var(--muted);margin-bottom:12px;">Captura el tipo de cambio del <strong>último día de cada mes</strong> para cada moneda (por ejemplo, el FIX). Con eso el sistema valúa, al cierre de cada mes, lo que debes y lo que te deben en divisas, y registra la ganancia o pérdida <strong>no realizada</strong>. Al pagar o cobrar, esa valuación se revierte sola y queda solo la diferencia realizada. Un mes sin tipo de cambio arrastra la valuación del anterior. Los meses cerrados (🔒) no se pueden cambiar. La caja y los bancos en divisas no se tocan.</p>
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:12px;">Captura el tipo de cambio del <strong>último día de cada mes</strong> para cada moneda (por ejemplo, el FIX). Con eso el sistema valúa al cierre de cada mes, en <strong>cada moneda por separado</strong>: lo que debes (proveedores), lo que te deben (clientes) y lo que tienes en <strong>bancos y cajas en divisas</strong>, y registra la ganancia o pérdida <strong>no realizada</strong>. Al pagar, cobrar o gastar, esa valuación se revierte sola y queda solo la diferencia realizada. Un mes sin tipo de cambio arrastra la valuación del anterior. Los meses cerrados (🔒) no se pueden cambiar.</p>
     ${cuerpo}
     <div class="modal-actions"><button class="btn btn-ghost" id="tcCierreCerrar">Cerrar</button>${(!errTc && monedas.length) ? '<button class="btn btn-gold" id="tcCierreGuardar">Guardar</button>' : ''}</div>
   </div>`;
@@ -22956,7 +23001,7 @@ async function cargarContextoRevision(b) {
     pag('fz_ventas'), loadConceptos(b.id), loadConceptosVenta(b.id), loadConceptosSistema(b.id),
     pag('fz_proveedores'), pag('fz_bancos_mov'), pag('fz_efectivo_mov'), pag('fz_pagos_aplicados'),
     pag('fz_polizas'), pag('fz_polizas_lineas', 'id,poliza_id,cargo,abono,cuenta_tipo,proveedor_factura_id'), pag('fz_efectivo_monedas'),
-    pag('fz_cobros_aplicados'), pag('fz_facturas_clientes', 'id,folio,numero_factura,total,cliente_id,fecha,importe_pagado,estatus,moneda'), pag('fz_clientes'), pag('fz_bancos_cuentas', 'id,moneda'), // todos los clientes, activos o no: un crédito de un cliente dado de baja también debe mostrar su nombre
+    pag('fz_cobros_aplicados'), pag('fz_facturas_clientes', 'id,folio,numero_factura,total,cliente_id,fecha,importe_pagado,estatus,moneda'), pag('fz_clientes'), pag('fz_bancos_cuentas', 'id,moneda,saldo_inicial'), // todos los clientes, activos o no: un crédito de un cliente dado de baja también debe mostrar su nombre
   ]);
   const porCat = {
     efectivo: conceptos.filter(c => c.categoria === 'efectivo'), tarjetas: conceptos.filter(c => c.categoria === 'tarjetas'),
@@ -24133,27 +24178,36 @@ function revSalidasSinClasificar(ctx) {
 // Tipos de cambio de cierre (revaluación de cuentas en divisas). Solo aparece en negocios con facturas en moneda extranjera. Solo lee.
 // No molesta a quien no usa la revaluación: avisa de un mes faltante únicamente DESPUÉS del primer tipo de cambio capturado de esa moneda.
 function revTcCierre(ctx) {
-  const { proveedores, pagosAplicados, facturasClientes, cobrosAplicados, tcCierre } = ctx;
+  const { proveedores, pagosAplicados, facturasClientes, cobrosAplicados, tcCierre, bancosCuentas, monedas, bancosMov, efectivoMov } = ctx;
   const esDivisa = (f) => f.moneda && f.moneda !== 'MXN';
   const provF = proveedores.filter(esDivisa), cliF = facturasClientes.filter(esDivisa);
-  if (!provF.length && !cliF.length) return null; // negocio sin facturas en divisas: no aplica
-  const base = { id: 'tc_cierre', titulo: 'Tipos de cambio de cierre para la revaluación de cuentas en divisas', ayuda: 'La revaluación necesita el tipo de cambio del último día de cada mes mientras haya saldos abiertos en divisa. Captúralo en Configuración → Tipos de cambio de cierre. Un mes sin tipo de cambio no se inventa: se arrastra la valuación del anterior. Esta revisión solo lee.', items: [] };
+  // cuentas de banco y cajas en divisa (la moneda de una caja se toma de su nombre)
+  const cuentasF = [
+    ...(bancosCuentas || []).map(c => ({ clave: 'banco:' + c.id, moneda: String(c.moneda || 'MXN').toUpperCase(), saldoInicial: Number(c.saldo_inicial) || 0 })),
+    ...(monedas || []).map(c => ({ clave: 'efectivo:' + c.id, moneda: codigoMonedaDeCaja(c.nombre, c.tc_reporte), saldoInicial: Number(c.saldo_inicial) || 0 })),
+  ].filter(c => c.moneda !== 'MXN');
+  const movsDe = (c) => c.clave.startsWith('banco:') ? bancosMov.filter(m => 'banco:' + m.cuenta_id === c.clave) : efectivoMov.filter(m => 'efectivo:' + m.moneda_id === c.clave);
+  const cuentasConUso = cuentasF.filter(c => Math.abs(c.saldoInicial) > 0.004 || movsDe(c).length > 0); // una caja en dólares sin saldo ni movimientos no obliga a nada
+  if (!provF.length && !cliF.length && !cuentasConUso.length) return null; // negocio sin nada en divisas: no aplica
+  const base = { id: 'tc_cierre', titulo: 'Tipos de cambio de cierre para la revaluación de saldos en divisas', ayuda: 'La revaluación necesita el tipo de cambio del último día de cada mes mientras haya saldos en divisa: facturas por pagar o por cobrar, bancos o cajas. Captúralo en Configuración → Tipos de cambio de cierre. Un mes sin tipo de cambio no se inventa: se arrastra la valuación del anterior. Esta revisión solo lee.', items: [] };
   if (tcCierre && tcCierre.error) return { ...base, items: [{ fecha: todayStr(), monto: 0, texto: `No se pudo leer la tabla de tipos de cambio de cierre (fz_tc_cierre): ${tcCierre.error}. Corre en Supabase el bloque «TIPOS DE CAMBIO AL CIERRE DE MES» de schema.sql.` }] };
   const tcs = (tcCierre && tcCierre.filas) || [];
-  if (!tcs.length) return { ...base, nota: 'Aún no has capturado ningún tipo de cambio de cierre: las cuentas en divisas se mantienen al tipo de cambio de su factura (sin revaluar).' };
+  if (!tcs.length) return { ...base, nota: 'Aún no has capturado ningún tipo de cambio de cierre: los saldos en divisas se mantienen a su valor original (sin revaluar).' };
   const agrupar = (lista) => { const m = {}; lista.forEach(a => { (m[a.factura_id] = m[a.factura_id] || []).push({ fecha: String(a.fecha).slice(0, 10), monto: Number(a.monto) || 0 }); }); return m; };
   const apP = agrupar(pagosAplicados), apC = agrupar(cobrosAplicados);
   const hoyYm = todayStr().slice(0, 7); const sigMes = (ym) => { const [y, m] = ym.split('-').map(Number); return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`; };
   const items = [];
   [...new Set(tcs.map(t => t.moneda))].forEach(moneda => {
     const propias = tcs.filter(t => t.moneda === moneda); const primera = propias.map(t => t.fecha).sort()[0];
+    const susCuentas = cuentasConUso.filter(c => c.moneda === moneda).map(c => ({ ...c, movs: movsDe(c) }));
     for (let ym = primera.slice(0, 7); ym < hoyYm; ym = sigMes(ym)) { // solo meses ya terminados
       const E = monthBounds(ym).end; if (propias.some(t => t.fecha === E)) continue;
-      let porPagar = 0, porCobrar = 0;
+      let porPagar = 0, porCobrar = 0, enCuentas = 0;
       provF.filter(f => f.moneda === moneda && String(f.fecha).slice(0, 10) <= E).forEach(f => { porPagar += revalSaldoEn(Number(f.importe) || 0, apP[f.id], Number(f.importe_pagado) || 0, String(f.fecha_pago || f.fecha).slice(0, 10), E); });
       cliF.filter(f => f.moneda === moneda && String(f.fecha).slice(0, 10) <= E).forEach(f => { porCobrar += revalSaldoEn(Number(f.total) || 0, apC[f.id], Number(f.importe_pagado) || 0, String(f.fecha).slice(0, 10), E); });
-      if (Math.abs(porPagar) < 0.005 && Math.abs(porCobrar) < 0.005) continue; // sin saldo abierto ese mes no hay nada que valuar
-      items.push({ fecha: E, monto: revRedondeo(Math.abs(porPagar) + Math.abs(porCobrar)), texto: `${fechaCorta(E)} · ${moneda}: al cierre de ${ym} hay ${revRedondeo(porPagar)} ${moneda} por pagar y ${revRedondeo(porCobrar)} ${moneda} por cobrar, y falta el tipo de cambio de cierre` });
+      susCuentas.forEach(c => { enCuentas += (ctx.financiero ? c.saldoInicial : 0) + c.movs.filter(m => String(m.fecha).slice(0, 10) <= E).reduce((a, m) => a + (Number(m.depositos) || 0) - (Number(m.cargos) || 0), 0); });
+      if (Math.abs(porPagar) < 0.005 && Math.abs(porCobrar) < 0.005 && Math.abs(enCuentas) < 0.005) continue; // sin saldo en divisa ese mes no hay nada que valuar
+      items.push({ fecha: E, monto: revRedondeo(Math.abs(porPagar) + Math.abs(porCobrar) + Math.abs(enCuentas)), texto: `${fechaCorta(E)} · ${moneda}: al cierre de ${ym} hay ${revRedondeo(porPagar)} ${moneda} por pagar, ${revRedondeo(porCobrar)} ${moneda} por cobrar y ${revRedondeo(enCuentas)} ${moneda} en bancos y cajas, y falta el tipo de cambio de cierre` });
     }
   });
   items.sort((a, z) => a.fecha.localeCompare(z.fecha));
