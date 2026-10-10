@@ -248,6 +248,7 @@ function toast(msg, kind) {
 
 /* ---------- Auditoría: registrar quién crea/edita/elimina qué ---------- */
 async function registrarAuditoria(businessId, accion, modulo, descripcion) {
+  try { REVAL_CACHE.clear(); } catch (_) {} // toda escritura invalida la memoria breve de la revaluación de divisas
   try {
     const { error } = await sb.from('fz_auditoria').insert({
       business_id: businessId, usuario_email: STATE.user?.email || null,
@@ -4894,7 +4895,7 @@ async function prepararCierreEjercicio(businessId, ejercicio) {
   // (computeResultadoEjerciciosAnteriores cuenta el remanente de los años cerrados), así que el Balance no cambia. Aquí se informa el resultado TOTAL y su parte fuera del libro.
   let fueraDelLibro = 0, resultadoTotal = resultado;
   const negocioCierre = (STATE.businesses || []).find(x => x.id === businessId);
-  if (esNegocioFinanciero(negocioCierre)) {
+  {
     const utilidadER = redondearMoneda(await computeUtilidadAcumulada(businessId, `${ejercicio}-12`));
     resultadoTotal = utilidadER;
     fueraDelLibro = redondearMoneda(utilidadER - resultado);
@@ -12159,6 +12160,7 @@ async function renderConfiguracion() {
     ${grid(`
       ${tarjetaConfigHtml('cfgCatalogo', 'Catálogo de Cuentas', b ? `Cuenta mayor, subcuentas y su estructura contable para ${b.name}.` : 'Selecciona un negocio para configurar su catálogo.')}
       ${tarjetaConfigHtml('cfgCierre', 'Cierre de periodo', b ? `Bloquea la captura de meses ya cerrados en ${b.name}.` : 'Selecciona un negocio para gestionar sus cierres.')}
+      ${tarjetaConfigHtml('cfgTcCierre', 'Tipos de cambio de cierre', b ? `Revaluación al cierre de lo que debes y te deben en dólares u otra divisa en ${b.name}.` : 'Selecciona un negocio.')}
       ${tarjetaConfigHtml('cfgActivosFijos', 'Activos Fijos', b ? `Equipo, mobiliario y su depreciación mensual automática en ${b.name}.` : 'Selecciona un negocio para gestionar sus activos.')}
       ${tarjetaConfigHtml('cfgPagosClasificar', 'Pagos por clasificar', b ? `Salidas de dinero pendientes de asignar a proveedor/factura y/o de clasificar hacia Banco/Efectivo en ${b.name}.` : 'Selecciona un negocio.')}
       ${esFin ? '' : tarjetaConfigHtml('cfgSaldosFavorIVA', 'Control de saldos a favor IVA', b ? `Confirmar, acreditar y solicitar devolución de saldos a favor de IVA declarados en ${b.name}.` : 'Selecciona un negocio.')}
@@ -12188,6 +12190,8 @@ async function renderConfiguracion() {
   ir('cfgAuditoria', 'auditoria');
   const cierreBtn = document.getElementById('cfgCierre');
   if (cierreBtn) cierreBtn.addEventListener('click', () => { if (b) abrirModalCierrePeriodo(b.id); else toast('Selecciona un negocio primero.', 'error'); });
+  const tcCierreBtn = document.getElementById('cfgTcCierre');
+  if (tcCierreBtn) tcCierreBtn.addEventListener('click', () => { if (b) abrirModalTcCierre(b.id); else toast('Selecciona un negocio primero.', 'error'); });
   ir('cfgActivosFijos', 'activosfijos');
   ir('cfgPagosClasificar', 'pagosclasificar');
   ir('cfgSaldosFavorIVA', 'saldosfavoriva');
@@ -19165,7 +19169,7 @@ async function computeSaldoCuentaMayorPolizas(businessId, cuentaMayorId, subcuen
 //   gastos capturados en Ventas, faltantes de caja, gastos manuales, gastos sin clasificar). Tras cerrar, el Estado de Resultados del año queda en cero para lo que cancela la póliza,
 //   así que su resultado es exactamente ese remanente (si no hay remanente, vale cero y nada cambia). Sin esto, ese remanente desaparecía de Capital al cerrar el año.
 // Usa la MISMA fuente del Estado de Resultados para cada año (computeUtilidadAcumulada), nunca un cálculo aparte.
-async function computeResultadoEjerciciosAnteriores(businessId, hastaYm) {
+async function computeResultadoEjerciciosAnteriores(businessId, hastaYm, soloCerrados = false) {
   const anioActual = Number(hastaYm.slice(0, 4));
   const tablas = ['fz_proveedores', 'fz_ventas', 'fz_bancos_mov', 'fz_efectivo_mov', 'fz_polizas'];
   // Se busca la fecha más antigua DENTRO de una ventana de 10 años: una fecha mal capturada (ej. 0023)
@@ -19178,6 +19182,13 @@ async function computeResultadoEjerciciosAnteriores(businessId, hastaYm) {
   if (primerAnio >= anioActual) return 0;
   const aniosConResultado = []; // abiertos y cerrados: un año cerrado aporta su remanente (ver arriba)
   for (let y = primerAnio; y < anioActual; y++) aniosConResultado.push(y);
+  // soloCerrados (negocios fiscales): un año abierto sigue sin sumarse (se cierra con su póliza); un año cerrado aporta su remanente: lo que la póliza no puede llevar a Capital
+  // porque no es una subcuenta (diferencia cambiaria, revaluación). Sin ese remanente, tras cerrar el Balance quedaba descuadrado por exactamente ese monto.
+  if (soloCerrados) {
+    const { data: cierres } = await sb.from('fz_polizas').select('ejercicio_cierre').eq('business_id', businessId).eq('es_cierre_anual', true);
+    const cerrados = new Set((cierres || []).map(c => Number(c.ejercicio_cierre)));
+    for (let i = aniosConResultado.length - 1; i >= 0; i--) if (!cerrados.has(aniosConResultado[i])) aniosConResultado.splice(i, 1);
+  }
   // los años se calculan a la vez (antes, uno tras otro); solo se calcula un año si realmente tiene información
   const resultados = await Promise.all(aniosConResultado.map(async (y) => {
     const conteos = await Promise.all(tablas.map(t => sb.from(t).select('id', { count: 'exact', head: true }).eq('business_id', businessId).gte('fecha', `${y}-01-01`).lte('fecha', `${y}-12-31`)));
@@ -19972,6 +19983,15 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   const traspasoGrupos = {};
   traspasos.forEach(m => { (traspasoGrupos[m.traspaso_id] = traspasoGrupos[m.traspaso_id] || []).push(m); });
 
+  // Revaluación de cuentas por pagar y por cobrar en divisas: un asiento balanceado por moneda al cierre de cada mes con tipo de cambio capturado.
+  // Sin tipos de cambio capturados no agrega nada. Misma fuente que el Estado de Resultados (calcularRevaluacionDivisas).
+  try {
+    const rv = await calcularRevaluacionDivisas(businessId, hastaFecha);
+    rv.entradas.filter(e => e.asientos.length && (!desdeFecha || e.fecha >= desdeFecha)).forEach(e => {
+      const base = { modulo: 'Revaluación de divisas', tipoOrigen: 'revaluacion_divisas', id: `reval-${e.moneda}-${e.fecha}`, fecha: e.fecha, referencia: `Revaluación ${e.moneda} al ${e.fecha}`, detalle: `Tipo de cambio de cierre ${e.tc}` };
+      e.asientos.forEach(a => push({ ...base, cuenta: a.cuenta }, a.clave, a.tipo, a.cargo, a.abono));
+    });
+  } catch (err) { console.warn('Revaluación de divisas no disponible:', err); }
   const totalCargo = filas.reduce((a, f) => a + f.cargo, 0), totalAbono = filas.reduce((a, f) => a + f.abono, 0);
   return { filas, totalCargo, totalAbono, traspasoGrupos, polizas: polizaMap, mayores, subcuentas, unidadesEfectivoPorMoneda };
 }
@@ -20598,7 +20618,7 @@ async function renderBalanceGeneralCuerpo() {
   // Los cálculos independientes arrancan juntos (antes iban uno tras otro): el motor del Balance, la utilidad del
   // ejercicio y el resultado de ejercicios anteriores. Cada uno se espera más abajo, igual que antes.
   const pUtilidad = computeUtilidadAcumulada(b.id, hastaYm);
-  const pAnteriores = ventasAfectaFueraDeSuRegistro(b.id) ? computeResultadoEjerciciosAnteriores(b.id, hastaYm) : Promise.resolve(0);
+  const pAnteriores = computeResultadoEjerciciosAnteriores(b.id, hastaYm, !ventasAfectaFueraDeSuRegistro(b.id));
   pUtilidad.catch(() => {}); pAnteriores.catch(() => {}); // si algo falla antes, no quedan errores sin atender (el await de abajo los vuelve a lanzar)
   const { filas, unidadesEfectivoPorMoneda: unidadesEfectivoBg } = await getLibroPartidaDobleConOrigen(b.id, hastaFecha);
   // Solo para PRESENTAR agrupado por cuenta mayor (con su árbol de subcuentas) — ningún total
@@ -20955,7 +20975,204 @@ function filtrarDatosGastosCostosPorMes(datosAnio, periodoMes) {
   };
 }
 
+// ============================================================================================================
+// REVALUACIÓN DE CUENTAS POR PAGAR Y POR COBRAR EN DIVISAS (no realizada)
+// ------------------------------------------------------------------------------------------------------------
+// FUENTE ÚNICA: el libro (asientos) y el Estado de Resultados (computeGananciaCambiaria / computeGananciaPerdidaCambiariaER) leen de aquí,
+// así que Balance, Balanza, Mayor y resultados no pueden diferir entre sí.
+//  · Solo actúa si el negocio tiene tipos de cambio de cierre capturados (fz_tc_cierre). Sin ellos devuelve vacío y todo queda EXACTAMENTE igual que antes.
+//  · Al cierre de cada mes con tipo de cambio: ajuste acumulado = Σ saldo abierto en divisa × (tipo de cambio de cierre − tipo de cambio de la factura).
+//    El asiento de cada cierre es la VARIACIÓN contra el cierre anterior de esa moneda. Al pagarse una factura, la diferencia REALIZADA (que ya existía) queda
+//    intacta y la valuación de lo pagado se revierte sola en el siguiente cierre: el resultado acumulado nunca cuenta dos veces.
+//  · Proveedores (pasivo): si el dólar sube, la deuda en pesos sube → pérdida. Clientes (activo): si sube, la cuenta por cobrar sube → ganancia.
+//  · La caja y los bancos en divisas siguen a costo promedio (no se tocan).
+// ============================================================================================================
+const REVAL_CUENTAS = {
+  perdida: { cuenta: 'Pérdida cambiaria por valuación (no realizada)', clave: 'perdida_cambiaria_valuacion', tipo: 'gasto' },
+  ganancia: { cuenta: 'Ganancia cambiaria por valuación (no realizada)', clave: 'ganancia_cambiaria_valuacion', tipo: 'ingreso' },
+  proveedores: { cuenta: 'Valuación de proveedores en divisas', clave: 'valuacion_proveedores_divisas', tipo: 'pasivo' },
+  clientes: { cuenta: 'Valuación de clientes en divisas', clave: 'valuacion_clientes_divisas', tipo: 'activo' },
+};
+// Asientos de UN cierre (balanceados): devuelve las líneas y cuánto es ganancia y cuánto pérdida.
+function asientosRevaluacion(cxp, cxc) {
+  const asientos = []; let ganancia = 0, perdida = 0;
+  const lin = (c, cargo, abono) => asientos.push({ ...c, cargo, abono });
+  if (cxp > 0.004) { lin(REVAL_CUENTAS.perdida, cxp, 0); lin(REVAL_CUENTAS.proveedores, 0, cxp); perdida += cxp; }
+  else if (cxp < -0.004) { lin(REVAL_CUENTAS.proveedores, -cxp, 0); lin(REVAL_CUENTAS.ganancia, 0, -cxp); ganancia += -cxp; }
+  if (cxc > 0.004) { lin(REVAL_CUENTAS.clientes, cxc, 0); lin(REVAL_CUENTAS.ganancia, 0, cxc); ganancia += cxc; }
+  else if (cxc < -0.004) { lin(REVAL_CUENTAS.perdida, -cxc, 0); lin(REVAL_CUENTAS.clientes, 0, -cxc); perdida += -cxc; }
+  return { asientos, ganancia: redondearMoneda(ganancia), perdida: redondearMoneda(perdida) };
+}
+async function cargarTcCierre(businessId) {
+  try {
+    const { data, error } = await sb.from('fz_tc_cierre').select('moneda,fecha,tc').eq('business_id', businessId).order('fecha');
+    if (error) return { filas: [], error: error.message || String(error) };
+    return { filas: (data || []).map(r => ({ moneda: String(r.moneda || '').toUpperCase(), fecha: String(r.fecha).slice(0, 10), tc: Number(r.tc) || 0 })).filter(r => r.moneda && r.tc > 0), error: null };
+  } catch (e) { return { filas: [], error: (e && e.message) || String(e) }; }
+}
+// Saldo abierto (en la divisa del documento) al cierre E: importe − lo aplicado hasta E. Una factura vieja marcada pagada sin aplicaciones se toma como pagada en su fecha de pago.
+function revalSaldoEn(importe, aplicaciones, pagadoSinAplicaciones, fechaPagoSinAplicaciones, E) {
+  let saldo = importe;
+  if (aplicaciones && aplicaciones.length) aplicaciones.forEach(a => { if (String(a.fecha).slice(0, 10) <= E) saldo -= Number(a.monto) || 0; });
+  else if (pagadoSinAplicaciones > 0.004 && fechaPagoSinAplicaciones <= E) saldo -= pagadoSinAplicaciones;
+  return saldo;
+}
+const REVAL_CACHE = new Map(); // comparte llamadas simultáneas o en ráfaga (3 s): nunca guarda datos de una acción anterior del usuario
+async function calcularRevaluacionDivisas(businessId, hastaFecha) {
+  const ahora = Date.now();
+  for (const [k, v] of REVAL_CACHE) if (ahora - v.t > 3000) REVAL_CACHE.delete(k);
+  const clave = `${businessId}|${hastaFecha || ''}`;
+  if (REVAL_CACHE.has(clave)) return REVAL_CACHE.get(clave).p;
+  const p = calcularRevaluacionDivisasSinCache(businessId, hastaFecha);
+  REVAL_CACHE.set(clave, { t: ahora, p });
+  return p;
+}
+async function calcularRevaluacionDivisasSinCache(businessId, hastaFecha) {
+  const vacio = { entradas: [], error: null };
+  const { filas: tcs, error } = await cargarTcCierre(businessId);
+  if (error) return { ...vacio, error };
+  const hasta = hastaFecha || '9999-12-31';
+  const tcsHasta = tcs.filter(r => r.fecha <= hasta);
+  if (!tcsHasta.length) return vacio;
+  const monedas = [...new Set(tcsHasta.map(r => r.moneda))];
+  const leer = async (tabla, cols) => { const r = await fetchTodasLasPaginas(() => sb.from(tabla).select(cols).eq('business_id', businessId).in('moneda', monedas).lte('fecha', hasta).order('id')); if (r.error) throw new Error(`${tabla}: ${r.error.message}`); return r.data || []; };
+  const [prov, cli] = await Promise.all([ leer('fz_proveedores', 'id,fecha,importe,importe_pagado,fecha_pago,moneda,tipo_cambio'), leer('fz_facturas_clientes', 'id,fecha,total,importe_pagado,moneda,tipo_cambio') ]);
+  const aplicaciones = async (tabla, ids) => { const out = []; for (let i = 0; i < ids.length; i += 100) { const r = await fetchTodasLasPaginas(() => sb.from(tabla).select('factura_id,monto,fecha').eq('business_id', businessId).in('factura_id', ids.slice(i, i + 100)).order('id')); if (r.error) throw new Error(`${tabla}: ${r.error.message}`); out.push(...(r.data || [])); } return out; };
+  const [aplProv, aplCli] = await Promise.all([ aplicaciones('fz_pagos_aplicados', prov.map(f => f.id)), aplicaciones('fz_cobros_aplicados', cli.map(f => f.id)) ]);
+  const agrupar = (lista) => { const m = {}; lista.forEach(a => { (m[a.factura_id] = m[a.factura_id] || []).push({ fecha: String(a.fecha).slice(0, 10), monto: Number(a.monto) || 0 }); }); return m; };
+  const apP = agrupar(aplProv), apC = agrupar(aplCli);
+  // saldo abierto (en la divisa del documento) al cierre E: importe − lo aplicado hasta E. Una factura vieja marcada pagada sin aplicaciones se toma como pagada en su fecha de pago.
+  const saldoEn = revalSaldoEn;
+  const entradas = [];
+  for (const moneda of monedas) {
+    let prevP = 0, prevC = 0;
+    for (const r of tcsHasta.filter(x => x.moneda === moneda)) {
+      const E = r.fecha;
+      let adjP = 0, adjC = 0;
+      prov.filter(f => f.moneda === moneda && String(f.fecha).slice(0, 10) <= E).forEach(f => {
+        const tcHist = Number(f.tipo_cambio) || 1;
+        const saldo = saldoEn(Number(f.importe) || 0, apP[f.id], Number(f.importe_pagado) || 0, String(f.fecha_pago || f.fecha).slice(0, 10), E);
+        adjP += saldo * (r.tc - tcHist);
+      });
+      cli.filter(f => f.moneda === moneda && String(f.fecha).slice(0, 10) <= E).forEach(f => {
+        const tcHist = Number(f.tipo_cambio) || 1;
+        const saldo = saldoEn(Number(f.total) || 0, apC[f.id], Number(f.importe_pagado) || 0, String(f.fecha).slice(0, 10), E);
+        adjC += saldo * (r.tc - tcHist);
+      });
+      adjP = redondearMoneda(adjP); adjC = redondearMoneda(adjC);
+      const dP = redondearMoneda(adjP - prevP), dC = redondearMoneda(adjC - prevC);
+      const { asientos, ganancia, perdida } = asientosRevaluacion(dP, dC);
+      entradas.push({ fecha: E, moneda, tc: r.tc, cxp: dP, cxc: dC, ajusteProveedores: adjP, ajusteClientes: adjC, asientos, ganancia, perdida });
+      prevP = adjP; prevC = adjC;
+    }
+  }
+  entradas.sort((a, b) => a.fecha.localeCompare(b.fecha) || a.moneda.localeCompare(b.moneda));
+  return { entradas, error: null };
+}
+// ============================================================================================================
+// CAPTURA DE TIPOS DE CAMBIO DE CIERRE (Configuración → Tipos de cambio de cierre)
+// ============================================================================================================
+async function abrirModalTcCierre(businessId) {
+  const b = (STATE.businesses || []).find(x => x.id === businessId);
+  const lectura = async (tabla) => { const r = await fetchTodasLasPaginas(() => sb.from(tabla).select('id,fecha,moneda').eq('business_id', businessId).not('moneda', 'is', null).neq('moneda', 'MXN').order('id')); return r.data || []; };
+  const [{ filas: tcs, error: errTc }, prov, cli] = await Promise.all([cargarTcCierre(businessId), lectura('fz_proveedores'), lectura('fz_facturas_clientes')]);
+  const foraneas = [...prov, ...cli];
+  const monedas = [...new Set([...foraneas.map(f => String(f.moneda).toUpperCase()), ...tcs.map(t => t.moneda)])].sort();
+  const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalTcCierre';
+  const cerrar = () => { bg.remove(); };
+  const cuerpoVacio = (texto) => `<p class="empty" style="padding:12px 0;">${texto}</p>`;
+  let cuerpo;
+  if (errTc) cuerpo = cuerpoVacio(`No se pudo leer la tabla de tipos de cambio (fz_tc_cierre): ${revEsc(errTc)}. Corre en Supabase el bloque «TIPOS DE CAMBIO AL CIERRE DE MES» de schema.sql y vuelve a abrir esta pantalla.`);
+  else if (!monedas.length) cuerpo = cuerpoVacio('Este negocio no tiene facturas en moneda extranjera. Cuando las tenga, aquí capturas el tipo de cambio de cierre de cada mes.');
+  else {
+    const primerasFechas = [...foraneas.map(f => String(f.fecha).slice(0, 7)), ...tcs.map(t => t.fecha.slice(0, 7))].sort();
+    const hoyYm = todayStr().slice(0, 7); const meses = [];
+    for (let ym = primerasFechas[0]; ym <= hoyYm; ym = (() => { const [y, m] = ym.split('-').map(Number); return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`; })()) meses.push(ym);
+    const ultimos = meses.slice(-36); // máximo 3 años a la vista
+    let rv = { entradas: [] }; try { rv = await calcularRevaluacionDivisas(businessId, monthBounds(hoyYm).end); } catch (_) {}
+    const tcDe = (m, f) => (tcs.find(t => t.moneda === m && t.fecha === f) || {}).tc;
+    const efectoDe = (m, f) => rv.entradas.find(e => e.moneda === m && e.fecha === f);
+    const filas = [];
+    for (const ym of ultimos) {
+      const fin = monthBounds(ym).end; const cerrado = await bloqueadoPorCierre(businessId, fin);
+      filas.push(`<tr><td style="white-space:nowrap;">${ym}${cerrado ? ' <span title="Mes cerrado: no se puede cambiar" style="color:var(--muted);">🔒</span>' : ''}</td>${monedas.map(m => {
+        const v = tcDe(m, fin), e = efectoDe(m, fin);
+        return `<td><input class="cell tc-cierre-input" type="text" inputmode="decimal" data-moneda="${m}" data-fecha="${fin}" data-original="${v || ''}" value="${v || ''}" ${cerrado ? 'disabled' : ''} style="width:92px;" placeholder="—">${e ? `<div style="font-size:10.5px;color:var(--muted);margin-top:2px;">Ajuste acum.: prov ${fmt(e.ajusteProveedores)} · cli ${fmt(e.ajusteClientes)}</div>` : ''}</td>`;
+      }).join('')}</tr>`);
+    }
+    cuerpo = `<div style="max-height:52vh;overflow:auto;"><table class="tabla-operativa"><thead><tr><th>Cierre de</th>${monedas.map(m => `<th>${m} (pesos por 1 ${m})</th>`).join('')}</tr></thead><tbody>${filas.join('')}</tbody></table></div>`;
+  }
+  bg.innerHTML = `<div class="modal" style="width:min(760px,95vw);">
+    <h3>Tipos de cambio de cierre${b ? ' — ' + revEsc(b.name) : ''}</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:12px;">Captura el tipo de cambio del <strong>último día de cada mes</strong> para cada moneda (por ejemplo, el FIX). Con eso el sistema valúa, al cierre de cada mes, lo que debes y lo que te deben en divisas, y registra la ganancia o pérdida <strong>no realizada</strong>. Al pagar o cobrar, esa valuación se revierte sola y queda solo la diferencia realizada. Un mes sin tipo de cambio arrastra la valuación del anterior. Los meses cerrados (🔒) no se pueden cambiar. La caja y los bancos en divisas no se tocan.</p>
+    ${cuerpo}
+    <div class="modal-actions"><button class="btn btn-ghost" id="tcCierreCerrar">Cerrar</button>${(!errTc && monedas.length) ? '<button class="btn btn-gold" id="tcCierreGuardar">Guardar</button>' : ''}</div>
+  </div>`;
+  document.body.appendChild(bg);
+  bg.querySelector('#tcCierreCerrar').addEventListener('click', cerrar);
+  const guardar = bg.querySelector('#tcCierreGuardar');
+  if (guardar) guardar.addEventListener('click', async () => {
+    const upserts = [], borrar = [];
+    for (const inp of bg.querySelectorAll('.tc-cierre-input')) {
+      if (inp.disabled) continue;
+      const crudo = inp.value.trim(), original = inp.dataset.original;
+      if (crudo === (original || '')) continue;
+      if (!crudo) { if (original) borrar.push({ moneda: inp.dataset.moneda, fecha: inp.dataset.fecha }); continue; }
+      const v = leerMonto(crudo);
+      if (!(v > 0) || v > 100000) { toast(`Tipo de cambio no válido para ${inp.dataset.moneda} ${inp.dataset.fecha}: "${crudo}".`, 'error'); return; }
+      upserts.push({ business_id: businessId, moneda: inp.dataset.moneda, fecha: inp.dataset.fecha, tc: v });
+    }
+    if (!upserts.length && !borrar.length) { toast('No hay cambios que guardar.'); return; }
+    guardar.disabled = true; guardar.textContent = 'Guardando…';
+    try {
+      if (upserts.length) { const { error } = await sb.from('fz_tc_cierre').upsert(upserts, { onConflict: 'business_id,moneda,fecha' }); if (error) throw error; }
+      for (const d of borrar) { const { error } = await sb.from('fz_tc_cierre').delete().eq('business_id', businessId).eq('moneda', d.moneda).eq('fecha', d.fecha); if (error) throw error; }
+      REVAL_CACHE.clear();
+      registrarAuditoria(businessId, 'editar', 'Configuración', `Tipos de cambio de cierre: ${upserts.length} guardado(s), ${borrar.length} eliminado(s)`);
+      toast('Tipos de cambio guardados. El Balance y el Estado de Resultados ya los reflejan.');
+      cerrar(); if (typeof renderCurrentSection === 'function') renderCurrentSection();
+    } catch (err) { toast('No se pudo guardar: ' + (err.message || err), 'error'); guardar.disabled = false; guardar.textContent = 'Guardar'; }
+  });
+}
+
+// Lo que la revaluación suma a los resultados de un periodo {start, end} (los cierres de mes que caen dentro).
+async function revaluacionDelPeriodo(businessId, periodo) {
+  let rv; try { rv = await calcularRevaluacionDivisas(businessId, periodo.end); } catch (e) { console.warn('Revaluación de divisas no disponible:', e); return { ganancia: 0, perdida: 0 }; }
+  let ganancia = 0, perdida = 0;
+  rv.entradas.forEach(e => { if (e.fecha >= periodo.start && e.fecha <= periodo.end) { ganancia += e.ganancia; perdida += e.perdida; } });
+  return { ganancia: redondearMoneda(ganancia), perdida: redondearMoneda(perdida) };
+}
+
+// Ganancia cambiaria REALIZADA de clientes (cobros) + el efecto de la revaluación en el periodo.
 async function computeGananciaCambiaria(businessId, periodo, cobrosCompartidos = null) {
+  const [realizada, realizadaProv, rv] = await Promise.all([
+    computeGananciaCambiariaRealizada(businessId, periodo, cobrosCompartidos),
+    computeGananciaCambiariaProveedoresRealizada(businessId, periodo),
+    revaluacionDelPeriodo(businessId, periodo),
+  ]);
+  return realizada + realizadaProv + (rv.ganancia - rv.perdida);
+}
+// Diferencia cambiaria REALIZADA de pagos a proveedores en divisa, neta (ganancia − pérdida). El libro ya la registraba pero la utilidad del Balance no la sumaba:
+// el Balance se descuadraba por exactamente esa diferencia. Misma fórmula, umbral y convención de signo que el libro (rama 'proveedor') y que computeGananciaPerdidaCambiariaER.
+async function computeGananciaCambiariaProveedoresRealizada(businessId, periodo) {
+  const { data: pagos } = await sb.from('fz_pagos_aplicados')
+    .select('monto,tipo_cambio,factura_id,fecha')
+    .eq('business_id', businessId).gte('fecha', periodo.start).lte('fecha', periodo.end).not('tipo_cambio', 'is', null);
+  if (!pagos || !pagos.length) return 0;
+  const facturaIds = [...new Set(pagos.map(p => p.factura_id))];
+  const { data: facturas } = await sb.from('fz_proveedores').select('id,tipo_cambio').in('id', facturaIds);
+  const tcOriginalPorFactura = Object.fromEntries((facturas || []).map(f => [f.id, Number(f.tipo_cambio) || 1]));
+  let neto = 0;
+  pagos.forEach(p => {
+    const tcOriginal = tcOriginalPorFactura[p.factura_id] || 1;
+    const tcReal = Number(p.tipo_cambio) || tcOriginal;
+    const diferencia = (Number(p.monto) || 0) * (tcReal - tcOriginal);
+    if (diferencia > 0.004) neto -= diferencia; // proveedores: convención invertida, pagar más pesos de los esperados es pérdida
+    else if (diferencia < -0.004) neto += -diferencia;
+  });
+  return neto;
+}
+async function computeGananciaCambiariaRealizada(businessId, periodo, cobrosCompartidos = null) {
   let cobros;
   if (cobrosCompartidos) {
     cobros = cobrosCompartidos.filter(c => c.fecha >= periodo.start && c.fecha <= periodo.end);
@@ -21019,7 +21236,9 @@ async function computeGananciaPerdidaCambiariaER(businessId, periodo) {
     });
   }
 
-  return { ganancia: redondearMoneda(ganancia), perdida: redondearMoneda(perdida) };
+  // Revaluación de cuentas por pagar y por cobrar en divisas (vacía si el negocio no capturó tipos de cambio de cierre)
+  const rv = await revaluacionDelPeriodo(businessId, periodo);
+  return { ganancia: redondearMoneda(ganancia + rv.ganancia), perdida: redondearMoneda(perdida + rv.perdida) };
 }
 
 
@@ -22753,7 +22972,8 @@ async function cargarContextoRevision(b) {
     docsLibro = Object.values(grupos).map(g => ({ ...g, diferencia: g.cargo - g.abono }));
     if (esNegocioFinanciero(b)) marcarDocumentosPorDiseno(docsLibro, await cargarInfoDocumentosPorDiseno(b.id));
   } catch (e) { errorLibro = e.message || String(e); }
-  return { b, bancosCuentas, financiero: ventasAfectaFueraDeSuRegistro(b.id), ventas, conceptos, conceptosVenta, conceptosSistema, porCat,
+  const tcCierre = await cargarTcCierre(b.id);
+  return { b, bancosCuentas, tcCierre, financiero: ventasAfectaFueraDeSuRegistro(b.id), ventas, conceptos, conceptosVenta, conceptosSistema, porCat,
            proveedores, bancosMov, efectivoMov, pagosAplicados, polizas, lineas, monedas, cobrosAplicados, facturasClientes, clientes, docsLibro, errorLibro };
 }
 
@@ -23910,9 +24130,39 @@ function revSalidasSinClasificar(ctx) {
     items, nota: items.length ? `Total: ${fmt(total)} en ${items.length} salida(s).` : '' };
 }
 
+// Tipos de cambio de cierre (revaluación de cuentas en divisas). Solo aparece en negocios con facturas en moneda extranjera. Solo lee.
+// No molesta a quien no usa la revaluación: avisa de un mes faltante únicamente DESPUÉS del primer tipo de cambio capturado de esa moneda.
+function revTcCierre(ctx) {
+  const { proveedores, pagosAplicados, facturasClientes, cobrosAplicados, tcCierre } = ctx;
+  const esDivisa = (f) => f.moneda && f.moneda !== 'MXN';
+  const provF = proveedores.filter(esDivisa), cliF = facturasClientes.filter(esDivisa);
+  if (!provF.length && !cliF.length) return null; // negocio sin facturas en divisas: no aplica
+  const base = { id: 'tc_cierre', titulo: 'Tipos de cambio de cierre para la revaluación de cuentas en divisas', ayuda: 'La revaluación necesita el tipo de cambio del último día de cada mes mientras haya saldos abiertos en divisa. Captúralo en Configuración → Tipos de cambio de cierre. Un mes sin tipo de cambio no se inventa: se arrastra la valuación del anterior. Esta revisión solo lee.', items: [] };
+  if (tcCierre && tcCierre.error) return { ...base, items: [{ fecha: todayStr(), monto: 0, texto: `No se pudo leer la tabla de tipos de cambio de cierre (fz_tc_cierre): ${tcCierre.error}. Corre en Supabase el bloque «TIPOS DE CAMBIO AL CIERRE DE MES» de schema.sql.` }] };
+  const tcs = (tcCierre && tcCierre.filas) || [];
+  if (!tcs.length) return { ...base, nota: 'Aún no has capturado ningún tipo de cambio de cierre: las cuentas en divisas se mantienen al tipo de cambio de su factura (sin revaluar).' };
+  const agrupar = (lista) => { const m = {}; lista.forEach(a => { (m[a.factura_id] = m[a.factura_id] || []).push({ fecha: String(a.fecha).slice(0, 10), monto: Number(a.monto) || 0 }); }); return m; };
+  const apP = agrupar(pagosAplicados), apC = agrupar(cobrosAplicados);
+  const hoyYm = todayStr().slice(0, 7); const sigMes = (ym) => { const [y, m] = ym.split('-').map(Number); return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`; };
+  const items = [];
+  [...new Set(tcs.map(t => t.moneda))].forEach(moneda => {
+    const propias = tcs.filter(t => t.moneda === moneda); const primera = propias.map(t => t.fecha).sort()[0];
+    for (let ym = primera.slice(0, 7); ym < hoyYm; ym = sigMes(ym)) { // solo meses ya terminados
+      const E = monthBounds(ym).end; if (propias.some(t => t.fecha === E)) continue;
+      let porPagar = 0, porCobrar = 0;
+      provF.filter(f => f.moneda === moneda && String(f.fecha).slice(0, 10) <= E).forEach(f => { porPagar += revalSaldoEn(Number(f.importe) || 0, apP[f.id], Number(f.importe_pagado) || 0, String(f.fecha_pago || f.fecha).slice(0, 10), E); });
+      cliF.filter(f => f.moneda === moneda && String(f.fecha).slice(0, 10) <= E).forEach(f => { porCobrar += revalSaldoEn(Number(f.total) || 0, apC[f.id], Number(f.importe_pagado) || 0, String(f.fecha).slice(0, 10), E); });
+      if (Math.abs(porPagar) < 0.005 && Math.abs(porCobrar) < 0.005) continue; // sin saldo abierto ese mes no hay nada que valuar
+      items.push({ fecha: E, monto: revRedondeo(Math.abs(porPagar) + Math.abs(porCobrar)), texto: `${fechaCorta(E)} · ${moneda}: al cierre de ${ym} hay ${revRedondeo(porPagar)} ${moneda} por pagar y ${revRedondeo(porCobrar)} ${moneda} por cobrar, y falta el tipo de cambio de cierre` });
+    }
+  });
+  items.sort((a, z) => a.fecha.localeCompare(z.fecha));
+  return { ...base, items };
+}
+
 async function ejecutarRevisionConsistencia(b) {
   const ctx = await cargarContextoRevision(b);
-  const checks = [revVentasCategorias, revPropinas, revPropinasSinMarca, revPropinasDuplicadas, revDepositosVentas, revPagosProveedor, revPagosReubicables, revGruposConFaltante, revCreditosDuplicados, revFacturasPagoIncoherente, revDescuadreLibro, revVinculosPagoFactura, revCreditosClientes, revVinculosCobroFactura, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar];
+  const checks = [revVentasCategorias, revPropinas, revPropinasSinMarca, revPropinasDuplicadas, revDepositosVentas, revPagosProveedor, revPagosReubicables, revGruposConFaltante, revCreditosDuplicados, revFacturasPagoIncoherente, revDescuadreLibro, revVinculosPagoFactura, revCreditosClientes, revVinculosCobroFactura, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar, revTcCierre];
   const out = [];
   for (const fn of checks) {
     try { const r = fn(ctx); if (r) out.push(r); }
