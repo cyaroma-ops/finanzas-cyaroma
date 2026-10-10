@@ -23499,13 +23499,47 @@ function revFacturasPagoIncoherente(ctx) {
     if (imp <= 0 || (f.moneda && f.moneda !== 'MXN')) return;
     const pagado = Number(f.importe_pagado) || 0, apl = aplicado[f.id] || 0;
     const etiqueta = `${fechaCorta(f.fecha)} · ${f.proveedor || 'Proveedor'} · ${f.factura || 's/f'}`;
-    if (pagado - apl > 0.005 && !ligadas.has(f.id)) items.push({ fecha: f.fecha, monto: revRedondeo(pagado - apl), texto: `${etiqueta}: pagada sin ningún pago. Figura pagada ${fmt(pagado)} (${f.estatus}) y no tiene ningún pago ligado; aplicado ${fmt(apl)}` });
+    if (pagado - apl > 0.005 && !ligadas.has(f.id)) items.push({ tipo: 'sin_pago', f, pagado, apl, fecha: f.fecha, monto: revRedondeo(pagado - apl), texto: `${etiqueta}: pagada sin ningún pago. Figura pagada ${fmt(pagado)} (${f.estatus}) y no tiene ningún pago ligado; aplicado ${fmt(apl)}` });
     else if (apl - pagado > 0.005) items.push({ fecha: f.fecha, monto: revRedondeo(apl - pagado), texto: `${etiqueta}: aplicado de más. Las aplicaciones suman ${fmt(apl)} y la factura figura pagada por ${fmt(pagado)} (${f.estatus})` });
     const estatusMal = (f.estatus === 'Pagado' && pagado < imp - 0.005) || (f.estatus === 'Pendiente' && pagado > 0.005) || (f.estatus === 'Parcial' && (pagado <= 0.005 || pagado >= imp - 0.005));
     if (estatusMal) items.push({ fecha: f.fecha, monto: revRedondeo(imp - pagado), texto: `${etiqueta}: estatus incoherente. Es ${f.estatus} con importe ${fmt(imp)} y pagado ${fmt(pagado)}` });
   });
   items.sort((a, z) => a.fecha.localeCompare(z.fecha));
-  return { ...base, items: items.slice(0, 120), ...(items.length > 120 ? { nota: `Se muestran 120 de ${items.length}.` } : {}) };
+  const r = { ...base, items: items.slice(0, 120), ...(items.length > 120 ? { nota: `Se muestran 120 de ${items.length}.` } : {}) };
+  const sinPago = items.filter(i => i.tipo === 'sin_pago');
+  if (sinPago.length) {
+    const b = ctx.b, totalSinPago = revRedondeo(sinPago.reduce((acc, i) => acc + i.monto, 0));
+    r.accion = {
+      etiqueta: `Dejar pendiente${sinPago.length === 1 ? '' : 's'} ${sinPago.length} factura${sinPago.length === 1 ? '' : 's'} pagada${sinPago.length === 1 ? '' : 's'} sin pago (${fmt(totalSinPago)})`,
+      confirmar: `Se dejará lo pagado de ${sinPago.length} factura(s) en lo que realmente tienen aplicado: quedarán como Pendiente o Parcial por ${fmt(totalSinPago)} (por pagar). El Balance NO cambia (ya cuenta ese pasivo completo). Úsalo SOLO si ese dinero de verdad no se pagó. Si sí se pagó, registra ese pago (o liga el que ya existe) y no presiones este botón. Se revisa de nuevo cada factura antes de tocarla y los meses cerrados no se tocan. ¿Continuar?`,
+      ejecutar: async () => {
+        const leer = (tabla) => fetchTodasLasPaginas(() => sb.from(tabla).select('id,proveedor_factura_ids,proveedor_factura_id').eq('business_id', b.id).eq('tipo_salida', 'proveedor').order('id'));
+        const [bm, em] = await Promise.all([leer('fz_bancos_mov'), leer('fz_efectivo_mov')]);
+        const ligadasAhora = new Set();
+        [...(bm.data || []), ...(em.data || [])].forEach(m => { const ids = Array.isArray(m.proveedor_factura_ids) && m.proveedor_factura_ids.length ? m.proveedor_factura_ids : (m.proveedor_factura_id ? [m.proveedor_factura_id] : []); ids.forEach(id => ligadasAhora.add(id)); });
+        let hechas = 0, cerradas = 0, omitidas = 0, monto = 0;
+        for (const it of sinPago) {
+          if (await bloqueadoPorCierre(b.id, it.f.fecha)) { cerradas++; continue; }
+          const { data: fr } = await sb.from('fz_proveedores').select('id,importe,importe_pagado,estatus').eq('id', it.f.id).maybeSingle();
+          const { data: aps } = await sb.from('fz_pagos_aplicados').select('monto').eq('factura_id', it.f.id);
+          const aplicadoAhora = revRedondeo((aps || []).reduce((acc, a) => acc + (Number(a.monto) || 0), 0));
+          const pagadoAhora = Number(fr && fr.importe_pagado) || 0;
+          // se vuelve a comprobar: sigue igual que en pantalla, ningún pago se le ligó mientras tanto y de verdad hay pagado sin respaldo
+          if (!fr || ligadasAhora.has(it.f.id) || Math.abs(pagadoAhora - it.pagado) > 0.005 || pagadoAhora - aplicadoAhora < 0.005) { omitidas++; continue; }
+          const nuevo = aplicadoAhora;
+          const upd = nuevo <= 0.004
+            ? { importe_pagado: 0, estatus: 'Pendiente', pagado_desde: null, pagado_desde_tipo: null, pagado_desde_cuenta_id: null, fecha_pago: null }
+            : { importe_pagado: nuevo, estatus: nuevo >= Number(fr.importe) - 0.005 ? 'Pagado' : 'Parcial' };
+          const { error } = await sb.from('fz_proveedores').update(upd).eq('id', it.f.id);
+          if (error) throw error;
+          registrarAuditoria(b.id, 'editar', 'Proveedores', `Factura ${it.f.factura || 's/f'} (${it.f.proveedor || 'Proveedor'}): figuraba pagada por ${fmt(pagadoAhora)} sin ningún pago que lo respaldara; se dejó en ${fmt(nuevo)} pagado (${upd.estatus}) (Revisión de consistencia)`);
+          hechas++; monto = revRedondeo(monto + pagadoAhora - nuevo);
+        }
+        return `${hechas} factura(s) dejada(s) pendiente(s) por ${fmt(monto)}${cerradas ? ` · ${cerradas} en meses cerrados no se tocaron` : ''}${omitidas ? ` · ${omitidas} ya no estaban como se esperaba y se dejaron` : ''}.`;
+      },
+    };
+  }
+  return r;
 }
 
 // Libro contable: (A) documentos descuadrados que NO son de un solo lado por diseño (los mismos que lista la Balanza) y (B) CENTAVOS que no se compensan: los documentos de un solo lado
@@ -23516,7 +23550,7 @@ function revDescuadreLibro(ctx) {
     ayuda: 'Lee los documentos del libro. (A) Documentos descuadrados que no son de un solo lado por diseño (los mismos del diagnóstico de la Balanza). (B) Centavos que no se compensan: por diseño, un pago en exceso y su crédito a favor son de un solo lado y se anulan entre sí; si en una fecha no se anulan (por ejemplo, un crédito duplicado), el Balance queda descuadrado por esa diferencia sin que ningún documento se vea mal por sí solo. Si el Balance marca un descuadre y esta revisión sale vacía, la diferencia está entre la utilidad del libro y la del Estado de Resultados: ver las verificaciones de la Balanza. Esta revisión solo lee; no cambia nada.' };
   if (ctx.errorLibro) return { ...base, items: [], nota: `No se pudo leer el libro contable: ${ctx.errorLibro}` };
   const docs = ctx.docsLibro || [];
-  const sueltos = docs.filter(d => Math.abs(d.diferencia) > 0.001 && !d.unLadoPorDiseno);
+  const sueltos = docs.filter(d => Math.abs(d.diferencia) >= 0.005 && !d.unLadoPorDiseno); // menos de medio centavo no se ve ni en pesos (el Balance tolera $0.01)
   const enSueltos = new Set(sueltos);
   const chicos = docs.filter(d => Math.abs(d.diferencia) > 0.001 && Math.abs(d.diferencia) < 1 && !enSueltos.has(d));
   const items = sueltos.map(d => ({ fecha: d.fecha, monto: revRedondeo(d.diferencia), texto: `${fechaCorta(d.fecha)} · ${d.modulo}: ${String(d.referencia || d.detalle || '').slice(0, 60)}: cargos ${fmt(d.cargo)} − abonos ${fmt(d.abono)} = ${fmt(d.diferencia)}` }));
@@ -23884,23 +23918,35 @@ async function renderRevisionConsistencia() {
     cuerpo.innerHTML = `
       <div style="padding:2px 4px 12px;font-size:13px;color:var(--muted);">Esta pantalla solo lee. Los botones corrigen únicamente lo que dice su etiqueta, con las mismas funciones del sistema, y piden confirmación. Revisado a las ${new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}.</div>
       <div style="padding:0 4px 14px;font-size:14px;"><strong>${conAviso ? `⚠ ${conAviso} de ${revs.length} revisiones con algo que atender` : `✓ Todo en orden (${revs.length} revisiones)`}</strong></div>
-      ${revs.map(r => {
-        const ok = !r.error && !r.items.length;
-        const filas = (r.items || []).slice(0, REV_MAX_ITEMS).map((x, idx) => `<tr><td>${revEsc(x.texto)}</td><td class="num">${x.monto === undefined ? '' : fmt(x.monto)}</td><td>${x.elegirFactura ? `<button class="btn btn-ghost btn-sm rev-elegir" data-rev="${revEsc(r.id)}" data-i="${idx}">Elegir factura…</button>` : ''}</td></tr>`).join('');
-        const mas = (r.items || []).length > REV_MAX_ITEMS ? `<tr><td colspan="3" style="color:var(--muted);">… y ${r.items.length - REV_MAX_ITEMS} más</td></tr>` : '';
-        return `
-          <div class="card" style="margin-bottom:12px;border-left:3px solid ${ok ? 'var(--green)' : (r.error ? 'var(--red)' : 'var(--gold, #c9a227)')};">
-            <div class="card-head"><h3 style="font-size:14px;">${ok ? '✓' : '⚠'} ${revEsc(r.titulo)}${r.items.length ? ` <span class="badge pend" style="margin-left:6px;">${r.items.length}</span>` : ''}</h3></div>
+      ${(() => {
+        // Orden: primero las que no se pudieron revisar, luego las que tienen observaciones y al final las que están en orden (cada grupo conserva su orden original).
+        const prioridad = (r) => r.error ? 0 : ((r.items && r.items.length) ? 1 : 2);
+        const ordenadas = revs.map((r, i) => ({ r, i })).sort((x, y) => prioridad(x.r) - prioridad(y.r) || x.i - y.i).map(x => x.r);
+        const conObs = ordenadas.filter(r => prioridad(r) < 2), sinObs = ordenadas.filter(r => prioridad(r) === 2);
+        const encabezado = (texto, n, color) => `<div class="rev-grupo" style="display:flex;align-items:center;gap:8px;margin:${texto === 'Con observaciones' ? '4px' : '18px'} 4px 8px;font-size:11px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);"><span style="width:8px;height:8px;border-radius:50%;background:${color};display:inline-block;"></span>${texto}<span style="font-weight:600;letter-spacing:0;color:var(--muted);">(${n})</span></div>`;
+        const tarjeta = (r) => {
+          const filas = (r.items || []).slice(0, REV_MAX_ITEMS).map((x, idx) => `<tr><td style="white-space:normal;overflow-wrap:anywhere;line-height:1.4;">${revEsc(x.texto)}</td><td class="num" style="white-space:nowrap;vertical-align:top;">${x.monto === undefined ? '' : fmt(x.monto)}</td><td style="vertical-align:top;">${x.elegirFactura ? `<button class="btn btn-ghost btn-sm rev-elegir" data-rev="${revEsc(r.id)}" data-i="${idx}">Elegir factura…</button>` : ''}</td></tr>`).join('');
+          const mas = (r.items || []).length > REV_MAX_ITEMS ? `<tr><td colspan="3" style="color:var(--muted);">… y ${r.items.length - REV_MAX_ITEMS} más</td></tr>` : '';
+          return `
+          <div class="card" data-rev-card="${revEsc(r.id)}" style="margin-bottom:12px;border-left:3px solid ${r.error ? 'var(--red)' : 'var(--gold, #c9a227)'};">
+            <div class="card-head"><h3 style="font-size:14px;">⚠ ${revEsc(r.titulo)}${r.items.length ? ` <span class="badge pend" style="margin-left:6px;">${r.items.length}</span>` : ''}</h3></div>
             <div style="padding:6px 14px 12px;font-size:13px;">
               ${r.error ? `<div style="color:var(--red);">No se pudo revisar: ${revEsc(r.error)}</div>` : ''}
-              ${ok ? `<div style="color:var(--muted);">Sin diferencias.${r.nota ? ' ' + revEsc(r.nota) : ''}</div>` : `
-                <div style="color:var(--muted);margin-bottom:8px;">${revEsc(r.ayuda)}</div>
-                ${r.accion ? `<div style="margin:0 0 10px;"><button class="btn btn-gold btn-sm rev-accion" data-rev="${revEsc(r.id)}">${revEsc(r.accion.etiqueta)}</button></div>` : ''}
-                <table class="tabla-operativa"><thead><tr><th>Detalle</th><th class="num">Importe</th><th></th></tr></thead><tbody>${filas}${mas}</tbody></table>
-                ${r.nota ? `<div style="color:var(--muted);margin-top:8px;">${revEsc(r.nota)}</div>` : ''}`}
+              <div style="color:var(--muted);margin-bottom:8px;">${revEsc(r.ayuda)}</div>
+              ${r.accion ? `<div style="margin:0 0 10px;"><button class="btn btn-gold btn-sm rev-accion" data-rev="${revEsc(r.id)}">${revEsc(r.accion.etiqueta)}</button></div>` : ''}
+              <div style="overflow-x:auto;"><table class="tabla-operativa" style="width:100%;table-layout:auto;"><thead><tr><th>Detalle</th><th class="num">Importe</th><th></th></tr></thead><tbody>${filas}${mas}</tbody></table></div>
+              ${r.nota ? `<div style="color:var(--muted);margin-top:8px;">${revEsc(r.nota)}</div>` : ''}
             </div>
           </div>`;
-      }).join('')}`;
+        };
+        const filaOk = (r) => `
+          <div data-rev-card="${revEsc(r.id)}" style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding:8px 14px;margin-bottom:6px;background:var(--card);border-radius:var(--radius);border-left:3px solid var(--green);box-shadow:0 1px 3px rgba(10,31,61,.05);">
+            <span style="color:var(--green);font-weight:700;">✓</span><span style="font-size:13.5px;font-weight:600;">${revEsc(r.titulo)}</span>
+            <span style="margin-left:auto;font-size:12px;color:var(--muted);">Sin diferencias${r.nota ? ` · ${revEsc(r.nota)}` : ''}</span>
+          </div>`;
+        return (conObs.length ? encabezado('Con observaciones', conObs.length, 'var(--gold, #c9a227)') + conObs.map(tarjeta).join('') : '')
+             + (sinObs.length ? encabezado('Sin observaciones', sinObs.length, 'var(--green)') + sinObs.map(filaOk).join('') : '');
+      })()}`;
     cuerpo.querySelectorAll('.rev-elegir').forEach(btn => btn.addEventListener('click', async () => {
       const r = revs.find(x => x.id === btn.dataset.rev);
       const it = r && (r.items || []).slice(0, REV_MAX_ITEMS)[Number(btn.dataset.i)];
