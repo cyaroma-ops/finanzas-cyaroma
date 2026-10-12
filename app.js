@@ -1160,6 +1160,7 @@ const SECTION_META = {
   bancos: { title: 'Bancos', sub: '', showMonth: true, needsBiz: true },
   proveedores: { title: 'Proveedores', sub: '', showMonth: false, needsBiz: true },
   clientes: { title: 'Clientes', sub: '', showMonth: false, needsBiz: true },
+  cfdi: { title: 'CFDI (XML)', sub: 'Carga los XML descargados del SAT, diferencia emitidos de recibidos y registra su estatus', showMonth: false, needsBiz: true },
   activosfijos: { title: 'Activos Fijos', sub: '', showMonth: false, needsBiz: true },
   ivafiscal: { title: 'IVA y Retenciones', sub: '', showMonth: true, needsBiz: true },
   balanza: { title: 'Balanza de Comprobación', sub: '', showMonth: true, needsBiz: true },
@@ -1343,6 +1344,7 @@ async function renderCurrentSection() {
   if (s === 'bancos') return renderBancos();
   if (s === 'proveedores') return renderProveedores();
   if (s === 'clientes') return renderClientes();
+  if (s === 'cfdi') return renderCfdi();
   if (s === 'activosfijos') return renderActivosFijos();
   if (s === 'pagosclasificar') return renderPagosPorClasificar();
   if (s === 'saldosfavoriva') return renderControlSaldosFavorIVA();
@@ -21882,6 +21884,349 @@ async function abrirOrigenDesdeDetalle(origen, businessId) {
   resaltarFilaPorId(origen.id);
 }
 
+
+// ============================================================================================================
+// CFDI (XML descargados del SAT) — PRIMERA PARTE: cargar, guardar, diferenciar emitidos de recibidos, bandeja y estatus manual con bitácora.
+// · El XML original se guarda INTACTO en el bucket privado "cfdi" (<business_id>/<UUID>.xml); lo extraído va a fz_cfdi.
+// · Emitido / recibido se decide solo: RFC del negocio contra el emisor y el receptor del XML. Si no coincide con ninguno, es ajeno y no se guarda.
+// · El XML NO dice si el CFDI se canceló después: el estatus SAT se lleva aparte ("no verificado" hasta que alguien lo marque) con bitácora.
+// · Esta parte NO crea facturas ni movimientos: clasificar es la siguiente.
+// ============================================================================================================
+const CFDI_TIPOS = { I: 'Ingreso', E: 'Egreso', P: 'Pago', N: 'Nómina', T: 'Traslado' };
+const CFDI_ESTATUS_SAT = { no_verificado: 'No verificado', vigente: 'Vigente', cancelado: 'Cancelado', en_proceso: 'Cancelación en proceso', no_encontrado: 'No encontrado' };
+const CFDI_MOTIVOS_CANCELACION = { '01': '01 · Comprobante emitido con errores con relación', '02': '02 · Comprobante emitido con errores sin relación', '03': '03 · No se llevó a cabo la operación', '04': '04 · Operación nominativa relacionada en una factura global' };
+let STATE_cfdi = { dir: 'todos', sat: 'todos', tipo: 'todos', q: '', datos: [] };
+
+// ---- lectura del XML ----
+function cfdiDecodificar(bytes) {
+  let texto = new TextDecoder('utf-8').decode(bytes).replace(/^\uFEFF/, '');
+  const m = /^<\?xml[^>]*encoding=["']([^"']+)["']/i.exec(texto.slice(0, 200));
+  if (m && !/^utf-?8$/i.test(m[1])) { try { texto = new TextDecoder(m[1]).decode(bytes).replace(/^\uFEFF/, ''); } catch (_) { /* se queda en utf-8 */ } }
+  return texto;
+}
+function cfdiParsear(xmlTexto) {
+  let doc;
+  try { doc = new DOMParser().parseFromString(xmlTexto, 'application/xml'); } catch (e) { return { ok: false, motivo: 'El archivo no es un XML válido' }; }
+  if (!doc || !doc.documentElement || doc.getElementsByTagName('parsererror').length) return { ok: false, motivo: 'El archivo no es un XML válido' };
+  const ln = (el) => el.localName || String(el.nodeName).split(':').pop();
+  const hijos = (el, n) => [...el.children].filter(c => ln(c) === n);
+  const hijo = (el, n) => hijos(el, n)[0] || null;
+  const desc = (el, n) => [...el.getElementsByTagNameNS('*', n)];
+  const a = (el, ...ns) => { if (!el) return ''; for (const n of ns) { const v = el.getAttribute(n); if (v !== null && v !== '') return v; } return ''; };
+  const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
+  const raiz = doc.documentElement;
+  if (ln(raiz) === 'Retenciones') return { ok: false, motivo: 'CFDI de retenciones e información de pagos: aún no se carga (solo comprobantes fiscales)' };
+  if (ln(raiz) !== 'Comprobante') return { ok: false, motivo: 'No es un CFDI (no tiene el nodo Comprobante)' };
+  const version = a(raiz, 'Version');
+  if (!version) return { ok: false, motivo: 'Versión de CFDI no reconocida (¿CFDI 3.2 o anterior?)' };
+  if (!/^[34]\./.test(version)) return { ok: false, motivo: `Versión de CFDI no soportada (${version})` };
+  const complemento = hijo(raiz, 'Complemento');
+  const timbre = complemento ? desc(complemento, 'TimbreFiscalDigital')[0] : null;
+  const uuid = timbre ? a(timbre, 'UUID').toUpperCase() : '';
+  if (!uuid) return { ok: false, motivo: 'No está timbrado (no trae UUID en el TimbreFiscalDigital)' };
+  if (!/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/.test(uuid)) return { ok: false, motivo: `UUID con formato inválido (${uuid})` };
+  const tipo = a(raiz, 'TipoDeComprobante').toUpperCase();
+  if (!CFDI_TIPOS[tipo]) return { ok: false, motivo: `Tipo de comprobante no reconocido (${tipo || 'vacío'})` };
+  const emisor = hijo(raiz, 'Emisor'), receptor = hijo(raiz, 'Receptor');
+  if (!emisor || !receptor) return { ok: false, motivo: 'Falta el nodo Emisor o Receptor' };
+  const fechaHora = a(raiz, 'Fecha');
+  if (!/^\d{4}-\d{2}-\d{2}/.test(fechaHora)) return { ok: false, motivo: 'Fecha de emisión inválida' };
+  // impuestos del comprobante (solo el nodo Impuestos directo del Comprobante, no el de cada concepto)
+  let ivaTras = 0, ivaRet = 0, isrRet = 0, iepsTras = 0;
+  const imp = hijo(raiz, 'Impuestos');
+  if (imp) {
+    const tr = hijo(imp, 'Traslados'); if (tr) hijos(tr, 'Traslado').forEach(t => { const i = a(t, 'Impuesto'), m = num(a(t, 'Importe')); if (i === '002') ivaTras += m; else if (i === '003') iepsTras += m; });
+    const re = hijo(imp, 'Retenciones'); if (re) hijos(re, 'Retencion').forEach(t => { const i = a(t, 'Impuesto'), m = num(a(t, 'Importe')); if (i === '002') ivaRet += m; else if (i === '001') isrRet += m; });
+  }
+  const cs = hijo(raiz, 'Conceptos');
+  const conceptos = cs ? hijos(cs, 'Concepto').map(c => ({ clave: a(c, 'ClaveProdServ'), descripcion: a(c, 'Descripcion'), cantidad: num(a(c, 'Cantidad')), unidad: a(c, 'ClaveUnidad', 'Unidad'), valor_unitario: num(a(c, 'ValorUnitario')), importe: num(a(c, 'Importe')), descuento: num(a(c, 'Descuento')) })) : [];
+  const relacionados = hijos(raiz, 'CfdiRelacionados').map(r => ({ tipo_relacion: a(r, 'TipoRelacion'), uuids: hijos(r, 'CfdiRelacionado').map(x => a(x, 'UUID').toUpperCase()) }));
+  const pagosNodo = complemento ? desc(complemento, 'Pagos')[0] : null;
+  const pagos = pagosNodo ? desc(pagosNodo, 'Pago').map(p => ({ fecha_pago: a(p, 'FechaPago'), forma_pago: a(p, 'FormaDePagoP'), moneda: a(p, 'MonedaP'), monto: num(a(p, 'Monto')), tipo_cambio: a(p, 'TipoCambioP') ? num(a(p, 'TipoCambioP')) : null,
+    documentos: [...p.children].filter(c => ln(c) === 'DoctoRelacionado').map(d => ({ uuid: a(d, 'IdDocumento').toUpperCase(), serie: a(d, 'Serie'), folio: a(d, 'Folio'), moneda: a(d, 'MonedaDR'), parcialidad: a(d, 'NumParcialidad'), saldo_anterior: num(a(d, 'ImpSaldoAnt')), pagado: num(a(d, 'ImpPagado')), saldo_insoluto: num(a(d, 'ImpSaldoInsoluto')) })) })) : [];
+  const moneda = a(raiz, 'Moneda') || 'MXN';
+  return { ok: true, cfdi: {
+    uuid, version, tipo_comprobante: tipo, fecha: fechaHora.slice(0, 10), fecha_hora: fechaHora, serie: a(raiz, 'Serie'), folio: a(raiz, 'Folio'),
+    rfc_emisor: a(emisor, 'Rfc').toUpperCase().trim(), nombre_emisor: a(emisor, 'Nombre'), regimen_emisor: a(emisor, 'RegimenFiscal'),
+    rfc_receptor: a(receptor, 'Rfc').toUpperCase().trim(), nombre_receptor: a(receptor, 'Nombre'), regimen_receptor: a(receptor, 'RegimenFiscalReceptor'), uso_cfdi: a(receptor, 'UsoCFDI'),
+    subtotal: num(a(raiz, 'SubTotal')), descuento: num(a(raiz, 'Descuento')), total: num(a(raiz, 'Total')), moneda, tipo_cambio: (moneda !== 'MXN' && a(raiz, 'TipoCambio')) ? num(a(raiz, 'TipoCambio')) : null,
+    metodo_pago: a(raiz, 'MetodoPago'), forma_pago: a(raiz, 'FormaPago'),
+    iva_trasladado: redondearMoneda(ivaTras), iva_retenido: redondearMoneda(ivaRet), isr_retenido: redondearMoneda(isrRet), ieps_trasladado: redondearMoneda(iepsTras),
+    conceptos, relacionados, pagos } };
+}
+// emitido / recibido / ajeno: el RFC del negocio contra el emisor y el receptor del XML
+function cfdiDireccion(c, rfcNegocio) {
+  const r = String(rfcNegocio || '').toUpperCase().trim();
+  if (!r) return 'ajeno';
+  if (c.rfc_emisor === r) return 'emitido';
+  if (c.rfc_receptor === r) return 'recibido';
+  return 'ajeno';
+}
+async function cfdiHash(bytes) {
+  try { if (typeof crypto !== 'undefined' && crypto.subtle) { const h = await crypto.subtle.digest('SHA-256', bytes); return [...new Uint8Array(h)].map(x => x.toString(16).padStart(2, '0')).join(''); } } catch (_) { /* sin hash */ }
+  return null;
+}
+async function cfdiBytesDe(file) {
+  if (file && typeof file.arrayBuffer === 'function') return new Uint8Array(await file.arrayBuffer());
+  return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(new Uint8Array(r.result)); r.onerror = () => rej(r.error); r.readAsArrayBuffer(file); });
+}
+// archivos elegidos (XML sueltos o ZIP) → lista de XML con sus bytes originales
+async function cfdiLeerArchivos(files) {
+  const crudos = [], omitidos = [];
+  for (const f of files) {
+    const nombre = f.name || 'archivo';
+    if (/\.zip$/i.test(nombre)) {
+      if (typeof JSZip === 'undefined') { omitidos.push({ nombre, motivo: 'No se pudo leer el ZIP (falta la librería JSZip)' }); continue; }
+      try {
+        const zip = await JSZip.loadAsync(await cfdiBytesDe(f));
+        const entradas = Object.values(zip.files).filter(e => !e.dir && /\.xml$/i.test(e.name) && !/(^|\/)(__MACOSX|\.)/.test(e.name));
+        for (const e of entradas) crudos.push({ nombre: `${nombre} › ${e.name.split('/').pop()}`, bytes: await e.async('uint8array') });
+        if (!entradas.length) omitidos.push({ nombre, motivo: 'El ZIP no trae archivos XML' });
+      } catch (err) { omitidos.push({ nombre, motivo: 'No se pudo abrir el ZIP: ' + (err.message || err) }); }
+    } else if (/\.xml$/i.test(nombre)) crudos.push({ nombre, bytes: await cfdiBytesDe(f) });
+    else omitidos.push({ nombre, motivo: 'Se omite: no es XML ni ZIP' });
+  }
+  return { crudos, omitidos };
+}
+// analiza el lote ANTES de guardar: qué es nuevo, emitido o recibido, duplicado, ajeno o inválido
+async function cfdiAnalizarLote(businessId, rfcNegocio, crudos, omitidos = []) {
+  const items = [], vistos = new Map();
+  for (const c of crudos) {
+    const r = cfdiParsear(cfdiDecodificar(c.bytes));
+    if (!r.ok) { items.push({ nombre: c.nombre, estado: 'invalido', motivo: r.motivo }); continue; }
+    const direccion = cfdiDireccion(r.cfdi, rfcNegocio);
+    if (direccion === 'ajeno') { items.push({ nombre: c.nombre, estado: 'ajeno', cfdi: r.cfdi, motivo: `Ni el emisor (${r.cfdi.rfc_emisor}) ni el receptor (${r.cfdi.rfc_receptor}) es el RFC de este negocio (${String(rfcNegocio).toUpperCase()})` }); continue; }
+    if (vistos.has(r.cfdi.uuid)) { items.push({ nombre: c.nombre, estado: 'duplicado_lote', cfdi: r.cfdi, motivo: `Repetido en esta carga (mismo UUID que ${vistos.get(r.cfdi.uuid)})` }); continue; }
+    vistos.set(r.cfdi.uuid, c.nombre);
+    items.push({ nombre: c.nombre, estado: 'nuevo', cfdi: r.cfdi, direccion, bytes: c.bytes });
+  }
+  const pendientes = items.filter(i => i.estado === 'nuevo');
+  const existentes = new Set();
+  for (let i = 0; i < pendientes.length; i += 100) {
+    const { data, error } = await sb.from('fz_cfdi').select('uuid').eq('business_id', businessId).in('uuid', pendientes.slice(i, i + 100).map(x => x.cfdi.uuid));
+    if (error) throw error;
+    (data || []).forEach(x => existentes.add(String(x.uuid).toUpperCase()));
+  }
+  items.forEach(i => { if (i.estado === 'nuevo' && existentes.has(i.cfdi.uuid)) { i.estado = 'duplicado_bd'; i.motivo = 'Ya estaba cargado'; delete i.bytes; } });
+  omitidos.forEach(o => items.push({ nombre: o.nombre, estado: 'invalido', motivo: o.motivo }));
+  const cuenta = (f) => items.filter(f).length;
+  const nuevos = items.filter(i => i.estado === 'nuevo');
+  return { items, resumen: { leidos: items.length, nuevos: nuevos.length, emitidos: nuevos.filter(i => i.direccion === 'emitido').length, recibidos: nuevos.filter(i => i.direccion === 'recibido').length,
+    duplicados: cuenta(i => i.estado === 'duplicado_bd' || i.estado === 'duplicado_lote'), ajenos: cuenta(i => i.estado === 'ajeno'), invalidos: cuenta(i => i.estado === 'invalido') } };
+}
+// guarda: primero el XML original, luego el renglón y la bitácora. Devuelve cuántos se guardaron y qué falló
+async function cfdiGuardarLote(businessId, nuevos, alAvanzar) {
+  const usuario = (STATE.user && STATE.user.email) || null;
+  let guardados = 0; const fallas = []; let hechos = 0;
+  const filas = [];
+  const pool = async (lista, n, fn) => { let i = 0; await Promise.all(Array.from({ length: n }, async () => { while (i < lista.length) { const k = i++; await fn(lista[k]); } })); };
+  await pool(nuevos, 6, async (it) => {
+    const c = it.cfdi, ruta = `${businessId}/${c.uuid}.xml`;
+    try {
+      const hash = await cfdiHash(it.bytes);
+      const { error: eSub } = await sb.storage.from('cfdi').upload(ruta, new Blob([it.bytes], { type: 'application/xml' }), { contentType: 'application/xml', upsert: false });
+      if (eSub && !/already exists|duplicate/i.test(eSub.message || '')) throw new Error('No se pudo guardar el XML: ' + eSub.message);
+      filas.push({ business_id: businessId, uuid: c.uuid, direccion: it.direccion, tipo_comprobante: c.tipo_comprobante, version: c.version, fecha: c.fecha, fecha_hora: c.fecha_hora, serie: c.serie || null, folio: c.folio || null,
+        rfc_emisor: c.rfc_emisor, nombre_emisor: c.nombre_emisor || null, regimen_emisor: c.regimen_emisor || null, rfc_receptor: c.rfc_receptor, nombre_receptor: c.nombre_receptor || null, regimen_receptor: c.regimen_receptor || null, uso_cfdi: c.uso_cfdi || null,
+        subtotal: c.subtotal, descuento: c.descuento, total: c.total, moneda: c.moneda, tipo_cambio: c.tipo_cambio, metodo_pago: c.metodo_pago || null, forma_pago: c.forma_pago || null,
+        iva_trasladado: c.iva_trasladado, iva_retenido: c.iva_retenido, isr_retenido: c.isr_retenido, ieps_trasladado: c.ieps_trasladado,
+        conceptos: c.conceptos, relacionados: c.relacionados, pagos: c.pagos, xml_path: ruta, xml_hash: hash, xml_nombre: it.nombre, cargado_por: usuario, estado: 'por_clasificar', estatus_sat: 'no_verificado' }); // explícitos: no se depende de los valores por omisión de la base
+    } catch (err) { fallas.push({ nombre: it.nombre, motivo: err.message || String(err) }); }
+    hechos++; if (alAvanzar) alAvanzar(hechos, nuevos.length);
+  });
+  for (let i = 0; i < filas.length; i += 100) {
+    const lote = filas.slice(i, i + 100);
+    let { data, error } = await sb.from('fz_cfdi').insert(lote).select('id,uuid');
+    if (error) { // si falla el lote, se intenta uno por uno para saber cuáles
+      data = [];
+      for (const f of lote) { const r = await sb.from('fz_cfdi').insert(f).select('id,uuid'); if (r.error) fallas.push({ nombre: f.xml_nombre, motivo: r.error.message }); else data.push(...(r.data || [])); }
+    }
+    guardados += (data || []).length;
+    if ((data || []).length) await sb.from('fz_cfdi_bitacora').insert(data.map(d => ({ business_id: businessId, cfdi_id: d.id, accion: 'carga', valor_nuevo: 'por_clasificar', motivo: 'Carga de XML', fuente: 'carga', usuario_email: usuario })));
+  }
+  return { guardados, fallas };
+}
+
+// ---- pantalla: bandeja ----
+const cfdiBadgeSat = (e) => {
+  const color = { vigente: ['#e7f6ec', '#1e7a46'], cancelado: ['#fde8e8', '#c0392b'], en_proceso: ['#fff4dd', '#9a6a00'], no_encontrado: ['#fde8e8', '#c0392b'], no_verificado: ['#eef1f6', '#667085'] }[e] || ['#eef1f6', '#667085'];
+  return `<span class="badge" style="background:${color[0]};color:${color[1]};">${CFDI_ESTATUS_SAT[e] || e}</span>`;
+};
+async function renderCfdi() {
+  const el = document.getElementById('sec-cfdi'), b = biz();
+  if (!b) { el.innerHTML = '<div class="empty">Selecciona un negocio.</div>'; return; }
+  if (!String(b.rfc || '').trim()) { el.innerHTML = `<div class="card"><div class="card-head"><h3>CFDI (XML)</h3></div><p class="empty" style="padding:14px 0;">Este negocio no tiene RFC capturado. El RFC es lo que permite saber si un CFDI es <strong>emitido</strong> o <strong>recibido</strong>: captúralo en Negocios y vuelve a entrar.</p></div>`; return; }
+  if (STATE_cfdi.negocioId !== b.id) STATE_cfdi = { dir: 'todos', sat: 'todos', tipo: 'todos', q: '', datos: [], negocioId: b.id }; // los filtros no se arrastran de un negocio a otro (una bandeja "vacía" por un filtro olvidado confunde)
+  el.innerHTML = '<div class="empty">Cargando…</div>';
+  const r = await fetchTodasLasPaginas(() => sb.from('fz_cfdi').select('id,uuid,direccion,tipo_comprobante,fecha,serie,folio,rfc_emisor,nombre_emisor,rfc_receptor,nombre_receptor,total,moneda,iva_trasladado,iva_retenido,isr_retenido,estado,estatus_sat,estatus_sat_fecha').eq('business_id', b.id).order('fecha', { ascending: false }).order('id'));
+  if (r.error) { el.innerHTML = `<div class="card"><div class="card-head"><h3>CFDI (XML)</h3></div><p class="empty" style="padding:14px 0;">No se pudo leer la tabla de CFDI (${revEsc(r.error.message || r.error)}). Corre migracion_cfdi.sql en Supabase y vuelve a entrar.</p></div>`; return; }
+  STATE_cfdi.datos = r.data || [];
+  pintarCfdi(el, b);
+}
+function pintarCfdi(el, b) {
+  const todos = STATE_cfdi.datos, f = STATE_cfdi, q = f.q.trim().toLowerCase();
+  const visibles = todos.filter(c => (f.dir === 'todos' || c.direccion === f.dir) && (f.sat === 'todos' || c.estatus_sat === f.sat) && (f.tipo === 'todos' || c.tipo_comprobante === f.tipo)
+    && (!q || [c.uuid, c.nombre_emisor, c.nombre_receptor, c.rfc_emisor, c.rfc_receptor, c.serie, c.folio].some(v => String(v || '').toLowerCase().includes(q))));
+  const cnt = (fn) => todos.filter(fn).length;
+  const puedeCambiar = puedeReabrirPeriodo();
+  const chips = (clave, opciones) => opciones.map(([v, t]) => `<div class="tag ${f[clave] === v ? 'active' : ''}" data-filtro="${clave}" data-valor="${v}">${t}</div>`).join('');
+  const MAX = 500;
+  el.innerHTML = `
+    <div class="kpi-grid kpi-grid-mobile-compact" style="margin-bottom:14px;">
+      <div class="kpi"><div class="label">CFDI cargados</div><div class="value num">${todos.length}</div></div>
+      <div class="kpi"><div class="label">Emitidos</div><div class="value num">${cnt(c => c.direccion === 'emitido')}</div></div>
+      <div class="kpi"><div class="label">Recibidos</div><div class="value num">${cnt(c => c.direccion === 'recibido')}</div></div>
+      <div class="kpi"><div class="label">Por clasificar</div><div class="value num">${cnt(c => c.estado === 'por_clasificar')}</div></div>
+      <div class="kpi"><div class="label">Cancelados</div><div class="value num ${cnt(c => c.estatus_sat === 'cancelado') ? 'red' : ''}">${cnt(c => c.estatus_sat === 'cancelado')}</div></div>
+    </div>
+    <div class="card" style="margin-bottom:14px;">
+      <div class="card-head"><h3>Cargar XML del SAT</h3><span class="hint">RFC del negocio: <strong>${revEsc(String(b.rfc).toUpperCase())}</strong></span></div>
+      <div id="cfdiDrop" style="border:2px dashed var(--line);border-radius:10px;padding:22px;text-align:center;cursor:pointer;color:var(--muted);font-size:13px;">Arrastra aquí el <strong>ZIP</strong> o los <strong>XML</strong> descargados del SAT, o haz clic para elegirlos.<br><span style="font-size:11.5px;">Se detecta solo si cada CFDI es emitido o recibido. Antes de guardar verás un resumen; no se crea ninguna factura ni movimiento.</span></div>
+      <input type="file" id="cfdiArchivos" multiple accept=".xml,.zip,application/xml,text/xml,application/zip" style="display:none;">
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>Comprobantes</h3><span class="hint">${visibles.length} de ${todos.length}</span></div>
+      <div class="tag-row" style="margin-bottom:8px;">${chips('dir', [['todos', 'Todos'], ['emitido', 'Emitidos'], ['recibido', 'Recibidos']])}</div>
+      <div class="tag-row" style="margin-bottom:8px;">${chips('sat', [['todos', 'Cualquier estatus SAT'], ['no_verificado', 'No verificado'], ['vigente', 'Vigente'], ['cancelado', 'Cancelado'], ['en_proceso', 'En proceso']])}</div>
+      <div class="tag-row" style="margin-bottom:10px;">${chips('tipo', [['todos', 'Todos los tipos'], ...Object.entries(CFDI_TIPOS)])}<input id="cfdiBuscar" class="cell" type="text" placeholder="Buscar RFC, nombre, UUID o folio" value="${revEsc(f.q)}" style="margin-left:auto;width:260px;"></div>
+      <div class="table-wrap scroll-sticky"><table class="tabla-operativa"><thead><tr><th>Fecha</th><th>Dirección</th><th>Tipo</th><th>Serie / Folio</th><th>Emisor → Receptor</th><th class="num">Total</th><th class="num">IVA</th><th>Estatus SAT</th><th>Estado</th><th></th></tr></thead><tbody>
+        ${visibles.length ? visibles.slice(0, MAX).map(c => `<tr>
+          <td>${fechaCorta(c.fecha)}</td><td><span class="badge" style="background:${c.direccion === 'emitido' ? '#e8f0fe;color:#1a56c4' : '#f1ecff;color:#5b3fc4'};">${c.direccion === 'emitido' ? 'Emitido' : 'Recibido'}</span></td><td>${c.tipo_comprobante} · ${CFDI_TIPOS[c.tipo_comprobante]}</td>
+          <td>${revEsc([c.serie, c.folio].filter(Boolean).join('-') || '—')}</td>
+          <td style="max-width:300px;"><div style="font-size:12.5px;">${revEsc(c.nombre_emisor || c.rfc_emisor)}</div><div style="font-size:11px;color:var(--muted);">${revEsc(c.rfc_emisor)} → ${revEsc(c.rfc_receptor)}</div></td>
+          <td class="num">${fmtMon(c.total, c.moneda)}</td><td class="num">${fmt(c.iva_trasladado)}</td><td>${cfdiBadgeSat(c.estatus_sat)}${c.estatus_sat === 'cancelado' && c.estatus_sat_fecha ? `<div style="font-size:10.5px;color:var(--muted);">${fechaCorta(c.estatus_sat_fecha)}</div>` : ''}</td>
+          <td style="font-size:12px;">${c.estado === 'por_clasificar' ? (c.estatus_sat === 'cancelado' ? '<span style="color:var(--red);">No clasificable (cancelado)</span>' : 'Por clasificar') : revEsc(c.estado)}</td>
+          <td style="white-space:nowrap;"><button class="btn btn-ghost btn-sm cfdi-ver" data-id="${c.id}">Ver</button>${puedeCambiar ? ` <button class="btn btn-ghost btn-sm cfdi-estatus" data-id="${c.id}">Estatus</button>` : ''}</td></tr>`).join('') : '<tr><td colspan="10" class="empty">Aún no hay CFDI con esos filtros.</td></tr>'}
+        ${visibles.length > MAX ? `<tr><td colspan="10" style="color:var(--muted);">Se muestran ${MAX} de ${visibles.length}: afina los filtros o la búsqueda.</td></tr>` : ''}
+      </tbody></table></div></div>`;
+  el.querySelectorAll('[data-filtro]').forEach(t => t.addEventListener('click', () => { STATE_cfdi[t.dataset.filtro] = t.dataset.valor; pintarCfdi(el, b); }));
+  const buscar = el.querySelector('#cfdiBuscar'); buscar.addEventListener('input', () => { STATE_cfdi.q = buscar.value; clearTimeout(buscar._t); buscar._t = setTimeout(() => { pintarCfdi(el, b); const n = el.querySelector('#cfdiBuscar'); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }, 250); });
+  el.querySelectorAll('.cfdi-ver').forEach(x => x.addEventListener('click', () => abrirCfdiDetalle(x.dataset.id)));
+  el.querySelectorAll('.cfdi-estatus').forEach(x => x.addEventListener('click', () => abrirCfdiEstatus(x.dataset.id)));
+  const drop = el.querySelector('#cfdiDrop'), input = el.querySelector('#cfdiArchivos');
+  drop.addEventListener('click', () => input.click());
+  input.addEventListener('change', () => { if (input.files.length) cfdiCargarArchivos([...input.files], b); input.value = ''; });
+  drop.addEventListener('dragover', (ev) => { ev.preventDefault(); drop.style.background = '#fdf6e8'; });
+  drop.addEventListener('dragleave', () => { drop.style.background = ''; });
+  drop.addEventListener('drop', (ev) => { ev.preventDefault(); drop.style.background = ''; const fs = [...(ev.dataTransfer ? ev.dataTransfer.files : [])]; if (fs.length) cfdiCargarArchivos(fs, b); });
+}
+// carga: lee, analiza y muestra el resumen ANTES de guardar
+async function cfdiCargarArchivos(files, b) {
+  toast('Leyendo archivos…');
+  let lote;
+  try { const { crudos, omitidos } = await cfdiLeerArchivos(files); lote = await cfdiAnalizarLote(b.id, b.rfc, crudos, omitidos); }
+  catch (err) { toast('No se pudieron analizar los archivos: ' + (err.message || err), 'error'); return; }
+  const R = lote.resumen, nuevos = lote.items.filter(i => i.estado === 'nuevo');
+  const lista = (estado, titulo, color) => { const l = lote.items.filter(i => i.estado === estado || (estado === 'dup' && /^duplicado/.test(i.estado))); return l.length ? `<div style="margin-top:10px;"><div style="font-weight:600;font-size:12.5px;color:${color};">${titulo} (${l.length})</div><div style="max-height:130px;overflow:auto;font-size:11.5px;color:var(--muted);">${l.slice(0, 60).map(i => `${revEsc(i.nombre)} — ${revEsc(i.motivo || '')}`).join('<br>')}${l.length > 60 ? `<br>… y ${l.length - 60} más` : ''}</div></div>` : ''; };
+  const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalCfdiCarga';
+  bg.innerHTML = `<div class="modal" style="width:min(760px,95vw);max-height:90vh;overflow:auto;"><h3>Resumen de la carga</h3>
+    <div class="kpi-grid kpi-grid-mobile-compact" style="margin:6px 0 4px;">
+      <div class="kpi"><div class="label">Archivos leídos</div><div class="value num">${R.leidos}</div></div>
+      <div class="kpi"><div class="label">Nuevos a cargar</div><div class="value num green">${R.nuevos}</div></div>
+      <div class="kpi"><div class="label">Emitidos</div><div class="value num">${R.emitidos}</div></div>
+      <div class="kpi"><div class="label">Recibidos</div><div class="value num">${R.recibidos}</div></div>
+      <div class="kpi"><div class="label">Duplicados</div><div class="value num">${R.duplicados}</div></div>
+      <div class="kpi"><div class="label">Ajenos</div><div class="value num ${R.ajenos ? 'red' : ''}">${R.ajenos}</div></div>
+      <div class="kpi"><div class="label">Inválidos</div><div class="value num ${R.invalidos ? 'red' : ''}">${R.invalidos}</div></div>
+    </div>
+    <p style="font-size:12px;color:var(--muted);">Los duplicados (mismo UUID) se omiten. Los ajenos no son de este negocio y no se guardan. Los nuevos se guardan con su XML original intacto, como <strong>por clasificar</strong> y estatus SAT <strong>no verificado</strong>: este sistema no sabe si el SAT los canceló después.</p>
+    ${lista('dup', 'Duplicados omitidos', 'var(--muted)')}${lista('ajeno', 'Ajenos (no se guardan)', 'var(--red)')}${lista('invalido', 'Inválidos o no soportados', 'var(--red)')}
+    <div class="modal-actions"><button class="btn btn-ghost" id="cfdiCancelar">Cancelar</button>${nuevos.length ? `<button class="btn btn-gold" id="cfdiConfirmar">Cargar ${nuevos.length} CFDI</button>` : ''}</div></div>`;
+  document.body.appendChild(bg);
+  bg.querySelector('#cfdiCancelar').addEventListener('click', () => bg.remove());
+  const ok = bg.querySelector('#cfdiConfirmar');
+  if (ok) ok.addEventListener('click', async () => {
+    ok.disabled = true; ok.textContent = 'Guardando…';
+    const res = await cfdiGuardarLote(b.id, nuevos, (h, t) => { ok.textContent = `Guardando ${h} de ${t}…`; });
+    bg.remove();
+    registrarAuditoria(b.id, 'crear', 'CFDI', `Carga de CFDI: ${res.guardados} guardado(s)${res.fallas.length ? `, ${res.fallas.length} con error` : ''}`);
+    toast(`${res.guardados} CFDI cargados${res.fallas.length ? ` · ${res.fallas.length} con error: ${res.fallas[0].motivo}` : ''}.`, res.fallas.length ? 'error' : undefined);
+    renderCfdi();
+  });
+}
+
+// ---- detalle, descarga del XML y estatus manual ----
+async function cfdiDescargarXml(c) {
+  const { data, error } = await sb.storage.from('cfdi').download(c.xml_path);
+  if (error || !data) { toast('No se pudo descargar el XML: ' + ((error && error.message) || 'no existe en el almacén'), 'error'); return; }
+  const url = URL.createObjectURL(data), a = document.createElement('a');
+  a.href = url; a.download = `${c.uuid}.xml`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+async function abrirCfdiDetalle(id) {
+  const { data: c, error } = await sb.from('fz_cfdi').select('*').eq('id', id).maybeSingle();
+  if (error || !c) { toast('No se encontró el CFDI.', 'error'); return; }
+  const { data: bit } = await sb.from('fz_cfdi_bitacora').select('*').eq('cfdi_id', id).order('created_at', { ascending: false });
+  const puedeCambiar = puedeReabrirPeriodo();
+  const fila = (k, v) => `<tr><td style="color:var(--muted);white-space:nowrap;padding-right:14px;">${k}</td><td>${v === null || v === undefined || v === '' ? '—' : v}</td></tr>`;
+  const conceptos = (c.conceptos || []);
+  const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalCfdiDetalle';
+  bg.innerHTML = `<div class="modal" style="width:min(960px,96vw);max-height:92vh;overflow:auto;">
+    <h3>${CFDI_TIPOS[c.tipo_comprobante]} ${c.direccion === 'emitido' ? 'emitido' : 'recibido'} · ${revEsc([c.serie, c.folio].filter(Boolean).join('-') || c.uuid.slice(0, 8))}</h3>
+    <p style="font-size:11.5px;color:var(--muted);margin:0 0 8px;">UUID ${revEsc(c.uuid)} · CFDI ${revEsc(c.version || '')}</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+      <table style="font-size:12.5px;">${fila('Fecha', fechaCorta(c.fecha))}${fila('Emisor', `${revEsc(c.nombre_emisor || '')} <span style="color:var(--muted);">${revEsc(c.rfc_emisor)}</span>`)}${fila('Receptor', `${revEsc(c.nombre_receptor || '')} <span style="color:var(--muted);">${revEsc(c.rfc_receptor)}</span>`)}${fila('Uso del CFDI', revEsc(c.uso_cfdi))}${fila('Método / forma de pago', revEsc([c.metodo_pago, c.forma_pago].filter(Boolean).join(' / ')))}</table>
+      <table style="font-size:12.5px;">${fila('Subtotal', fmtMon(c.subtotal, c.moneda))}${fila('Descuento', fmtMon(c.descuento, c.moneda))}${fila('IVA trasladado', fmtMon(c.iva_trasladado, c.moneda))}${fila('IVA retenido', fmtMon(c.iva_retenido, c.moneda))}${fila('ISR retenido', fmtMon(c.isr_retenido, c.moneda))}${fila('Total', `<strong>${fmtMon(c.total, c.moneda)}</strong>${c.tipo_cambio ? ` · TC ${fmtTC(c.tipo_cambio)}` : ''}`)}</table>
+    </div>
+    <h4 style="font-size:13px;margin:14px 0 6px;">Estatus ante el SAT</h4>
+    <div style="font-size:12.5px;">${cfdiBadgeSat(c.estatus_sat)}${c.estatus_sat_fecha ? ` · ${fechaCorta(c.estatus_sat_fecha)}` : ''}${c.estatus_sat_motivo ? ` · motivo ${revEsc(CFDI_MOTIVOS_CANCELACION[c.estatus_sat_motivo] || c.estatus_sat_motivo)}` : ''}${c.estatus_sat_nota ? ` · ${revEsc(c.estatus_sat_nota)}` : ''}${c.uuid_sustitucion ? ` · lo sustituye ${revEsc(c.uuid_sustitucion)}` : ''}${c.estatus_sat_fuente ? ` <span style="color:var(--muted);">(fuente: ${revEsc(c.estatus_sat_fuente)})</span>` : ''}
+      ${c.estatus_sat === 'no_verificado' ? '<div style="color:var(--muted);margin-top:4px;">El XML no indica si el SAT lo canceló después de emitirlo. Márcalo cuando lo verifiques.</div>' : ''}</div>
+    <h4 style="font-size:13px;margin:14px 0 6px;">Conceptos (${conceptos.length})</h4>
+    <div style="max-height:160px;overflow:auto;"><table class="tabla-operativa"><thead><tr><th>Clave</th><th>Descripción</th><th class="num">Cant.</th><th class="num">Importe</th></tr></thead><tbody>${conceptos.length ? conceptos.map(x => `<tr><td>${revEsc(x.clave)}</td><td>${revEsc(x.descripcion)}</td><td class="num">${x.cantidad}</td><td class="num">${fmtMon(x.importe, c.moneda)}</td></tr>`).join('') : '<tr><td colspan="4" class="empty">Sin conceptos.</td></tr>'}</tbody></table></div>
+    ${(c.relacionados || []).length ? `<h4 style="font-size:13px;margin:14px 0 6px;">CFDI relacionados</h4><div style="font-size:12px;">${c.relacionados.map(r => `Relación ${revEsc(r.tipo_relacion)}: ${r.uuids.map(revEsc).join(', ')}`).join('<br>')}</div>` : ''}
+    ${(c.pagos || []).length ? `<h4 style="font-size:13px;margin:14px 0 6px;">Pagos que ampara este complemento</h4><div style="font-size:12px;">${c.pagos.map(p => `${revEsc(String(p.fecha_pago).slice(0, 10))} · ${fmtMon(p.monto, p.moneda || 'MXN')}<br>${(p.documentos || []).map(d => `&nbsp;&nbsp;↳ ${revEsc(d.uuid)} · parcialidad ${revEsc(d.parcialidad)} · pagado ${fmt(d.pagado)} · saldo insoluto ${fmt(d.saldo_insoluto)}`).join('<br>')}`).join('<br>')}</div>` : ''}
+    <h4 style="font-size:13px;margin:14px 0 6px;">Bitácora</h4>
+    <div style="max-height:150px;overflow:auto;"><table class="tabla-operativa"><thead><tr><th>Fecha</th><th>Acción</th><th>Cambio</th><th>Motivo</th><th>Usuario</th></tr></thead><tbody>${(bit || []).length ? bit.map(x => `<tr><td style="white-space:nowrap;">${revEsc(String(x.created_at).replace('T', ' ').slice(0, 16))}</td><td>${x.accion === 'carga' ? 'Carga' : 'Estatus SAT'}</td><td>${revEsc([x.valor_anterior, x.valor_nuevo].filter(v => v).map(v => CFDI_ESTATUS_SAT[v] || v).join(' → '))}</td><td>${revEsc(x.motivo || '')}${x.fuente ? ` <span style="color:var(--muted);">(${revEsc(x.fuente)})</span>` : ''}</td><td>${revEsc(x.usuario_email || '')}</td></tr>`).join('') : '<tr><td colspan="5" class="empty">Sin movimientos.</td></tr>'}</tbody></table></div>
+    <div class="modal-actions"><button class="btn btn-ghost" id="cdCerrar">Cerrar</button><button class="btn btn-ghost" id="cdXml">Descargar XML</button>${puedeCambiar ? '<button class="btn btn-gold" id="cdEstatus">Cambiar estatus</button>' : ''}</div></div>`;
+  document.body.appendChild(bg);
+  bg.querySelector('#cdCerrar').addEventListener('click', () => bg.remove());
+  bg.querySelector('#cdXml').addEventListener('click', () => cfdiDescargarXml(c));
+  const e = bg.querySelector('#cdEstatus'); if (e) e.addEventListener('click', () => { bg.remove(); abrirCfdiEstatus(c.id); });
+}
+async function abrirCfdiEstatus(id) {
+  if (!puedeReabrirPeriodo()) { toast('Solo Administrador, Propietario, Socio o Gerencia pueden cambiar el estatus de un CFDI.', 'error'); return; }
+  const { data: c, error } = await sb.from('fz_cfdi').select('*').eq('id', id).maybeSingle();
+  if (error || !c) { toast('No se encontró el CFDI.', 'error'); return; }
+  const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalCfdiEstatus';
+  bg.innerHTML = `<div class="modal" style="width:min(560px,95vw);"><h3>Estatus ante el SAT</h3>
+    <p style="font-size:12.5px;color:var(--muted);">${CFDI_TIPOS[c.tipo_comprobante]} ${c.direccion} · ${revEsc([c.serie, c.folio].filter(Boolean).join('-') || c.uuid)} · ${fmtMon(c.total, c.moneda)}<br>Estatus actual: <strong>${CFDI_ESTATUS_SAT[c.estatus_sat]}</strong>. Esto <strong>no modifica el XML ni sus datos</strong>: solo registra el estatus, con su fecha, motivo y quién lo cambió.</p>
+    <label style="font-size:12.5px;font-weight:600;">Nuevo estatus</label>
+    <select id="ceNuevo" class="cell" style="width:100%;margin-bottom:10px;">${Object.entries(CFDI_ESTATUS_SAT).filter(([k]) => k !== c.estatus_sat).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>
+    <label style="font-size:12.5px;font-weight:600;" id="ceFechaLbl">Fecha en que se verificó</label>
+    <input id="ceFecha" type="date" class="cell" value="${todayStr()}" max="${todayStr()}" style="width:100%;margin-bottom:10px;">
+    <div id="ceBloqueCancel" style="display:none;">
+      <label style="font-size:12.5px;font-weight:600;">Motivo de cancelación (SAT)</label>
+      <select id="ceMotivo" class="cell" style="width:100%;margin-bottom:10px;"><option value="">— no lo sé / no aplica —</option>${Object.entries(CFDI_MOTIVOS_CANCELACION).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>
+      <div id="ceBloqueSust" style="display:none;"><label style="font-size:12.5px;font-weight:600;">UUID del CFDI que lo sustituye</label><input id="ceSust" type="text" class="cell" placeholder="Opcional (motivo 01)" style="width:100%;margin-bottom:10px;"></div>
+    </div>
+    <label style="font-size:12.5px;font-weight:600;" id="ceNotaLbl">Nota</label>
+    <input id="ceNota" type="text" class="cell" placeholder="Cómo lo verificaste (portal del SAT, aviso del proveedor…)" style="width:100%;margin-bottom:6px;">
+    <div id="ceAviso" style="font-size:12px;color:var(--red);min-height:16px;"></div>
+    <div class="modal-actions"><button class="btn btn-ghost" id="ceCancelar">Cancelar</button><button class="btn btn-gold" id="ceGuardar">Guardar</button></div></div>`;
+  document.body.appendChild(bg);
+  const $ = (s) => bg.querySelector(s), nuevo = $('#ceNuevo');
+  const ajustar = () => { const v = nuevo.value; $('#ceBloqueCancel').style.display = v === 'cancelado' ? '' : 'none'; $('#ceFechaLbl').textContent = v === 'cancelado' ? 'Fecha de cancelación' : 'Fecha en que se verificó';
+    $('#ceNotaLbl').textContent = (v === 'cancelado' || c.estatus_sat === 'cancelado') ? 'Nota (obligatoria)' : 'Nota'; };
+  nuevo.addEventListener('change', ajustar); ajustar();
+  $('#ceMotivo').addEventListener('change', () => { $('#ceBloqueSust').style.display = $('#ceMotivo').value === '01' ? '' : 'none'; });
+  $('#ceCancelar').addEventListener('click', () => bg.remove());
+  $('#ceGuardar').addEventListener('click', async () => {
+    const v = nuevo.value, fecha = $('#ceFecha').value, nota = $('#ceNota').value.trim(), motivo = v === 'cancelado' ? $('#ceMotivo').value : '', sust = v === 'cancelado' && motivo === '01' ? $('#ceSust').value.trim().toUpperCase() : '';
+    const falla = (m) => { $('#ceAviso').textContent = m; };
+    if (!fecha) return falla('Indica la fecha.'); if (fecha > todayStr()) return falla('La fecha no puede ser futura.');
+    if ((v === 'cancelado' || c.estatus_sat === 'cancelado') && !nota) return falla(v === 'cancelado' ? 'Escribe en la nota cómo supiste que se canceló.' : 'Un CFDI que estaba cancelado solo se reactiva con una nota que explique por qué.');
+    if (sust && !/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/.test(sust)) return falla('El UUID que lo sustituye no tiene formato válido.');
+    const usuario = (STATE.user && STATE.user.email) || null;
+    const cambios = { estatus_sat: v, estatus_sat_fecha: fecha, estatus_sat_motivo: motivo || null, estatus_sat_nota: nota || null, uuid_sustitucion: sust || null, estatus_sat_fuente: 'manual' };
+    const g = $('#ceGuardar'); g.disabled = true;
+    const { error: e1 } = await sb.from('fz_cfdi').update(cambios).eq('id', c.id);
+    if (e1) { g.disabled = false; return falla('No se pudo guardar: ' + e1.message); }
+    const { error: e2 } = await sb.from('fz_cfdi_bitacora').insert({ business_id: c.business_id, cfdi_id: c.id, accion: 'estatus_sat', valor_anterior: c.estatus_sat, valor_nuevo: v, motivo: [motivo ? CFDI_MOTIVOS_CANCELACION[motivo] : '', nota, sust ? `sustituye: ${sust}` : '', `fecha ${fecha}`].filter(Boolean).join(' · '), fuente: 'manual', usuario_email: usuario });
+    if (e2) toast('El estatus se guardó pero no se pudo registrar en la bitácora: ' + e2.message, 'error');
+    registrarAuditoria(c.business_id, 'editar', 'CFDI', `CFDI ${c.uuid}: estatus SAT ${CFDI_ESTATUS_SAT[c.estatus_sat]} → ${CFDI_ESTATUS_SAT[v]}`);
+    bg.remove(); toast(`Estatus actualizado: ${CFDI_ESTATUS_SAT[v]}.`);
+    if (STATE.currentSection === 'cfdi') renderCfdi();
+  });
+}
 
 const MESES_LARGO = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
 function estadoResultadosSubtitulo(periodo) {
