@@ -21201,9 +21201,14 @@ function asientosRevaluacion(cxp, cxc, cta = 0) {
 }
 async function cargarTcCierre(businessId) {
   try {
-    const { data, error } = await sb.from('fz_tc_cierre').select('moneda,fecha,tc').eq('business_id', businessId).order('fecha');
-    if (error) return { filas: [], error: error.message || String(error) };
-    return { filas: (data || []).map(r => ({ moneda: String(r.moneda || '').toUpperCase(), fecha: String(r.fecha).slice(0, 10), tc: Number(r.tc) || 0 })).filter(r => r.moneda && r.tc > 0), error: null };
+    let r = await sb.from('fz_tc_cierre').select('moneda,fecha,tc,fuente').eq('business_id', businessId).order('fecha');
+    let sinColumnaFuente = false;
+    if (r.error && /fuente/i.test(r.error.message || '')) { // la columna "fuente" aún no existe en la base: se sigue sin ella
+      sinColumnaFuente = true;
+      r = await sb.from('fz_tc_cierre').select('moneda,fecha,tc').eq('business_id', businessId).order('fecha');
+    }
+    if (r.error) return { filas: [], error: r.error.message || String(r.error) };
+    return { filas: (r.data || []).map(x => ({ moneda: String(x.moneda || '').toUpperCase(), fecha: String(x.fecha).slice(0, 10), tc: Number(x.tc) || 0, fuente: String(x.fuente || '').trim() })).filter(x => x.moneda && x.tc > 0), sinColumnaFuente, error: null };
   } catch (e) { return { filas: [], error: (e && e.message) || String(e) }; }
 }
 // Saldo abierto (en la divisa del documento) al cierre E: importe − lo aplicado hasta E. Una factura vieja marcada pagada sin aplicaciones se toma como pagada en su fecha de pago.
@@ -21291,9 +21296,9 @@ async function calcularRevaluacionDivisasSinCache(businessId) {
       adjP = redondearMoneda(adjP); adjC = redondearMoneda(adjC); adjA = redondearMoneda(adjA);
       const dP = redondearMoneda(adjP - prevP), dC = redondearMoneda(adjC - prevC), dA = redondearMoneda(adjA - prevA);
       const { asientos, ganancia, perdida } = asientosRevaluacion(dP, dC, dA);
-      entradas.push({ fecha: E, moneda, tc: r.tc, cxp: dP, cxc: dC, cta: dA, ajusteProveedores: adjP, ajusteClientes: adjC, ajusteCuentas: adjA, asientos, ganancia, perdida,
+      entradas.push({ fecha: E, moneda, tc: r.tc, fuente: r.fuente || '', cxp: dP, cxc: dC, cta: dA, ajusteProveedores: adjP, ajusteClientes: adjC, ajusteCuentas: adjA, asientos, ganancia, perdida,
         detalle: { proveedores: detProv, clientes: detCli, cuentas: detCta }, anterior });
-      anterior = { fecha: E, tc: r.tc, ajusteProveedores: adjP, ajusteClientes: adjC, ajusteCuentas: adjA };
+      anterior = { fecha: E, tc: r.tc, fuente: r.fuente || '', ajusteProveedores: adjP, ajusteClientes: adjC, ajusteCuentas: adjA };
       prevP = adjP; prevC = adjC; prevA = adjA;
     }
   }
@@ -21317,7 +21322,7 @@ async function cuentasEnDivisa(businessId, monedas) {
 async function abrirModalTcCierre(businessId) {
   const b = (STATE.businesses || []).find(x => x.id === businessId);
   const lectura = async (tabla) => { const r = await fetchTodasLasPaginas(() => sb.from(tabla).select('id,fecha,moneda').eq('business_id', businessId).not('moneda', 'is', null).neq('moneda', 'MXN').order('id')); return r.data || []; };
-  const [{ filas: tcs, error: errTc }, prov, cli, bancosC, cajasC] = await Promise.all([
+  const [{ filas: tcs, error: errTc, sinColumnaFuente }, prov, cli, bancosC, cajasC] = await Promise.all([
     cargarTcCierre(businessId), lectura('fz_proveedores'), lectura('fz_facturas_clientes'),
     sb.from('fz_bancos_cuentas').select('id,moneda').eq('business_id', businessId), sb.from('fz_efectivo_monedas').select('id,nombre,tc_reporte').eq('business_id', businessId),
   ]);
@@ -21343,21 +21348,29 @@ async function abrirModalTcCierre(businessId) {
     const ultimos = meses.slice(-36); // máximo 3 años a la vista
     let rv = { entradas: [] }; try { rv = await calcularRevaluacionDivisas(businessId); } catch (_) {}
     const tcDe = (m, f) => (tcs.find(t => t.moneda === m && t.fecha === f) || {}).tc;
+    const fuenteDe = (m, f) => (tcs.find(t => t.moneda === m && t.fecha === f) || {}).fuente || '';
     const efectoDe = (m, f) => rv.entradas.find(e => e.moneda === m && e.fecha === f);
     const filas = [];
     for (const ym of ultimos) {
       const fin = monthBounds(ym).end; const cerrado = await bloqueadoPorCierre(businessId, fin);
       filas.push(`<tr><td style="white-space:nowrap;">${ym}${cerrado ? ' <span title="Mes cerrado: no se puede cambiar" style="color:var(--muted);">🔒</span>' : ''}</td>${monedas.map(m => {
         const v = tcDe(m, fin), e = efectoDe(m, fin);
-        return `<td><input class="cell tc-cierre-input" type="text" inputmode="decimal" data-moneda="${m}" data-fecha="${fin}" data-original="${v || ''}" value="${v || ''}" ${cerrado ? 'disabled' : ''} style="width:92px;" placeholder="—">${e ? `<div style="font-size:10.5px;color:var(--muted);margin-top:2px;">Ajuste acum.: prov ${fmt(e.ajusteProveedores)} · cli ${fmt(e.ajusteClientes)} · cuentas ${fmt(e.ajusteCuentas)} · <a href="#" class="tc-ver-calculo" data-moneda="${m}" data-fecha="${fin}">Ver cálculo</a></div>` : ''}</td>`;
+        return `<td><input class="cell tc-cierre-input" type="text" inputmode="decimal" data-moneda="${m}" data-fecha="${fin}" data-original="${v || ''}" value="${v || ''}" ${cerrado ? 'disabled' : ''} style="width:92px;" placeholder="—"><input class="cell tc-fuente-input" type="text" list="tcFuentesLista" data-moneda="${m}" data-fecha="${fin}" data-original="${revEsc(fuenteDe(m, fin))}" value="${revEsc(fuenteDe(m, fin))}" ${(cerrado || sinColumnaFuente) ? 'disabled' : ''} style="width:140px;margin-top:3px;font-size:11px;" placeholder="Fuente">${e ? `<div style="font-size:10.5px;color:var(--muted);margin-top:2px;">Ajuste acum.: prov ${fmt(e.ajusteProveedores)} · cli ${fmt(e.ajusteClientes)} · cuentas ${fmt(e.ajusteCuentas)} · <a href="#" class="tc-ver-calculo" data-moneda="${m}" data-fecha="${fin}">Ver cálculo</a></div>` : ''}</td>`;
       }).join('')}</tr>`);
     }
     cuerpo = `<div style="max-height:52vh;overflow:auto;"><table class="tabla-operativa"><thead><tr><th>Cierre de</th>${monedas.map(m => `<th>${m} (pesos por 1 ${m})</th>`).join('')}</tr></thead><tbody>${filas.join('')}</tbody></table></div>`;
   }
+  const fuentePorOmision = (!errTc && monedas.length) ? `<datalist id="tcFuentesLista"><option value="Banxico — FIX (DOF)"></option><option value="Banxico — FIX"></option><option value="DOF"></option><option value="Tipo de cambio bancario"></option><option value="Contrato / factura"></option></datalist>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 10px;font-size:12.5px;">
+      <label for="tcFuenteDefault" style="font-weight:600;">Fuente por omisión</label>
+      <input id="tcFuenteDefault" class="cell" type="text" list="tcFuentesLista" value="Banxico — FIX (DOF)" ${sinColumnaFuente ? 'disabled' : ''} style="width:230px;">
+      <span style="color:var(--muted);font-size:11.5px;">Se anota en los tipos de cambio que captures o cambies y no tengan una fuente propia (por ejemplo: el FIX publicado en el DOF).</span>
+    </div>
+    ${sinColumnaFuente ? '<div style="font-size:12px;color:var(--red);margin:0 0 10px;">La columna «fuente» aún no existe en tu base de datos: corre migracion_tc_fuente.sql en Supabase para poder guardarla. Mientras tanto los tipos de cambio se guardan sin fuente.</div>' : ''}` : '';
   bg.innerHTML = `<div class="modal" style="width:min(760px,95vw);">
     <h3>Tipos de cambio de cierre${b ? ' — ' + revEsc(b.name) : ''}</h3>
     <p style="font-size:12.5px;color:var(--muted);margin-bottom:12px;">Captura el tipo de cambio del <strong>último día de cada mes</strong> para cada moneda (por ejemplo, el FIX). Con eso el sistema valúa al cierre de cada mes, en <strong>cada moneda por separado</strong>: lo que debes (proveedores), lo que te deben (clientes) y lo que tienes en <strong>bancos y cajas en divisas</strong>, y registra la ganancia o pérdida <strong>no realizada</strong>. Al pagar, cobrar o gastar, esa valuación se revierte sola y queda solo la diferencia realizada. Un mes sin tipo de cambio arrastra la valuación del anterior. Los meses cerrados (🔒) no se pueden cambiar.</p>
-    ${cuerpo}
+    ${fuentePorOmision}${cuerpo}
     <div class="modal-actions"><button class="btn btn-ghost" id="tcCierreCerrar">Cerrar</button>${(!errTc && monedas.length) ? '<button class="btn btn-gold" id="tcCierreGuardar">Guardar</button>' : ''}</div>
   </div>`;
   document.body.appendChild(bg);
@@ -21366,19 +21379,32 @@ async function abrirModalTcCierre(businessId) {
   const guardar = bg.querySelector('#tcCierreGuardar');
   if (guardar) guardar.addEventListener('click', async () => {
     const upserts = [], borrar = [];
+    const porDefecto = ((bg.querySelector('#tcFuenteDefault') || {}).value || '').trim();
     for (const inp of bg.querySelectorAll('.tc-cierre-input')) {
       if (inp.disabled) continue;
       const crudo = inp.value.trim(), original = inp.dataset.original;
-      if (crudo === (original || '')) continue;
+      const fInp = [...bg.querySelectorAll('.tc-fuente-input')].find(x => x.dataset.moneda === inp.dataset.moneda && x.dataset.fecha === inp.dataset.fecha);
+      const fuenteNueva = fInp && !fInp.disabled ? fInp.value.trim() : null, fuenteOrig = fInp ? (fInp.dataset.original || '') : '';
+      const cambioTc = crudo !== (original || ''), cambioFuente = fuenteNueva !== null && fuenteNueva !== fuenteOrig;
+      if (!cambioTc && !cambioFuente) continue;
       if (!crudo) { if (original) borrar.push({ moneda: inp.dataset.moneda, fecha: inp.dataset.fecha }); continue; }
       const v = leerMonto(crudo);
       if (!(v > 0) || v > 100000) { toast(`Tipo de cambio no válido para ${inp.dataset.moneda} ${inp.dataset.fecha}: "${crudo}".`, 'error'); return; }
-      upserts.push({ business_id: businessId, moneda: inp.dataset.moneda, fecha: inp.dataset.fecha, tc: v });
+      const fila = { business_id: businessId, moneda: inp.dataset.moneda, fecha: inp.dataset.fecha, tc: v };
+      if (!sinColumnaFuente) fila.fuente = (fuenteNueva !== null && fuenteNueva !== '') ? fuenteNueva : (cambioTc && !fuenteOrig ? porDefecto : fuenteOrig); // un tipo de cambio nuevo o cambiado sin fuente propia toma la fuente por omisión
+      upserts.push(fila);
     }
     if (!upserts.length && !borrar.length) { toast('No hay cambios que guardar.'); return; }
     guardar.disabled = true; guardar.textContent = 'Guardando…';
     try {
-      if (upserts.length) { const { error } = await sb.from('fz_tc_cierre').upsert(upserts, { onConflict: 'business_id,moneda,fecha' }); if (error) throw error; }
+      if (upserts.length) {
+        let { error } = await sb.from('fz_tc_cierre').upsert(upserts, { onConflict: 'business_id,moneda,fecha' });
+        if (error && /fuente/i.test(error.message || '')) { // la columna aún no existe: se guarda el tipo de cambio sin la fuente y se avisa
+          ({ error } = await sb.from('fz_tc_cierre').upsert(upserts.map(({ fuente, ...resto }) => resto), { onConflict: 'business_id,moneda,fecha' }));
+          if (!error) toast('Se guardaron los tipos de cambio SIN la fuente: falta la columna «fuente». Corre migracion_tc_fuente.sql en Supabase.', 'error');
+        }
+        if (error) throw error;
+      }
       for (const d of borrar) { const { error } = await sb.from('fz_tc_cierre').delete().eq('business_id', businessId).eq('moneda', d.moneda).eq('fecha', d.fecha); if (error) throw error; }
       REVAL_CACHE.clear();
       registrarAuditoria(businessId, 'editar', 'Configuración', `Tipos de cambio de cierre: ${upserts.length} guardado(s), ${borrar.length} eliminado(s)`);
@@ -21429,7 +21455,7 @@ async function abrirPapelRevaluacion(businessId, moneda, fecha) {
   const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalPapelReval';
   bg.innerHTML = `<div class="modal" style="width:min(1100px,96vw);max-height:92vh;overflow:auto;">
     <h3>Papel de trabajo — Revaluación de saldos en ${revEsc(moneda)} al ${fechaCorta(fecha)}${b ? ' · ' + revEsc(b.name) : ''}</h3>
-    <p style="font-size:12.5px;color:var(--muted);margin-bottom:6px;">Tipo de cambio de cierre: <strong>${fmtTC(e.tc)}</strong> pesos por 1 ${revEsc(moneda)}${e.anterior ? ` · Cierre anterior: ${fechaCorta(e.anterior.fecha)} a ${fmtTC(e.anterior.tc)}` : ' · Primer cierre de esta moneda'}.
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:6px;">Tipo de cambio de cierre: <strong>${fmtTC(e.tc)}</strong> pesos por 1 ${revEsc(moneda)} · Fuente: <strong>${e.fuente ? revEsc(e.fuente) : 'no registrada'}</strong>${e.anterior ? ` · Cierre anterior: ${fechaCorta(e.anterior.fecha)} a ${fmtTC(e.anterior.tc)}${e.anterior.fuente ? ' (' + revEsc(e.anterior.fuente) + ')' : ''}` : ' · Primer cierre de esta moneda'}.
       Método: las partidas monetarias en moneda extranjera (cuentas por pagar y por cobrar, bancos y efectivo) se expresan al tipo de cambio de cierre (NIF B-15); la diferencia contra su valor registrado se reconoce en resultados como ganancia o pérdida cambiaria <em>no realizada</em>. El tipo de cambio se captura en Configuración → Tipos de cambio de cierre.</p>
     ${html(T.proveedores)}${html(T.clientes)}${html(T.cuentas)}${html(T.determinacion)}${html(T.asiento)}
     <div class="modal-actions"><button class="btn btn-ghost" id="prCerrar">Cerrar</button><button class="btn btn-ghost" id="prExcel">Excel</button><button class="btn btn-gold" id="prPdf">PDF</button></div>
@@ -21441,14 +21467,14 @@ async function abrirPapelRevaluacion(businessId, moneda, fecha) {
     const wb = XLSX.utils.book_new();
     const hoja = (nombre, t) => { const aoa = [t.cols.map(c => c.t), ...t.filas]; if (t.pie) aoa.push(t.pie); XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), nombre.slice(0, 31)); };
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
-      [`Papel de trabajo — Revaluación de saldos en ${moneda}`], [b?.razon_social || b?.name || ''], [`Cierre al ${fecha}`], [`Tipo de cambio de cierre: ${e.tc}`], [e.anterior ? `Cierre anterior: ${e.anterior.fecha} a ${e.anterior.tc}` : 'Primer cierre de esta moneda'], [],
+      [`Papel de trabajo — Revaluación de saldos en ${moneda}`], [b?.razon_social || b?.name || ''], [`Cierre al ${fecha}`], [`Tipo de cambio de cierre: ${e.tc}`], [`Fuente del tipo de cambio: ${e.fuente || 'no registrada'}`], [e.anterior ? `Cierre anterior: ${e.anterior.fecha} a ${e.anterior.tc}` : 'Primer cierre de esta moneda'], [],
       ['Método', 'Partidas monetarias en moneda extranjera expresadas al tipo de cambio de cierre (NIF B-15); ganancia o pérdida cambiaria no realizada.'],
     ]), 'Resumen');
     hoja('Proveedores', T.proveedores); hoja('Clientes', T.clientes); hoja('Bancos y efectivo', T.cuentas); hoja('Determinacion', T.determinacion); hoja('Asiento', T.asiento);
     XLSX.writeFile(wb, `Papel de trabajo revaluacion - ${b?.name || ''} - ${sufijo}.xlsx`);
   });
   bg.querySelector('#prPdf').addEventListener('click', () => {
-    const { doc, margin, y } = iniciarPdfConEncabezado(b, `Papel de trabajo — Revaluación de saldos en ${moneda} al ${fechaCorta(fecha)} · Tipo de cambio de cierre ${fmtTC(e.tc)}${e.anterior ? ` · Cierre anterior ${fechaCorta(e.anterior.fecha)} a ${fmtTC(e.anterior.tc)}` : ''}`, { orientation: 'landscape' });
+    const { doc, margin, y } = iniciarPdfConEncabezado(b, `Papel de trabajo — Revaluación de saldos en ${moneda} al ${fechaCorta(fecha)} · Tipo de cambio de cierre ${fmtTC(e.tc)} (fuente: ${e.fuente || 'no registrada'})${e.anterior ? ` · Cierre anterior ${fechaCorta(e.anterior.fecha)} a ${fmtTC(e.anterior.tc)}` : ''}`, { orientation: 'landscape' });
     let cy = y;
     const pdfTxt = (v) => String(v).replace(/×/g, 'x').replace(/−/g, '-'); // la fuente estándar del PDF no trae estos símbolos
     [T.proveedores, T.clientes, T.cuentas, T.determinacion, T.asiento].forEach(t => {
@@ -24479,6 +24505,7 @@ function revTcCierre(ctx) {
   const base = { id: 'tc_cierre', titulo: 'Tipos de cambio de cierre para la revaluación de saldos en divisas', ayuda: 'La revaluación necesita el tipo de cambio del último día de cada mes mientras haya saldos en divisa: facturas por pagar o por cobrar, bancos o cajas. Captúralo en Configuración → Tipos de cambio de cierre. Un mes sin tipo de cambio no se inventa: se arrastra la valuación del anterior. Esta revisión solo lee.', items: [] };
   if (tcCierre && tcCierre.error) return { ...base, items: [{ fecha: todayStr(), monto: 0, texto: `No se pudo leer la tabla de tipos de cambio de cierre (fz_tc_cierre): ${tcCierre.error}. Corre en Supabase el bloque «TIPOS DE CAMBIO AL CIERRE DE MES» de schema.sql.` }] };
   const tcs = (tcCierre && tcCierre.filas) || [];
+  const sinFuente = (tcCierre && !tcCierre.sinColumnaFuente) ? tcs.filter(t => !t.fuente).length : 0;
   if (!tcs.length) return { ...base, nota: 'Aún no has capturado ningún tipo de cambio de cierre: los saldos en divisas se mantienen a su valor original (sin revaluar).' };
   const agrupar = (lista) => { const m = {}; lista.forEach(a => { (m[a.factura_id] = m[a.factura_id] || []).push({ fecha: String(a.fecha).slice(0, 10), monto: Number(a.monto) || 0 }); }); return m; };
   const apP = agrupar(pagosAplicados), apC = agrupar(cobrosAplicados);
@@ -24498,7 +24525,7 @@ function revTcCierre(ctx) {
     }
   });
   items.sort((a, z) => a.fecha.localeCompare(z.fecha));
-  return { ...base, items };
+  return { ...base, items, ...(sinFuente ? { nota: `${sinFuente} tipo(s) de cambio sin fuente registrada: anótala en Configuración → Tipos de cambio de cierre (la autoridad puede preguntar de dónde salió).` } : {}) };
 }
 
 async function ejecutarRevisionConsistencia(b) {
