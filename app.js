@@ -1241,7 +1241,7 @@ function setupNav() {
   document.getElementById('sidebarOverlay').addEventListener('click', cerrarMenuMovil);
 }
 
-const SECCIONES_IMPRIMIBLES = ['efectivo', 'bancos', 'pl', 'flujo', 'balance', 'proveedores'];
+const SECCIONES_IMPRIMIBLES = ['efectivo', 'bancos', 'pl', 'flujo', 'balance', 'proveedores', 'clientes'];
 
 function updateTopbar() {
   const meta = SECTION_META[STATE.currentSection];
@@ -1293,6 +1293,10 @@ function updateTopbar() {
         if (STATE_provVista === 'directorio') tituloImpresion = 'Directorio de Proveedores — Saldos Pendientes' + (b ? ' · ' + b.name : '');
         else if (STATE_provVista === 'detalle') tituloImpresion = `Estado de Cuenta — ${STATE_provDetalleNombre}` + (b ? ' · ' + b.name : '');
         else tituloImpresion = 'Cuentas por Pagar — Facturas' + (b ? ' · ' + b.name : '');
+      } else if (STATE.currentSection === 'clientes') {
+        if (STATE_clientesVista === 'detalle') tituloImpresion = `Estado de Cuenta — ${STATE_clienteDetalleNombre}` + (b ? ' · ' + b.name : '');
+        else if (STATE_clientesVista === 'directorio') tituloImpresion = 'Directorio de Clientes — Saldos Pendientes' + (b ? ' · ' + b.name : '');
+        else tituloImpresion = 'Cuentas por Cobrar — Facturas' + (b ? ' · ' + b.name : '');
       }
       const mesLegible = MESES_LARGO[Number(STATE.currentMonth.slice(5,7)) - 1] + ' ' + STATE.currentMonth.slice(0,4);
       document.getElementById('printTitle').textContent = tituloImpresion;
@@ -16370,6 +16374,22 @@ async function renderDirectorioProveedores(el, b) {
   window.scrollTo(0, scrollY);
 }
 
+// Estilos SOLO de impresión para los estados de cuenta (proveedor y cliente): la tabla se ajusta al ancho de la hoja en vertical y en horizontal,
+// la referencia larga se parte en varias líneas y se omiten en papel las columnas que solo sirven en pantalla (botones, días de retraso, estatus fiscal).
+function inyectarEstilosEstadoCuenta() {
+  if (document.getElementById('estilosEstadoCuenta')) return;
+  const st = document.createElement('style'); st.id = 'estilosEstadoCuenta';
+  st.textContent = `@media print {
+    table.tabla-estado-cuenta { font-size: 8.5px !important; width: 100% !important; table-layout: auto !important; }
+    table.tabla-estado-cuenta th, table.tabla-estado-cuenta td { padding: 4px 4px !important; }
+    table.tabla-estado-cuenta th { font-size: 7.5px !important; }
+    table.tabla-estado-cuenta td.num, table.tabla-estado-cuenta th.num { white-space: nowrap !important; }
+    table.tabla-estado-cuenta td.ref { white-space: normal !important; overflow-wrap: anywhere !important; word-break: break-word !important; min-width: 130px !important; max-width: 230px !important; }
+    body[data-print-section="proveedores"] .kpi, body[data-print-section="clientes"] .kpi { margin-bottom: 10px !important; }
+    table.tabla-estado-cuenta .solo-pantalla { display: none !important; }
+  }`;
+  document.head.appendChild(st);
+}
 async function getTransaccionesProveedor(businessId, facturas) {
   const facturaIds = facturas.map(f => f.id);
   const transacciones = [];
@@ -16482,6 +16502,7 @@ async function getTransaccionesProveedor(businessId, facturas) {
 }
 
 async function renderProveedorDetalle(el, b) {
+  inyectarEstilosEstadoCuenta();
   const key = STATE_provDetalleKey;
   if (!key) { STATE_provVista = 'directorio'; return renderProveedores(); }
   const [{ data: all }, { data: catalogo }] = await Promise.all([
@@ -16524,19 +16545,19 @@ async function renderProveedorDetalle(el, b) {
         </div>
       </div>
       <div class="table-wrap scroll-sticky">
-        <table>
-          <thead><tr><th>Fecha</th><th>Tipo</th><th>Referencia</th>${hayDivisas ? '<th>Moneda</th><th class="num">TC</th>' : ''}<th class="num">Monto</th>${hayDivisas ? '<th class="num">Equivalente MXN</th>' : ''}<th class="num">Saldo</th><th class="num">Saldo acumulado</th><th></th></tr></thead>
+        <table class="tabla-estado-cuenta">
+          <thead><tr><th>Fecha</th><th>Tipo</th><th>Referencia</th>${hayDivisas ? '<th>Moneda</th><th class="num">TC</th>' : ''}<th class="num">Monto</th>${hayDivisas ? '<th class="num">Equivalente MXN</th>' : ''}<th class="num">Saldo</th><th class="num">Saldo acumulado</th><th class="solo-pantalla"></th></tr></thead>
           <tbody>
             ${transacciones.length ? transacciones.map(t => `<tr>
               <td>${fechaCorta(t.fecha)}</td>
               <td>${t.tipo}</td>
-              <td>${t.numero}</td>
+              <td class="ref">${t.numero}</td>
               ${hayDivisas ? `<td>${t.moneda || 'MXN'}</td><td class="num">${t.moneda && t.moneda !== 'MXN' ? fmtTC(t.tc || 1) : '—'}</td>` : ''}
               <td class="num ${t.monto<0?'red':''}">${t.monto<0?'-':''}${hayDivisas ? fmtMon(Math.abs(t.monto), t.moneda) : fmt(Math.abs(t.monto))}</td>
               ${hayDivisas ? `<td class="num ${t.montoMxn<0?'red':''}">${t.moneda && t.moneda !== 'MXN' ? `${t.montoMxn<0?'-':''}${fmt(Math.abs(t.montoMxn))}` : '—'}</td>` : ''}
               <td class="num" style="${t.saldo!=null && Math.abs(t.saldo)>0.004?'color:var(--gold);font-weight:600;':''}">${t.saldo!=null ? (hayDivisas ? fmtMonNeg(t.saldo, t.moneda) : fmtNeg(t.saldo)) : '—'}</td>
               <td class="num" style="font-weight:600;">${hayDivisas ? fmtMonNeg(t.saldoAcumulado, t.moneda) : fmtNeg(t.saldoAcumulado)}</td>
-              <td><button class="btn btn-ghost btn-sm ${t.origen.tipo==='proveedor'?'ver-factura-btn':(t.origen.tipo==='bancos'||t.origen.tipo==='efectivo'?'ver-desglose-pago-btn':'abrir-origen-btn')}" data-origen='${JSON.stringify(t.origen).replace(/'/g,'&apos;')}' style="font-size:11px;padding:3px 8px;">Ver / Editar</button></td>
+              <td class="solo-pantalla"><button class="btn btn-ghost btn-sm ${t.origen.tipo==='proveedor'?'ver-factura-btn':(t.origen.tipo==='bancos'||t.origen.tipo==='efectivo'?'ver-desglose-pago-btn':'abrir-origen-btn')}" data-origen='${JSON.stringify(t.origen).replace(/'/g,'&apos;')}' style="font-size:11px;padding:3px 8px;">Ver / Editar</button></td>
             </tr>`).join('') : `<tr><td colspan="${hayDivisas ? 10 : 7}" class="empty">Sin transacciones.</td></tr>`}
           </tbody>
         </table>
@@ -16720,6 +16741,7 @@ let STATE_clienteEditandoId = null;
 
 let STATE_clientesVista = 'directorio'; // 'directorio' | 'facturas' | 'detalle' | 'ordenes'
 let STATE_clienteDetalleId = null;
+let STATE_clienteDetalleNombre = '';
 function clientesTabsHtml() {
   return `<div class="tag-row" style="margin-bottom:14px;">
     <div class="tag ${STATE_clientesVista==='directorio'?'active':''}" id="clientesTabDirectorio">Directorio</div>
@@ -16749,18 +16771,106 @@ async function renderClientes() {
   await renderDirectorioClientes(el, b);
 }
 
+async function getTransaccionesCliente(businessId, facturas, nombreCliente) {
+  const facturaIds = facturas.map(f => f.id);
+  const facturaPorId = Object.fromEntries(facturas.map(f => [f.id, f]));
+  const monedaDe = (f) => (f && f.moneda) || 'MXN';
+  const tcDe = (f) => monedaDe(f) !== 'MXN' ? (Number(f.tipo_cambio) || 1) : 1;
+  const transacciones = [];
+  let fxRealizada = 0; // pesos de más (+, ganancia) o de menos (−, pérdida) que se cobraron contra el tipo de cambio de la factura
+  const componerReferencia = (ref) => ['Cobro de cliente — ' + nombreCliente, ref].filter(Boolean).join(' · ');
+
+  facturas.forEach(f => {
+    const mon = monedaDe(f), tc = tcDe(f), total = Number(f.total) || 0;
+    transacciones.push({
+      fecha: f.fecha, tipo: 'Factura', numero: `#${f.folio}${f.numero_factura ? ' · ' + f.numero_factura : ''}`, monto: total,
+      saldo: redondearMoneda(Math.max(0, total - (Number(f.importe_pagado) || 0))),
+      moneda: mon, tc: mon !== 'MXN' ? tc : null, montoMxn: mon !== 'MXN' ? redondearMoneda(total * tc) : total, factura: f,
+      origen: { tipo: 'factura_cliente', id: f.id, fecha: f.fecha },
+    });
+  });
+  if (!facturaIds.length) { transacciones.fxRealizada = 0; return transacciones; }
+
+  // 1) lo que cada cobro aplicó a ESTAS facturas
+  const porLotes = async (fn, ids) => { const out = []; for (let i = 0; i < ids.length; i += 100) out.push(...(await fn(ids.slice(i, i + 100)) || [])); return out; };
+  const apsPropias = await porLotes(async (ids) => (await sb.from('fz_cobros_aplicados').select('id,factura_id,monto,tipo_cambio,origen_tabla,origen_id,fecha,notas').eq('business_id', businessId).in('factura_id', ids)).data, facturaIds);
+  const origenesIds = [...new Set(apsPropias.filter(a => a.origen_id).map(a => a.origen_id))];
+  // 2) todo lo que aplicaron esos mismos movimientos (para saber si un sobrante / crédito a favor es solo de este cliente)
+  const apsOrigen = await porLotes(async (ids) => (await sb.from('fz_cobros_aplicados').select('factura_id,monto,origen_tabla,origen_id').eq('business_id', businessId).in('origen_id', ids)).data, origenesIds);
+  // 3) los movimientos de banco / efectivo
+  const movs = {};
+  const idsDe = (tabla) => [...new Set(apsPropias.filter(a => a.origen_tabla === tabla && a.origen_id).map(a => a.origen_id))];
+  for (const tabla of ['fz_bancos_mov', 'fz_efectivo_mov']) (await porLotes(async (ids) => (await sb.from(tabla).select('*').eq('business_id', businessId).in('id', ids)).data, idsDe(tabla))).forEach(m => { movs[`${tabla}|${m.id}`] = m; });
+
+  const grupos = {};
+  apsPropias.forEach(a => { const k = a.origen_id ? `${a.origen_tabla}|${a.origen_id}` : `manual|${a.id || a.fecha + a.monto}`; (grupos[k] = grupos[k] || { tabla: a.origen_tabla, id: a.origen_id, propias: [], credito: 0, ajenas: false }).propias.push(a); });
+  apsOrigen.forEach(a => { const g = grupos[`${a.origen_tabla}|${a.origen_id}`]; if (!g) return; if (!a.factura_id) g.credito += Number(a.monto) || 0; else if (!facturaPorId[a.factura_id]) g.ajenas = true; });
+  Object.values(grupos).forEach(g => {
+    const mov = g.id ? movs[`${g.tabla}|${g.id}`] : null;
+    const f0 = facturaPorId[g.propias[0].factura_id], mon = monedaDe(f0);
+    const tcHist = Number(mov && mov.tipo_cambio_historico) || tcDe(f0);
+    const lineas = g.propias.map(a => { const fa = facturaPorId[a.factura_id]; return { monto: Number(a.monto) || 0, tc: Number(a.tipo_cambio) || tcHist, tcFactura: tcDe(fa) }; });
+    const montoDoc = lineas.reduce((t, x) => t + x.monto, 0);
+    const equivalente = mon !== 'MXN' ? lineas.reduce((t, x) => t + x.monto * x.tc, 0) : montoDoc;
+    if (mon !== 'MXN') lineas.forEach(x => { fxRealizada += x.monto * (x.tc - x.tcFactura); });
+    const fecha = (mov && mov.fecha) || g.propias[0].fecha;
+    const tipo = g.tabla === 'fz_bancos_mov' ? 'Cobro — Banco' : g.tabla === 'fz_efectivo_mov' ? 'Cobro — Efectivo' : 'Cobro — Manual';
+    const origen = !mov ? null : (g.tabla === 'fz_bancos_mov' ? { tipo: 'bancos', id: mov.id, cuentaId: mov.cuenta_id, fecha: mov.fecha } : { tipo: 'efectivo', id: mov.id, monedaId: mov.moneda_id, fecha: mov.fecha });
+    transacciones.push({ fecha, tipo, numero: componerReferencia(mov ? (mov.concepto || mov.descripcion) : g.propias[0].notas), monto: -redondearMoneda(montoDoc), moneda: mon,
+      tc: mon !== 'MXN' ? (montoDoc > 0 ? equivalente / montoDoc : tcHist) : null, montoMxn: -redondearMoneda(equivalente), origen });
+    // sobrante del cobro que quedó como crédito a favor del cliente (solo si el cobro fue únicamente de este cliente)
+    if (g.credito > 0.004 && !g.ajenas) {
+      transacciones.push({ fecha, tipo: 'Crédito a favor del cliente', numero: componerReferencia('sobrante del cobro'), monto: -redondearMoneda(g.credito), moneda: mon,
+        tc: mon !== 'MXN' ? tcHist : null, montoMxn: -redondearMoneda(mon !== 'MXN' ? g.credito * tcHist : g.credito), origen });
+    }
+  });
+
+  // cobros hechos con PÓLIZA DE DIARIO (la línea del cliente abona su cuenta por cobrar)
+  const { data: lineasCobro } = await sb.from('fz_polizas_lineas').select('*').eq('business_id', businessId).eq('cuenta_tipo', 'cliente').in('cliente_factura_id', facturaIds);
+  const polizaIds = [...new Set((lineasCobro || []).map(l => l.poliza_id))];
+  const { data: polizasInfo } = polizaIds.length ? await sb.from('fz_polizas').select('id,fecha,numero').in('id', polizaIds) : { data: [] };
+  const polizaMap = Object.fromEntries((polizasInfo || []).map(pz => [pz.id, pz]));
+  const porPoliza = {};
+  (lineasCobro || []).forEach(l => {
+    const pz = polizaMap[l.poliza_id]; if (!pz || !(Number(l.abono) > 0.004)) return;
+    const fa = facturaPorId[l.cliente_factura_id], mon = monedaDe(fa), tc = tcDe(fa);
+    porPoliza[l.cliente_factura_id] = (porPoliza[l.cliente_factura_id] || 0) + (Number(l.abono) || 0);
+    transacciones.push({ fecha: pz.fecha, tipo: 'Cobro — Póliza de diario', numero: componerReferencia(`#${pz.numero ?? ''}`), monto: -(Number(l.abono) || 0), moneda: mon, tc: mon !== 'MXN' ? tc : null,
+      montoMxn: -(mon !== 'MXN' ? redondearMoneda((Number(l.abono) || 0) * tc) : (Number(l.abono) || 0)), origen: { tipo: 'poliza', id: pz.id, fecha: pz.fecha } });
+  });
+
+  // Una factura que figura cobrada pero cuyo cobro no está ligado a ningún movimiento ni póliza (cobro antiguo o marcado a mano): se muestra explícito
+  // para que el saldo acumulado coincida con el saldo de la factura (y quede a la vista que hay que revisarlo).
+  facturas.forEach(f => {
+    const cubierto = apsPropias.filter(a => a.factura_id === f.id).reduce((t, a) => t + (Number(a.monto) || 0), 0) + (porPoliza[f.id] || 0);
+    const faltante = redondearMoneda((Number(f.importe_pagado) || 0) - cubierto);
+    if (faltante > 0.004) { const mon = monedaDe(f), tc = tcDe(f); transacciones.push({ fecha: f.fecha, tipo: 'Cobro sin movimiento ligado', numero: `#${f.folio} — revisa: figura cobrado pero ningún movimiento lo respalda`, monto: -faltante, moneda: mon, tc: mon !== 'MXN' ? tc : null, montoMxn: -(mon !== 'MXN' ? redondearMoneda(faltante * tc) : faltante), origen: null }); }
+  });
+
+  transacciones.sort((a, b) => a.fecha.localeCompare(b.fecha) || (a.tipo === 'Factura' ? -1 : 1) - (b.tipo === 'Factura' ? -1 : 1));
+  const acumulado = {}; // el saldo acumulado se lleva POR MONEDA
+  transacciones.forEach(t => { acumulado[t.moneda] = (acumulado[t.moneda] || 0) + t.monto; t.saldoAcumulado = acumulado[t.moneda]; });
+  transacciones.fxRealizada = redondearMoneda(fxRealizada);
+  return transacciones.reverse(); // más reciente primero, como en proveedores
+}
+
 async function renderClienteDetalle(el, b) {
+  inyectarEstilosEstadoCuenta();
   const cliente = (await loadClientes(b.id)).find(c => c.id === STATE_clienteDetalleId);
   if (!cliente) { STATE_clientesVista = 'directorio'; return renderClientes(); }
+  const nombreCliente = cliente.razon_social || cliente.nombre_comercial;
+  STATE_clienteDetalleNombre = nombreCliente;
   const { data: facturas } = await sb.from('fz_facturas_clientes').select('*').eq('cliente_id', cliente.id).order('fecha', { ascending: false }).order('folio', { ascending: false });
   const lista = facturas || [];
   const totalFacturado = lista.reduce((s,f)=>s+(Number(f.total)||0),0);
   const totalPagado = lista.reduce((s,f)=>s+(Number(f.importe_pagado)||0),0);
   const pendiente = totalFacturado - totalPagado;
+  const transacciones = await getTransaccionesCliente(b.id, lista, nombreCliente);
   // Con facturas en divisa: totales POR MONEDA y su equivalente en pesos al tipo de cambio de cada factura
   const hayDivisas = lista.some(f => f.moneda && f.moneda !== 'MXN');
   const eqMxn = (f, v) => (f.moneda && f.moneda !== 'MXN') ? (Number(v) || 0) * (Number(f.tipo_cambio) || 1) : (Number(v) || 0);
   const kpiDivisa = (valor) => `${fmtPorMoneda(sumarPorMoneda(lista, valor))}<div style="font-size:11px;font-weight:400;color:var(--muted);margin-top:2px;">≈ ${fmt(lista.reduce((s, f) => s + eqMxn(f, valor(f)), 0))} MXN al tipo de cambio de cada factura</div>`;
+  const fxReal = transacciones.fxRealizada || 0;
 
   el.innerHTML = `
     <button class="btn btn-ghost btn-sm" id="clienteDetalleVolver" style="margin-bottom:14px;">← Volver al directorio</button>
@@ -16768,40 +16878,37 @@ async function renderClienteDetalle(el, b) {
       <div class="kpi"><div class="label">Total facturado</div><div class="value num">${hayDivisas ? kpiDivisa(f => f.total) : fmt(totalFacturado)}</div></div>
       <div class="kpi"><div class="label">Total pagado</div><div class="value num green">${hayDivisas ? kpiDivisa(f => f.importe_pagado) : fmt(totalPagado)}</div></div>
       <div class="kpi"><div class="label">Saldo pendiente</div><div class="value num ${pendiente>0.004?'red':'green'}">${hayDivisas ? kpiDivisa(f => Number(f.total||0) - Number(f.importe_pagado||0)) : fmt(pendiente)}</div></div>
+      ${hayDivisas && Math.abs(fxReal) > 0.004 ? `<div class="kpi"><div class="label">${fxReal > 0 ? 'Ganancia' : 'Pérdida'} cambiaria realizada</div><div class="value num ${fxReal > 0 ? 'green' : 'red'}">${fmt(Math.abs(fxReal))}</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">cobrado vs. tipo de cambio de la factura</div></div>` : ''}
     </div>
     <div class="card">
-      <div class="card-head"><h3>${cliente.razon_social || cliente.nombre_comercial}</h3>${cliente.razon_social ? `<span class="hint">${cliente.nombre_comercial}</span>` : ''}</div>
+      <div class="card-head"><h3>${nombreCliente}</h3>${cliente.razon_social ? `<span class="hint">${cliente.nombre_comercial}</span>` : ''}<span class="hint">Facturas y cobros, más reciente primero</span></div>
       <div class="table-wrap scroll-sticky">
-        <table>
+        <table class="tabla-estado-cuenta">
           <thead><tr>
-            <th>Fecha</th><th>Folio</th><th>No. Factura</th>
-            <th>Moneda</th><th class="num">TC</th>
-            <th class="num">Total</th>${hayDivisas ? '<th class="num">Total en MXN</th>' : ''}<th class="num">Pagado</th><th class="num">Saldo</th>
-            <th>Vencimiento</th><th class="num">Días retraso</th>
-            <th>Estatus</th><th>Fiscal</th><th></th>
+            <th>Fecha</th><th>Tipo</th><th>Referencia</th>${hayDivisas ? '<th>Moneda</th><th class="num">TC</th>' : ''}
+            <th class="num">Monto</th>${hayDivisas ? '<th class="num">Equivalente MXN</th>' : ''}<th class="num">Saldo</th><th class="num">Saldo acumulado</th>
+            <th>Vencimiento</th><th class="num solo-pantalla">Días retraso</th><th>Estatus</th><th class="solo-pantalla">Fiscal</th><th class="solo-pantalla"></th>
           </tr></thead>
           <tbody>
-            ${lista.length ? lista.map(f => {
-              const saldo = redondearMoneda(Math.max(0, Number(f.total) - Number(f.importe_pagado||0)));
-              const diasRetraso = calcularDiasRetraso(f.fecha_vencimiento, saldo);
-              const esMxn = !f.moneda || f.moneda === 'MXN';
+            ${transacciones.length ? transacciones.map(t => {
+              const esFactura = t.tipo === 'Factura', f = t.factura;
+              const diasRetraso = esFactura ? calcularDiasRetraso(f.fecha_vencimiento, t.saldo) : '';
               return `<tr>
-                <td>${fechaCorta(f.fecha)}</td>
-                <td>#${f.folio}</td>
-                <td>${f.numero_factura || '—'}</td>
-                <td>${f.moneda || 'MXN'}</td>
-                <td class="num">${esMxn ? '—' : fmtTC(f.tipo_cambio || 1)}</td>
-                <td class="num">${prefijoMoneda(f.moneda)} ${fmt(f.total)}</td>
-                ${hayDivisas ? `<td class="num" title="Total × tipo de cambio de la factura">${esMxn ? '—' : fmt(redondearMoneda(Number(f.total) * (Number(f.tipo_cambio) || 1)))}</td>` : ''}
-                <td class="num">${prefijoMoneda(f.moneda)} ${fmt(f.importe_pagado||0)}</td>
-                <td class="num" style="${saldo>0.004?'color:var(--gold);font-weight:600;':''}">${prefijoMoneda(f.moneda)} ${fmt(saldo)}</td>
-                <td>${f.fecha_vencimiento ? fechaCorta(f.fecha_vencimiento) : '—'}</td>
-                <td class="num" style="${typeof diasRetraso==='number' && diasRetraso>0?'color:var(--red);font-weight:700;':''}">${diasRetraso}</td>
-                <td><span class="badge ${f.estatus==='Pagado'?'pag':'pend'}">${f.estatus}</span></td>
-                <td>${ESTATUS_FISCAL_BADGE[f.estatus_fiscal] || ESTATUS_FISCAL_BADGE.no_aplica}</td>
-                ${facturaMenuHtml(f.id)}
+                <td>${fechaCorta(t.fecha)}</td>
+                <td>${t.tipo}</td>
+                <td class="ref">${t.numero}</td>
+                ${hayDivisas ? `<td>${t.moneda || 'MXN'}</td><td class="num">${t.moneda && t.moneda !== 'MXN' ? fmtTC(t.tc || 1) : '—'}</td>` : ''}
+                <td class="num ${t.monto<0?'red':''}">${t.monto<0?'-':''}${hayDivisas ? fmtMon(Math.abs(t.monto), t.moneda) : fmt(Math.abs(t.monto))}</td>
+                ${hayDivisas ? `<td class="num ${t.montoMxn<0?'red':''}">${t.moneda && t.moneda !== 'MXN' ? `${t.montoMxn<0?'-':''}${fmt(Math.abs(t.montoMxn))}` : '—'}</td>` : ''}
+                <td class="num" style="${esFactura && t.saldo>0.004?'color:var(--gold);font-weight:600;':''}">${esFactura ? (hayDivisas ? fmtMonNeg(t.saldo, t.moneda) : fmtNeg(t.saldo)) : '—'}</td>
+                <td class="num" style="font-weight:600;">${hayDivisas ? fmtMonNeg(t.saldoAcumulado, t.moneda) : fmtNeg(t.saldoAcumulado)}</td>
+                <td>${esFactura ? (f.fecha_vencimiento ? fechaCorta(f.fecha_vencimiento) : '—') : ''}</td>
+                <td class="num solo-pantalla" style="${typeof diasRetraso==='number' && diasRetraso>0?'color:var(--red);font-weight:700;':''}">${esFactura ? diasRetraso : ''}</td>
+                <td>${esFactura ? `<span class="badge ${f.estatus==='Pagado'?'pag':'pend'}">${f.estatus}</span>` : ''}</td>
+                <td class="solo-pantalla">${esFactura ? (ESTATUS_FISCAL_BADGE[f.estatus_fiscal] || ESTATUS_FISCAL_BADGE.no_aplica) : ''}</td>
+                ${esFactura ? facturaMenuHtml(f.id).replace('<td data-rol="acciones"', '<td class="solo-pantalla" data-rol="acciones"') : `<td class="solo-pantalla">${t.origen ? `<button class="btn btn-ghost btn-sm abrir-origen-btn" data-origen='${JSON.stringify(t.origen).replace(/'/g, '&apos;')}'>Ver / Editar</button>` : ''}</td>`}
               </tr>`;
-            }).join('') : `<tr><td colspan="${hayDivisas ? 14 : 13}" class="empty">Este cliente aún no tiene facturas.</td></tr>`}
+            }).join('') : `<tr><td colspan="${hayDivisas ? 14 : 12}" class="empty">Este cliente aún no tiene facturas.</td></tr>`}
           </tbody>
         </table>
       </div>
@@ -16809,6 +16916,10 @@ async function renderClienteDetalle(el, b) {
   `;
   document.getElementById('clienteDetalleVolver').addEventListener('click', () => { STATE_clientesVista = 'directorio'; renderClientes(); });
   wireFacturaMenu(el, b.id, () => renderClienteDetalle(el, b));
+  el.querySelectorAll('.abrir-origen-btn').forEach(btn => btn.addEventListener('click', () => {
+    const origen = JSON.parse(btn.dataset.origen.replace(/&apos;/g, "'"));
+    abrirOrigenDesdeDetalle(origen, b.id);
+  }));
 }
 
 async function renderDirectorioClientes(el, b) {
@@ -20111,6 +20222,10 @@ async function diagnosticarDescuadreBalanza(businessId, hastaFecha) {
 // Mapea el tipoOrigen del diagnóstico al formato que ya entiende abrirOrigenDesdeDetalle,
 // para reutilizar la misma navegación "Ver documento" que ya existe en otras pantallas.
 function verDocumentoDesdeOrigen(item, businessId) {
+  if (item.tipoOrigen === 'revaluacion_divisas') { // asiento de revaluación: abre su papel de trabajo
+    const m = /^reval-([A-Z]{3,4})-(\d{4}-\d{2}-\d{2})$/.exec(String(item.id || ''));
+    if (m) { const dd = document.getElementById('modalDiagnosticoDescuadre'); if (dd) dd.classList.remove('show'); abrirPapelRevaluacion(businessId, m[1], m[2]); return; }
+  }
   const mapa = {
     poliza: { tipo: 'poliza', id: item.id },
     factura_proveedor: { tipo: 'proveedor', id: item.id, fecha: item.fecha },
@@ -21113,7 +21228,12 @@ async function calcularRevaluacionDivisasSinCache(businessId) {
   if (!tcs.length) return vacio;
   const monedas = [...new Set(tcs.map(r => r.moneda))];
   const leer = async (tabla, cols) => { const r = await fetchTodasLasPaginas(() => sb.from(tabla).select(cols).eq('business_id', businessId).in('moneda', monedas).order('id')); if (r.error) throw new Error(`${tabla}: ${r.error.message}`); return r.data || []; };
-  const [prov, cli] = await Promise.all([ leer('fz_proveedores', 'id,fecha,importe,importe_pagado,fecha_pago,moneda,tipo_cambio'), leer('fz_facturas_clientes', 'id,fecha,total,importe_pagado,moneda,tipo_cambio') ]);
+  const [prov, cli, clientesQ] = await Promise.all([
+    leer('fz_proveedores', 'id,fecha,importe,importe_pagado,fecha_pago,moneda,tipo_cambio,proveedor,factura'),
+    leer('fz_facturas_clientes', 'id,fecha,total,importe_pagado,moneda,tipo_cambio,cliente_id,folio,numero_factura'),
+    sb.from('fz_clientes').select('id,razon_social,nombre_comercial').eq('business_id', businessId),
+  ]);
+  const nombreCliente = Object.fromEntries((clientesQ.data || []).map(c => [c.id, c.razon_social || c.nombre_comercial || '']));
   const aplicaciones = async (tabla, ids) => { const out = []; for (let i = 0; i < ids.length; i += 100) { const r = await fetchTodasLasPaginas(() => sb.from(tabla).select('factura_id,monto,fecha').eq('business_id', businessId).in('factura_id', ids.slice(i, i + 100)).order('id')); if (r.error) throw new Error(`${tabla}: ${r.error.message}`); out.push(...(r.data || [])); } return out; };
   const [aplProv, aplCli] = await Promise.all([ aplicaciones('fz_pagos_aplicados', prov.map(f => f.id)), aplicaciones('fz_cobros_aplicados', cli.map(f => f.id)) ]);
   const agrupar = (lista) => { const m = {}; lista.forEach(a => { (m[a.factura_id] = m[a.factura_id] || []).push({ fecha: String(a.fecha).slice(0, 10), monto: Number(a.monto) || 0 }); }); return m; };
@@ -21140,29 +21260,40 @@ async function calcularRevaluacionDivisasSinCache(businessId) {
 
   const entradas = [];
   for (const moneda of monedas) {
-    let prevP = 0, prevC = 0, prevA = 0;
+    let prevP = 0, prevC = 0, prevA = 0, anterior = null;
     for (const r of tcs.filter(x => x.moneda === moneda)) {
       const E = r.fecha;
       let adjP = 0, adjC = 0, adjA = 0;
+      const detProv = [], detCli = [], detCta = []; // el DETALLE de cada partida: es el papel de trabajo que respalda el asiento
       prov.filter(f => f.moneda === moneda && String(f.fecha).slice(0, 10) <= E).forEach(f => {
-        const tcHist = Number(f.tipo_cambio) || 1;
-        const saldo = saldoEn(Number(f.importe) || 0, apP[f.id], Number(f.importe_pagado) || 0, String(f.fecha_pago || f.fecha).slice(0, 10), E);
-        adjP += saldo * (r.tc - tcHist);
+        const tcHist = Number(f.tipo_cambio) || 1, importe = Number(f.importe) || 0;
+        const saldo = saldoEn(importe, apP[f.id], Number(f.importe_pagado) || 0, String(f.fecha_pago || f.fecha).slice(0, 10), E);
+        const ajuste = saldo * (r.tc - tcHist);
+        adjP += ajuste;
+        if (Math.abs(saldo) > 0.004) detProv.push({ tercero: f.proveedor || '(sin proveedor)', documento: f.factura || 's/f', fecha: String(f.fecha).slice(0, 10), importe, aplicado: redondearMoneda(importe - saldo), saldo: redondearMoneda(saldo), tcOrigen: tcHist, tcCierre: r.tc, ajuste: redondearMoneda(ajuste) });
       });
       cli.filter(f => f.moneda === moneda && String(f.fecha).slice(0, 10) <= E).forEach(f => {
-        const tcHist = Number(f.tipo_cambio) || 1;
-        const saldo = saldoEn(Number(f.total) || 0, apC[f.id], Number(f.importe_pagado) || 0, String(f.fecha).slice(0, 10), E);
-        adjC += saldo * (r.tc - tcHist);
+        const tcHist = Number(f.tipo_cambio) || 1, importe = Number(f.total) || 0;
+        const saldo = saldoEn(importe, apC[f.id], Number(f.importe_pagado) || 0, String(f.fecha).slice(0, 10), E);
+        const ajuste = saldo * (r.tc - tcHist);
+        adjC += ajuste;
+        if (Math.abs(saldo) > 0.004) detCli.push({ tercero: nombreCliente[f.cliente_id] || '(cliente)', documento: `#${f.folio ?? ''}${f.numero_factura ? ' · ' + f.numero_factura : ''}`, fecha: String(f.fecha).slice(0, 10), importe, aplicado: redondearMoneda(importe - saldo), saldo: redondearMoneda(saldo), tcOrigen: tcHist, tcCierre: r.tc, ajuste: redondearMoneda(ajuste) });
       });
       cuentas.filter(c => c.moneda === moneda).forEach(c => {
         // el saldo inicial solo está en el libro de los negocios financieros; en los fiscales no se cuenta para que coincida con lo que el libro ya muestra
         const unidades = (financiero ? c.saldoInicial : 0) + sumaHasta(movsPorClave[c.clave], E);
-        adjA += unidades * r.tc - sumaHasta(libroPorClave[c.clave], E);
+        const libro = sumaHasta(libroPorClave[c.clave], E);
+        const ajuste = unidades * r.tc - libro;
+        adjA += ajuste;
+        if (Math.abs(unidades) > 0.004 || Math.abs(libro) > 0.004) detCta.push({ cuenta: c.nombre || c.clave, tipo: c.tabla === 'fz_bancos_mov' ? 'Banco' : 'Efectivo', unidades: redondearMoneda(unidades), valorAlCierre: redondearMoneda(unidades * r.tc), libro: redondearMoneda(libro), ajuste: redondearMoneda(ajuste) });
       });
+      detProv.sort((a, b) => a.fecha.localeCompare(b.fecha)); detCli.sort((a, b) => a.fecha.localeCompare(b.fecha));
       adjP = redondearMoneda(adjP); adjC = redondearMoneda(adjC); adjA = redondearMoneda(adjA);
       const dP = redondearMoneda(adjP - prevP), dC = redondearMoneda(adjC - prevC), dA = redondearMoneda(adjA - prevA);
       const { asientos, ganancia, perdida } = asientosRevaluacion(dP, dC, dA);
-      entradas.push({ fecha: E, moneda, tc: r.tc, cxp: dP, cxc: dC, cta: dA, ajusteProveedores: adjP, ajusteClientes: adjC, ajusteCuentas: adjA, asientos, ganancia, perdida });
+      entradas.push({ fecha: E, moneda, tc: r.tc, cxp: dP, cxc: dC, cta: dA, ajusteProveedores: adjP, ajusteClientes: adjC, ajusteCuentas: adjA, asientos, ganancia, perdida,
+        detalle: { proveedores: detProv, clientes: detCli, cuentas: detCta }, anterior });
+      anterior = { fecha: E, tc: r.tc, ajusteProveedores: adjP, ajusteClientes: adjC, ajusteCuentas: adjA };
       prevP = adjP; prevC = adjC; prevA = adjA;
     }
   }
@@ -21218,7 +21349,7 @@ async function abrirModalTcCierre(businessId) {
       const fin = monthBounds(ym).end; const cerrado = await bloqueadoPorCierre(businessId, fin);
       filas.push(`<tr><td style="white-space:nowrap;">${ym}${cerrado ? ' <span title="Mes cerrado: no se puede cambiar" style="color:var(--muted);">🔒</span>' : ''}</td>${monedas.map(m => {
         const v = tcDe(m, fin), e = efectoDe(m, fin);
-        return `<td><input class="cell tc-cierre-input" type="text" inputmode="decimal" data-moneda="${m}" data-fecha="${fin}" data-original="${v || ''}" value="${v || ''}" ${cerrado ? 'disabled' : ''} style="width:92px;" placeholder="—">${e ? `<div style="font-size:10.5px;color:var(--muted);margin-top:2px;">Ajuste acum.: prov ${fmt(e.ajusteProveedores)} · cli ${fmt(e.ajusteClientes)} · cuentas ${fmt(e.ajusteCuentas)}</div>` : ''}</td>`;
+        return `<td><input class="cell tc-cierre-input" type="text" inputmode="decimal" data-moneda="${m}" data-fecha="${fin}" data-original="${v || ''}" value="${v || ''}" ${cerrado ? 'disabled' : ''} style="width:92px;" placeholder="—">${e ? `<div style="font-size:10.5px;color:var(--muted);margin-top:2px;">Ajuste acum.: prov ${fmt(e.ajusteProveedores)} · cli ${fmt(e.ajusteClientes)} · cuentas ${fmt(e.ajusteCuentas)} · <a href="#" class="tc-ver-calculo" data-moneda="${m}" data-fecha="${fin}">Ver cálculo</a></div>` : ''}</td>`;
       }).join('')}</tr>`);
     }
     cuerpo = `<div style="max-height:52vh;overflow:auto;"><table class="tabla-operativa"><thead><tr><th>Cierre de</th>${monedas.map(m => `<th>${m} (pesos por 1 ${m})</th>`).join('')}</tr></thead><tbody>${filas.join('')}</tbody></table></div>`;
@@ -21230,6 +21361,7 @@ async function abrirModalTcCierre(businessId) {
     <div class="modal-actions"><button class="btn btn-ghost" id="tcCierreCerrar">Cerrar</button>${(!errTc && monedas.length) ? '<button class="btn btn-gold" id="tcCierreGuardar">Guardar</button>' : ''}</div>
   </div>`;
   document.body.appendChild(bg);
+  bg.querySelectorAll('.tc-ver-calculo').forEach(a => a.addEventListener('click', (ev) => { ev.preventDefault(); abrirPapelRevaluacion(businessId, a.dataset.moneda, a.dataset.fecha); }));
   bg.querySelector('#tcCierreCerrar').addEventListener('click', cerrar);
   const guardar = bg.querySelector('#tcCierreGuardar');
   if (guardar) guardar.addEventListener('click', async () => {
@@ -21253,6 +21385,85 @@ async function abrirModalTcCierre(businessId) {
       toast('Tipos de cambio guardados. El Balance y el Estado de Resultados ya los reflejan.');
       cerrar(); if (typeof renderCurrentSection === 'function') renderCurrentSection();
     } catch (err) { toast('No se pudo guardar: ' + (err.message || err), 'error'); guardar.disabled = false; guardar.textContent = 'Guardar'; }
+  });
+}
+
+// ============================================================================================================
+// PAPEL DE TRABAJO DE LA REVALUACIÓN — muestra, partida por partida, cómo se determinó el asiento de cada cierre.
+// Es el respaldo que suele pedir la autoridad: saldo en divisa, tipo de cambio de origen y de cierre, ajuste de cada partida,
+// determinación contra el cierre anterior y el asiento resultante. Todo sale del MISMO cálculo que genera el asiento y el Balance.
+// ============================================================================================================
+function papelRevaluacionTablas(e) {
+  const fmtSigno = (n) => (Number(n) < -0.004 ? '-' : '') + fmt(Math.abs(Number(n) || 0)); // texto plano (fmtNeg devuelve HTML): sirve igual en pantalla, Excel y PDF
+  const mon = e.moneda, d = e.detalle || { proveedores: [], clientes: [], cuentas: [] }, ant = e.anterior;
+  const doc = (it) => [it.tercero, it.documento, fechaCorta(it.fecha), fmtMon(it.importe, mon), fmtMon(it.aplicado, mon), fmtMon(it.saldo, mon), fmtTC(it.tcOrigen), fmtTC(it.tcCierre), fmtSigno(it.ajuste)];
+  const colsDoc = (tercero, aplic) => [{ t: tercero }, { t: 'Documento' }, { t: 'Fecha' }, { t: `Importe original (${mon})`, num: 1 }, { t: `${aplic} a la fecha`, num: 1 }, { t: `Saldo en ${mon}`, num: 1 }, { t: 'TC de origen', num: 1 }, { t: 'TC de cierre', num: 1 }, { t: 'Ajuste (MXN)', num: 1 }];
+  const determinacion = [
+    ['Proveedores (cuentas por pagar)', fmtSigno(e.ajusteProveedores), fmtSigno(ant ? ant.ajusteProveedores : 0), fmtSigno(e.cxp)],
+    ['Clientes (cuentas por cobrar)', fmtSigno(e.ajusteClientes), fmtSigno(ant ? ant.ajusteClientes : 0), fmtSigno(e.cxc)],
+    ['Bancos y efectivo en divisas', fmtSigno(e.ajusteCuentas), fmtSigno(ant ? ant.ajusteCuentas : 0), fmtSigno(e.cta)],
+  ];
+  return {
+    proveedores: { titulo: `1. Cuentas por pagar en ${mon} (proveedores)`, cols: colsDoc('Proveedor', 'Pagado'), filas: d.proveedores.map(doc), pie: ['Ajuste acumulado a este cierre', '', '', '', '', '', '', '', fmtSigno(e.ajusteProveedores)],
+      nota: 'Fórmula: saldo en divisa × (TC de cierre − TC de origen). Positivo = la deuda en pesos aumentó (pérdida).' },
+    clientes: { titulo: `2. Cuentas por cobrar en ${mon} (clientes)`, cols: colsDoc('Cliente', 'Cobrado'), filas: d.clientes.map(doc), pie: ['Ajuste acumulado a este cierre', '', '', '', '', '', '', '', fmtSigno(e.ajusteClientes)],
+      nota: 'Fórmula: saldo en divisa × (TC de cierre − TC de origen). Positivo = la cuenta por cobrar vale más pesos (ganancia).' },
+    cuentas: { titulo: `3. Bancos y efectivo en ${mon}`, cols: [{ t: 'Cuenta' }, { t: 'Tipo' }, { t: `Saldo en ${mon}`, num: 1 }, { t: 'TC de cierre', num: 1 }, { t: 'Valor al TC de cierre (MXN)', num: 1 }, { t: 'Valor en libros (MXN)', num: 1 }, { t: 'Ajuste (MXN)', num: 1 }],
+      filas: d.cuentas.map(c => [c.cuenta, c.tipo, fmtMon(c.unidades, mon), fmtTC(e.tc), fmtSigno(c.valorAlCierre), fmtSigno(c.libro), fmtSigno(c.ajuste)]), pie: ['Ajuste acumulado a este cierre', '', '', '', '', '', fmtSigno(e.ajusteCuentas)],
+      nota: 'Fórmula: saldo en divisa × TC de cierre − valor en libros. Positivo = el saldo vale más pesos (ganancia).' },
+    determinacion: { titulo: '4. Determinación del asiento del cierre', cols: [{ t: 'Rubro' }, { t: 'Ajuste acumulado a este cierre', num: 1 }, { t: ant ? `Ajuste acumulado al cierre anterior (${fechaCorta(ant.fecha)}, TC ${fmtTC(ant.tc)})` : 'Ajuste acumulado al cierre anterior', num: 1 }, { t: 'Variación = asiento del mes', num: 1 }],
+      filas: determinacion, pie: ['Total', fmtSigno(e.ajusteProveedores + e.ajusteClientes + e.ajusteCuentas), fmtSigno((ant ? ant.ajusteProveedores + ant.ajusteClientes + ant.ajusteCuentas : 0)), fmtSigno(e.cxp + e.cxc + e.cta)],
+      nota: 'El asiento de cada cierre es la VARIACIÓN del ajuste acumulado contra el cierre anterior de la misma moneda. Al pagar, cobrar o gastar, la diferencia realizada ya está en el libro y la valuación de esa parte se revierte aquí, en el siguiente cierre.' },
+    asiento: { titulo: '5. Asiento contable generado', cols: [{ t: 'Cuenta' }, { t: 'Debe', num: 1 }, { t: 'Haber', num: 1 }],
+      filas: (e.asientos || []).map(a => [a.cuenta, a.cargo ? fmt(a.cargo) : '', a.abono ? fmt(a.abono) : '']), pie: ['Totales', fmt((e.asientos || []).reduce((t, a) => t + a.cargo, 0)), fmt((e.asientos || []).reduce((t, a) => t + a.abono, 0))],
+      nota: (e.asientos || []).length ? '' : 'Sin variación en este cierre: no genera asiento.' },
+  };
+}
+async function abrirPapelRevaluacion(businessId, moneda, fecha) {
+  const b = (STATE.businesses || []).find(x => x.id === businessId);
+  let rv; try { rv = await calcularRevaluacionDivisas(businessId); } catch (err) { toast('No se pudo calcular la revaluación: ' + (err.message || err), 'error'); return; }
+  const e = rv.entradas.find(x => x.moneda === moneda && x.fecha === fecha);
+  if (!e) { toast(`No hay revaluación de ${moneda} al ${fecha}: captura el tipo de cambio de cierre de ese mes.`, 'error'); return; }
+  const T = papelRevaluacionTablas(e);
+  const html = (t) => `<div style="margin:16px 0 4px;"><h4 style="font-size:13px;color:var(--navy-1);margin-bottom:6px;">${revEsc(t.titulo)}</h4><div style="overflow-x:auto;"><table class="tabla-operativa"><thead><tr>${t.cols.map(c => `<th class="${c.num ? 'num' : ''}">${revEsc(c.t)}</th>`).join('')}</tr></thead><tbody>${t.filas.length ? t.filas.map(f => `<tr>${f.map((v, i) => `<td class="${t.cols[i].num ? 'num' : ''}">${revEsc(v)}</td>`).join('')}</tr>`).join('') : `<tr><td colspan="${t.cols.length}" class="empty">Sin partidas abiertas en este cierre.</td></tr>`}${t.pie ? `<tr class="total-row" style="font-weight:700;">${t.pie.map((v, i) => `<td class="${t.cols[i] && t.cols[i].num ? 'num' : ''}">${revEsc(v)}</td>`).join('')}</tr>` : ''}</tbody></table></div>${t.nota ? `<div style="font-size:11px;color:var(--muted);margin-top:4px;">${revEsc(t.nota)}</div>` : ''}</div>`;
+  const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalPapelReval';
+  bg.innerHTML = `<div class="modal" style="width:min(1100px,96vw);max-height:92vh;overflow:auto;">
+    <h3>Papel de trabajo — Revaluación de saldos en ${revEsc(moneda)} al ${fechaCorta(fecha)}${b ? ' · ' + revEsc(b.name) : ''}</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:6px;">Tipo de cambio de cierre: <strong>${fmtTC(e.tc)}</strong> pesos por 1 ${revEsc(moneda)}${e.anterior ? ` · Cierre anterior: ${fechaCorta(e.anterior.fecha)} a ${fmtTC(e.anterior.tc)}` : ' · Primer cierre de esta moneda'}.
+      Método: las partidas monetarias en moneda extranjera (cuentas por pagar y por cobrar, bancos y efectivo) se expresan al tipo de cambio de cierre (NIF B-15); la diferencia contra su valor registrado se reconoce en resultados como ganancia o pérdida cambiaria <em>no realizada</em>. El tipo de cambio se captura en Configuración → Tipos de cambio de cierre.</p>
+    ${html(T.proveedores)}${html(T.clientes)}${html(T.cuentas)}${html(T.determinacion)}${html(T.asiento)}
+    <div class="modal-actions"><button class="btn btn-ghost" id="prCerrar">Cerrar</button><button class="btn btn-ghost" id="prExcel">Excel</button><button class="btn btn-gold" id="prPdf">PDF</button></div>
+  </div>`;
+  document.body.appendChild(bg);
+  bg.querySelector('#prCerrar').addEventListener('click', () => bg.remove());
+  const sufijo = `${moneda} ${fecha}`;
+  bg.querySelector('#prExcel').addEventListener('click', () => {
+    const wb = XLSX.utils.book_new();
+    const hoja = (nombre, t) => { const aoa = [t.cols.map(c => c.t), ...t.filas]; if (t.pie) aoa.push(t.pie); XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), nombre.slice(0, 31)); };
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+      [`Papel de trabajo — Revaluación de saldos en ${moneda}`], [b?.razon_social || b?.name || ''], [`Cierre al ${fecha}`], [`Tipo de cambio de cierre: ${e.tc}`], [e.anterior ? `Cierre anterior: ${e.anterior.fecha} a ${e.anterior.tc}` : 'Primer cierre de esta moneda'], [],
+      ['Método', 'Partidas monetarias en moneda extranjera expresadas al tipo de cambio de cierre (NIF B-15); ganancia o pérdida cambiaria no realizada.'],
+    ]), 'Resumen');
+    hoja('Proveedores', T.proveedores); hoja('Clientes', T.clientes); hoja('Bancos y efectivo', T.cuentas); hoja('Determinacion', T.determinacion); hoja('Asiento', T.asiento);
+    XLSX.writeFile(wb, `Papel de trabajo revaluacion - ${b?.name || ''} - ${sufijo}.xlsx`);
+  });
+  bg.querySelector('#prPdf').addEventListener('click', () => {
+    const { doc, margin, y } = iniciarPdfConEncabezado(b, `Papel de trabajo — Revaluación de saldos en ${moneda} al ${fechaCorta(fecha)} · Tipo de cambio de cierre ${fmtTC(e.tc)}${e.anterior ? ` · Cierre anterior ${fechaCorta(e.anterior.fecha)} a ${fmtTC(e.anterior.tc)}` : ''}`, { orientation: 'landscape' });
+    let cy = y;
+    const pdfTxt = (v) => String(v).replace(/×/g, 'x').replace(/−/g, '-'); // la fuente estándar del PDF no trae estos símbolos
+    [T.proveedores, T.clientes, T.cuentas, T.determinacion, T.asiento].forEach(t => {
+      if (cy > 500) { doc.addPage(); cy = 40; }
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(10.5); doc.setTextColor(10, 31, 61); doc.text(pdfTxt(t.titulo), margin, cy + 4);
+      const ncol = t.cols.length;
+      doc.autoTable({ startY: cy + 10, head: [t.cols.map(c => pdfTxt(c.t))], body: t.filas.length ? t.filas.map(f => f.map(pdfTxt)) : [[{ content: 'Sin partidas abiertas en este cierre.', colSpan: ncol }]], foot: t.pie ? [t.pie.map(pdfTxt)] : undefined, margin: { left: margin, right: margin }, theme: 'grid',
+        styles: { fontSize: 7.5, cellPadding: 3 }, headStyles: { fillColor: [10, 31, 61], textColor: 255 }, footStyles: { fillColor: [235, 238, 244], textColor: 20, fontStyle: 'bold' },
+        columnStyles: Object.fromEntries(t.cols.map((c, i) => [i, { halign: c.num ? 'right' : 'left' }])),
+        didParseCell: (h) => { if ((h.section === 'foot' || h.section === 'head') && t.cols[h.column.index] && t.cols[h.column.index].num) h.cell.styles.halign = 'right'; } }); // las cifras también alineadas a la derecha en encabezado y pie
+      cy = doc.lastAutoTable.finalY + 6;
+      if (t.nota) { doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(102, 112, 133); const lineas = doc.splitTextToSize(pdfTxt(t.nota), 720); doc.text(lineas, margin, cy + 8); cy += 8 + lineas.length * 9; }
+      cy += 10;
+    });
+    doc.save(`Papel de trabajo revaluacion - ${b?.name || ''} - ${sufijo}.pdf`);
   });
 }
 
