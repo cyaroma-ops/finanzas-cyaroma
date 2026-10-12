@@ -13002,6 +13002,7 @@ async function openProveedoresCatModal(businessId, onClose) {
     renderProveedoresCatList(businessId);
   };
   document.getElementById('importProveedoresBtn').onclick = () => openImportExcelModal('proveedores', businessId, () => renderProveedoresCatList(businessId));
+  if (document.getElementById('faltantesProveedoresBtn')) document.getElementById('faltantesProveedoresBtn').onclick = () => abrirProveedoresFaltantes({ id: businessId }, () => renderProveedoresCatList(businessId));
 }
 async function renderProveedoresCatList(businessId) {
   const provs = await loadProveedoresCatalogo(businessId);
@@ -13402,26 +13403,29 @@ function openImportExcelModal(tipo, businessId, onDone, extra) {
 
       } else if (tipo === 'facturas') {
         const { data: catalogo } = await sb.from('fz_proveedores_catalogo').select('*').eq('business_id', businessId);
-        const payload = rows.map(r => {
-          const proveedorTexto = String(buscarColumna(r, ['proveedor', 'nombre comercial', 'nombre']) || '').trim();
-          const match = (catalogo || []).find(c => (c.nombre_comercial || c.nombre || '').trim().toLowerCase() === proveedorTexto.toLowerCase());
-          const estatusRaw = String(buscarColumna(r, ['estatus', 'status']) || '').trim().toLowerCase();
-          return {
-            business_id: businessId,
-            fecha: parseFechaExcel(buscarColumna(r, ['fecha'])),
-            proveedor: proveedorTexto || (match ? (match.nombre_comercial || match.nombre) : ''),
-            proveedor_id: match ? match.id : null,
-            factura: String(buscarColumna(r, ['factura', 'no factura', 'numero factura']) || '').trim() || null,
-            importe: Number(buscarColumna(r, ['importe', 'monto', 'total'])) || 0,
-            estatus: estatusRaw.startsWith('pag') ? 'Pagado' : 'Pendiente',
-            desglose: {},
-          };
-        }).filter(f => f.proveedor && f.importe);
-        if (!payload.length) { toast('No se encontraron filas válidas (revisa las columnas Proveedor e Importe).', 'error'); return; }
-        if (await importacionBloqueadaPorCierre(businessId, payload.map(x => x.fecha))) return; // periodo cerrado
+        const todos = (catalogo || []).map(p => ({ ...p }));
+        // el proveedor se reconoce por nombre normalizado contra razón social, nombre comercial y nombre (antes solo por nombre comercial exacto)
+        const buscarProv = (txt) => { const k = provNormNombre(txt); if (k.length < 3) return null; const igual = (p) => [p.nombre_comercial, p.nombre, p.razon_social].some(n => provNormNombre(n) === k); return todos.find(p => p.activo !== false && igual(p)) || todos.find(p => p.activo === false && igual(p)) || null; };
+        const crudas = rows.map(r => {
+          const proveedorTexto = String(buscarColumna(r, ['proveedor', 'nombre comercial', 'nombre']) || '').trim(), estatusRaw = String(buscarColumna(r, ['estatus', 'status']) || '').trim().toLowerCase();
+          return { proveedorTexto, fecha: parseFechaExcel(buscarColumna(r, ['fecha'])), factura: String(buscarColumna(r, ['factura', 'no factura', 'numero factura']) || '').trim() || null, importe: Number(buscarColumna(r, ['importe', 'monto', 'total'])) || 0, estatus: estatusRaw.startsWith('pag') ? 'Pagado' : 'Pendiente' };
+        }).filter(f => f.proveedorTexto && f.importe);
+        if (!crudas.length) { toast('No se encontraron filas válidas (revisa las columnas Proveedor e Importe).', 'error'); return; }
+        if (await importacionBloqueadaPorCierre(businessId, crudas.map(x => x.fecha))) return; // periodo cerrado
+        // los proveedores del archivo que aún no existen se CREAN en el catálogo (con un solo registro por nombre) y los desactivados que coinciden se reactivan: así ninguna factura queda sin proveedor
+        const porClave = {}, nuevosProv = [], reactivar = [];
+        for (const f of crudas) {
+          const k = provNormNombre(f.proveedorTexto); if (porClave[k]) continue;
+          const ex = buscarProv(f.proveedorTexto);
+          if (ex) { porClave[k] = ex; if (ex.activo === false) reactivar.push(ex.id); }
+          else { const fila = { business_id: businessId, nombre: f.proveedorTexto, nombre_comercial: f.proveedorTexto, razon_social: null, activo: true }; porClave[k] = fila; nuevosProv.push({ k, fila }); }
+        }
+        if (nuevosProv.length) { const { data: creados, error: eP } = await sb.from('fz_proveedores_catalogo').insert(nuevosProv.map(n => n.fila)).select(); if (eP || !creados) { toast('No se pudieron crear los proveedores: ' + ((eP && eP.message) || ''), 'error'); return; } nuevosProv.forEach((n, i) => { porClave[n.k] = creados[i]; }); }
+        for (const id of reactivar) await sb.from('fz_proveedores_catalogo').update({ activo: true }).eq('id', id);
+        const payload = crudas.map(f => { const p = porClave[provNormNombre(f.proveedorTexto)]; return { business_id: businessId, fecha: f.fecha, proveedor: provNombreVisible(p) || f.proveedorTexto, proveedor_id: p.id, factura: f.factura, importe: f.importe, estatus: f.estatus, desglose: {} }; });
         const { error } = await sb.from('fz_proveedores').insert(payload);
         if (error) { toast('Error al importar: ' + error.message, 'error'); return; }
-        toast(`${payload.length} facturas importadas. Ya puedes desglosarlas por subcuenta.`);
+        toast(`${payload.length} facturas importadas${nuevosProv.length ? ` · ${nuevosProv.length} proveedor(es) nuevo(s) en el catálogo` : ''}${reactivar.length ? ` · ${reactivar.length} reactivado(s)` : ''}. Ya puedes desglosarlas por subcuenta.`);
 
       } else if (tipo === 'bancos_mov') {
         const cuentaId = extra;
@@ -16422,6 +16426,7 @@ async function renderDirectorioProveedores(el, b) {
   });
   const lista = Object.values(grupos).map(g => ({ ...g, pendiente: g.facturado - g.pagado })).sort((a,b) => b.pendienteMxn - a.pendienteMxn);
   const gruposDupDir = proveedoresDuplicados(catalogo || [], provConteosDe(all));
+  const faltantesDir = proveedoresFaltantes({ facturas: all || [], catalogo: catalogo || [], cfdis: [] }); const nFaltDir = faltantesDir.sinVinculo.length + faltantesDir.inactivos.length;
   let faltanRfc = false; // hay proveedores sin RFC y CFDI recibidos de los que se podría tomar
   if (!gruposDupDir.length && (catalogo || []).some(p => p.activo !== false && !provRfcValido(p.rfc))) { try { const rr = await sb.from('fz_cfdi').select('id', { count: 'exact', head: true }).eq('business_id', b.id).eq('direccion', 'recibido'); faltanRfc = !rr.error && (rr.count || 0) > 0; } catch (_) { faltanRfc = false; } }
 
@@ -16451,6 +16456,7 @@ async function renderDirectorioProveedores(el, b) {
         <h3>Directorio de proveedores</h3>
         <div style="display:flex;gap:8px;align-items:center;">
           <span class="hint">Clic en un proveedor para ver todo su historial</span>
+          ${nFaltDir ? `<button class="btn btn-ghost btn-sm" id="faltantesProvBtn" title="Hay proveedores con facturas que no están en el catálogo">Completar catálogo (${nFaltDir})</button>` : ''}
           ${gruposDupDir.length || faltanRfc ? `<button class="btn btn-ghost btn-sm" id="unificarProvBtn" title="Unificar proveedores dados de alta más de una vez y completar los RFC que faltan">${gruposDupDir.length ? `Unificar duplicados (${gruposDupDir.length})` : 'Completar RFC'}</button>` : ''}
           <div style="position:relative;">
             <button class="btn btn-gold btn-sm" id="nuevaTransaccionProvBtn">+ Nueva transacción</button>
@@ -16485,6 +16491,7 @@ async function renderDirectorioProveedores(el, b) {
     </div>
   `;
   wireProvTabs(el);
+  const fbtn = document.getElementById('faltantesProvBtn'); if (fbtn) fbtn.addEventListener('click', () => abrirProveedoresFaltantes(b, () => renderProveedores()));
   const ubtn = document.getElementById('unificarProvBtn'); if (ubtn) ubtn.addEventListener('click', () => abrirUnificarProveedores(b));
   document.getElementById('nuevaTransaccionProvBtn').addEventListener('click', (e) => {
     e.stopPropagation();
@@ -22432,6 +22439,113 @@ async function abrirUnificarProveedores(b) {
     <div id="unifResumen" style="font-size:12px;font-weight:600;margin:6px 0 8px;"></div><div id="unifCuerpo"></div>
     <div class="modal-actions"><button class="btn btn-ghost" id="unifCerrar">Cerrar</button></div></div>`;
   document.body.appendChild(bg); bg.querySelector('#unifCerrar').addEventListener('click', cerrar); pintar();
+}
+
+// ---- proveedores que tienen movimiento pero NO están en el catálogo ----
+// Tres orígenes: (1) facturas importadas/capturadas sin vínculo con el catálogo (proveedor_id vacío: el directorio las agrupa por el TEXTO), (2) proveedores desactivados (la antigua ✕) que aún tienen
+// facturas, y (3) emisores de los CFDI recibidos que todavía no son proveedor. Pura: recibe los datos ya cargados y devuelve qué falta y qué se propone.
+function proveedoresFaltantes({ facturas, catalogo, cfdis }) {
+  const fs = facturas || [], cat = catalogo || [], activos = cat.filter(p => p.activo !== false), porId = {}; cat.forEach(p => { porId[p.id] = p; });
+  const conteos = provConteosDe(fs);
+  const mejorActivo = (texto) => { const rk = cfdiRankearProveedores(activos, conteos, { rfc_emisor: '', nombre_emisor: texto }, {}).filter(x => x.score >= 80); return rk.length ? rk[0].p : null; };
+  const emisores = {}; (cfdis || []).forEach(c => { const r = provRfc(c.rfc_emisor); if (!r) return; const e = emisores[r] = emisores[r] || { rfc: r, n: 0, nombres: {} }; e.n++; const nm = String(c.nombre_emisor || '').trim(); if (nm) e.nombres[nm] = (e.nombres[nm] || 0) + 1; });
+  const emisorLista = Object.values(emisores).map(e => ({ rfc: e.rfc, n: e.n, nombre: Object.entries(e.nombres).sort((a, z) => z[1] - a[1])[0] ? Object.entries(e.nombres).sort((a, z) => z[1] - a[1])[0][0] : '' }));
+  const rfcsDe = (texto) => emisorLista.filter(e => e.nombre && provNormNombre(e.nombre) === provNormNombre(texto)).sort((a, z) => z.n - a.n).map(e => ({ rfc: e.rfc, n: e.n }));
+  // (1) sin vínculo: se agrupan por nombre normalizado (las variantes de mayúsculas, espacios o «S.A. de C.V.» son el mismo proveedor)
+  const g1 = {}; let sinNombre = 0;
+  fs.filter(f => !f.proveedor_id).forEach(f => { const k = provNormNombre(f.proveedor); if (k.length < 2) { sinNombre++; return; } const g = g1[k] = g1[k] || { clave: k, textos: {}, raws: new Set(), ids: [], n: 0, total: 0 }; const t = String(f.proveedor).trim(); g.textos[t] = (g.textos[t] || 0) + 1; g.raws.add(String(f.proveedor)); g.ids.push(f.id); g.n++; g.total = redondearMoneda(g.total + (Number(f.importe) || 0)); });
+  const sinVinculo = Object.values(g1).map(g => { const ts = Object.entries(g.textos).sort((a, z) => z[1] - a[1]).map(x => x[0]); const texto = ts[0]; const sug = mejorActivo(texto);
+    return { tipo: 'sinVinculo', clave: g.clave, texto, variantes: ts, textosOriginales: [...g.raws], ids: g.ids, n: g.n, total: g.total, sugerido: sug ? sug.id : null, rfcOpciones: rfcsDe(texto) }; }).sort((a, z) => z.n - a.n);
+  // (2) ligadas a un registro desactivado del catálogo
+  const g2 = {}; fs.filter(f => f.proveedor_id && porId[f.proveedor_id] && porId[f.proveedor_id].activo === false).forEach(f => { const g = g2[f.proveedor_id] = g2[f.proveedor_id] || { p: porId[f.proveedor_id], ids: [], textos: new Set(), n: 0, total: 0 }; g.ids.push(f.id); if (f.proveedor) g.textos.add(String(f.proveedor)); g.n++; g.total = redondearMoneda(g.total + (Number(f.importe) || 0)); });
+  const inactivos = Object.values(g2).map(g => { const sug = mejorActivo(provNombreVisible(g.p) || g.p.nombre); return { tipo: 'inactivo', p: g.p, texto: provNombreVisible(g.p), variantes: [...g.textos], ids: g.ids, n: g.n, total: g.total, sugerido: sug && sug.id !== g.p.id ? sug.id : null, rfcOpciones: rfcsDe(g.p.razon_social || g.p.nombre) }; }).sort((a, z) => z.n - a.n);
+  // (3) emisores de CFDI sin proveedor: ni el RFC ni el nombre existen en el catálogo, y no son ya uno de los grupos anteriores (esos reciben el RFC a través de su grupo)
+  const nombresGrupos = new Set([...sinVinculo.map(g => g.clave), ...inactivos.map(g => provNormNombre(g.texto))]);
+  const deCfdi = emisorLista.filter(e => { if (cat.some(p => provRfc(p.rfc) === e.rfc)) return false; const k = provNormNombre(e.nombre); if (k.length >= 3 && (nombresGrupos.has(k) || cat.some(p => [p.razon_social, p.nombre, p.nombre_comercial].some(n => provNormNombre(n) === k)))) return false; return true; })
+    .map(e => ({ tipo: 'cfdi', rfc: e.rfc, texto: e.nombre || e.rfc, n: e.n })).sort((a, z) => z.n - a.n);
+  return { sinVinculo, inactivos, deCfdi, sinNombre, total: sinVinculo.length + inactivos.length + deCfdi.length };
+}
+// Aplica lo elegido. acciones: { tipo:'crear'|'ligar'|'reactivar'|'ligarInactivo'|'crearCfdi', ... }. Nada se borra; no cambia ningún importe.
+async function proveedoresAplicarFaltantes(b, acciones) {
+  const r = { creados: 0, ligados: 0, reactivados: 0, facturas: 0, rfc: 0, falla: [] };
+  const { data: cat } = await sb.from('fz_proveedores_catalogo').select('*').eq('business_id', b.id); let catalogo = cat || [];
+  const moverFacturas = async (ids, provId, visible) => { for (let i = 0; i < ids.length; i += 100) { const { error } = await sb.from('fz_proveedores').update({ proveedor_id: provId, proveedor: visible }).eq('business_id', b.id).in('id', ids.slice(i, i + 100)); if (error) throw error; } r.facturas += ids.length; };
+  const ponerRfc = async (provId, rfc) => { if (!rfc) return; const p = catalogo.find(x => x.id === provId); if (!p || provRfc(p.rfc)) return; const v = provValidarRfcCatalogo(rfc, catalogo, provId); if (!v.ok || !v.rfc) return; const { error } = await sb.from('fz_proveedores_catalogo').update({ rfc: v.rfc }).eq('id', provId).eq('business_id', b.id); if (!error) { p.rfc = v.rfc; r.rfc++; } };
+  for (const a of acciones) {
+    try {
+      if (a.tipo === 'crear') {
+        const { data: nuevo, error } = await sb.from('fz_proveedores_catalogo').insert({ business_id: b.id, nombre: a.texto, nombre_comercial: a.texto, razon_social: null, activo: true }).select().single();
+        if (error || !nuevo) throw error || new Error('no se creó'); catalogo.push(nuevo); r.creados++;
+        const visible = provNombreVisible(nuevo); await moverFacturas(a.ids, nuevo.id, visible); await ponerRfc(nuevo.id, a.rfc);
+        await proveedoresRenombrarPagos(b, nuevo.id, a.ids, [...new Set([...(a.variantes || []), ...(a.textosOriginales || [])])].filter(t => t && t !== visible), visible);
+      } else if (a.tipo === 'ligar') {
+        const p = catalogo.find(x => x.id === a.proveedorId); if (!p) throw new Error('El proveedor elegido no existe.');
+        const visible = provNombreVisible(p); await moverFacturas(a.ids, p.id, visible); r.ligados++; await ponerRfc(p.id, a.rfc);
+        await proveedoresRenombrarPagos(b, p.id, a.ids, [...new Set([...(a.variantes || []), ...(a.textosOriginales || [])])].filter(t => t && t !== visible), visible);
+      } else if (a.tipo === 'reactivar') {
+        const { error } = await sb.from('fz_proveedores_catalogo').update({ activo: true }).eq('id', a.proveedorId).eq('business_id', b.id); if (error) throw error;
+        const p = catalogo.find(x => x.id === a.proveedorId); if (p) p.activo = true; r.reactivados++; await ponerRfc(a.proveedorId, a.rfc);
+      } else if (a.tipo === 'ligarInactivo') {
+        const u = await proveedoresUnificar(b, a.proveedorId, [a.desdeId], {}); if (!u.ok) throw new Error((u.falla || []).join(' · ')); r.ligados++; r.facturas += u.movidas || 0; await ponerRfc(a.proveedorId, a.rfc);
+      } else if (a.tipo === 'crearCfdi') {
+        const v = provValidarRfcCatalogo(a.rfc, catalogo, null); const fila = { business_id: b.id, nombre: a.texto, razon_social: a.texto, activo: true }; if (v.ok && v.rfc) fila.rfc = v.rfc;
+        const { data: nuevo, error } = await sb.from('fz_proveedores_catalogo').insert(fila).select().single(); if (error || !nuevo) throw error || new Error('no se creó'); catalogo.push(nuevo); r.creados++;
+      }
+    } catch (e) { r.falla.push(`«${a.texto || a.proveedorId || ''}»: ${(e && e.message) || e}`); }
+  }
+  registrarAuditoria(b.id, 'editar', 'Proveedores', `Catálogo completado: ${r.creados} creado(s), ${r.ligados} ligado(s), ${r.reactivados} reactivado(s), ${r.facturas} factura(s) con vínculo, ${r.rfc} RFC`);
+  return r;
+}
+
+async function abrirProveedoresFaltantes(b, alCambiar) {
+  if (!puedeReabrirPeriodo()) { toast('Solo Administrador, Propietario, Socio o Gerencia pueden completar el catálogo.', 'error'); return; }
+  const cargar = async () => {
+    const [cat, fs, cf] = await Promise.all([sb.from('fz_proveedores_catalogo').select('*').eq('business_id', b.id), fetchTodasLasPaginas(() => sb.from('fz_proveedores').select('id,proveedor_id,proveedor,importe,importe_pagado').eq('business_id', b.id).order('id')), fetchTodasLasPaginas(() => sb.from('fz_cfdi').select('rfc_emisor,nombre_emisor').eq('business_id', b.id).eq('direccion', 'recibido').order('id'))]);
+    const catalogo = cat.data || [];
+    return { catalogo, F: proveedoresFaltantes({ facturas: fs.data || [], catalogo, cfdis: (cf && cf.data) || [] }) };
+  };
+  let D = await cargar(), huboCambios = false;
+  const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalProvFaltantes';
+  const cerrar = () => { bg.remove(); if (huboCambios && alCambiar) alCambiar(); };
+  const pintar = () => {
+    const F = D.F, activos = D.catalogo.filter(p => p.activo !== false).sort((a, z) => provNombreVisible(a).localeCompare(provNombreVisible(z)));
+    const optsLigar = (sel) => `<optgroup label="Ligar a un proveedor del catálogo">${activos.map(p => `<option value="lig:${p.id}" ${sel === p.id ? 'selected' : ''}>${revEsc(provNombreVisible(p))}${p.rfc ? ' · ' + revEsc(p.rfc) : ''}</option>`).join('')}</optgroup>`;
+    const selRfc = (ops) => ops.length ? `<select class="cell falt-rfc" style="width:170px;"><option value="">sin RFC</option>${ops.map(o => `<option value="${o.rfc}" ${ops.length === 1 ? 'selected' : ''}>${o.rfc} · ${o.n} XML</option>`).join('')}</select>` : '<span style="color:var(--muted);font-size:11.5px;">sin XML con ese nombre</span>';
+    const fila = (cls, i, nombre, sub, cuenta, controles) => `<div class="falt-fila" data-cls="${cls}" data-i="${i}" style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);font-size:12.5px;">
+      <input type="checkbox" class="falt-sel" checked><div style="flex:1;min-width:0;overflow-wrap:anywhere;"><strong>${revEsc(nombre)}</strong>${sub ? `<div style="color:var(--muted);font-size:11px;">${sub}</div>` : ''}</div><div style="white-space:nowrap;color:var(--muted);min-width:110px;text-align:right;">${cuenta}</div><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end;max-width:420px;">${controles}</div></div>`;
+    const b1 = F.sinVinculo.map((g, i) => fila('s', i, g.texto, g.variantes.length > 1 ? `También escrito: ${g.variantes.slice(1, 4).map(revEsc).join(' · ')}` : '', `${g.n} factura(s) · ${fmt(g.total)}`,
+      `<select class="cell falt-acc" style="width:230px;"><option value="crear" ${g.sugerido ? '' : 'selected'}>➕ Crear en el catálogo</option>${optsLigar(g.sugerido)}</select>${selRfc(g.rfcOpciones)}`)).join('');
+    const b2 = F.inactivos.map((g, i) => fila('i', i, g.texto, 'Desactivado en el catálogo', `${g.n} factura(s) · ${fmt(g.total)}`,
+      `<select class="cell falt-acc" style="width:230px;"><option value="reactivar" ${g.sugerido ? '' : 'selected'}>↺ Reactivar</option>${optsLigar(g.sugerido)}</select>${selRfc(g.rfcOpciones)}`)).join('');
+    const b3 = F.deCfdi.map((g, i) => fila('c', i, g.texto, `RFC ${revEsc(g.rfc)}`, `${g.n} XML`, '<span style="font-size:11.5px;color:var(--muted);">➕ Crear con su RFC</span>')).join('');
+    const bloque = (tit, ayuda, html) => html ? `<div style="font-size:13px;font-weight:700;margin:12px 0 2px;">${tit}</div><div style="font-size:11.5px;color:var(--muted);margin-bottom:4px;">${ayuda}</div>${html}` : '';
+    bg.querySelector('#faltCuerpo').innerHTML = !F.total ? '<p class="empty" style="padding:14px 0;">✓ Todos los proveedores que tienen facturas o XML ya están en tu catálogo.</p>'
+      : bloque(`Facturas sin proveedor del catálogo (${F.sinVinculo.length})`, 'Vienen de Excel o de capturas que quedaron solo con el nombre escrito. Se agrupan las variantes de un mismo nombre.', b1) + bloque(`Desactivados que todavía tienen facturas (${F.inactivos.length})`, 'Se desactivaron con la antigua ✕ pero siguen apareciendo en el directorio.', b2) + bloque(`Emisores de tus XML que aún no son proveedor (${F.deCfdi.length})`, 'Proveedores que aparecen en CFDI recibidos y no existen en el catálogo.', b3);
+    bg.querySelector('#faltResumen').textContent = F.total ? `${F.total} proveedor(es) con facturas o XML que no están en el catálogo${F.sinNombre ? ` · ${F.sinNombre} factura(s) sin nombre no se pueden asignar` : ''}` : '';
+    bg.querySelector('#faltAplicar').style.display = F.total ? '' : 'none';
+  };
+  bg.innerHTML = `<div class="modal" style="width:min(980px,96vw);max-height:92vh;overflow:auto;"><h3>Completar el catálogo de proveedores</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 4px;">Trae al catálogo los proveedores que ya tienen facturas o XML. Por cada uno decides si se <strong>crea</strong>, se <strong>liga a uno que ya existe</strong> (para no duplicar) o se <strong>reactiva</strong>. Las facturas quedan ligadas al proveedor; <strong>no se borra nada ni cambia ningún importe</strong>.</p>
+    <div id="faltResumen" style="font-size:12px;font-weight:600;margin:6px 0 0;"></div><div id="faltCuerpo"></div>
+    <div class="modal-actions"><button class="btn btn-ghost" id="faltCerrar">Cerrar</button><button class="btn btn-gold" id="faltAplicar">Aplicar a los marcados</button></div></div>`;
+  document.body.appendChild(bg); bg.querySelector('#faltCerrar').addEventListener('click', cerrar); pintar();
+  bg.querySelector('#faltAplicar').addEventListener('click', async () => {
+    const F = D.F, acciones = [];
+    bg.querySelectorAll('.falt-fila').forEach(fl => {
+      if (!fl.querySelector('.falt-sel').checked) return;
+      const i = Number(fl.dataset.i), cls = fl.dataset.cls, acc = (fl.querySelector('.falt-acc') || {}).value, rfc = (fl.querySelector('.falt-rfc') || {}).value || null;
+      if (cls === 's') { const g = F.sinVinculo[i], base = { texto: g.texto, ids: g.ids, variantes: g.variantes, textosOriginales: g.textosOriginales, rfc }; acciones.push(acc && acc.startsWith('lig:') ? { ...base, tipo: 'ligar', proveedorId: acc.slice(4) } : { ...base, tipo: 'crear' }); }
+      else if (cls === 'i') { const g = F.inactivos[i]; acciones.push(acc && acc.startsWith('lig:') ? { tipo: 'ligarInactivo', desdeId: g.p.id, proveedorId: acc.slice(4), texto: g.texto, rfc } : { tipo: 'reactivar', proveedorId: g.p.id, texto: g.texto, rfc }); }
+      else if (cls === 'c') { const g = F.deCfdi[i]; acciones.push({ tipo: 'crearCfdi', texto: g.texto, rfc: g.rfc }); }
+    });
+    if (!acciones.length) { toast('Marca al menos un proveedor.', 'error'); return; }
+    const cuenta = (t) => acciones.filter(a => a.tipo === t).length;
+    if (!confirm(`Se van a crear ${cuenta('crear') + cuenta('crearCfdi')} proveedor(es), ligar ${cuenta('ligar') + cuenta('ligarInactivo')} a uno existente y reactivar ${cuenta('reactivar')}. Las facturas quedan ligadas al proveedor y el nombre de sus pagos se iguala. No se borra nada ni cambia ningún importe; no se deshace automáticamente. ¿Continuar?`)) return;
+    const btn = bg.querySelector('#faltAplicar'); btn.disabled = true; btn.textContent = 'Aplicando…';
+    const r = await proveedoresAplicarFaltantes(b, acciones);
+    toast(`Catálogo completado: ${r.creados} creado(s) · ${r.ligados} ligado(s) · ${r.reactivados} reactivado(s) · ${r.facturas} factura(s) con proveedor${r.rfc ? ` · ${r.rfc} RFC` : ''}.${r.falla.length ? ' Con problemas: ' + r.falla.join(' · ') : ''}`, r.falla.length ? 'error' : undefined);
+    huboCambios = true; btn.disabled = false; btn.textContent = 'Aplicar a los marcados'; D = await cargar(); pintar();
+  });
 }
 
 // ---- clasificación: pantalla ----
