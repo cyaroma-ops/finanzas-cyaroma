@@ -16366,6 +16366,8 @@ async function renderDirectorioProveedores(el, b) {
   });
   const lista = Object.values(grupos).map(g => ({ ...g, pendiente: g.facturado - g.pagado })).sort((a,b) => b.pendienteMxn - a.pendienteMxn);
   const gruposDupDir = proveedoresDuplicados(catalogo || [], provConteosDe(all));
+  let faltanRfc = false; // hay proveedores sin RFC y CFDI recibidos de los que se podría tomar
+  if (!gruposDupDir.length && (catalogo || []).some(p => p.activo !== false && !provRfcValido(p.rfc))) { try { const rr = await sb.from('fz_cfdi').select('id', { count: 'exact', head: true }).eq('business_id', b.id).eq('direccion', 'recibido'); faltanRfc = !rr.error && (rr.count || 0) > 0; } catch (_) { faltanRfc = false; } }
 
   // Resumen general: por pagar, pagado este mes, facturas pendientes, pendientes de desglosar
   const mesActual = STATE.currentMonth;
@@ -16393,7 +16395,7 @@ async function renderDirectorioProveedores(el, b) {
         <h3>Directorio de proveedores</h3>
         <div style="display:flex;gap:8px;align-items:center;">
           <span class="hint">Clic en un proveedor para ver todo su historial</span>
-          ${gruposDupDir.length ? `<button class="btn btn-ghost btn-sm" id="unificarProvBtn" title="Hay proveedores dados de alta más de una vez">Unificar duplicados (${gruposDupDir.length})</button>` : ''}
+          ${gruposDupDir.length || faltanRfc ? `<button class="btn btn-ghost btn-sm" id="unificarProvBtn" title="Unificar proveedores dados de alta más de una vez y completar los RFC que faltan">${gruposDupDir.length ? `Unificar duplicados (${gruposDupDir.length})` : 'Completar RFC'}</button>` : ''}
           <div style="position:relative;">
             <button class="btn btn-gold btn-sm" id="nuevaTransaccionProvBtn">+ Nueva transacción</button>
             <div id="nuevaTransaccionProvDropdown" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:180px;overflow:hidden;">
@@ -22154,26 +22156,31 @@ function provNormNombre(s) {
   for (let i = 0; i < 4; i++) { let cambio = false; for (const r of sufijos) { const m = n.replace(r, ''); if (m !== n && m.length >= 3) { n = m; cambio = true; } } if (!cambio) break; }
   return n.trim();
 }
+// un RFC que identifica a un contribuyente: 3-4 letras + fecha + homoclave; los genéricos (público en general, extranjero) NO identifican a nadie
+function provRfcValido(r) { const x = String(r || '').toUpperCase().trim(); return /^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$/.test(x) && !['XAXX010101000', 'XEXX010101000'].includes(x); }
+const provRfc = (r) => provRfcValido(r) ? String(r).toUpperCase().trim() : '';
 // el nombre que se VE de un proveedor del catálogo: la misma fórmula del directorio ("razón social — nombre comercial")
 function provNombreVisible(p) { return p ? (p.razon_social ? `${p.razon_social}${p.nombre_comercial ? ' — ' + p.nombre_comercial : ''}` : (p.nombre_comercial || p.nombre || '')) : ''; }
 const provTokens = (s) => new Set(provNormNombre(s).split(' ').filter(t => t.length >= 3 && !['DEL', 'LOS', 'LAS', 'SUS'].includes(t)));
 function provSimilitud(a, b) { const A = provTokens(a), B = provTokens(b); if (!A.size || !B.size) return 0; let i = 0; A.forEach(t => { if (B.has(t)) i++; }); return i / (A.size + B.size - i); }
 // qué tan probable es que el proveedor "p" del catálogo sea el del CFDI (RFC y nombre); conteos = facturas que tiene cada uno; historial = proveedores que ya recibieron CFDI de ese RFC
 function cfdiRankearProveedores(catalogo, conteos, c, historial) {
-  const rfcE = String(c.rfc_emisor || '').toUpperCase().trim(), nomE = provNormNombre(c.nombre_emisor);
+  const rfcE = provRfc(c.rfc_emisor), nomE = provNormNombre(c.nombre_emisor);
   const lista = catalogo.map(p => {
-    const nombres = [p.razon_social, p.nombre, p.nombre_comercial].filter(Boolean);
+    const nombres = [p.razon_social, p.nombre, p.nombre_comercial].filter(Boolean), rfcP = provRfc(p.rfc);
+    const conflicto = !!(rfcE && rfcP && rfcP !== rfcE); // el proveedor ya tiene OTRO RFC: es otro contribuyente aunque el nombre se parezca
     let score = 0, motivo = '';
     const poner = (s, m) => { if (s > score) { score = s; motivo = m; } };
-    if (rfcE.length >= 10 && String(p.rfc || '').toUpperCase().trim() === rfcE) poner(100, 'por RFC');
-    if (historial && historial[p.id]) poner(90, 'porque ya le clasificaste otro CFDI de este RFC');
+    if (rfcE && rfcP === rfcE) poner(100, 'por RFC');
+    if (historial && historial[p.id] && !conflicto) poner(90, 'porque ya le clasificaste otro CFDI de este RFC');
     if (nomE.length >= 3) {
       nombres.forEach(n => { if (provNormNombre(n) === nomE) poner(p.razon_social && provNormNombre(p.razon_social) === nomE ? 83 : 80, 'por nombre (el catálogo no tiene su RFC)'); });
       const sim = Math.max(0, ...nombres.map(n => provSimilitud(n, c.nombre_emisor)));
       if (sim >= 0.75) poner(50 + Math.round(30 * sim), 'por nombre parecido');
       nombres.forEach(n => { const nn = provNormNombre(n); const corto = nn.length < nomE.length ? nn : nomE, largo = nn.length < nomE.length ? nomE : nn; if (corto.split(' ').length >= 2 && corto.length >= 8 && largo.includes(corto)) poner(60, 'por nombre contenido'); });
     }
-    return { p, score, motivo, n: (conteos[p.id] || {}).n || 0 };
+    if (conflicto && score > 0) { score = Math.min(score, 45); motivo = `el nombre coincide pero tiene OTRO RFC (${rfcP})`; } // nunca se propone solo
+    return { p, score, motivo, n: (conteos[p.id] || {}).n || 0, conflicto, rfcP };
   }).filter(x => x.score > 0);
   lista.sort((a, z) => z.score - a.score || z.n - a.n || (z.p.rfc ? 1 : 0) - (a.p.rfc ? 1 : 0));
   return lista;
@@ -22186,7 +22193,7 @@ function proveedoresDuplicados(catalogo, conteos) {
   const dueno = {};
   activos.forEach(p => {
     const llaves = new Set();
-    const rfc = String(p.rfc || '').toUpperCase().trim(); if (rfc.length >= 10) llaves.add('rfc:' + rfc);
+    const rfc = provRfc(p.rfc); if (rfc) llaves.add('rfc:' + rfc);
     [p.razon_social, p.nombre, p.nombre_comercial].forEach(n => { const k = provNormNombre(n); if (k.length >= 4) llaves.add('n:' + k); });
     llaves.forEach(k => { if (dueno[k] && dueno[k] !== p.id) padre[raiz(p.id)] = raiz(dueno[k]); else dueno[k] = p.id; });
   });
@@ -22197,6 +22204,32 @@ function proveedoresDuplicados(catalogo, conteos) {
       .sort((a, z) => z.n - a.n || (z.p.rfc ? 1 : 0) - (a.p.rfc ? 1 : 0));
     return { miembros, sugerido: miembros[0].p.id, facturas: miembros.reduce((s, m) => s + m.n, 0) };
   }).sort((a, z) => z.facturas - a.facturas);
+}
+// proveedores SIN RFC cuyo RFC se puede tomar de los CFDI recibidos: el nombre del emisor coincide (sin "S.A. de C.V.") y los CFDI traen un solo RFC.
+// Si los CFDI de ese nombre traen varios RFC no se decide solo: se ofrecen para que elijas.
+function proveedoresRfcSugeridos(catalogo, cfdis) {
+  const porRfc = {};
+  (cfdis || []).forEach(c => { const r = provRfc(c.rfc_emisor); if (!r) return; const g = porRfc[r] = porRfc[r] || { rfc: r, n: 0, nombre: c.nombre_emisor || '' }; g.n++; });
+  const poseidos = {}; catalogo.filter(p => p.activo !== false && provRfc(p.rfc)).forEach(p => { (poseidos[provRfc(p.rfc)] = poseidos[provRfc(p.rfc)] || []).push(p); });
+  return catalogo.filter(p => p.activo !== false && !provRfc(p.rfc)).map(p => {
+    const opciones = Object.values(porRfc).filter(g => cfdiRankearProveedores([p], {}, { rfc_emisor: g.rfc, nombre_emisor: g.nombre }, {}).some(x => x.score >= 80)).sort((a, z) => z.n - a.n);
+    if (!opciones.length) return null;
+    return { p, opciones: opciones.map(o => ({ rfc: o.rfc, n: o.n, nombre: o.nombre, yaDe: (poseidos[o.rfc] || []).map(q => provNombreVisible(q)) })) };
+  }).filter(Boolean);
+}
+// guarda los RFC elegidos (solo si el proveedor sigue sin RFC)
+async function proveedoresAplicarRfc(b, items) {
+  let n = 0; const falla = [];
+  for (const it of items) {
+    if (!provRfcValido(it.rfc)) { falla.push(`RFC no válido para «${it.nombre}»`); continue; }
+    const { data: fila } = await sb.from('fz_proveedores_catalogo').select('id,rfc,business_id').eq('id', it.id).maybeSingle();
+    if (!fila || fila.business_id !== b.id) { falla.push(`«${it.nombre}» no se encontró.`); continue; }
+    if (provRfcValido(fila.rfc)) { falla.push(`«${it.nombre}» ya tiene RFC (${provRfc(fila.rfc)}): no se cambia.`); continue; } // nunca se pisa un RFC válido
+    const { error } = await sb.from('fz_proveedores_catalogo').update({ rfc: provRfc(it.rfc) }).eq('id', it.id).eq('business_id', b.id);
+    if (error) falla.push(`«${it.nombre}»: ${error.message}`); else n++;
+  }
+  if (n) registrarAuditoria(b.id, 'editar', 'Proveedores', `RFC completados desde los CFDI: ${n} proveedor(es)`);
+  return { ok: !falla.length, n, falla };
 }
 // facturas por proveedor del catálogo (cantidad, total facturado y saldo)
 function provConteosDe(facturas) {
@@ -22215,61 +22248,131 @@ async function cfdiHistorialProveedor(b, rfcE) {
   const o = {}; (fs || []).forEach(f => { if (f.proveedor_id) o[f.proveedor_id] = (o[f.proveedor_id] || 0) + 1; }); return o;
 }
 // unifica: mueve las facturas de los duplicados al proveedor que se conserva y desactiva (no borra) los sobrantes
-async function proveedoresUnificar(b, keepId, dupIds) {
+async function proveedoresUnificar(b, keepId, dupIds, opciones = {}) {
   const { data: keep } = await sb.from('fz_proveedores_catalogo').select('*').eq('id', keepId).maybeSingle();
-  if (!keep || keep.business_id !== b.id) return { ok: false, error: 'No se encontró el proveedor que se conserva.' };
-  let movidas = 0, importe = 0; const falla = [];
-  const llenar = {}; // al conservado se le completa el RFC si no lo tenía (nunca se pisa lo que ya tiene)
+  if (!keep || keep.business_id !== b.id) return { ok: false, error: 'No se encontró el proveedor que se conserva.', falla: ['No se encontró el proveedor que se conserva.'] };
+  // el nombre comercial del proveedor unificado: lo elige quien unifica (undefined = no se toca)
+  const cambiaNC = opciones.nombreComercial !== undefined && (opciones.nombreComercial || null) !== (keep.nombre_comercial || null);
+  const keepFinal = { ...keep, nombre_comercial: opciones.nombreComercial !== undefined ? (opciones.nombreComercial || null) : keep.nombre_comercial };
+  const visible = provNombreVisible(keepFinal);
+  let movidas = 0, importe = 0; const falla = [], llenar = {}, idsMovidos = [], etiquetas = new Set();
+  if (cambiaNC) etiquetas.add(provNombreVisible(keep)); // si cambia el nombre comercial del conservado, sus pagos también siguen el nombre nuevo
   for (const dupId of dupIds) {
     if (dupId === keepId) continue;
     const { data: dup } = await sb.from('fz_proveedores_catalogo').select('*').eq('id', dupId).maybeSingle();
     if (!dup || dup.business_id !== b.id) { falla.push('Un proveedor duplicado no se encontró.'); continue; }
-    const { data: fs } = await sb.from('fz_proveedores').select('id,importe').eq('business_id', b.id).eq('proveedor_id', dupId);
-    const { error } = await sb.from('fz_proveedores').update({ proveedor_id: keepId, proveedor: provNombreVisible(keep) }).eq('business_id', b.id).eq('proveedor_id', dupId);
+    if (provRfcValido(keep.rfc) && provRfcValido(dup.rfc) && provRfc(keep.rfc) !== provRfc(dup.rfc)) { falla.push(`«${provNombreVisible(dup)}» tiene otro RFC (${provRfc(dup.rfc)}) distinto al que conservas (${provRfc(keep.rfc)}): son contribuyentes distintos, no se unifica.`); continue; }
+    const { data: fs } = await sb.from('fz_proveedores').select('id,importe,proveedor').eq('business_id', b.id).eq('proveedor_id', dupId);
+    (fs || []).forEach(f => { idsMovidos.push(f.id); if (f.proveedor) etiquetas.add(f.proveedor); });
+    [provNombreVisible(dup), dup.nombre, dup.razon_social, dup.nombre_comercial].forEach(t => { if (t) etiquetas.add(t); });
+    const { error } = await sb.from('fz_proveedores').update({ proveedor_id: keepId, proveedor: visible }).eq('business_id', b.id).eq('proveedor_id', dupId);
     if (error) { falla.push(`«${provNombreVisible(dup)}»: ${error.message}`); continue; }
     const { data: quedan } = await sb.from('fz_proveedores').select('id').eq('business_id', b.id).eq('proveedor_id', dupId);
     if ((quedan || []).length) { falla.push(`«${provNombreVisible(dup)}»: ${(quedan || []).length} factura(s) no se movieron`); continue; }
-    // solo el RFC se completa: no se ve en el nombre. La razón social y el nombre comercial NO se copian, porque cambiarían cómo se ve el proveedor conservado (p. ej. le pondrían una extensión "— CAPA")
-    if (!String(keep.rfc || '').trim() && String(dup.rfc || '').trim() && !llenar.rfc) llenar.rfc = dup.rfc;
+    // al conservado solo se le completa el RFC (no se ve en el nombre); la razón social y el nombre comercial no se copian solos
+    if (!provRfcValido(keep.rfc) && provRfcValido(dup.rfc) && !llenar.rfc) llenar.rfc = provRfc(dup.rfc);
     await sb.from('fz_proveedores_catalogo').update({ activo: false }).eq('id', dupId);
-    movidas += (fs || []).length; importe = redondearMoneda(importe + (fs || []).reduce((s, f) => s + (Number(f.importe) || 0), 0));
-    registrarAuditoria(b.id, 'editar', 'Proveedores', `Unificado «${provNombreVisible(dup)}» → «${provNombreVisible(keep)}»: ${(fs || []).length} factura(s) por ${fmt(importe)}`);
+    const imp = redondearMoneda((fs || []).reduce((x, f) => x + (Number(f.importe) || 0), 0));
+    movidas += (fs || []).length; importe = redondearMoneda(importe + imp);
+    registrarAuditoria(b.id, 'editar', 'Proveedores', `Unificado «${provNombreVisible(dup)}» → «${visible}»: ${(fs || []).length} factura(s) por ${fmt(imp)}`);
   }
+  if (cambiaNC) llenar.nombre_comercial = opciones.nombreComercial || null;
   if (Object.keys(llenar).length) await sb.from('fz_proveedores_catalogo').update(llenar).eq('id', keepId);
-  return { ok: !falla.length, movidas, importe, falla, error: falla[0] };
+  if (cambiaNC) await sb.from('fz_proveedores').update({ proveedor: visible }).eq('business_id', b.id).eq('proveedor_id', keepId); // el texto de sus facturas sigue al nombre elegido
+  const renombrados = await proveedoresRenombrarPagos(b, keepId, idsMovidos, [...etiquetas].filter(t => t && t !== visible), visible);
+  return { ok: !falla.length, movidas, importe, falla, error: falla[0], movimientos: renombrados.movimientos, polizas: renombrados.polizas };
+}
+// El libro muestra, en los renglones de PAGO, el nombre guardado en cada movimiento (banco/efectivo) y en cada línea de póliza. Para que el proveedor unificado no aparezca con dos nombres
+// en los auxiliares, esos textos se actualizan SOLO si: (1) son exactamente uno de los nombres con los que se conocía al duplicado, y (2) el movimiento/línea está ligado únicamente a facturas
+// del proveedor conservado. Una descripción personalizada o un pago que cubre facturas de otro proveedor no se toca. No cambia ningún importe, cuenta, fecha ni vínculo.
+async function proveedoresRenombrarPagos(b, keepId, idsMovidos, etiquetas, visible) {
+  if (!idsMovidos.length || !etiquetas.length) return { movimientos: 0, polizas: 0 };
+  const propias = new Set(); { const { data } = await sb.from('fz_proveedores').select('id').eq('business_id', b.id).eq('proveedor_id', keepId); (data || []).forEach(f => propias.add(f.id)); }
+  const movidos = new Set(idsMovidos), liga = (m) => [m.proveedor_factura_id, ...(Array.isArray(m.proveedor_factura_ids) ? m.proveedor_factura_ids : [])].filter(Boolean);
+  let movimientos = 0, polizas = 0;
+  for (const tabla of ['fz_bancos_mov', 'fz_efectivo_mov']) {
+    const { data } = await sb.from(tabla).select('id,proveedor,proveedor_factura_id,proveedor_factura_ids').eq('business_id', b.id).in('proveedor', etiquetas);
+    for (const m of (data || [])) { const ids = liga(m); if (!ids.length || !ids.some(x => movidos.has(x)) || !ids.every(x => propias.has(x))) continue; const { error } = await sb.from(tabla).update({ proveedor: visible }).eq('id', m.id); if (!error) movimientos++; }
+  }
+  for (let i = 0; i < idsMovidos.length; i += 100) {
+    const { data } = await sb.from('fz_polizas_lineas').select('id,proveedor,proveedor_factura_id').in('proveedor_factura_id', idsMovidos.slice(i, i + 100)).in('proveedor', etiquetas);
+    for (const l of (data || [])) { if (!propias.has(l.proveedor_factura_id)) continue; const { error } = await sb.from('fz_polizas_lineas').update({ proveedor: visible }).eq('id', l.id); if (!error) polizas++; }
+  }
+  if (movimientos || polizas) registrarAuditoria(b.id, 'editar', 'Proveedores', `Nombre actualizado a «${visible}» en ${movimientos} movimiento(s) de pago y ${polizas} línea(s) de póliza ligados a las facturas unificadas`);
+  return { movimientos, polizas };
 }
 
 async function abrirUnificarProveedores(b) {
   if (!puedeReabrirPeriodo()) { toast('Solo Administrador, Propietario, Socio o Gerencia pueden unificar proveedores.', 'error'); return; }
-  const cargar = async () => { const { data } = await sb.from('fz_proveedores_catalogo').select('*').eq('business_id', b.id); const conteos = await provConteos(b); return proveedoresDuplicados(data || [], conteos); };
-  let grupos = await cargar(), huboCambios = false;
+  const cargar = async () => {
+    const [{ data: cat }, conteos, rc] = await Promise.all([sb.from('fz_proveedores_catalogo').select('*').eq('business_id', b.id), provConteos(b), fetchTodasLasPaginas(() => sb.from('fz_cfdi').select('rfc_emisor,nombre_emisor').eq('business_id', b.id).eq('direccion', 'recibido').order('id'))]);
+    const catalogo = cat || [];
+    return { catalogo, grupos: proveedoresDuplicados(catalogo, conteos), rfcs: proveedoresRfcSugeridos(catalogo, (rc && rc.data) || []) };
+  };
+  let D = await cargar(), huboCambios = false, ST = {};
   const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalUnificarProv';
   const cerrar = () => { bg.remove(); if (huboCambios && typeof renderCurrentSection === 'function') renderCurrentSection(); };
+  const trivial = (m, n) => provNormNombre(n) === provNormNombre(m.p.razon_social || m.p.nombre); // un nombre comercial igual al legal no aporta nada
+  const iniciar = (g, keepId) => {
+    const keep = g.miembros.find(m => m.p.id === keepId), incl = {};
+    g.miembros.forEach(m => { if (m.p.id !== keepId) incl[m.p.id] = !(provRfcValido(keep.p.rfc) && provRfcValido(m.p.rfc) && provRfc(keep.p.rfc) !== provRfc(m.p.rfc)); }); // otro RFC = otro contribuyente: no se marca
+    return { keep: keepId, incl, nc: undefined, ncTocado: false };
+  };
+  const opcionesNC = (g, st) => [...new Set(g.miembros.filter(m => m.p.id === st.keep || st.incl[m.p.id]).map(m => ({ m, n: String(m.p.nombre_comercial || '').trim() })).filter(x => x.n && !trivial(x.m, x.n)).map(x => x.n))];
+  const ncActual = (g, st) => { // lo que quedará como nombre comercial: lo que elijas; si no has elegido, se conserva el que ya hay (o el único que exista en el grupo)
+    const ops = opcionesNC(g, st); if (!ops.length) return undefined;
+    if (st.ncTocado) return st.nc;
+    const keep = g.miembros.find(m => m.p.id === st.keep), kn = String(keep.p.nombre_comercial || '').trim();
+    return kn && ops.includes(kn) ? kn : (ops.length === 1 ? ops[0] : '');
+  };
   const pintar = () => {
-    const cuerpo = bg.querySelector('#unifCuerpo');
-    cuerpo.innerHTML = !grupos.length ? '<p class="empty" style="padding:14px 0;">✓ No se detectaron proveedores repetidos en el catálogo.</p>' : grupos.map((g, gi) => `
-      <div style="border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:10px;" data-g="${gi}">
-        ${g.miembros.map((m, mi) => `<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--line);font-size:12.5px;">
-          <label style="display:flex;align-items:center;gap:6px;min-width:110px;"><input type="radio" name="unifKeep${gi}" value="${m.p.id}" ${m.p.id === g.sugerido ? 'checked' : ''}> Conservar</label>
-          <div style="flex:1;min-width:0;overflow-wrap:anywhere;"><strong>${revEsc(m.visible)}</strong>${m.p.rfc ? `<span style="color:var(--muted);"> · ${revEsc(m.p.rfc)}</span>` : ''}</div>
-          <div style="white-space:nowrap;color:var(--muted);">${m.n} factura(s) · ${fmt(m.total)}</div></div>`).join('')}
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;gap:10px;flex-wrap:wrap;"><span style="font-size:11.5px;color:var(--muted);">Las facturas de los demás pasan al que conserves y esos quedan desactivados.</span><button class="btn btn-gold btn-sm unif-ir" data-g="${gi}">Unificar este grupo</button></div>
-      </div>`).join('');
-    bg.querySelector('#unifResumen').textContent = grupos.length ? `${grupos.length} grupo(s) con posibles duplicados · ${grupos.reduce((s, g) => s + g.miembros.length, 0)} registros` : '';
+    const cuerpo = bg.querySelector('#unifCuerpo'); const rf = D.rfcs;
+    const bloqueRfc = rf.length ? `<div style="border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:12px;">
+      <div style="font-size:13px;font-weight:700;">RFC faltantes (${rf.length} proveedor(es) sin RFC)</div>
+      <div style="font-size:11.5px;color:var(--muted);margin:2px 0 6px;">Salen de los CFDI que ya cargaste cuando el nombre del emisor coincide. El RFC es lo que identifica a un proveedor: con él se reconoce sin dudas y se detectan duplicados aunque cambie el nombre. Si hay varios RFC con ese nombre, elige tú.</div>
+      <div style="max-height:200px;overflow:auto;">${rf.map(x => `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--line);font-size:12.5px;"><div style="flex:1;min-width:0;overflow-wrap:anywhere;"><strong>${revEsc(provNombreVisible(x.p))}</strong></div>
+        <select class="cell rfc-sel" data-id="${x.p.id}" style="width:250px;">${x.opciones.length > 1 ? '<option value="">— elige el RFC —</option>' : ''}${x.opciones.map(o => `<option value="${o.rfc}">${o.rfc} · ${o.n} CFDI${o.yaDe.length ? ' · ya lo tiene ' + revEsc(o.yaDe[0].slice(0, 22)) : ''}</option>`).join('')}</select></div>`).join('')}</div>
+      <div style="text-align:right;margin-top:8px;"><button class="btn btn-gold btn-sm" id="unifGuardarRfc">Guardar los RFC elegidos</button></div></div>` : '';
+    const bloquesGrupos = !D.grupos.length ? '<p class="empty" style="padding:10px 0;">✓ No se detectaron proveedores repetidos en el catálogo.</p>' : D.grupos.map((g, gi) => {
+      const st = ST[gi] = ST[gi] && g.miembros.some(m => m.p.id === ST[gi].keep) ? ST[gi] : iniciar(g, g.sugerido), keep = g.miembros.find(m => m.p.id === st.keep), ops = opcionesNC(g, st), nc = ncActual(g, st);
+      const verComo = provNombreVisible({ ...keep.p, nombre_comercial: ops.length ? (nc || null) : keep.p.nombre_comercial });
+      return `<div style="border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:10px;" data-g="${gi}">
+        ${g.miembros.map(m => { const esKeep = m.p.id === st.keep, conflicto = !esKeep && provRfcValido(keep.p.rfc) && provRfcValido(m.p.rfc) && provRfc(keep.p.rfc) !== provRfc(m.p.rfc);
+          return `<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--line);font-size:12.5px;">
+          <label style="display:flex;align-items:center;gap:6px;min-width:96px;"><input type="radio" name="unifKeep${gi}" value="${m.p.id}" ${esKeep ? 'checked' : ''}> Conservar</label>
+          <label style="display:flex;align-items:center;gap:6px;min-width:84px;${esKeep ? 'visibility:hidden;' : ''}"><input type="checkbox" class="unif-incl" data-id="${m.p.id}" ${st.incl[m.p.id] ? 'checked' : ''}> Unificar</label>
+          <div style="flex:1;min-width:0;overflow-wrap:anywhere;"><strong>${revEsc(m.visible)}</strong>${m.p.rfc ? `<span style="color:var(--muted);"> · ${revEsc(m.p.rfc)}</span>` : ''}${conflicto ? '<div style="color:var(--red);font-size:11.5px;">⚠ RFC distinto al que conservas: es otro contribuyente, no se marca para unificar</div>' : ''}</div>
+          <div style="white-space:nowrap;color:var(--muted);">${m.n} factura(s) · ${fmt(m.total)}</div></div>`; }).join('')}
+        ${ops.length ? `<div style="margin-top:8px;font-size:12.5px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;"><label for="unifNc${gi}" style="font-weight:600;">Nombre comercial del proveedor unificado</label><select class="cell unif-nc" id="unifNc${gi}" data-g="${gi}" style="width:230px;"><option value="">(sin nombre comercial)</option>${ops.map(n => `<option value="${revEsc(n)}" ${nc === n ? 'selected' : ''}>${revEsc(n)}</option>`).join('')}</select><span style="color:var(--muted);font-size:11.5px;">Se verá como: <strong>${revEsc(verComo)}</strong></span></div>` : ''}
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;gap:10px;flex-wrap:wrap;"><span style="font-size:11.5px;color:var(--muted);">Las facturas de los marcados pasan al que conserves y esos quedan desactivados.</span><button class="btn btn-gold btn-sm unif-ir" data-g="${gi}">Unificar este grupo</button></div></div>`; }).join('');
+    cuerpo.innerHTML = `${bloqueRfc}${D.grupos.length ? `<div style="font-size:13px;font-weight:700;margin:2px 0 6px;">Proveedores repetidos</div>` : ''}${bloquesGrupos}`;
+    bg.querySelector('#unifResumen').textContent = D.grupos.length ? `${D.grupos.length} grupo(s) con posibles duplicados · ${D.grupos.reduce((x, g) => x + g.miembros.length, 0)} registros` : '';
+    const gr = cuerpo.querySelector('#unifGuardarRfc');
+    if (gr) gr.addEventListener('click', async () => {
+      const items = [...cuerpo.querySelectorAll('.rfc-sel')].filter(sel => sel.value).map(sel => ({ id: sel.dataset.id, rfc: sel.value, nombre: provNombreVisible((D.catalogo.find(p => p.id === sel.dataset.id)) || {}) }));
+      if (!items.length) { toast('Elige al menos un RFC para guardar.', 'error'); return; }
+      gr.disabled = true; gr.textContent = 'Guardando…';
+      const r = await proveedoresAplicarRfc(b, items);
+      toast(r.ok ? `RFC guardados en ${r.n} proveedor(es).` : `Se guardaron ${r.n}; con problemas: ${r.falla.join(' · ')}`, r.ok ? undefined : 'error');
+      huboCambios = true; D = await cargar(); ST = {}; pintar();
+    });
+    cuerpo.querySelectorAll('input[type=radio]').forEach(rd => rd.addEventListener('change', () => { const gi = Number(rd.name.replace('unifKeep', '')); ST[gi] = iniciar(D.grupos[gi], rd.value); pintar(); }));
+    cuerpo.querySelectorAll('.unif-incl').forEach(ck => ck.addEventListener('change', () => { const gi = Number(ck.closest('[data-g]').dataset.g); ST[gi].incl[ck.dataset.id] = ck.checked; pintar(); }));
+    cuerpo.querySelectorAll('.unif-nc').forEach(sel => sel.addEventListener('change', () => { const gi = Number(sel.dataset.g); ST[gi].nc = sel.value; ST[gi].ncTocado = true; pintar(); }));
     cuerpo.querySelectorAll('.unif-ir').forEach(btn => btn.addEventListener('click', async () => {
-      const gi = Number(btn.dataset.g), g = grupos[gi], keepId = (cuerpo.querySelector(`input[name="unifKeep${gi}"]:checked`) || {}).value;
-      const dups = g.miembros.map(m => m.p.id).filter(x => x !== keepId); const k = g.miembros.find(m => m.p.id === keepId);
-      const mover = g.miembros.filter(m => m.p.id !== keepId).reduce((s, m) => s + m.n, 0);
-      if (!keepId || !dups.length) { toast('Elige cuál conservar.', 'error'); return; }
-      if (!confirm(`Se conservará «${k.visible}» y se moverán a él ${mover} factura(s) de los otros ${dups.length} registro(s), que quedarán desactivados (no se borran). No cambia ningún importe, pero no se puede deshacer automáticamente. ¿Continuar?`)) return;
+      const gi = Number(btn.dataset.g), g = D.grupos[gi], st = ST[gi], keep = g.miembros.find(m => m.p.id === st.keep);
+      const dups = g.miembros.filter(m => m.p.id !== st.keep && st.incl[m.p.id]); const mover = dups.reduce((x, m) => x + m.n, 0);
+      if (!dups.length) { toast('Marca al menos un proveedor para unificar.', 'error'); return; }
+      const ops = opcionesNC(g, st), nc = ncActual(g, st), verComo = provNombreVisible({ ...keep.p, nombre_comercial: ops.length ? (nc || null) : keep.p.nombre_comercial });
+      if (!confirm(`Se conservará «${verComo}» y se moverán a él ${mover} factura(s) de ${dups.length} registro(s), que quedarán desactivados (no se borran). No cambia ningún importe ni ningún pago (siguen ligados a sus facturas); el nombre que muestran los pagos ya registrados de esas facturas se actualiza al del proveedor conservado. No se puede deshacer automáticamente. ¿Continuar?`)) return;
       btn.disabled = true; btn.textContent = 'Unificando…';
-      const r = await proveedoresUnificar(b, keepId, dups);
-      if (!r.ok) toast('No se pudo unificar todo: ' + (r.falla || []).join(' · '), 'error'); else toast(`Unificado: ${r.movidas} factura(s) pasaron a «${k.visible}».`);
-      huboCambios = true; grupos = await cargar(); pintar();
+      const r = await proveedoresUnificar(b, st.keep, dups.map(m => m.p.id), ops.length ? { nombreComercial: nc || '' } : {});
+      toast(r.ok ? `Unificado: ${r.movidas} factura(s) pasaron a «${verComo}»${r.movimientos || r.polizas ? ` y se actualizó su nombre en ${r.movimientos || 0} pago(s)${r.polizas ? ' y ' + r.polizas + ' línea(s) de póliza' : ''}` : ''}.` : 'No se pudo unificar todo: ' + (r.falla || []).join(' · '), r.ok ? undefined : 'error');
+      huboCambios = true; D = await cargar(); ST = {}; pintar();
     }));
   };
-  bg.innerHTML = `<div class="modal" style="width:min(820px,96vw);max-height:92vh;overflow:auto;"><h3>Unificar proveedores repetidos</h3>
-    <p style="font-size:12.5px;color:var(--muted);margin:0 0 4px;">Se agrupan los proveedores del catálogo que comparten el RFC o el nombre (sin contar «S.A. de C.V.»). Por cada grupo elige cuál conservar: se propone el que tiene más facturas. <strong>Revisa cada grupo:</strong> si son sucursales o negocios distintos de verdad, no los unifiques.</p>
+  bg.innerHTML = `<div class="modal" style="width:min(860px,96vw);max-height:92vh;overflow:auto;"><h3>Proveedores: completar RFC y unificar repetidos</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 4px;">Se agrupan los proveedores que comparten el RFC o el nombre (sin contar «S.A. de C.V.»). Por grupo eliges cuál conservar (se propone el de más facturas) y el nombre comercial con el que se verá. Un proveedor con <strong>otro RFC</strong> es otro contribuyente y no se marca. <strong>Revisa cada grupo.</strong></p>
     <div id="unifResumen" style="font-size:12px;font-weight:600;margin:6px 0 8px;"></div><div id="unifCuerpo"></div>
     <div class="modal-actions"><button class="btn btn-ghost" id="unifCerrar">Cerrar</button></div></div>`;
   document.body.appendChild(bg); bg.querySelector('#unifCerrar').addEventListener('click', cerrar); pintar();
@@ -22319,7 +22422,7 @@ async function abrirCfdiClasificar(id) {
   // el mejor candidato; si pertenece a un grupo de duplicados (el mismo proveedor dado de alta dos veces) se propone el MÁS USADO del grupo, no el primero que apareció
   let mejor = ranking[0] || null;
   if (mejor) { const g = grupoDe(mejor.p.id); if (g) { const k = ranking.find(x => x.p.id === g.sugerido); if (k) mejor = k; } }
-  const E = { prov: mejor && mejor.score >= 50 ? mejor.p.id : 'nuevo', subs: conceptos.map(() => ''), cat: '', accion: 'crear', nuevoOk: false, motivoProv: mejor && mejor.score >= 50 ? mejor.motivo : '' };
+  const E = { prov: mejor && mejor.score >= 50 ? mejor.p.id : 'nuevo', subs: conceptos.map(() => ''), cat: '', accion: 'crear', nuevoOk: false, rfcOk: false, motivoProv: mejor && mejor.score >= 50 ? mejor.motivo : '' };
   const sd = await cfdiSubcuentaPorDefecto(b, E.prov); if (sd) E.subs = conceptos.map(() => sd);
   let candidatas = await cfdiCandidatasDuplicado(b, c, E.prov, nomE);
   const nombreSub = (sid) => { const s = subcuentas.find(x => x.id === sid); return s ? s.nombre : '—'; };
@@ -22341,16 +22444,27 @@ async function abrirCfdiClasificar(id) {
     const ligar = E.accion.startsWith('ligar:');
     const plan = cfdiPlanFactura({ cfdi: c, conceptos, subcuentas: E.subs, modoFiscal, categoriaRetencion: E.cat });
     const opcSub = (sel) => `<option value="">— elige —</option>${opcionesSubcuentaHtml(subcuentas, mayores, sel || null)}`;
+    const rkSel = ranking.find(x => x.p.id === E.prov), pSel = catalogo.find(p => p.id === E.prov), gDup = E.prov !== 'nuevo' ? grupoDe(E.prov) : null;
+    const hayParecidos = ranking.some(x => x.score >= 50), conflictosNombre = ranking.filter(x => x.conflicto), conflictoSel = !!(rkSel && rkSel.conflicto);
+    const etiqueta = (x) => `${revEsc(provNombreVisible(x.p))}${x.p.rfc ? ' · ' + revEsc(x.p.rfc) : ''} · ${x.n} factura(s)${x.conflicto ? ' · ⚠ RFC distinto' : ''}`;
+    const selectProvHtml = `<select id="clsProv" class="cell" style="width:100%;margin:2px 0 2px;">${ranking.length ? `<optgroup label="Coincidencias en tu catálogo">${ranking.map(x => `<option value="${x.p.id}" ${E.prov === x.p.id ? 'selected' : ''}>${etiqueta(x)}</option>`).join('')}</optgroup>` : ''}${catalogo.some(p => !ranking.some(x => x.p.id === p.id)) ? `<optgroup label="Otros proveedores">${catalogo.filter(p => !ranking.some(x => x.p.id === p.id)).map(p => `<option value="${p.id}" ${E.prov === p.id ? 'selected' : ''}>${revEsc(provNombreVisible(p))}${p.rfc ? ' · ' + revEsc(p.rfc) : ''}</option>`).join('')}</optgroup>` : ''}<option value="nuevo" ${E.prov === 'nuevo' ? 'selected' : ''}>➕ Crear proveedor nuevo: ${revEsc(c.nombre_emisor || rfcE)}</option></select>`;
+    const caja = (borde, fondo, html) => `<div style="border:1px solid ${borde};border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:12px;background:${fondo};">${html}</div>`;
+    let hintProvHtml = '';
+    if (E.prov === 'nuevo') {
+      hintProvHtml += `<div style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">${hayParecidos ? '' : conflictosNombre.length ? `Hay un proveedor con ese nombre pero con OTRO RFC (${conflictosNombre.map(x => revEsc(x.rfcP)).join(', ')}): se crea uno nuevo porque el RFC es lo que identifica a un proveedor.` : 'No hay un proveedor con ese RFC ni con ese nombre: se crea uno nuevo con su RFC.'}</div>`;
+      if (hayParecidos) hintProvHtml += caja('var(--red)', '#fff0f0', `<strong>Ojo: ya hay proveedores parecidos en tu catálogo</strong> (${ranking.filter(x => x.score >= 50).slice(0, 3).map(x => revEsc(provNombreVisible(x.p))).join(' · ')}). Crear uno nuevo lo duplicaría.<label style="display:block;margin-top:4px;"><input type="checkbox" id="clsNuevoOk" ${E.nuevoOk ? 'checked' : ''}> Sí, es un proveedor distinto: crear uno nuevo</label>`);
+    } else {
+      hintProvHtml += `<div style="font-size:11.5px;color:var(--muted);margin-bottom:${gDup || conflictoSel ? '6' : '10'}px;">Proveedor reconocido ${revEsc(E.motivoProv || 'elegido por ti')}. ${conflictoSel ? '' : (pSel && !provRfcValido(pSel.rfc) ? (provRfcValido(rfcE) ? `<strong>No tiene RFC: al clasificar se le guardará ${revEsc(rfcE)}</strong> para reconocerlo con exactitud la próxima vez.` : '') : pSel ? `RFC del proveedor: ${revEsc(pSel.rfc)}.` : '')}</div>`;
+      if (conflictoSel) hintProvHtml += caja('var(--red)', '#fff0f0', `<strong>Este proveedor ya tiene otro RFC (${revEsc(rkSel.rfcP)}) y el CFDI trae ${revEsc(rfcE)}.</strong> Un RFC distinto es otro contribuyente, aunque el nombre se parezca. Si de verdad es el mismo, no se le cambia el RFC.<label style="display:block;margin-top:4px;"><input type="checkbox" id="clsRfcOk" ${E.rfcOk ? 'checked' : ''}> Sí, es el mismo proveedor aunque el RFC es distinto</label>`);
+      if (gDup) hintProvHtml += caja('#e2b64b', '#fff9e8', `<strong>Este proveedor está repetido en tu catálogo (${gDup.miembros.length} registros):</strong> ${gDup.miembros.map(m => `${revEsc(m.visible)} (${m.n} fact.)`).join(' · ')}. Se propone el más usado; puedes unificarlos para que no vuelva a pasar. <button class="btn btn-ghost btn-sm" id="clsUnificar" style="margin-left:6px;">Unificar duplicados</button>`);
+    }
     cuerpo.innerHTML = `
       <div style="border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:12.5px;background:${modoFiscal ? '#eef4ff' : '#f6f1e6'};">${modoFiscal
         ? '<strong>Negocio fiscal:</strong> el IVA se <strong>separa</strong> (va a IVA acreditable) y las retenciones también; el gasto es el subtotal.'
         : '<strong>Negocio financiero:</strong> el gasto <strong>incluye el IVA</strong>; no se separa IVA ni retenciones.'}</div>
       <div style="font-size:12.5px;color:var(--muted);margin-bottom:10px;">${revEsc([c.serie, c.folio].filter(Boolean).join('-') || c.uuid)} · ${fechaCorta(c.fecha)} · ${revEsc(c.nombre_emisor || c.rfc_emisor)} <span style="color:var(--muted);">(${revEsc(rfcE)})</span> · Total ${fm(c.total)}</div>
       <label style="font-size:12.5px;font-weight:600;">Proveedor</label>
-      <select id="clsProv" class="cell" style="width:100%;margin:2px 0 2px;">${ranking.length ? `<optgroup label="Coincidencias en tu catálogo">${ranking.map(x => `<option value="${x.p.id}" ${E.prov === x.p.id ? 'selected' : ''}>${revEsc(provNombreVisible(x.p))}${x.p.rfc ? ' · ' + revEsc(x.p.rfc) : ''} · ${x.n} factura(s)</option>`).join('')}</optgroup>` : ''}${catalogo.some(p => !ranking.some(x => x.p.id === p.id)) ? `<optgroup label="Otros proveedores">${catalogo.filter(p => !ranking.some(x => x.p.id === p.id)).map(p => `<option value="${p.id}" ${E.prov === p.id ? 'selected' : ''}>${revEsc(provNombreVisible(p))}${p.rfc ? ' · ' + revEsc(p.rfc) : ''}</option>`).join('')}</optgroup>` : ''}<option value="nuevo" ${E.prov === 'nuevo' ? 'selected' : ''}>➕ Crear proveedor nuevo: ${revEsc(c.nombre_emisor || rfcE)}</option></select>
-      <div style="font-size:11.5px;color:var(--muted);margin-bottom:${E.prov !== 'nuevo' && grupoDe(E.prov) || (E.prov === 'nuevo' && ranking.some(x => x.score >= 50)) ? '6' : '10'}px;">${E.prov === 'nuevo' ? (ranking.some(x => x.score >= 50) ? '' : 'No hay un proveedor con ese RFC ni con ese nombre: se crea uno nuevo con su RFC.') : `Proveedor reconocido ${revEsc(E.motivoProv || 'elegido por ti')}.`}</div>
-      ${E.prov !== 'nuevo' && grupoDe(E.prov) ? `<div style="border:1px solid #e2b64b;border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:12px;background:#fff9e8;"><strong>Este proveedor está repetido en tu catálogo (${grupoDe(E.prov).miembros.length} registros):</strong> ${grupoDe(E.prov).miembros.map(m => `${revEsc(m.visible)} (${m.n} fact.)`).join(' · ')}. Se propone el más usado; puedes unificarlos para que no vuelva a pasar. <button class="btn btn-ghost btn-sm" id="clsUnificar" style="margin-left:6px;">Unificar duplicados</button></div>` : ''}
-      ${E.prov === 'nuevo' && ranking.some(x => x.score >= 50) ? `<div style="border:1px solid var(--red);border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:12px;background:#fff0f0;"><strong>Ojo: ya hay proveedores parecidos en tu catálogo</strong> (${ranking.slice(0, 3).map(x => revEsc(provNombreVisible(x.p))).join(' · ')}). Crear uno nuevo lo duplicaría.<label style="display:block;margin-top:4px;"><input type="checkbox" id="clsNuevoOk" ${E.nuevoOk ? 'checked' : ''}> Sí, es un proveedor distinto: crear uno nuevo</label></div>` : ''}
+      ${selectProvHtml}${hintProvHtml}
       ${candidatas.length ? `<div style="border:1px solid #e2b64b;border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:12.5px;background:#fff9e8;"><strong>Ya capturaste una factura parecida a mano.</strong> Para no duplicarla puedes ligarla a este CFDI:
         <label style="display:block;margin-top:4px;"><input type="radio" name="clsAccion" value="crear" ${!ligar ? 'checked' : ''}> Crear una factura nueva</label>
         ${candidatas.map(f => `<label style="display:block;"><input type="radio" name="clsAccion" value="ligar:${f.id}" ${E.accion === 'ligar:' + f.id ? 'checked' : ''}> Ligar a la factura ${revEsc(f.factura || 's/f')} · ${revEsc(f.proveedor)} · ${fechaCorta(f.fecha)} · ${fmtMon(f.importe, f.moneda)}${modoFiscal && !f.aplica_iva ? ' <span style="color:var(--red);">(sin IVA separado: al ligarla no se modifica)</span>' : ''}</label>`).join('')}</div>` : ''}
@@ -22360,12 +22474,13 @@ async function abrirCfdiClasificar(id) {
       ${conceptos.length > 1 ? `<div style="margin:6px 0 10px;font-size:12px;">Misma subcuenta para todos: <select id="clsTodas" class="cell" style="width:240px;">${opcSub('')}</select></div>` : ''}
       ${modoFiscal && tieneRet ? `<label style="font-size:12.5px;font-weight:600;">Categoría de retención</label><select id="clsCat" class="cell" style="width:100%;margin-bottom:10px;"><option value="">— elige —</option>${CATEGORIAS_RETENCION.map(k => `<option value="${revEsc(k.nombre)}" ${E.cat === k.nombre ? 'selected' : ''}>${revEsc(k.nombre)}</option>`).join('')}</select>` : ''}
       <div style="border:1px solid var(--line);border-radius:8px;padding:10px 12px;"><div style="font-size:12.5px;font-weight:700;margin-bottom:4px;">Así quedará la factura de proveedor</div>${vistaPrevia(plan)}<div style="margin-top:8px;font-size:11.5px;color:var(--muted);">Queda <strong>Pendiente de pago</strong>${c.metodo_pago ? ` (el CFDI indica ${revEsc(c.metodo_pago)}${c.forma_pago ? ' · forma ' + revEsc(c.forma_pago) : ''})` : ''}: el pago se registra como siempre.</div></div>`}`;
-    bg.querySelector('#clsConfirmar').disabled = !ligar && (!plan.ok || (E.prov === 'nuevo' && ranking.some(x => x.score >= 50) && !E.nuevoOk));
+    bg.querySelector('#clsConfirmar').disabled = !ligar && (!plan.ok || (E.prov === 'nuevo' && hayParecidos && !E.nuevoOk) || (conflictoSel && !E.rfcOk));
     bg.querySelector('#clsConfirmar').textContent = ligar ? 'Ligar a la factura' : 'Clasificar y crear la factura';
-    cuerpo.querySelector('#clsProv').addEventListener('change', async (ev) => { E.prov = ev.target.value; E.nuevoOk = false; const rk0 = ranking.find(x => x.p.id === E.prov); E.motivoProv = rk0 ? rk0.motivo : (catalogo.some(p => p.id === E.prov) ? 'elegido por ti' : ''); const sd2 = await cfdiSubcuentaPorDefecto(b, E.prov); if (sd2) E.subs = conceptos.map(() => sd2); candidatas = await cfdiCandidatasDuplicado(b, c, E.prov, nomE); if (!candidatas.some(f => E.accion === 'ligar:' + f.id)) E.accion = 'crear'; pintar(); });
+    cuerpo.querySelector('#clsProv').addEventListener('change', async (ev) => { E.prov = ev.target.value; E.nuevoOk = false; E.rfcOk = false; const rk0 = ranking.find(x => x.p.id === E.prov); E.motivoProv = rk0 ? rk0.motivo : (catalogo.some(p => p.id === E.prov) ? 'elegido por ti' : ''); const sd2 = await cfdiSubcuentaPorDefecto(b, E.prov); if (sd2) E.subs = conceptos.map(() => sd2); candidatas = await cfdiCandidatasDuplicado(b, c, E.prov, nomE); if (!candidatas.some(f => E.accion === 'ligar:' + f.id)) E.accion = 'crear'; pintar(); });
     cuerpo.querySelectorAll('input[name="clsAccion"]').forEach(r => r.addEventListener('change', () => { E.accion = r.value; pintar(); }));
     cuerpo.querySelectorAll('.cls-sub').forEach(sel => sel.addEventListener('change', () => { E.subs[Number(sel.dataset.i)] = sel.value; pintar(); }));
     const unif = cuerpo.querySelector('#clsUnificar'); if (unif) unif.addEventListener('click', () => { cerrar(); abrirUnificarProveedores(b); });
+    const rok = cuerpo.querySelector('#clsRfcOk'); if (rok) rok.addEventListener('change', () => { E.rfcOk = rok.checked; pintar(); });
     const nok = cuerpo.querySelector('#clsNuevoOk'); if (nok) nok.addEventListener('change', () => { E.nuevoOk = nok.checked; pintar(); });
     const todas = cuerpo.querySelector('#clsTodas'); if (todas) todas.addEventListener('change', () => { if (todas.value) { E.subs = conceptos.map(() => todas.value); pintar(); } });
     const cat = cuerpo.querySelector('#clsCat'); if (cat) cat.addEventListener('change', () => { E.cat = cat.value; pintar(); });
@@ -22403,12 +22518,12 @@ async function abrirCfdiClasificar(id) {
     let provId = E.prov, provNombre, provNuevoId = null;
     if (provId === 'nuevo') {
       provNombre = c.nombre_emisor || rfcE;
-      const { data: pn, error: eP } = await sb.from('fz_proveedores_catalogo').insert({ business_id: b.id, nombre: provNombre, razon_social: c.nombre_emisor || null, rfc: rfcE, activo: true }).select().single();
+      const { data: pn, error: eP } = await sb.from('fz_proveedores_catalogo').insert({ business_id: b.id, nombre: provNombre, razon_social: c.nombre_emisor || null, rfc: provRfc(rfcE) || null, activo: true }).select().single();
       if (eP || !pn) return falla('No se pudo crear el proveedor: ' + ((eP && eP.message) || ''));
       provId = pn.id; provNuevoId = pn.id;
     } else {
       const p0 = catalogo.find(p => p.id === provId); provNombre = p0 ? provNombreVisible(p0) : c.nombre_emisor; // el mismo nombre que ve el directorio
-      if (p0 && !String(p0.rfc || '').trim()) await sb.from('fz_proveedores_catalogo').update({ rfc: rfcE }).eq('id', provId); // el catálogo aprende el RFC: la próxima vez se reconoce por RFC
+      if (p0 && !provRfcValido(p0.rfc) && provRfcValido(rfcE)) await sb.from('fz_proveedores_catalogo').update({ rfc: provRfc(rfcE) }).eq('id', provId); // el catálogo aprende el RFC: la próxima vez se reconoce por RFC
     }
     const folio = await siguienteFolio(b.id, 'factura_proveedor');
     const { data: fac, error: eF } = await sb.from('fz_proveedores').insert({ business_id: b.id, proveedor_id: provId, proveedor: provNombre, folio, pagado_desde_tipo: null, pagado_desde_cuenta_id: null, ...plan.payload }).select().single();
