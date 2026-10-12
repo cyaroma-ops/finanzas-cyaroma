@@ -22681,7 +22681,22 @@ async function abrirCfdiClasificar(id) {
       const eC = await marcar(fid, 'Ligado a una factura de proveedor ya capturada');
       if (eC) { await sb.from('fz_proveedores').update({ cfdi_uuid: null }).eq('id', fid); return falla('No se pudo registrar la clasificación: ' + eC.message); }
       registrarAuditoria(b.id, 'editar', 'CFDI', `CFDI ${c.uuid} ligado a una factura de proveedor existente`);
-      cerrar(); toast('CFDI ligado a la factura existente.'); renderCfdi(); return;
+      // el RFC del CFDI también se guarda en el proveedor de esa factura (si no tenía), igual que al crear la factura nueva: así la próxima vez se reconoce por RFC.
+      // Nunca se pisa un RFC válido, y si otro proveedor ya tiene ese RFC (posible duplicado) no se guarda y se avisa.
+      const cand = candidatas.find(f => f.id === fid);
+      const provDest = cand && cand.proveedor_id ? cand.proveedor_id : (E.prov !== 'nuevo' ? E.prov : null);
+      let rfcGuardado = false, avisoRfc = '';
+      if (provDest && provRfcValido(rfcE)) {
+        const { data: pd } = await sb.from('fz_proveedores_catalogo').select('id,rfc,business_id').eq('id', provDest).maybeSingle();
+        if (pd && pd.business_id === b.id) {
+          if (!provRfcValido(pd.rfc)) {
+            const v = provValidarRfcCatalogo(rfcE, catalogo, provDest);
+            if (v.ok && v.rfc) { const { error: eR } = await sb.from('fz_proveedores_catalogo').update({ rfc: v.rfc }).eq('id', provDest).eq('business_id', b.id); rfcGuardado = !eR; }
+            else if (!v.ok) avisoRfc = ' No se guardó el RFC: ' + v.error;
+          } else if (provRfc(pd.rfc) !== provRfc(rfcE)) avisoRfc = ` Ojo: el proveedor de esa factura tiene otro RFC (${provRfc(pd.rfc)}) y el CFDI trae ${rfcE}; no se cambió.`;
+        }
+      }
+      cerrar(); toast(`CFDI ligado a la factura existente.${rfcGuardado ? ` Se guardó el RFC ${provRfc(rfcE)} del proveedor.` : ''}${avisoRfc}`, avisoRfc ? 'error' : undefined); renderCfdi(); return;
     }
     const plan = cfdiPlanFactura({ cfdi: c, conceptos, subcuentas: E.subs, modoFiscal, categoriaRetencion: E.cat });
     if (!plan.ok) return falla(plan.errores[0]);
