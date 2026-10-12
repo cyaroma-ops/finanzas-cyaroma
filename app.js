@@ -16472,6 +16472,7 @@ async function renderDirectorioProveedores(el, b) {
             <div id="nuevaTransaccionProvDropdown" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:180px;overflow:hidden;">
               <button class="ntp-factura" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Factura</button>
               <button class="ntp-pago" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Registrar pago</button>
+              <button class="ntp-nc" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Nota de crédito</button>
             </div>
           </div>
         </div>
@@ -16513,6 +16514,7 @@ async function renderDirectorioProveedores(el, b) {
     await openModalFacturaProveedor(null, b.id, catalogo, opcionesPagoDesde);
   });
   el.querySelector('.ntp-pago').addEventListener('click', () => abrirElegirFacturaPago(b.id));
+  el.querySelector('.ntp-nc').addEventListener('click', () => abrirNotaCreditoProveedor(b, null, () => renderProveedores()));
   el.querySelectorAll('.prov-dir-row').forEach(tr => tr.addEventListener('click', () => {
     STATE_provDetalleKey = tr.dataset.key;
     STATE_provVista = 'detalle';
@@ -16688,6 +16690,7 @@ async function renderProveedorDetalle(el, b) {
         <div style="display:flex;gap:8px;align-items:center;">
           <span class="hint">Todas las transacciones, más reciente primero</span>
           <button class="btn btn-ghost btn-sm" id="provDetalleNuevaFactura">+ Nueva factura</button>
+          <button class="btn btn-ghost btn-sm" id="provDetalleNotaCredito">+ Nota de crédito</button>
           <button class="btn btn-gold btn-sm" id="provDetalleRegistrarPago">Registrar pago</button>
         </div>
       </div>
@@ -16717,6 +16720,7 @@ async function renderProveedorDetalle(el, b) {
     await openModalFacturaProveedor(null, b.id, catalogo, opcionesPagoDesde, primeraFactura?.proveedor_id || null);
   });
   document.getElementById('provDetalleRegistrarPago').addEventListener('click', () => abrirElegirFacturaPago(b.id, primeraFactura?.proveedor || null));
+  document.getElementById('provDetalleNotaCredito').addEventListener('click', () => abrirNotaCreditoProveedor(b, null, () => renderProveedores(), { proveedorId: primeraFactura?.proveedor_id || null }));
   el.querySelectorAll('.abrir-origen-btn').forEach(btn => btn.addEventListener('click', () => {
     const origen = JSON.parse(btn.dataset.origen.replace(/&apos;/g, "'"));
     abrirOrigenDesdeDetalle(origen, b.id);
@@ -17028,7 +17032,9 @@ async function renderClienteDetalle(el, b) {
       ${hayDivisas && Math.abs(fxReal) > 0.004 ? `<div class="kpi"><div class="label">${fxReal > 0 ? 'Ganancia' : 'Pérdida'} cambiaria realizada</div><div class="value num ${fxReal > 0 ? 'green' : 'red'}">${fmt(Math.abs(fxReal))}</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">cobrado vs. tipo de cambio de la factura</div></div>` : ''}
     </div>
     <div class="card">
-      <div class="card-head"><h3>${nombreCliente}</h3>${cliente.razon_social ? `<span class="hint">${cliente.nombre_comercial}</span>` : ''}<span class="hint">Facturas y cobros, más reciente primero</span></div>
+      <div class="card-head"><h3>${nombreCliente}</h3>${cliente.razon_social ? `<span class="hint">${cliente.nombre_comercial}</span>` : ''}<span class="hint">Facturas y cobros, más reciente primero</span>
+        <div style="position:relative;margin-left:auto;"><button class="btn btn-gold btn-sm" id="cdtBtn">+ Nueva transacción</button><div id="cdtDropdown" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:190px;overflow:hidden;">
+          <button class="cdt-factura" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Factura</button><button class="cdt-orden" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Orden de venta</button><button class="cdt-pago" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Registrar cobro</button><button class="cdt-nc" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Nota de crédito</button></div></div></div>
       <div class="table-wrap scroll-sticky">
         <table class="tabla-estado-cuenta">
           <thead><tr>
@@ -17062,6 +17068,14 @@ async function renderClienteDetalle(el, b) {
     </div>
   `;
   document.getElementById('clienteDetalleVolver').addEventListener('click', () => { STATE_clientesVista = 'directorio'; renderClientes(); });
+  // Nueva transacción dentro del cliente: cada opción abre su ventana ya con ESTE cliente elegido
+  document.getElementById('cdtBtn').addEventListener('click', (e) => { e.stopPropagation(); const dd = document.getElementById('cdtDropdown'); dd.style.display = dd.style.display === 'block' ? 'none' : 'block'; });
+  document.addEventListener('click', () => { const dd = document.getElementById('cdtDropdown'); if (dd) dd.style.display = 'none'; });
+  const elegirClienteEn = (idSelect) => { const sel = document.getElementById(idSelect); if (sel) { sel.value = cliente.id; if (typeof sel.onchange === 'function') sel.onchange(); } };
+  el.querySelector('.cdt-factura').addEventListener('click', async () => { await openModalFactura(null, b.id); elegirClienteEn('facturaCliente'); });
+  el.querySelector('.cdt-orden').addEventListener('click', async () => { await openModalOrden(null, b.id); elegirClienteEn('ordenCliente'); });
+  el.querySelector('.cdt-pago').addEventListener('click', () => abrirElegirFacturaCobro(b.id, nombreCliente));
+  el.querySelector('.cdt-nc').addEventListener('click', () => abrirNotaCreditoCliente(b, null, () => renderClientes(), { clienteId: cliente.id }));
   wireFacturaMenu(el, b.id, () => renderClienteDetalle(el, b));
   el.querySelectorAll('.abrir-origen-btn').forEach(btn => btn.addEventListener('click', () => {
     const origen = JSON.parse(btn.dataset.origen.replace(/&apos;/g, "'"));
@@ -17123,6 +17137,7 @@ async function renderDirectorioClientes(el, b) {
               <button class="nt-factura" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Factura</button>
               <button class="nt-orden" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Orden de venta</button>
               <button class="nt-pago" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Registrar cobro</button>
+              <button class="nt-nc" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Nota de crédito</button>
             </div>
           </div>
           <button class="btn btn-ghost btn-sm" id="openProductosBtn">${iconoConfigurar()}Productos y Servicios</button>
@@ -17177,6 +17192,7 @@ async function renderDirectorioClientes(el, b) {
   el.querySelector('.nt-factura').addEventListener('click', () => openModalFactura(null, b.id));
   el.querySelector('.nt-orden').addEventListener('click', () => openModalOrden(null, b.id));
   el.querySelector('.nt-pago').addEventListener('click', () => abrirElegirFacturaCobro(b.id));
+  el.querySelector('.nt-nc').addEventListener('click', () => abrirNotaCreditoCliente(b, null, () => renderClientes()));
   el.querySelectorAll('.cliente-fila').forEach(tr => tr.addEventListener('click', (e) => {
     if (e.target.closest('.cliente-menu-btn') || e.target.closest('.cliente-menu-dropdown')) return;
     STATE_clienteDetalleId = tr.dataset.id;
@@ -17444,7 +17460,7 @@ document.getElementById('closeConciliacion').addEventListener('click', () => {
   document.getElementById('modalConciliacion').classList.remove('show');
 });
 
-async function abrirElegirFacturaCobro(businessId) {
+async function abrirElegirFacturaCobro(businessId, clientePreseleccionado) {
   const pendientes = (await loadFacturasClientesPendConNombre(businessId)).filter(f => f.estatus !== 'Pagado');
   const [cuentasBancoQ, monedasQ] = await Promise.all([
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
@@ -17554,7 +17570,7 @@ async function abrirElegirFacturaCobro(businessId) {
     }));
     actualizarResumen();
   };
-  buscar.value = '';
+  buscar.value = clientePreseleccionado || '';
   buscar.oninput = renderLista;
   document.getElementById('elegirFacturaCobroMonto').oninput = actualizarResumen;
   renderLista();
@@ -23336,7 +23352,7 @@ function ncPlanProveedor({ factura: f, total, modoFiscal, fecha, numero, motivo,
 }
 
 async function ncPreflight() { const r = await sb.from('fz_proveedores').select('tipo_documento,factura_origen_id,nc_motivo').limit(1); return { ok: !r.error }; }
-async function abrirNotaCreditoProveedor(b, facturaId, alCambiar) {
+async function abrirNotaCreditoProveedor(b, facturaId, alCambiar, opciones = {}) {
   if (!b) return;
   if (!(await ncPreflight()).ok) { toast('Falta correr migracion_notas_credito.sql en Supabase para poder crear notas de crédito.', 'error'); return; }
   const modoFiscal = b.modo === 'fiscal_contable';
@@ -23350,7 +23366,7 @@ async function abrirNotaCreditoProveedor(b, facturaId, alCambiar) {
   }
   const mayoresGasto = mayores.filter(m => ['gasto', 'costo'].includes(m.tipo)), subsGasto = subcuentas.filter(s => mayoresGasto.some(m => m.id === s.cuenta_mayor_id));
   const nombreSub = (id) => (subcuentas.find(x => x.id === id) || {}).nombre || '(cuenta eliminada)';
-  const E = { provId: orig0 ? orig0.proveedor_id : '', facturaId: orig0 ? orig0.id : '', total: '', fecha: todayStr(), numero: '', motivo: NC_MOTIVOS[0], nota: '', pct: 16, subcuentaId: '', compensar: true, facturas: [], ncPrevias: [] };
+  const E = { provId: orig0 ? orig0.proveedor_id : (opciones.proveedorId && catalogo.some(p => p.id === opciones.proveedorId) ? opciones.proveedorId : ''), facturaId: orig0 ? orig0.id : '', total: '', fecha: todayStr(), numero: '', motivo: NC_MOTIVOS[0], nota: '', pct: 16, subcuentaId: '', compensar: true, facturas: [], ncPrevias: [] };
   const cargarFacturas = async () => {
     if (!E.provId) { E.facturas = []; E.ncPrevias = []; return; }
     const { data } = await fetchTodasLasPaginas(() => sb.from('fz_proveedores').select('*').eq('business_id', b.id).eq('proveedor_id', E.provId).order('fecha', { ascending: false }).order('id'));
@@ -23473,7 +23489,7 @@ async function ncDeshacerAplicacion(b, tipo, ncId, alCambiar) {
 }
 
 async function nccPreflight() { const r = await sb.from('fz_facturas_clientes').select('tipo_documento,factura_origen_id,nc_motivo').limit(1); return { ok: !r.error }; }
-async function abrirNotaCreditoCliente(b, facturaId, alCambiar) {
+async function abrirNotaCreditoCliente(b, facturaId, alCambiar, opciones = {}) {
   if (!b) return;
   if (!(await nccPreflight()).ok) { toast('Falta correr migracion_notas_credito_clientes.sql en Supabase para poder crear notas de crédito a clientes.', 'error'); return; }
   const [clientes, subcuentas, mayores] = await Promise.all([loadClientes(b.id), loadSubcuentas(b.id), loadCuentasMayor(b.id)]);
@@ -23484,7 +23500,7 @@ async function abrirNotaCreditoCliente(b, facturaId, alCambiar) {
     if (!orig0 || !(Number(orig0.total) > 0) || orig0.tipo_documento === 'nota_credito') { toast('A esa factura no se le puede hacer una nota de crédito.', 'error'); return; }
   }
   const mayoresIng = mayores.filter(m => m.tipo === 'ingreso'), subsIng = subcuentas.filter(s => mayoresIng.some(m => m.id === s.cuenta_mayor_id)), nombreSub = (id) => (subcuentas.find(x => x.id === id) || {}).nombre || '(cuenta eliminada)';
-  const E = { clienteId: orig0 ? orig0.cliente_id : '', facturaId: orig0 ? orig0.id : '', fecha: todayStr(), numero: '', motivo: NC_MOTIVOS[0], nota: '', pct: 16, subcuentaId: '', ef: 'pendiente', uuid: '', compensar: true, facturas: [], ncPrevias: [], lineas: [] };
+  const E = { clienteId: orig0 ? orig0.cliente_id : (opciones.clienteId && clientes.some(c => c.id === opciones.clienteId) ? opciones.clienteId : ''), facturaId: orig0 ? orig0.id : '', fecha: todayStr(), numero: '', motivo: NC_MOTIVOS[0], nota: '', pct: 16, subcuentaId: '', ef: 'pendiente', uuid: '', compensar: true, facturas: [], ncPrevias: [], lineas: [] };
   const cargar = async () => {
     if (!E.clienteId) { E.facturas = []; E.ncPrevias = []; return; }
     const { data } = await fetchTodasLasPaginas(() => sb.from('fz_facturas_clientes').select('*').eq('business_id', b.id).eq('cliente_id', E.clienteId).order('fecha', { ascending: false }).order('id'));
