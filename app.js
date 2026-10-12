@@ -5178,7 +5178,9 @@ async function sincronizarRealizacionFactura(facturaId, tipoFactura, businessId,
   const tablaAplicados = tipoFactura === 'proveedor' ? 'fz_pagos_aplicados' : 'fz_cobros_aplicados';
   const { data: aplicados } = await sb.from(tablaAplicados).select('monto').eq('factura_id', facturaId);
   const totalAplicado = (aplicados||[]).reduce((s,a)=>s+Number(a.monto||0), 0);
-  const proporcion = Math.min(1, totalAplicado / importeTotal);
+  // Un documento NEGATIVO (nota de crédito) se aplica con montos positivos: se compara en valor absoluto, para que su IVA se realice con su propio signo (antes la proporción salía -1
+  // y el IVA de la nota se realizaba al revés). Para documentos positivos la fórmula es exactamente la de siempre.
+  const proporcion = importeTotal < 0 ? Math.min(1, Math.abs(totalAplicado) / Math.abs(importeTotal)) : Math.min(1, totalAplicado / importeTotal);
   // La proporción es una razón entre montos en la MISMA moneda original — no depende del TC. Pero
   // la reclasificación en sí debe quedar en pesos, igual que el IVA ya registrado originalmente
   // (montoBase × tc histórico de la factura) — nunca en la moneda cruda. La diferencia cambiaria
@@ -13061,7 +13063,8 @@ function clasificarIvaAcreditableDeFactura(factura, subcuentaClasifMap) {
   if (factura.activo_fijo_id) { resultado.inversiones = redondearMoneda(ivaMonto); return resultado; }
   const lineas = desgloseLineas(factura.desglose);
   const sumaDesglose = redondearMoneda(lineas.reduce((s, l) => s + (Number(l.monto) || 0), 0));
-  if (!lineas.length || sumaDesglose <= 0) { resultado.sin_clasificar = redondearMoneda(ivaMonto); return resultado; }
+  // (un documento negativo —nota de crédito— trae desglose e IVA negativos: su desglose "vacío" es el que no suma negativo; para documentos positivos la regla es la de siempre)
+  if (!lineas.length || (ivaMonto < 0 ? sumaDesglose >= 0 : sumaDesglose <= 0)) { resultado.sin_clasificar = redondearMoneda(ivaMonto); return resultado; }
   let acumulado = 0;
   lineas.forEach((linea, idx) => {
     const clave = subcuentaClasifMap[linea.subcuenta_id] || 'sin_clasificar';
@@ -16114,6 +16117,7 @@ async function renderProveedores() {
           <button class="btn btn-ghost btn-sm" id="openCuentasBtnProv">${iconoConfigurar()}Catálogo de cuentas</button>
           <button class="btn btn-ghost btn-sm" id="importFacturasBtn">Importar facturas (Excel)</button>
           <button class="btn btn-ghost btn-sm" id="provisionarPropinasBtn">Poner al día propinas</button>
+          <button class="btn btn-ghost btn-sm" id="addNcProvBtn" title="Registra una nota de crédito del proveedor (devolución, descuento o corrección)">+ Nota de crédito</button>
           <button class="btn btn-gold btn-sm" id="addProvBtn">+ Agregar factura</button>
         </div>
       </div>
@@ -16135,6 +16139,8 @@ async function renderProveedores() {
   document.getElementById('addProvBtn').addEventListener('click', async () => {
     await openModalFacturaProveedor(null, b.id, catalogo, opcionesPagoDesde);
   });
+  document.getElementById('addNcProvBtn').addEventListener('click', () => abrirNotaCreditoProveedor(b, null, () => renderProveedores()));
+  el.querySelectorAll('.prov-nc').forEach(btn => btn.addEventListener('click', () => abrirNotaCreditoProveedor(b, btn.dataset.id, () => renderProveedores())));
   el.querySelectorAll('.prov-ver-pagos').forEach(btn => btn.addEventListener('click', () => verPagosDeFactura(btn.dataset.id, b.id)));
   document.getElementById('openProveedoresCatBtn').addEventListener('click', () => openProveedoresCatModal(b.id, renderProveedores));
   document.getElementById('openCuentasBtnProv').addEventListener('click', () => openCuentasModal(b.id, renderProveedores));
@@ -16548,7 +16554,7 @@ async function getTransaccionesProveedor(businessId, facturas) {
   facturas.forEach(f => {
     const mon = monedaDe(f), tc = tcDe(f);
     transacciones.push({
-      fecha: f.fecha, tipo: 'Factura', numero: f.factura || 's/f', monto: Number(f.importe) || 0,
+      fecha: f.fecha, tipo: 'Factura', etiqueta: f.tipo_documento === 'nota_credito' ? 'Nota de crédito' : undefined, numero: f.factura || 's/f', monto: Number(f.importe) || 0,
       saldo: redondearMoneda(Number(f.importe||0) - Number(f.importe_pagado||0)),
       moneda: mon, tc: mon !== 'MXN' ? tc : null, montoMxn: mon !== 'MXN' ? redondearMoneda((Number(f.importe) || 0) * tc) : (Number(f.importe) || 0),
       origen: { tipo: 'proveedor', id: f.id, fecha: f.fecha },
@@ -16688,7 +16694,7 @@ async function renderProveedorDetalle(el, b) {
           <tbody>
             ${transacciones.length ? transacciones.map(t => `<tr>
               <td>${fechaCorta(t.fecha)}</td>
-              <td>${t.tipo}</td>
+              <td>${t.etiqueta || t.tipo}</td>
               <td class="ref">${t.numero}</td>
               ${hayDivisas ? `<td>${t.moneda || 'MXN'}</td><td class="num">${t.moneda && t.moneda !== 'MXN' ? fmtTC(t.tc || 1) : '—'}</td>` : ''}
               <td class="num ${t.monto<0?'red':''}">${t.monto<0?'-':''}${hayDivisas ? fmtMon(Math.abs(t.monto), t.moneda) : fmt(Math.abs(t.monto))}</td>
@@ -19358,7 +19364,7 @@ function provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntos, todasFactur
     <td class="num" data-rol="meta">${esMxnProv ? '—' : fmtTC(p.tipo_cambio || 1)}</td>
     <td data-rol="importe">
       <input class="cell prov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(p.importe)}" data-id="${p.id}" data-field="importe">
-      ${esCredito ? `<div style="font-size:10.5px;color:var(--green);margin-top:2px;">crédito a favor</div>` : ''}
+      ${esCredito ? `<div style="font-size:10.5px;color:var(--green);margin-top:2px;">${p.tipo_documento === 'nota_credito' ? 'nota de crédito' + (p.factura_origen_id ? ' de ' + revEsc(((todasFacturas || []).find(x => x.id === p.factura_origen_id) || {}).factura || 'otra factura') : '') : 'crédito a favor'}</div>` : ''}
     </td>
     <td class="num" data-rol="meta">${Number(p.importe_pagado) > 0.004 ? `<button type="button" class="prov-ver-pagos" data-id="${p.id}" title="Ver qué pagos se aplicaron a esta factura" style="background:none;border:none;padding:0;font:inherit;color:var(--gold);text-decoration:underline;cursor:pointer;">${prefijoMoneda(p.moneda)} ${fmt(p.importe_pagado||0)}</button>` : `${prefijoMoneda(p.moneda)} ${fmt(p.importe_pagado||0)}`}</td>
     <td class="num" data-rol="meta" style="${saldoPendiente>0.004?'color:var(--gold);font-weight:600;':''}">${prefijoMoneda(p.moneda)} ${fmt(saldoPendiente)}</td>
@@ -19380,6 +19386,7 @@ function provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntos, todasFactur
       <button class="btn btn-ghost btn-sm prov-menu-btn" data-id="${p.id}" style="padding:5px 12px;">⋯</button>
       <div class="prov-menu-dropdown" data-menu="${p.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:130px;overflow:hidden;">
         <button class="prov-editar" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Editar factura</button>
+        ${!esCredito && p.tipo_documento !== 'nota_credito' ? `<button class="prov-nc" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Nota de crédito</button>` : ''}
         <button class="prov-del" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>
       </div>
     </td>
@@ -23265,6 +23272,144 @@ async function cfdiVolverAPorClasificar(c, alCambiar) {
   if (error) { toast('No se pudo: ' + error.message, 'error'); return; }
   await sb.from('fz_cfdi_bitacora').insert({ business_id: b.id, cfdi_id: c.id, accion: 'clasificacion', valor_anterior: antes, valor_nuevo: 'por_clasificar', motivo: 'Vuelto a por clasificar', fuente: 'manual', usuario_email: usuario });
   registrarAuditoria(b.id, 'editar', 'CFDI', `CFDI ${c.uuid} vuelto a por clasificar`); toast('CFDI de nuevo por clasificar.'); if (alCambiar) alCambiar();
+}
+
+// ============================================================================================================
+// NOTA DE CRÉDITO DE PROVEEDOR. Es un documento de proveedor con importe NEGATIVO (el motor ya lo trata así: baja el gasto, revierte el IVA acreditable y baja lo que debes).
+// Con factura de origen copia su IVA, retenciones y desglose EN PROPORCIÓN; sin factura (crédito general) pide la subcuenta y la tasa de IVA. Pura: no toca la base.
+// ============================================================================================================
+const NC_MOTIVOS = ['Devolución de mercancía', 'Descuento o bonificación', 'Corrección de precio', 'Servicio no prestado', 'Otro'];
+function ncPlanProveedor({ factura: f, total, modoFiscal, fecha, numero, motivo, pctIva, subcuentaId }) {
+  const errores = [], avisos = [], t = cfdiR2(total);
+  if (!(t > 0)) errores.push('Escribe el importe de la nota de crédito (el total, con IVA).');
+  if (!String(numero || '').trim()) errores.push('Escribe el número de la nota (por ejemplo NC-123).');
+  if (!fecha) errores.push('Falta la fecha de la nota.');
+  if (f && !(Number(f.importe) > 0)) errores.push('La factura de origen debe tener un importe positivo.');
+  if (f && t > cfdiR2(f.importe) + 0.005) errores.push(`La nota (${t.toFixed(2)}) no puede ser mayor que la factura que corrige (${cfdiR2(f.importe).toFixed(2)}).`);
+  if (!f && !subcuentaId) errores.push('Elige la subcuenta que baja la nota (la del gasto que corrige).');
+  if (errores.length) return { ok: false, errores, avisos };
+  const neg = (x) => { const v = cfdiR2(Math.abs(x)); return v === 0 ? 0 : -v; }, moneda = f ? (f.moneda || 'MXN') : 'MXN', tipoCambio = f ? (Number(f.tipo_cambio) || 1) : 1;
+  let payload, lineas = [], resumen;
+  if (f) {
+    const k = t / cfdiR2(f.importe), pesos = desgloseLineas(f.desglose).map(l => Math.abs(Number(l.monto) || 0));
+    if (modoFiscal) {
+      const ivaOrig = f.aplica_iva ? Number(f.iva_monto) || 0 : 0, isrOrig = f.aplica_retencion ? Number(f.retencion_isr_monto) || 0 : 0, ivaRetOrig = f.aplica_retencion ? Number(f.retencion_iva_monto) || 0 : 0;
+      const iva = cfdiR2(ivaOrig * k), isr = cfdiR2(isrOrig * k), ivaRet = cfdiR2(ivaRetOrig * k), base = cfdiR2(t - iva + isr + ivaRet); // la base absorbe el redondeo: base + IVA − retenciones = total exacto
+      payload = { subtotal: neg(base), aplica_iva: !!f.aplica_iva, iva_porcentaje: f.iva_porcentaje ?? null, iva_monto: neg(iva), aplica_retencion: !!f.aplica_retencion, retencion_categoria: f.aplica_retencion ? (f.retencion_categoria || null) : null,
+        retencion_isr_porcentaje: f.aplica_retencion ? (f.retencion_isr_porcentaje ?? 0) : 0, retencion_isr_monto: neg(isr), retencion_iva_porcentaje: f.aplica_retencion ? (f.retencion_iva_porcentaje ?? 0) : 0, retencion_iva_monto: neg(ivaRet), importe: neg(t) };
+      if (pesos.length && pesos.some(x => x > 0)) { const m = cfdiReparto(base, pesos); lineas = desgloseLineas(f.desglose).map((l, i) => ({ subcuenta_id: l.subcuenta_id, monto: neg(m[i]), descripcion: l.descripcion || null, importe: null, iva: null })).filter(l => l.monto !== 0); }
+      resumen = { base, iva, retenciones: cfdiR2(isr + ivaRet), total: t };
+    } else {
+      payload = { subtotal: null, aplica_iva: false, iva_porcentaje: null, iva_monto: 0, aplica_retencion: false, retencion_categoria: null, retencion_isr_porcentaje: 0, retencion_isr_monto: 0, retencion_iva_porcentaje: 0, retencion_iva_monto: 0, importe: neg(t) };
+      if (pesos.length && pesos.some(x => x > 0)) {
+        const orig = desgloseLineas(f.desglose), m = cfdiReparto(t, pesos);
+        lineas = orig.map((l, i) => { const imp = l.importe !== null && l.importe !== undefined ? cfdiR2(Math.abs(Number(l.importe)) * k) : null; return { subcuenta_id: l.subcuenta_id, monto: neg(m[i]), descripcion: l.descripcion || null, importe: imp === null ? null : neg(Math.min(imp, m[i])), iva: imp === null ? null : neg(cfdiR2(m[i] - Math.min(imp, m[i]))) }; }).filter(l => l.monto !== 0);
+      }
+      resumen = { base: t, iva: 0, retenciones: 0, total: t };
+    }
+    if (!lineas.length) avisos.push('La factura de origen no está desglosada: la nota bajará "Sin clasificar" en vez de la cuenta de gasto. Desglosa primero la factura para que baje el gasto correcto.');
+  } else {
+    if (modoFiscal) {
+      const pct = Number(pctIva) || 0, base = pct > 0 ? cfdiR2(t / (1 + pct / 100)) : t, iva = cfdiR2(t - base);
+      payload = { subtotal: neg(base), aplica_iva: pct > 0, iva_porcentaje: pct, iva_monto: neg(iva), aplica_retencion: false, retencion_categoria: null, retencion_isr_porcentaje: 0, retencion_isr_monto: 0, retencion_iva_porcentaje: 0, retencion_iva_monto: 0, importe: neg(t) };
+      lineas = [{ subcuenta_id: subcuentaId, monto: neg(base), descripcion: null, importe: null, iva: null }]; resumen = { base, iva, retenciones: 0, total: t };
+    } else {
+      payload = { subtotal: null, aplica_iva: false, iva_porcentaje: null, iva_monto: 0, aplica_retencion: false, retencion_categoria: null, retencion_isr_porcentaje: 0, retencion_isr_monto: 0, retencion_iva_porcentaje: 0, retencion_iva_monto: 0, importe: neg(t) };
+      lineas = [{ subcuenta_id: subcuentaId, monto: neg(t), descripcion: null, importe: null, iva: null }]; resumen = { base: t, iva: 0, retenciones: 0, total: t };
+    }
+  }
+  Object.assign(payload, { moneda, tipo_cambio: tipoCambio, fecha, factura: String(numero).trim(), tipo_documento: 'nota_credito', factura_origen_id: f ? f.id : null, nc_motivo: String(motivo || '').trim() || null, desglose: lineas, estatus: 'Pendiente', importe_pagado: 0 });
+  return { ok: true, errores, avisos, payload, lineas, resumen };
+}
+
+async function ncPreflight() { const r = await sb.from('fz_proveedores').select('tipo_documento,factura_origen_id,nc_motivo').limit(1); return { ok: !r.error }; }
+async function abrirNotaCreditoProveedor(b, facturaId, alCambiar) {
+  if (!b) return;
+  if (!(await ncPreflight()).ok) { toast('Falta correr migracion_notas_credito.sql en Supabase para poder crear notas de crédito.', 'error'); return; }
+  const modoFiscal = b.modo === 'fiscal_contable';
+  const [catR, subcuentas, mayores] = await Promise.all([sb.from('fz_proveedores_catalogo').select('id,nombre,nombre_comercial,razon_social,rfc,activo').eq('business_id', b.id), loadSubcuentas(b.id), loadCuentasMayor(b.id)]);
+  const catalogo = (catR.data || []).filter(p => p.activo !== false).sort((a, z) => provNombreVisible(a).localeCompare(provNombreVisible(z)));
+  let orig0 = null;
+  if (facturaId) {
+    const { data } = await sb.from('fz_proveedores').select('*').eq('id', facturaId).eq('business_id', b.id).maybeSingle(); orig0 = data;
+    if (!orig0 || !(Number(orig0.importe) > 0) || orig0.tipo_documento === 'nota_credito') { toast('A esa factura no se le puede hacer una nota de crédito.', 'error'); return; }
+    if (!orig0.proveedor_id) { toast('Primero liga esa factura a un proveedor del catálogo (Catálogo de proveedores → Traer los que faltan).', 'error'); return; }
+  }
+  const mayoresGasto = mayores.filter(m => ['gasto', 'costo'].includes(m.tipo)), subsGasto = subcuentas.filter(s => mayoresGasto.some(m => m.id === s.cuenta_mayor_id));
+  const nombreSub = (id) => (subcuentas.find(x => x.id === id) || {}).nombre || '(cuenta eliminada)';
+  const E = { provId: orig0 ? orig0.proveedor_id : '', facturaId: orig0 ? orig0.id : '', total: '', fecha: todayStr(), numero: '', motivo: NC_MOTIVOS[0], nota: '', pct: 16, subcuentaId: '', compensar: true, facturas: [], ncPrevias: [] };
+  const cargarFacturas = async () => {
+    if (!E.provId) { E.facturas = []; E.ncPrevias = []; return; }
+    const { data } = await fetchTodasLasPaginas(() => sb.from('fz_proveedores').select('*').eq('business_id', b.id).eq('proveedor_id', E.provId).order('fecha', { ascending: false }).order('id'));
+    const todas = data || []; E.facturas = todas.filter(f => Number(f.importe) > 0 && f.tipo_documento !== 'nota_credito'); E.ncPrevias = todas.filter(f => f.tipo_documento === 'nota_credito');
+  };
+  await cargarFacturas();
+  const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalNotaCredito'; const cerrar = () => bg.remove();
+  bg.innerHTML = `<div class="modal" style="width:min(820px,96vw);max-height:92vh;overflow:auto;"><h3>Nota de crédito de proveedor</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 8px;">Úsala cuando el proveedor te <strong>acredita</strong> una devolución, un descuento o una corrección. Baja el gasto, ${modoFiscal ? 'revierte el IVA acreditable ' : ''}y baja lo que le debes. Si eliges la factura que corrige, la nota copia su ${modoFiscal ? 'IVA, retenciones y ' : ''}desglose en proporción.</p>
+    <div class="grid-2"><div class="field"><label>Proveedor</label><select id="ncProv" class="cell" ${orig0 ? 'disabled' : ''}><option value="">Elige un proveedor…</option>${catalogo.map(p => `<option value="${p.id}" ${E.provId === p.id ? 'selected' : ''}>${revEsc(provNombreVisible(p))}</option>`).join('')}</select></div>
+      <div class="field"><label>Factura que corrige</label><select id="ncFactura" class="cell" ${orig0 ? 'disabled' : ''}></select></div></div>
+    <div class="grid-3"><div class="field"><label>Fecha de la nota</label><input type="date" id="ncFecha" value="${E.fecha}"></div><div class="field"><label>Número de la nota</label><input type="text" id="ncNumero" placeholder="Ej. NC-123" maxlength="40"></div>
+      <div class="field"><label>Total de la nota (con IVA)</label><div style="display:flex;gap:6px;"><input type="text" id="ncTotal" inputmode="decimal" placeholder="0.00" style="flex:1;"><button class="btn btn-ghost btn-sm" id="ncTodo" title="Acreditar todo lo que queda por acreditar de la factura">Todo</button></div></div></div>
+    <div class="grid-2"><div class="field"><label>Motivo</label><select id="ncMotivo" class="cell">${NC_MOTIVOS.map(m => `<option>${m}</option>`).join('')}</select></div><div class="field"><label>Nota (opcional)</label><input type="text" id="ncNota" maxlength="200" placeholder="Ej. 3 cajas dañadas"></div></div>
+    <div id="ncSinFactura" style="display:none;"><div class="grid-2"><div class="field"><label>Subcuenta que baja la nota</label><select id="ncSub" class="cell"><option value="">Elige…</option>${opcionesSubcuentaHtml(subsGasto, mayoresGasto, null)}</select></div>${modoFiscal ? '<div class="field"><label>IVA de la nota</label><select id="ncPct" class="cell"><option value="16">16 %</option><option value="8">8 %</option><option value="0">Sin IVA</option></select></div>' : '<div></div>'}</div></div>
+    <div id="ncCompWrap" style="margin:6px 0;"></div><div id="ncPreview"></div>
+    <div class="modal-actions"><button class="btn btn-ghost" id="ncCancelar">Cancelar</button><button class="btn btn-gold" id="ncConfirmar">Crear la nota de crédito</button></div></div>`;
+  document.body.appendChild(bg); bg.querySelector('#ncCancelar').addEventListener('click', cerrar);
+  const $ = (id) => bg.querySelector('#' + id), orig = () => E.facturas.find(f => f.id === E.facturaId) || null;
+  const acreditado = (fid) => cfdiR2(E.ncPrevias.filter(n => n.factura_origen_id === fid).reduce((s, n) => s + Math.abs(Number(n.importe) || 0), 0));
+  const maxAcreditable = () => { const f = orig(); return f ? cfdiR2(Number(f.importe) - acreditado(f.id)) : null; };
+  const pintarFacturas = () => {
+    $('ncFactura').innerHTML = `<option value="">— Sin factura (crédito general del proveedor) —</option>${E.facturas.map(f => `<option value="${f.id}" ${E.facturaId === f.id ? 'selected' : ''}>${revEsc(fechaCorta(f.fecha))} · ${revEsc(f.factura || (f.folio ? '#' + f.folio : 's/f'))} · ${fmtMon(f.importe, f.moneda)}${acreditado(f.id) ? ` (ya acreditado ${fmt(acreditado(f.id))})` : ''}</option>`).join('')}`;
+    $('ncSinFactura').style.display = E.facturaId ? 'none' : '';
+  };
+  const calcular = () => {
+    const f = orig(), total = leerMonto($('ncTotal').value) || 0;
+    const plan = ncPlanProveedor({ factura: f, total, modoFiscal, fecha: E.fecha, numero: E.numero, motivo: E.motivo + (E.nota ? ' — ' + E.nota : ''), pctIva: E.pct, subcuentaId: E.subcuentaId });
+    const maxA = maxAcreditable(); if (plan.ok && f && total > maxA + 0.005) return { ok: false, errores: [maxA > 0.005 ? `Ya hay notas por ${fmt(acreditado(f.id))} contra esa factura: solo puedes acreditar ${fmt(maxA)} más.` : 'Esa factura ya está acreditada por completo.'], avisos: [] };
+    return plan;
+  };
+  const pintarPreview = () => {
+    const f = orig(), plan = calcular(), total = leerMonto($('ncTotal').value) || 0;
+    // compensar contra la factura (sin mover dinero): solo si la factura todavía debe al menos lo que acredita la nota
+    const saldo = f ? cfdiR2(Number(f.importe) - Number(f.importe_pagado || 0)) : 0, puedeComp = !!f && total > 0 && saldo >= total - 0.005;
+    $('ncCompWrap').innerHTML = f ? (puedeComp ? `<label style="display:flex;gap:8px;align-items:flex-start;font-size:12.5px;"><input type="checkbox" id="ncComp" ${E.compensar ? 'checked' : ''} style="margin-top:3px;"><span><strong>Aplicarla ya contra esa factura</strong> (sin mover dinero): la factura baja su saldo en ${fmt(total)}.</span></label>` : `<div style="font-size:12px;color:var(--muted);">${total > 0 ? `La factura debe ${fmt(saldo)}, menos de lo que acredita la nota: ` : ''}la nota queda como <strong>crédito a favor del proveedor</strong> y se descuenta en tu próximo pago a él (marcándola junto con la factura al pagar).</div>`) : '<div style="font-size:12px;color:var(--muted);">Sin factura de origen: la nota queda como <strong>crédito a favor del proveedor</strong> y se descuenta en tu próximo pago a él.</div>';
+    const ck = $('ncComp'); if (ck) ck.addEventListener('change', () => { E.compensar = ck.checked; });
+    if (!plan.ok) $('ncPreview').innerHTML = total > 0 || E.numero ? `<div style="padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:12px;color:var(--red);">${plan.errores.map(revEsc).join('<br>')}</div>` : '';
+    else { const r = plan.resumen; $('ncPreview').innerHTML = `<div style="margin-top:6px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;font-size:12.5px;"><strong>Así quedará</strong>
+      <div style="margin-top:4px;">• Baja el gasto en <strong>${fmtMon(r.base, plan.payload.moneda)}</strong>${plan.lineas.length ? ': ' + plan.lineas.map(l => `${revEsc(nombreSub(l.subcuenta_id))} ${fmt(Math.abs(l.monto))}`).join(' · ') : ''}</div>
+      ${modoFiscal && r.iva ? `<div>• Baja el IVA acreditable en <strong>${fmtMon(r.iva, plan.payload.moneda)}</strong></div>` : ''}${r.retenciones ? `<div>• Regresa retenciones por <strong>${fmtMon(r.retenciones, plan.payload.moneda)}</strong></div>` : ''}
+      <div>• Reduce lo que le debes al proveedor en <strong>${fmtMon(r.total, plan.payload.moneda)}</strong></div>${plan.avisos.map(a => `<div style="color:#9a6a00;margin-top:4px;">⚠ ${revEsc(a)}</div>`).join('')}</div>`; }
+    const bc = $('ncConfirmar'); bc.disabled = !plan.ok;
+  };
+  const refrescar = () => { pintarFacturas(); pintarPreview(); };
+  $('ncProv').addEventListener('change', async () => { E.provId = $('ncProv').value; E.facturaId = ''; await cargarFacturas(); refrescar(); });
+  $('ncFactura').addEventListener('change', () => { E.facturaId = $('ncFactura').value; E.compensar = true; refrescar(); });
+  $('ncFecha').addEventListener('input', () => { E.fecha = $('ncFecha').value; pintarPreview(); }); $('ncNumero').addEventListener('input', () => { E.numero = $('ncNumero').value; pintarPreview(); });
+  $('ncTotal').addEventListener('input', () => pintarPreview()); $('ncMotivo').addEventListener('change', () => { E.motivo = $('ncMotivo').value; pintarPreview(); }); $('ncNota').addEventListener('input', () => { E.nota = $('ncNota').value; pintarPreview(); });
+  $('ncSub').addEventListener('change', () => { E.subcuentaId = $('ncSub').value; pintarPreview(); }); if ($('ncPct')) $('ncPct').addEventListener('change', () => { E.pct = Number($('ncPct').value); pintarPreview(); });
+  $('ncTodo').addEventListener('click', (ev) => { ev.preventDefault(); const m = maxAcreditable(); if (m === null) { toast('Primero elige la factura que corrige.', 'error'); return; } $('ncTotal').value = fmtInputVal(m); pintarPreview(); });
+  refrescar();
+  $('ncConfirmar').addEventListener('click', async () => {
+    const btn = $('ncConfirmar'); if (btn.disabled) return; btn.disabled = true;
+    const plan = calcular(); if (!plan.ok) { toast(plan.errores[0], 'error'); pintarPreview(); return; }
+    const prov = catalogo.find(p => p.id === E.provId); if (!prov) { toast('Elige el proveedor.', 'error'); pintarPreview(); return; }
+    if (await bloqueadoPorCierre(b.id, E.fecha)) { pintarPreview(); return; }
+    const f = orig(), total = leerMonto($('ncTotal').value) || 0, compensar = !!f && !!$('ncComp') && $('ncComp').checked;
+    const folio = await siguienteFolio(b.id, 'factura_proveedor');
+    const { data: nueva, error } = await sb.from('fz_proveedores').insert({ business_id: b.id, proveedor_id: prov.id, proveedor: provNombreVisible(prov), folio, ...plan.payload }).select().single();
+    if (error || !nueva) { toast('No se pudo crear la nota: ' + ((error && error.message) || ''), 'error'); pintarPreview(); return; }
+    let nota = '', falloComp = '';
+    if (compensar) {
+      try {
+        await aplicarPagoFacturas([f.id, nueva.id], 0, E.fecha, b.id, { origen_tabla: 'manual', origen_id: null });
+        await sb.from('fz_proveedores').update({ importe_pagado: nueva.importe }).eq('id', nueva.id); // la nota ya consumida queda saldada (no cuenta como saldo a favor disponible)
+        nota = ` y se aplicó contra la factura ${f.factura || '#' + f.folio}`;
+      } catch (e) { falloComp = (e && e.message) || String(e); }
+    }
+    registrarAuditoria(b.id, 'crear', 'Proveedores', `Nota de crédito ${plan.payload.factura} por ${fmtMon(total, plan.payload.moneda)} a ${provNombreVisible(prov)}${f ? ' (corrige ' + (f.factura || '#' + f.folio) + ')' : ''}${compensar ? ' — aplicada' : ''}`);
+    cerrar(); toast(`Nota de crédito ${plan.payload.factura} creada${nota}.${falloComp ? ' No se pudo aplicar contra la factura (' + falloComp + '): queda como crédito disponible.' : ''}`, falloComp ? 'error' : undefined); if (alCambiar) alCambiar();
+  });
 }
 
 // ---- pantalla: bandeja ----
