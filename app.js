@@ -22065,12 +22065,41 @@ async function renderCfdi() {
 }
 function pintarCfdi(el, b) {
   const todos = STATE_cfdi.datos, f = STATE_cfdi, q = f.q.trim().toLowerCase();
-  const visibles = todos.filter(c => (f.dir === 'todos' || c.direccion === f.dir) && (f.sat === 'todos' || c.estatus_sat === f.sat) && (f.tipo === 'todos' || c.tipo_comprobante === f.tipo)
-    && (!q || [c.uuid, c.nombre_emisor, c.nombre_receptor, c.rfc_emisor, c.rfc_receptor, c.serie, c.folio].some(v => String(v || '').toLowerCase().includes(q))));
+  const coincideQ = (c) => !q || [c.uuid, c.nombre_emisor, c.nombre_receptor, c.rfc_emisor, c.rfc_receptor, c.serie, c.folio].some(v => String(v || '').toLowerCase().includes(q));
+  // "pasa" aplica los filtros elegidos, omitiendo (si se pide) el de la faceta que se está contando: así cada renglón muestra lo que EXISTE con las demás elecciones
+  const pasa = (c, omitir, conBusqueda = true) => (omitir === 'dir' || f.dir === 'todos' || c.direccion === f.dir) && (omitir === 'sat' || f.sat === 'todos' || c.estatus_sat === f.sat)
+    && (omitir === 'tipo' || f.tipo === 'todos' || c.tipo_comprobante === f.tipo) && (!conBusqueda || coincideQ(c));
+  const faceta = (campo, valorDe, conBusqueda = true) => { const o = {}; todos.filter(c => pasa(c, campo, conBusqueda)).forEach(c => { const v = valorDe(c); o[v] = (o[v] || 0) + 1; }); return o; };
+  const FACETAS = { sat: { valorDe: c => c.estatus_sat, nombre: v => CFDI_ESTATUS_SAT[v] }, tipo: { valorDe: c => c.tipo_comprobante, nombre: v => CFDI_TIPOS[v] } };
+  // Dirección manda: una selección de estatus o de tipo solo se quita sola si YA NO EXISTE con la Dirección elegida (se evalúa cada una contra la Dirección, no contra las otras elecciones
+  // pendientes de revisar), y se avisa. Así cambiar de Recibidos a Emitidos quita lo que no existe ahí y conserva lo que sí.
+  const avisos = [];
+  for (const campo of ['sat', 'tipo']) {
+    if (f[campo] === 'todos') continue;
+    const existe = todos.some(c => (f.dir === 'todos' || c.direccion === f.dir) && FACETAS[campo].valorDe(c) === f[campo]);
+    if (!existe) { avisos.push(`Se quitó el filtro «${FACETAS[campo].nombre(f[campo])}» porque no hay CFDI con esa combinación.`); f[campo] = 'todos'; }
+  }
+  const visibles = todos.filter(c => pasa(c, null));
   const cnt = (fn) => todos.filter(fn).length;
   const puedeCambiar = puedeReabrirPeriodo();
-  const chips = (clave, opciones) => opciones.map(([v, t]) => `<div class="tag ${f[clave] === v ? 'active' : ''}" data-filtro="${clave}" data-valor="${v}">${t}</div>`).join('');
+  const tag = (campo, v, texto) => `<div class="tag ${f[campo] === v ? 'active' : ''}" data-filtro="${campo}" data-valor="${v}">${texto}</div>`;
+  // un renglón de opciones: "Todos" + solo las que tienen resultados (y la elegida), cada una con su conteo
+  const fila = (campo, orden, textoTodos, etiqueta, conteos, siempre = false) => {
+    const total = Object.values(conteos).reduce((x, y) => x + y, 0);
+    const opciones = siempre ? orden : orden.filter(v => conteos[v] > 0 || f[campo] === v); // Dirección manda: sus opciones siempre están (aunque sea con 0); las demás solo si existen
+    if (!opciones.length && !siempre) return '';
+    return `<div class="tag-row" style="margin-bottom:8px;">${tag(campo, 'todos', `${textoTodos} (${total})`)}${opciones.map(v => tag(campo, v, `${etiqueta(v)} (${conteos[v] || 0})`)).join('')}</div>`;
+  };
   const MAX = 500;
+  const hayDatos = todos.length > 0;
+  const filtrosHtml = !hayDatos ? '' : `
+      <div style="display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:280px;">${fila('dir', ['emitido', 'recibido'], 'Todos', v => v === 'emitido' ? 'Emitidos' : 'Recibidos', faceta('dir', c => c.direccion), true)}</div>
+        <input id="cfdiBuscar" class="cell" type="text" placeholder="Buscar RFC, nombre, UUID o folio" value="${revEsc(f.q)}" style="width:260px;">
+      </div>
+      ${fila('tipo', Object.keys(CFDI_TIPOS), 'Todos los tipos', v => `${CFDI_TIPOS[v]}`, faceta('tipo', FACETAS.tipo.valorDe))}
+      ${fila('sat', ['no_verificado', 'vigente', 'cancelado', 'en_proceso', 'no_encontrado'], 'Cualquier estatus SAT', v => CFDI_ESTATUS_SAT[v], faceta('sat', FACETAS.sat.valorDe))}
+      ${avisos.length ? `<div style="font-size:11.5px;color:var(--muted);margin:0 0 8px;">${avisos.map(revEsc).join('<br>')}</div>` : ''}`;
   el.innerHTML = `
     <div class="kpi-grid kpi-grid-mobile-compact" style="margin-bottom:14px;">
       <div class="kpi"><div class="label">CFDI cargados</div><div class="value num">${todos.length}</div></div>
@@ -22086,9 +22115,7 @@ function pintarCfdi(el, b) {
     </div>
     <div class="card">
       <div class="card-head"><h3>Comprobantes</h3><span class="hint">${visibles.length} de ${todos.length}</span></div>
-      <div class="tag-row" style="margin-bottom:8px;">${chips('dir', [['todos', 'Todos'], ['emitido', 'Emitidos'], ['recibido', 'Recibidos']])}</div>
-      <div class="tag-row" style="margin-bottom:8px;">${chips('sat', [['todos', 'Cualquier estatus SAT'], ['no_verificado', 'No verificado'], ['vigente', 'Vigente'], ['cancelado', 'Cancelado'], ['en_proceso', 'En proceso']])}</div>
-      <div class="tag-row" style="margin-bottom:10px;">${chips('tipo', [['todos', 'Todos los tipos'], ...Object.entries(CFDI_TIPOS)])}<input id="cfdiBuscar" class="cell" type="text" placeholder="Buscar RFC, nombre, UUID o folio" value="${revEsc(f.q)}" style="margin-left:auto;width:260px;"></div>
+      ${filtrosHtml}
       <div class="table-wrap scroll-sticky"><table class="tabla-operativa"><thead><tr><th>Fecha</th><th>Dirección</th><th>Tipo</th><th>Serie / Folio</th><th>Emisor → Receptor</th><th class="num">Total</th><th class="num">IVA</th><th>Estatus SAT</th><th>Estado</th><th></th></tr></thead><tbody>
         ${visibles.length ? visibles.slice(0, MAX).map(c => `<tr>
           <td>${fechaCorta(c.fecha)}</td><td><span class="badge" style="background:${c.direccion === 'emitido' ? '#e8f0fe;color:#1a56c4' : '#f1ecff;color:#5b3fc4'};">${c.direccion === 'emitido' ? 'Emitido' : 'Recibido'}</span></td><td>${c.tipo_comprobante} · ${CFDI_TIPOS[c.tipo_comprobante]}</td>
@@ -22096,11 +22123,11 @@ function pintarCfdi(el, b) {
           <td style="max-width:300px;"><div style="font-size:12.5px;">${revEsc(c.nombre_emisor || c.rfc_emisor)}</div><div style="font-size:11px;color:var(--muted);">${revEsc(c.rfc_emisor)} → ${revEsc(c.rfc_receptor)}</div></td>
           <td class="num">${fmtMon(c.total, c.moneda)}</td><td class="num">${fmt(c.iva_trasladado)}</td><td>${cfdiBadgeSat(c.estatus_sat)}${c.estatus_sat === 'cancelado' && c.estatus_sat_fecha ? `<div style="font-size:10.5px;color:var(--muted);">${fechaCorta(c.estatus_sat_fecha)}</div>` : ''}</td>
           <td style="font-size:12px;">${c.estado === 'por_clasificar' ? (c.estatus_sat === 'cancelado' ? '<span style="color:var(--red);">No clasificable (cancelado)</span>' : 'Por clasificar') : revEsc(c.estado)}</td>
-          <td style="white-space:nowrap;"><button class="btn btn-ghost btn-sm cfdi-ver" data-id="${c.id}">Ver</button>${puedeCambiar ? ` <button class="btn btn-ghost btn-sm cfdi-estatus" data-id="${c.id}">Estatus</button>` : ''}</td></tr>`).join('') : '<tr><td colspan="10" class="empty">Aún no hay CFDI con esos filtros.</td></tr>'}
+          <td style="white-space:nowrap;"><button class="btn btn-ghost btn-sm cfdi-ver" data-id="${c.id}">Ver</button>${puedeCambiar ? ` <button class="btn btn-ghost btn-sm cfdi-estatus" data-id="${c.id}">Estatus</button>` : ''}</td></tr>`).join('') : `<tr><td colspan="10" class="empty">${hayDatos ? 'No hay CFDI con esa combinación de filtros.' : 'Aún no hay CFDI cargados: arrastra arriba el ZIP o los XML descargados del SAT.'}</td></tr>`}
         ${visibles.length > MAX ? `<tr><td colspan="10" style="color:var(--muted);">Se muestran ${MAX} de ${visibles.length}: afina los filtros o la búsqueda.</td></tr>` : ''}
       </tbody></table></div></div>`;
   el.querySelectorAll('[data-filtro]').forEach(t => t.addEventListener('click', () => { STATE_cfdi[t.dataset.filtro] = t.dataset.valor; pintarCfdi(el, b); }));
-  const buscar = el.querySelector('#cfdiBuscar'); buscar.addEventListener('input', () => { STATE_cfdi.q = buscar.value; clearTimeout(buscar._t); buscar._t = setTimeout(() => { pintarCfdi(el, b); const n = el.querySelector('#cfdiBuscar'); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }, 250); });
+  const buscar = el.querySelector('#cfdiBuscar'); if (buscar) buscar.addEventListener('input', () => { STATE_cfdi.q = buscar.value; clearTimeout(buscar._t); buscar._t = setTimeout(() => { pintarCfdi(el, b); const n = el.querySelector('#cfdiBuscar'); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }, 250); });
   el.querySelectorAll('.cfdi-ver').forEach(x => x.addEventListener('click', () => abrirCfdiDetalle(x.dataset.id)));
   el.querySelectorAll('.cfdi-estatus').forEach(x => x.addEventListener('click', () => abrirCfdiEstatus(x.dataset.id)));
   const drop = el.querySelector('#cfdiDrop'), input = el.querySelector('#cfdiArchivos');
