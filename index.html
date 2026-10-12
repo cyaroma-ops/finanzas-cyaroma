@@ -810,6 +810,60 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   .mf-footer{ padding:12px 16px; }
 }
 </style>
+<style id="estiloModalProveedoresCat">
+/* ===== Modal «Catálogo de proveedores» — estilos acotados a ESTE modal (ningún otro modal cambia) ===== */
+#modalProveedoresCat{padding:10px;}
+#modalProveedoresCat .modal.mcp{width:min(940px,100%);max-height:min(680px,calc(var(--mcp-vh,100dvh) - 20px));padding:0;display:flex;flex-direction:column;overflow:hidden;}
+#modalProveedoresCat .mcp-head{display:flex;align-items:flex-start;gap:12px;padding:16px 20px 12px;border-bottom:1px solid var(--line);flex-shrink:0;}
+#modalProveedoresCat .mcp-head h3{margin:0 0 2px;font-size:19px;line-height:1.2;}
+#modalProveedoresCat .mcp-head p{margin:0;font-size:12.5px;color:var(--muted);line-height:1.4;}
+#modalProveedoresCat .mcp-x{margin-left:auto;flex-shrink:0;width:34px;height:34px;padding:0;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--muted);font-size:21px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;}
+#modalProveedoresCat .mcp-x:hover{background:#f4f6fa;color:var(--ink);}
+#modalProveedoresCat .mcp-body{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);overflow:hidden;}
+#modalProveedoresCat .mcp-panel{min-width:0;min-height:0;display:flex;flex-direction:column;padding:14px 20px 16px;}
+#modalProveedoresCat .mcp-panel--form{border-left:1px solid var(--line);background:#fafbfd;overflow-y:auto;}
+#modalProveedoresCat .mcp-sec-title{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 10px;font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;font-weight:700;color:var(--muted);}
+#modalProveedoresCat .mcp-conteo{font-weight:600;letter-spacing:0;text-transform:none;background:#eef1f6;color:#475467;border-radius:20px;padding:2px 9px;font-size:11.5px;}
+#modalProveedoresCat .mcp-buscar{margin:0 0 8px;}
+#modalProveedoresCat .mcp-buscar input{width:100%;box-sizing:border-box;padding:9px 12px;font-size:14px;border-radius:9px;}
+#modalProveedoresCat .mcp-tools{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 6px;}
+#modalProveedoresCat .mcp-tools .btn{flex:0 1 auto;min-height:32px;}
+#modalProveedoresCat .mcp-ayuda{font-size:11.5px;color:var(--muted);margin:0 0 8px;line-height:1.4;}
+#modalProveedoresCat .mcp-ayuda summary{cursor:pointer;width:fit-content;}
+#modalProveedoresCat .mcp-ayuda p{margin:5px 0 0;overflow-wrap:anywhere;}
+#modalProveedoresCat .mcp-list{flex:1;min-height:120px;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;border:1px solid var(--line);border-radius:10px;background:#fff;}
+#modalProveedoresCat .mcp-row{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:9px 12px;border-bottom:1px solid var(--line);}
+#modalProveedoresCat .mcp-row:last-child{border-bottom:none;}
+#modalProveedoresCat .mcp-row-info{min-width:0;flex:1;}
+#modalProveedoresCat .mcp-row-info strong{font-size:13.5px;overflow-wrap:anywhere;}
+#modalProveedoresCat .mcp-razon{font-size:11.5px;color:var(--muted);overflow-wrap:anywhere;line-height:1.35;margin-top:1px;}
+#modalProveedoresCat .mcp-rfc{flex-shrink:0;max-width:46%;text-align:right;font-size:11.5px;line-height:1.5;overflow-wrap:anywhere;}
+#modalProveedoresCat .mcp-rfc .provcat-rfc-input{width:min(100%,176px) !important;padding:6px 9px;font-size:13px;}
+#modalProveedoresCat .mcp-rfc .btn{margin-top:4px;}
+#modalProveedoresCat .mcp-panel--form .field{margin-bottom:12px;}
+#modalProveedoresCat #newProveedorCatRfc::placeholder{text-transform:none;}
+#modalProveedoresCat .mcp-panel--form .field input{width:100%;box-sizing:border-box;}
+#modalProveedoresCat .mcp-foot.modal-actions{margin:0;padding:12px 20px;justify-content:flex-end;border-top:1px solid var(--line);flex-shrink:0;position:static;}
+#modalProveedoresCat .mcp-foot .btn{flex:0 0 auto;min-height:40px;padding:10px 24px;}
+@media (max-width:760px){
+  #modalProveedoresCat{padding:8px;top:var(--mcp-top,0px);bottom:auto;height:var(--mcp-vh,100dvh);}
+  #modalProveedoresCat .modal.mcp{width:100%;max-height:100%;}
+  #modalProveedoresCat .mcp-head{padding:12px 14px 10px;}
+  #modalProveedoresCat .mcp-head h3{font-size:17px;}
+  #modalProveedoresCat .mcp-body{display:block;overflow-y:auto;-webkit-overflow-scrolling:touch;}
+  #modalProveedoresCat .mcp-panel{padding:12px 14px;}
+  #modalProveedoresCat .mcp-panel--form{border-left:none;border-top:1px solid var(--line);overflow:visible;}
+  #modalProveedoresCat .mcp-list{flex:none;min-height:96px;max-height:min(34dvh,260px);}
+  #modalProveedoresCat .mcp-tools .btn{flex:1 1 calc(50% - 4px);}
+  #modalProveedoresCat .mcp-row{flex-wrap:wrap;row-gap:2px;}
+  #modalProveedoresCat .mcp-row-info{flex:1 1 150px;}
+  #modalProveedoresCat .mcp-rfc{max-width:100%;flex:0 0 auto;margin-left:auto;text-align:right;} /* el RFC se queda a la derecha del nombre si cabe; si no, baja a su renglón */
+  #modalProveedoresCat .mcp-panel--form .field input,#modalProveedoresCat .mcp-buscar input{font-size:16px;}
+  #modalProveedoresCat .mcp-foot.modal-actions{padding:10px 14px;}
+  #modalProveedoresCat .mcp-foot .btn{width:100%;flex:1 1 100%;}
+  #modalProveedoresCat.mcp-teclado .mcp-head p{display:none;}
+}
+</style>
 </head>
 <body>
 
@@ -1677,32 +1731,45 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 </div>
 
 <!-- Modal: catálogo de proveedores -->
-<div class="modal-bg" id="modalProveedoresCat">
-  <div class="modal" style="width:min(520px,92vw);">
-    <h3>Catálogo de proveedores</h3>
-    <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px;">Da de alta tus proveedores una vez; luego los seleccionas al capturar facturas o pagos.</p>
-    <div id="proveedoresCatList" style="max-height:260px;overflow-y:auto;margin-bottom:16px;"></div>
-    <div class="grid-2">
-      <div class="field">
-        <label>Nombre comercial</label>
-        <input type="text" id="newProveedorCatNombre" placeholder="Ej. Distribuidora de Bebidas">
+<div class="modal-bg" id="modalProveedoresCat" role="dialog" aria-modal="true" aria-labelledby="mcpTitulo">
+  <div class="modal mcp">
+    <div class="mcp-head">
+      <div style="min-width:0;">
+        <h3 id="mcpTitulo">Catálogo de proveedores</h3>
+        <p>Da de alta tus proveedores una vez; luego los seleccionas al capturar facturas o pagos.</p>
       </div>
-      <div class="field">
-        <label>Razón social (opcional)</label>
-        <input type="text" id="newProveedorCatRazonSocial" placeholder="Ej. Distribuidora ABC SA de CV">
-      </div>
+      <button type="button" class="mcp-x" id="closeProveedoresCat" aria-label="Cerrar">&times;</button>
     </div>
-    <div class="field">
-      <label>RFC (opcional)</label>
-      <input type="text" id="newProveedorCatRfc" placeholder="Ej. ABC010101AB1" maxlength="13" autocomplete="off" style="text-transform:uppercase;">
+    <div class="mcp-body">
+      <section class="mcp-panel mcp-panel--lista" aria-label="Proveedores registrados">
+        <div class="mcp-sec-title"><span>Proveedores registrados</span><span class="mcp-conteo" id="mcpConteo">0</span></div>
+        <div class="field mcp-buscar"><input type="search" id="mcpBuscar" placeholder="Buscar por nombre, razón social o RFC" autocomplete="off" enterkeyhint="search" aria-label="Buscar proveedor"></div>
+        <div class="mcp-tools">
+          <button type="button" class="btn btn-ghost btn-sm" id="importProveedoresBtn">📥 Importar Excel</button>
+          <button type="button" class="btn btn-ghost btn-sm" id="faltantesProveedoresBtn" title="Trae al catálogo los proveedores que tienen facturas o XML y todavía no están aquí">Traer los que faltan</button>
+        </div>
+        <details class="mcp-ayuda"><summary>¿Cómo debe ser el Excel?</summary><p>El Excel debe tener columnas "Nombre Comercial" y "Razón Social" (una fila por proveedor); opcionalmente "RFC". Si el proveedor ya existe no se duplica y, si le faltaba, se le completa el RFC.</p></details>
+        <div id="proveedoresCatList" class="mcp-list"></div>
+      </section>
+      <section class="mcp-panel mcp-panel--form" aria-label="Agregar proveedor">
+        <div class="mcp-sec-title"><span>Agregar proveedor</span></div>
+        <div class="field">
+          <label for="newProveedorCatNombre">Nombre comercial</label>
+          <input type="text" id="newProveedorCatNombre" placeholder="Ej. Distribuidora de Bebidas" autocomplete="off" enterkeyhint="next">
+        </div>
+        <div class="field">
+          <label for="newProveedorCatRazonSocial">Razón social (opcional)</label>
+          <input type="text" id="newProveedorCatRazonSocial" placeholder="Ej. Distribuidora ABC SA de CV" autocomplete="off" enterkeyhint="next">
+        </div>
+        <div class="field">
+          <label for="newProveedorCatRfc">RFC (opcional)</label>
+          <input type="text" id="newProveedorCatRfc" placeholder="Ej. ABC010101AB1" maxlength="13" autocomplete="off" autocapitalize="characters" spellcheck="false" enterkeyhint="done" style="text-transform:uppercase;">
+        </div>
+      </section>
     </div>
-    <div class="modal-actions">
-      <button class="btn btn-ghost" id="closeProveedoresCat">Cerrar</button>
-      <button class="btn btn-ghost" id="faltantesProveedoresBtn" title="Trae al catálogo los proveedores que tienen facturas o XML y todavía no están aquí">Traer los que faltan</button>
-      <button class="btn btn-ghost" id="importProveedoresBtn">📥 Importar Excel</button>
-      <button class="btn btn-gold" id="saveProveedorCat">+ Agregar proveedor</button>
+    <div class="modal-actions mcp-foot">
+      <button type="button" class="btn btn-gold" id="saveProveedorCat">+ Agregar proveedor</button>
     </div>
-    <p style="font-size:11px;color:var(--muted);margin-top:10px;">El Excel debe tener columnas "Nombre Comercial" y "Razón Social" (una fila por proveedor); opcionalmente "RFC". Si el proveedor ya existe no se duplica y, si le faltaba, se le completa el RFC.</p>
   </div>
 </div>
 

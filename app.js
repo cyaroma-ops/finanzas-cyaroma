@@ -12981,9 +12981,21 @@ async function loadProveedoresCatalogo(businessId) {
   const { data } = await sb.from('fz_proveedores_catalogo').select('*').eq('business_id', businessId).eq('activo', true).order('nombre');
   return data || [];
 }
+// El modal sigue a la pantalla VISIBLE (el teclado del celular la achica): así el formulario y el botón principal no quedan tapados, y el campo enfocado se desplaza a la vista.
+function mcpPrepararTeclado(bg) {
+  if (!bg || bg.dataset.tecladoListo) return; bg.dataset.tecladoListo = '1';
+  const vv = window.visualViewport; let base = vv ? vv.height : window.innerHeight;
+  const ajustar = () => { const h = vv ? vv.height : window.innerHeight; base = Math.max(base, h); bg.style.setProperty('--mcp-vh', h + 'px'); bg.style.setProperty('--mcp-top', (vv ? vv.offsetTop : 0) + 'px'); bg.classList.toggle('mcp-teclado', h < base - 120); };
+  if (vv) { vv.addEventListener('resize', ajustar); vv.addEventListener('scroll', ajustar); } window.addEventListener('resize', ajustar); ajustar();
+  bg.addEventListener('focusin', (e) => { if (e.target && e.target.matches && e.target.matches('input,select,textarea')) setTimeout(() => { try { e.target.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (_) { /* sin scroll suave */ } }, 280); });
+}
 async function openProveedoresCatModal(businessId, onClose) {
+  const bq0 = document.getElementById('mcpBuscar'); if (bq0) bq0.value = '';
   await renderProveedoresCatList(businessId);
   document.getElementById('modalProveedoresCat').classList.add('show');
+  mcpPrepararTeclado(document.getElementById('modalProveedoresCat'));
+  if (bq0) bq0.oninput = () => pintarProveedoresCatList(businessId);
+  ['newProveedorCatNombre', 'newProveedorCatRazonSocial', 'newProveedorCatRfc'].forEach(id => { const el = document.getElementById(id); if (el) el.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); document.getElementById('saveProveedorCat').click(); } }; });
   document.getElementById('closeProveedoresCat').onclick = () => { document.getElementById('modalProveedoresCat').classList.remove('show'); if (onClose) onClose(); };
   document.getElementById('saveProveedorCat').onclick = async () => {
     const nombre = document.getElementById('newProveedorCatNombre').value.trim();
@@ -13001,27 +13013,33 @@ async function openProveedoresCatModal(businessId, onClose) {
     document.getElementById('newProveedorCatNombre').value = '';
     document.getElementById('newProveedorCatRazonSocial').value = '';
     if (document.getElementById('newProveedorCatRfc')) document.getElementById('newProveedorCatRfc').value = '';
+    const bq1 = document.getElementById('mcpBuscar'); if (bq1) bq1.value = ''; // para que el proveedor recién agregado se vea en la lista
     renderProveedoresCatList(businessId);
   };
   document.getElementById('importProveedoresBtn').onclick = () => openImportExcelModal('proveedores', businessId, () => renderProveedoresCatList(businessId));
   if (document.getElementById('faltantesProveedoresBtn')) document.getElementById('faltantesProveedoresBtn').onclick = () => abrirProveedoresFaltantes({ id: businessId }, () => renderProveedoresCatList(businessId));
 }
-async function renderProveedoresCatList(businessId) {
-  const provs = await loadProveedoresCatalogo(businessId);
-  const box = document.getElementById('proveedoresCatList');
-  if (!provs.length) { box.innerHTML = `<div class="empty" style="padding:16px;">Aún no hay proveedores. Agrega el primero abajo.</div>`; return; }
+let STATE_provCatLista = []; // última lista cargada: el buscador la filtra sin volver a consultar la base
+async function renderProveedoresCatList(businessId) { STATE_provCatLista = await loadProveedoresCatalogo(businessId); pintarProveedoresCatList(businessId); }
+function pintarProveedoresCatList(businessId) {
+  const provs = STATE_provCatLista, box = document.getElementById('proveedoresCatList');
+  const qEl = document.getElementById('mcpBuscar'), qTxt = qEl ? qEl.value.trim() : '', q = cfdiNorm(qTxt).trim();
+  const visibles = !q ? provs : provs.filter(p => [p.nombre_comercial, p.nombre, p.razon_social, p.rfc].some(t => cfdiNorm(t).includes(q)));
+  const cnt = document.getElementById('mcpConteo'); if (cnt) cnt.textContent = q ? `${visibles.length} de ${provs.length}` : String(provs.length);
+  if (!provs.length) { box.innerHTML = `<div class="empty" style="padding:16px;">Aún no hay proveedores. Agrega el primero en «Agregar proveedor».</div>`; return; }
+  if (!visibles.length) { box.innerHTML = `<div class="empty" style="padding:16px;">Sin resultados para «${revEsc(qTxt)}».</div>`; return; }
   // (ya no hay botón para quitar proveedores desde aquí: un proveedor repetido se resuelve con "Unificar duplicados" en Proveedores, que mueve sus facturas y no pierde nada)
-  box.innerHTML = provs.map(p => `
-    <div class="provcat-item" data-id="${p.id}" style="padding:8px 4px;border-bottom:1px solid var(--line);">
-      <div><strong>${revEsc(p.nombre_comercial || p.nombre)}</strong>${p.razon_social ? `<div style="color:var(--muted);font-size:12px;">${revEsc(p.razon_social)}</div>` : ''}</div>
-      <div class="provcat-rfc" style="font-size:12px;margin-top:2px;">${provRfcValido(p.rfc) ? `<span style="color:var(--muted);">RFC:</span> <strong>${revEsc(provRfc(p.rfc))}</strong> <a href="#" class="provcat-rfc-edit" data-id="${p.id}" style="margin-left:6px;">cambiar</a>` : `<a href="#" class="provcat-rfc-edit" data-id="${p.id}" style="color:var(--red);">+ Agregar RFC</a>`}</div>
+  box.innerHTML = visibles.map(p => `
+    <div class="provcat-item mcp-row" data-id="${p.id}">
+      <div class="mcp-row-info"><strong>${revEsc(p.nombre_comercial || p.nombre)}</strong>${p.razon_social ? `<div class="mcp-razon">${revEsc(p.razon_social)}</div>` : ''}</div>
+      <div class="provcat-rfc mcp-rfc">${provRfcValido(p.rfc) ? `<span style="color:var(--muted);">RFC:</span> <strong>${revEsc(provRfc(p.rfc))}</strong> <a href="#" class="provcat-rfc-edit" data-id="${p.id}" style="margin-left:6px;">cambiar</a>` : `<a href="#" class="provcat-rfc-edit" data-id="${p.id}" style="color:var(--red);">+ Agregar RFC</a>`}</div>
     </div>`).join('');
   box.querySelectorAll('.provcat-rfc-edit').forEach(a => a.addEventListener('click', (ev) => {
     ev.preventDefault();
     const p = provs.find(x => x.id === a.dataset.id), cont = a.closest('.provcat-rfc');
     cont.innerHTML = `<input type="text" class="cell provcat-rfc-input" value="${revEsc(p.rfc || '')}" maxlength="13" placeholder="Ej. ABC010101AB1" autocomplete="off" style="width:150px;text-transform:uppercase;"> <button class="btn btn-gold btn-sm provcat-rfc-guardar">Guardar</button> <button class="btn btn-ghost btn-sm provcat-rfc-cancelar">Cancelar</button>`;
     const input = cont.querySelector('.provcat-rfc-input'); input.focus();
-    cont.querySelector('.provcat-rfc-cancelar').addEventListener('click', () => renderProveedoresCatList(businessId));
+    cont.querySelector('.provcat-rfc-cancelar').addEventListener('click', () => pintarProveedoresCatList(businessId));
     cont.querySelector('.provcat-rfc-guardar').addEventListener('click', async () => {
       const v = provValidarRfcCatalogo(input.value, provs, p.id);
       if (!v.ok) { toast(v.error, 'error'); return; }
