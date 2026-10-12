@@ -14508,7 +14508,7 @@ async function loadFacturasClientesPendConNombre(businessId) {
     loadClientes(businessId),
   ]);
   const nombreCliente = Object.fromEntries(clientesQ.map(c => [c.id, c.razon_social || c.nombre_comercial]));
-  return (facturasQ.data || []).map(f => ({ ...f, clienteNombre: nombreCliente[f.cliente_id] || '(cliente eliminado)' }));
+  return (facturasQ.data || []).filter(f => !(Number(f.total) < 0)).map(f => ({ ...f, clienteNombre: nombreCliente[f.cliente_id] || '(cliente eliminado)' })); // una nota de crédito (total negativo) no es algo por cobrar
 }
 
 function facturaIdsClienteDe(r) {
@@ -16224,7 +16224,10 @@ async function renderProveedores() {
     const info = all.find(x => x.id === btn.dataset.id);
     if (info) await openModalFacturaProveedor(info, b.id, catalogo, opcionesPagoDesde);
   }));
+  el.querySelectorAll('.prov-nc-deshacer').forEach(btn => btn.addEventListener('click', () => ncDeshacerAplicacion(b, 'proveedor', btn.dataset.id, () => renderProveedores())));
   el.querySelectorAll('.prov-del').forEach(btn => btn.addEventListener('click', async () => {
+    const f0 = all.find(x => x.id === btn.dataset.id);
+    if (f0 && f0.tipo_documento === 'nota_credito' && (f0.estatus === 'Pagado' || Math.abs(Number(f0.importe_pagado) || 0) > 0.004)) { toast('Esta nota ya está aplicada: usa "Deshacer aplicación" en su menú antes de eliminarla.', 'error'); return; }
     const r = await eliminarFacturaProveedorConCascada(btn.dataset.id, b.id);
     if (r.ok) renderProveedores();
   }));
@@ -16927,7 +16930,7 @@ async function getTransaccionesCliente(businessId, facturas, nombreCliente) {
   facturas.forEach(f => {
     const mon = monedaDe(f), tc = tcDe(f), total = Number(f.total) || 0;
     transacciones.push({
-      fecha: f.fecha, tipo: 'Factura', numero: `#${f.folio}${f.numero_factura ? ' · ' + f.numero_factura : ''}`, monto: total,
+      fecha: f.fecha, tipo: 'Factura', etiqueta: f.tipo_documento === 'nota_credito' ? 'Nota de crédito' : undefined, numero: `#${f.folio}${f.numero_factura ? ' · ' + f.numero_factura : ''}`, monto: total,
       saldo: redondearMoneda(Math.max(0, total - (Number(f.importe_pagado) || 0))),
       moneda: mon, tc: mon !== 'MXN' ? tc : null, montoMxn: mon !== 'MXN' ? redondearMoneda(total * tc) : total, factura: f,
       origen: { tipo: 'factura_cliente', id: f.id, fecha: f.fecha },
@@ -17039,7 +17042,7 @@ async function renderClienteDetalle(el, b) {
               const diasRetraso = esFactura ? calcularDiasRetraso(f.fecha_vencimiento, t.saldo) : '';
               return `<tr>
                 <td>${fechaCorta(t.fecha)}</td>
-                <td>${t.tipo}</td>
+                <td>${t.etiqueta || t.tipo}</td>
                 <td class="ref">${t.numero}</td>
                 ${hayDivisas ? `<td>${t.moneda || 'MXN'}</td><td class="num">${t.moneda && t.moneda !== 'MXN' ? fmtTC(t.tc || 1) : '—'}</td>` : ''}
                 <td class="num ${t.monto<0?'red':''}">${t.monto<0?'-':''}${hayDivisas ? fmtMon(Math.abs(t.monto), t.moneda) : fmt(Math.abs(t.monto))}</td>
@@ -17050,7 +17053,7 @@ async function renderClienteDetalle(el, b) {
                 <td class="num solo-pantalla" style="${typeof diasRetraso==='number' && diasRetraso>0?'color:var(--red);font-weight:700;':''}">${esFactura ? diasRetraso : ''}</td>
                 <td>${esFactura ? `<span class="badge ${f.estatus==='Pagado'?'pag':'pend'}">${f.estatus}</span>` : ''}</td>
                 <td class="solo-pantalla">${esFactura ? (ESTATUS_FISCAL_BADGE[f.estatus_fiscal] || ESTATUS_FISCAL_BADGE.no_aplica) : ''}</td>
-                ${esFactura ? facturaMenuHtml(f.id).replace('<td data-rol="acciones"', '<td class="solo-pantalla" data-rol="acciones"') : `<td class="solo-pantalla">${t.origen ? `<button class="btn btn-ghost btn-sm abrir-origen-btn" data-origen='${JSON.stringify(t.origen).replace(/'/g, '&apos;')}'>Ver / Editar</button>` : ''}</td>`}
+                ${esFactura ? facturaMenuHtml(f.id, f).replace('<td data-rol="acciones"', '<td class="solo-pantalla" data-rol="acciones"') : `<td class="solo-pantalla">${t.origen ? `<button class="btn btn-ghost btn-sm abrir-origen-btn" data-origen='${JSON.stringify(t.origen).replace(/'/g, '&apos;')}'>Ver / Editar</button>` : ''}</td>`}
               </tr>`;
             }).join('') : `<tr><td colspan="${hayDivisas ? 14 : 12}" class="empty">Este cliente aún no tiene facturas.</td></tr>`}
           </tbody>
@@ -17867,12 +17870,17 @@ document.getElementById('closeElegirFacturaPago2').addEventListener('click', () 
 });
 
 /* ---------- Facturas de clientes ---------- */
-function facturaMenuHtml(facturaId) {
+function facturaMenuHtml(facturaId, f) {
+  const esNota = !!f && f.tipo_documento === 'nota_credito', aplicada = esNota && (f.estatus === 'Pagado' || Math.abs(Number(f.importe_pagado) || 0) > 0.004), estilo = 'display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;';
+  if (esNota) return `<td data-rol="acciones" style="position:relative;">
+    <button class="btn btn-ghost btn-sm factura-menu-btn" data-id="${facturaId}" style="padding:5px 12px;">⋮</button>
+    <div class="factura-menu-dropdown" data-menu="${facturaId}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:170px;overflow:hidden;">${aplicada ? `<button class="factura-nc-deshacer" data-id="${facturaId}" style="${estilo}">Deshacer aplicación</button>` : ''}<button class="factura-eliminar" data-id="${facturaId}" style="${estilo}color:var(--red);${aplicada ? 'border-top:1px solid var(--line);' : ''}">Eliminar</button></div></td>`;
   return `<td data-rol="acciones" style="position:relative;">
     <button class="btn btn-ghost btn-sm factura-menu-btn" data-id="${facturaId}" style="padding:5px 12px;">⋯</button>
     <div class="factura-menu-dropdown" data-menu="${facturaId}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:160px;overflow:hidden;">
       <button class="factura-modificar" data-id="${facturaId}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Modificar</button>
       <button class="factura-cobrar" data-id="${facturaId}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Recibir un pago</button>
+      <button class="factura-nc" data-id="${facturaId}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Nota de crédito</button>
       <button class="factura-pdf" data-id="${facturaId}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Descargar PDF</button>
       <button class="factura-eliminar" data-id="${facturaId}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>
     </div>
@@ -17899,11 +17907,14 @@ function wireFacturaMenu(el, businessId, onDone) {
       document.getElementById('cobroMonto').focus();
     }
   }));
+  el.querySelectorAll('.factura-nc').forEach(btn => btn.addEventListener('click', () => abrirNotaCreditoCliente(biz(), btn.dataset.id, onDone)));
+  el.querySelectorAll('.factura-nc-deshacer').forEach(btn => btn.addEventListener('click', () => ncDeshacerAplicacion(biz(), 'cliente', btn.dataset.id, onDone)));
   el.querySelectorAll('.factura-pdf').forEach(btn => btn.addEventListener('click', async () => {
     await descargarFacturaPDF(btn.dataset.id, businessId);
   }));
   el.querySelectorAll('.factura-eliminar').forEach(btn => btn.addEventListener('click', async () => {
-    const { data: fInfo } = await sb.from('fz_facturas_clientes').select('fecha').eq('id', btn.dataset.id).single();
+    const { data: fInfo } = await sb.from('fz_facturas_clientes').select('fecha,tipo_documento,estatus,importe_pagado').eq('id', btn.dataset.id).single();
+    if (fInfo && fInfo.tipo_documento === 'nota_credito' && (fInfo.estatus === 'Pagado' || Math.abs(Number(fInfo.importe_pagado) || 0) > 0.004)) { toast('Esta nota ya está aplicada: usa "Deshacer aplicación" en su menú antes de eliminarla.', 'error'); return; }
     if (fInfo && await bloqueadoPorCierre(businessId, fInfo.fecha)) return;
     if (!confirm('¿Desea usted eliminar esta factura? Si tiene cobros aplicados, también se revertirán (incluyendo los movimientos de banco/efectivo que se hayan creado). Esta acción no se puede deshacer.')) return;
     await eliminarFacturaCliente(btn.dataset.id, businessId);
@@ -18204,7 +18215,7 @@ async function renderFacturasClientes(el, b) {
     <div class="card">
       <div class="card-head">
         <h3>Facturas de clientes</h3>
-        <button class="btn btn-gold btn-sm" id="addFacturaBtn">+ Nueva factura</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-ghost btn-sm" id="addNcCliBtn" title="Registra una nota de crédito a un cliente (devolución, descuento o corrección)">+ Nota de crédito</button><button class="btn btn-gold btn-sm" id="addFacturaBtn">+ Nueva factura</button></div>
       </div>
       <div class="table-wrap scroll-sticky">
         <table class="tabla-operativa tabla-operativa--scroll">
@@ -18227,14 +18238,14 @@ async function renderFacturasClientes(el, b) {
               <td data-rol="secundario">${nombreCliente(f.cliente_id)}</td>
               <td data-rol="meta">${f.moneda || 'MXN'}</td>
               <td class="num" data-rol="meta">${esMxn ? '—' : fmtTC(f.tipo_cambio || 1)}</td>
-              <td class="num" data-rol="importe" style="font-weight:700;">${prefijoMoneda(f.moneda)} ${fmt(f.total)}</td>
+              <td class="num" data-rol="importe" style="font-weight:700;">${prefijoMoneda(f.moneda)} ${fmt(f.total)}${f.tipo_documento === 'nota_credito' ? `<div style="font-size:10.5px;font-weight:400;color:var(--green);">nota de crédito${f.factura_origen_id ? ' de #' + revEsc(((facturas.find(x => x.id === f.factura_origen_id)) || {}).folio || '?') : ''}</div>` : ''}</td>
               <td class="num" data-rol="meta">${prefijoMoneda(f.moneda)} ${fmt(f.importe_pagado||0)}</td>
               <td class="num" data-rol="meta" style="${saldo>0.004?'color:var(--gold);font-weight:600;':''}">${prefijoMoneda(f.moneda)} ${fmt(saldo)}</td>
               <td data-rol="meta">${f.fecha_vencimiento ? fechaCorta(f.fecha_vencimiento) : '—'}</td>
               <td data-rol="meta" style="${typeof diasRetraso==='number' && diasRetraso>0?'color:var(--red);font-weight:700;':''}">${diasRetraso}</td>
               <td data-rol="estado"><span class="badge ${f.estatus==='Pagado'?'pag':'pend'}">${f.estatus}</span></td>
               <td data-rol="meta">${ESTATUS_FISCAL_BADGE[f.estatus_fiscal] || ESTATUS_FISCAL_BADGE.no_aplica}</td>
-              ${facturaMenuHtml(f.id)}
+              ${facturaMenuHtml(f.id, f)}
             </tr>`;}).join('') : `<tr><td colspan="14" class="empty">Aún no hay facturas. Usa "+ Nueva factura".</td></tr>`}
           </tbody>
         </table>
@@ -18242,6 +18253,7 @@ async function renderFacturasClientes(el, b) {
     </div>
   `;
   document.getElementById('addFacturaBtn').addEventListener('click', () => openModalFactura(null, b.id));
+  document.getElementById('addNcCliBtn').addEventListener('click', () => abrirNotaCreditoCliente(b, null, () => renderFacturasClientes(el, b)));
   wireFacturaMenu(el, b.id, () => renderFacturasClientes(el, b));
   wireClientesTabs();
   window.scrollTo(0, scrollY);
@@ -19386,6 +19398,7 @@ function provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntos, todasFactur
       <button class="btn btn-ghost btn-sm prov-menu-btn" data-id="${p.id}" style="padding:5px 12px;">⋯</button>
       <div class="prov-menu-dropdown" data-menu="${p.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:130px;overflow:hidden;">
         <button class="prov-editar" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Editar factura</button>
+        ${p.tipo_documento === 'nota_credito' && (p.estatus === 'Pagado' || Math.abs(Number(p.importe_pagado) || 0) > 0.004) ? `<button class="prov-nc-deshacer" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Deshacer aplicación</button>` : ''}
         ${!esCredito && p.tipo_documento !== 'nota_credito' ? `<button class="prov-nc" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Nota de crédito</button>` : ''}
         <button class="prov-del" data-id="${p.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>
       </div>
@@ -23409,6 +23422,140 @@ async function abrirNotaCreditoProveedor(b, facturaId, alCambiar) {
     }
     registrarAuditoria(b.id, 'crear', 'Proveedores', `Nota de crédito ${plan.payload.factura} por ${fmtMon(total, plan.payload.moneda)} a ${provNombreVisible(prov)}${f ? ' (corrige ' + (f.factura || '#' + f.folio) + ')' : ''}${compensar ? ' — aplicada' : ''}`);
     cerrar(); toast(`Nota de crédito ${plan.payload.factura} creada${nota}.${falloComp ? ' No se pudo aplicar contra la factura (' + falloComp + '): queda como crédito disponible.' : ''}`, falloComp ? 'error' : undefined); if (alCambiar) alCambiar();
+  });
+}
+
+// ============================================================================================================
+// NOTA DE CRÉDITO A CLIENTE: una factura de cliente con total NEGATIVO (el libro ya la trata así: baja Clientes, el ingreso y el IVA trasladado). Con factura de origen copia su IVA y sus
+// líneas en proporción; sin ella pide la subcuenta de ingreso y la tasa. Pura: no toca la base. (Las facturas de cliente no llevan retenciones.)
+// ============================================================================================================
+function ncPlanCliente({ factura: f, lineasOrig, total, fecha, numero, motivo, pctIva, subcuentaId, estatusFiscal, folioFiscal }) {
+  const errores = [], avisos = [], t = cfdiR2(total), lo = Array.isArray(lineasOrig) ? lineasOrig : [];
+  if (!(t > 0)) errores.push('Escribe el importe de la nota de crédito (el total, con IVA).');
+  if (!String(numero || '').trim()) errores.push('Escribe el número de la nota (por ejemplo NC-123).');
+  if (!fecha) errores.push('Falta la fecha de la nota.');
+  if (f && !(Number(f.total) > 0)) errores.push('La factura de origen debe tener un total positivo.');
+  if (f && t > cfdiR2(f.total) + 0.005) errores.push(`La nota (${t.toFixed(2)}) no puede ser mayor que la factura que corrige (${cfdiR2(f.total).toFixed(2)}).`);
+  if ((!f || !lo.some(l => Math.abs(Number(l.importe) || 0) > 0)) && !subcuentaId) errores.push(f ? 'La factura de origen no tiene líneas con importe: elige la subcuenta de ingreso que baja la nota.' : 'Elige la subcuenta de ingreso que baja la nota.');
+  if (errores.length) return { ok: false, errores, avisos };
+  const neg = (x) => { const v = cfdiR2(Math.abs(x)); return v === 0 ? 0 : -v; }, moneda = f ? (f.moneda || 'MXN') : 'MXN', tipoCambio = f ? (Number(f.tipo_cambio) || 1) : 1;
+  let iva, base, aplicaIva, pct, lineas = [];
+  if (f) {
+    const k = t / cfdiR2(f.total); aplicaIva = !!f.aplica_iva; pct = aplicaIva ? (f.iva_porcentaje ?? 16) : 0;
+    iva = aplicaIva ? cfdiR2((Number(f.iva_monto) || 0) * k) : 0; base = cfdiR2(t - iva); // la base absorbe el redondeo: base + IVA = total exacto
+    const pesos = lo.map(l => Math.abs(Number(l.importe) || 0));
+    if (pesos.some(x => x > 0)) { const m = cfdiReparto(base, pesos); lineas = lo.map((l, i) => ({ descripcion: l.descripcion || null, cantidad: 1, precio_unitario: neg(m[i]), subcuenta_id: l.subcuenta_id, importe: neg(m[i]), orden: i, producto_id: l.producto_id || null })).filter(l => l.importe !== 0); }
+  } else { pct = Number(pctIva) || 0; aplicaIva = pct > 0; base = aplicaIva ? cfdiR2(t / (1 + pct / 100)) : t; iva = cfdiR2(t - base); }
+  if (!lineas.length) lineas = [{ descripcion: 'Nota de crédito', cantidad: 1, precio_unitario: neg(base), subcuenta_id: subcuentaId, importe: neg(base), orden: 0, producto_id: null }];
+  const ef = ['pendiente', 'facturada', 'no_aplica'].includes(estatusFiscal) ? estatusFiscal : 'pendiente';
+  const payload = { fecha, numero_factura: String(numero).trim(), moneda, tipo_cambio: tipoCambio, subtotal: neg(base), aplica_iva: aplicaIva, iva_porcentaje: pct, iva_monto: neg(iva), total: neg(t), estatus_fiscal: ef, folio_fiscal: ef === 'facturada' ? (String(folioFiscal || '').trim() || null) : null,
+    notas: String(motivo || '').trim() || null, tipo_documento: 'nota_credito', factura_origen_id: f ? f.id : null, nc_motivo: String(motivo || '').trim() || null, estatus: 'Pendiente', importe_pagado: 0, es_recurrente: false };
+  return { ok: true, errores, avisos, payload, lineas, resumen: { base, iva, total: t } };
+}
+// Deshace la aplicación directa de una nota contra su factura (la que hace la ventana "Nota de crédito"): devuelve a la factura lo que se le había aplicado y deja la nota otra vez pendiente.
+// Una nota que se usó dentro de un pago o un cobro NO se toca aquí (su movimiento tiene que liberarla).
+async function ncDeshacerAplicacion(b, tipo, ncId, alCambiar) {
+  const prov = tipo === 'proveedor', tabla = prov ? 'fz_proveedores' : 'fz_facturas_clientes', tablaAp = prov ? 'fz_pagos_aplicados' : 'fz_cobros_aplicados', col = prov ? 'importe' : 'total';
+  const { data: nc } = await sb.from(tabla).select('*').eq('id', ncId).eq('business_id', b.id).maybeSingle();
+  if (!nc || nc.tipo_documento !== 'nota_credito') { toast('Ese documento no es una nota de crédito.', 'error'); return false; }
+  if (nc.estatus !== 'Pagado' && Math.abs(Number(nc.importe_pagado) || 0) < 0.004) { toast('Esa nota no está aplicada.', 'error'); return false; }
+  const { data: usos } = await sb.from(tablaAp).select('id').eq('factura_id', nc.id).limit(1);
+  if ((usos || []).length) { toast(`Esta nota se usó dentro de un ${prov ? 'pago' : 'cobro'}: edita o elimina ese movimiento para liberarla.`, 'error'); return false; }
+  if (!nc.factura_origen_id) { toast('Esta nota no está ligada a una factura: no sé contra cuál se aplicó.', 'error'); return false; }
+  const { data: f } = await sb.from(tabla).select('*').eq('id', nc.factura_origen_id).maybeSingle(); if (!f) { toast('La factura contra la que se aplicó ya no existe.', 'error'); return false; }
+  if (await bloqueadoPorCierre(b.id, nc.fecha)) return false;
+  if (!confirm(`Se le quitará a la factura ${f.factura || f.numero_factura || '#' + f.folio} lo que le aplicó esta nota y la nota volverá a quedar pendiente. ¿Continuar?`)) return false;
+  const monto = Math.abs(Number(nc[col]) || 0), nuevo = Math.max(0, cfdiR2((Number(f.importe_pagado) || 0) - monto)), est = nuevo <= 0.004 ? 'Pendiente' : (nuevo >= Number(f[col]) - 0.01 ? 'Pagado' : 'Parcial');
+  const { error: e1 } = await sb.from(tabla).update({ importe_pagado: nuevo, estatus: est, ...(nuevo <= 0.004 ? { fecha_pago: null } : {}) }).eq('id', f.id); if (e1) { toast('No se pudo revertir la factura: ' + e1.message, 'error'); return false; }
+  const { error: e2 } = await sb.from(tabla).update({ estatus: 'Pendiente', importe_pagado: 0, fecha_pago: null }).eq('id', nc.id); if (e2) { await sb.from(tabla).update({ importe_pagado: f.importe_pagado, estatus: f.estatus }).eq('id', f.id); toast('No se pudo liberar la nota: ' + e2.message, 'error'); return false; }
+  registrarAuditoria(b.id, 'editar', prov ? 'Proveedores' : 'Clientes', `Se deshizo la aplicación de la nota de crédito ${nc.factura || nc.numero_factura || ''} contra ${f.factura || f.numero_factura || '#' + f.folio}`);
+  toast('Aplicación deshecha: la nota quedó pendiente.'); if (alCambiar) alCambiar(); return true;
+}
+
+async function nccPreflight() { const r = await sb.from('fz_facturas_clientes').select('tipo_documento,factura_origen_id,nc_motivo').limit(1); return { ok: !r.error }; }
+async function abrirNotaCreditoCliente(b, facturaId, alCambiar) {
+  if (!b) return;
+  if (!(await nccPreflight()).ok) { toast('Falta correr migracion_notas_credito_clientes.sql en Supabase para poder crear notas de crédito a clientes.', 'error'); return; }
+  const [clientes, subcuentas, mayores] = await Promise.all([loadClientes(b.id), loadSubcuentas(b.id), loadCuentasMayor(b.id)]);
+  const nombreCli = (c) => c.razon_social && c.razon_social !== c.nombre_comercial ? `${c.razon_social} — ${c.nombre_comercial}` : (c.nombre_comercial || c.razon_social || '');
+  let orig0 = null;
+  if (facturaId) {
+    const { data } = await sb.from('fz_facturas_clientes').select('*').eq('id', facturaId).eq('business_id', b.id).maybeSingle(); orig0 = data;
+    if (!orig0 || !(Number(orig0.total) > 0) || orig0.tipo_documento === 'nota_credito') { toast('A esa factura no se le puede hacer una nota de crédito.', 'error'); return; }
+  }
+  const mayoresIng = mayores.filter(m => m.tipo === 'ingreso'), subsIng = subcuentas.filter(s => mayoresIng.some(m => m.id === s.cuenta_mayor_id)), nombreSub = (id) => (subcuentas.find(x => x.id === id) || {}).nombre || '(cuenta eliminada)';
+  const E = { clienteId: orig0 ? orig0.cliente_id : '', facturaId: orig0 ? orig0.id : '', fecha: todayStr(), numero: '', motivo: NC_MOTIVOS[0], nota: '', pct: 16, subcuentaId: '', ef: 'pendiente', uuid: '', compensar: true, facturas: [], ncPrevias: [], lineas: [] };
+  const cargar = async () => {
+    if (!E.clienteId) { E.facturas = []; E.ncPrevias = []; return; }
+    const { data } = await fetchTodasLasPaginas(() => sb.from('fz_facturas_clientes').select('*').eq('business_id', b.id).eq('cliente_id', E.clienteId).order('fecha', { ascending: false }).order('id'));
+    const todas = data || []; E.facturas = todas.filter(f => Number(f.total) > 0 && f.tipo_documento !== 'nota_credito'); E.ncPrevias = todas.filter(f => f.tipo_documento === 'nota_credito');
+  };
+  const cargarLineas = async () => { if (!E.facturaId) { E.lineas = []; return; } const { data } = await sb.from('fz_facturas_clientes_lineas').select('*').eq('factura_id', E.facturaId).order('orden'); E.lineas = data || []; };
+  await cargar(); await cargarLineas();
+  const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalNotaCreditoCli'; const cerrar = () => bg.remove();
+  bg.innerHTML = `<div class="modal" style="width:min(820px,96vw);max-height:92vh;overflow:auto;"><h3>Nota de crédito a cliente</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 8px;">Úsala cuando <strong>tú le acreditas</strong> a tu cliente una devolución, un descuento o una corrección. Baja lo que te debe, tus ingresos y el IVA trasladado. Si eliges la factura que corrige, la nota copia su IVA y sus líneas en proporción.</p>
+    <div class="grid-2"><div class="field"><label>Cliente</label><select id="nccCliente" class="cell" ${orig0 ? 'disabled' : ''}><option value="">Elige un cliente…</option>${clientes.map(c => `<option value="${c.id}" ${E.clienteId === c.id ? 'selected' : ''}>${revEsc(nombreCli(c))}</option>`).join('')}</select></div>
+      <div class="field"><label>Factura que corrige</label><select id="nccFactura" class="cell" ${orig0 ? 'disabled' : ''}></select></div></div>
+    <div class="grid-3"><div class="field"><label>Fecha de la nota</label><input type="date" id="nccFecha" value="${E.fecha}"></div><div class="field"><label>Número de la nota</label><input type="text" id="nccNumero" placeholder="Ej. NC-123" maxlength="40"></div>
+      <div class="field"><label>Total de la nota (con IVA)</label><div style="display:flex;gap:6px;"><input type="text" id="nccTotal" inputmode="decimal" placeholder="0.00" style="flex:1;"><button class="btn btn-ghost btn-sm" id="nccTodo" title="Acreditar todo lo que queda por acreditar de la factura">Todo</button></div></div></div>
+    <div class="grid-2"><div class="field"><label>Motivo</label><select id="nccMotivo" class="cell">${NC_MOTIVOS.map(m => `<option>${m}</option>`).join('')}</select></div><div class="field"><label>Nota (opcional)</label><input type="text" id="nccNota" maxlength="200" placeholder="Ej. 2 mesas devueltas"></div></div>
+    <div id="nccSinFactura" style="display:none;"><div class="grid-2"><div class="field"><label>Subcuenta de ingreso que baja la nota</label><select id="nccSub" class="cell"><option value="">Elige…</option>${opcionesSubcuentaHtml(subsIng, mayoresIng, null)}</select></div><div class="field"><label>IVA de la nota</label><select id="nccPct" class="cell"><option value="16">16 %</option><option value="8">8 %</option><option value="0">Sin IVA</option></select></div></div></div>
+    <div class="grid-2"><div class="field"><label>Comprobante fiscal (CFDI de egreso)</label><select id="nccEf" class="cell"><option value="pendiente">Pendiente: avisar al contador</option><option value="facturada">Ya emitido</option><option value="no_aplica">No aplica</option></select></div><div class="field" id="nccUuidWrap" style="display:none;"><label>UUID del CFDI de egreso (opcional)</label><input type="text" id="nccUuid" maxlength="40" placeholder="Si ya lo tienes"></div></div>
+    <div id="nccCompWrap" style="margin:6px 0;"></div><div id="nccPreview"></div>
+    <div class="modal-actions"><button class="btn btn-ghost" id="nccCancelar">Cancelar</button><button class="btn btn-gold" id="nccConfirmar">Crear la nota de crédito</button></div></div>`;
+  document.body.appendChild(bg); bg.querySelector('#nccCancelar').addEventListener('click', cerrar);
+  const $ = (id) => bg.querySelector('#' + id), orig = () => E.facturas.find(f => f.id === E.facturaId) || null;
+  const acreditado = (fid) => cfdiR2(E.ncPrevias.filter(n => n.factura_origen_id === fid).reduce((s, n) => s + Math.abs(Number(n.total) || 0), 0));
+  const maxAcreditable = () => { const f = orig(); return f ? cfdiR2(Number(f.total) - acreditado(f.id)) : null; };
+  const pintarFacturas = () => {
+    $('nccFactura').innerHTML = `<option value="">— Sin factura (crédito general del cliente) —</option>${E.facturas.map(f => `<option value="${f.id}" ${E.facturaId === f.id ? 'selected' : ''}>${revEsc(fechaCorta(f.fecha))} · #${f.folio}${f.numero_factura ? ' · ' + revEsc(f.numero_factura) : ''} · ${fmtMon(f.total, f.moneda)}${acreditado(f.id) ? ` (ya acreditado ${fmt(acreditado(f.id))})` : ''}</option>`).join('')}`;
+    const sinF = !E.facturaId || !E.lineas.some(l => Math.abs(Number(l.importe) || 0) > 0); $('nccSinFactura').style.display = sinF ? '' : 'none'; $('nccPct').parentElement.style.display = E.facturaId ? 'none' : '';
+  };
+  const calcular = () => {
+    const f = orig(), total = leerMonto($('nccTotal').value) || 0;
+    const plan = ncPlanCliente({ factura: f, lineasOrig: E.lineas, total, fecha: E.fecha, numero: E.numero, motivo: E.motivo + (E.nota ? ' — ' + E.nota : ''), pctIva: E.pct, subcuentaId: E.subcuentaId, estatusFiscal: E.ef, folioFiscal: E.uuid });
+    const maxA = maxAcreditable(); if (plan.ok && f && total > maxA + 0.005) return { ok: false, errores: [maxA > 0.005 ? `Ya hay notas por ${fmt(acreditado(f.id))} contra esa factura: solo puedes acreditar ${fmt(maxA)} más.` : 'Esa factura ya está acreditada por completo.'], avisos: [] };
+    return plan;
+  };
+  const pintarPreview = () => {
+    const f = orig(), plan = calcular(), total = leerMonto($('nccTotal').value) || 0;
+    const saldo = f ? cfdiR2(Number(f.total) - Number(f.importe_pagado || 0)) : 0, puedeComp = !!f && total > 0 && saldo >= total - 0.005;
+    $('nccCompWrap').innerHTML = f ? (puedeComp ? `<label style="display:flex;gap:8px;align-items:flex-start;font-size:12.5px;"><input type="checkbox" id="nccComp" ${E.compensar ? 'checked' : ''} style="margin-top:3px;"><span><strong>Aplicarla ya contra esa factura</strong> (sin mover dinero): la factura baja su saldo en ${fmt(total)}.</span></label>` : `<div style="font-size:12px;color:var(--muted);">${total > 0 ? `La factura solo tiene ${fmt(saldo)} por cobrar, menos de lo que acredita la nota: ` : ''}la nota queda como <strong>crédito a favor del cliente</strong> (lo que le debes) hasta que se la apliques a otra factura o se la devuelvas.</div>`) : '<div style="font-size:12px;color:var(--muted);">Sin factura de origen: la nota queda como <strong>crédito a favor del cliente</strong> (lo que le debes).</div>';
+    const ck = $('nccComp'); if (ck) ck.addEventListener('change', () => { E.compensar = ck.checked; });
+    if (!plan.ok) $('nccPreview').innerHTML = total > 0 || E.numero ? `<div style="padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:12px;color:var(--red);">${plan.errores.map(revEsc).join('<br>')}</div>` : '';
+    else { const r = plan.resumen; $('nccPreview').innerHTML = `<div style="margin-top:6px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;font-size:12.5px;"><strong>Así quedará</strong>
+      <div style="margin-top:4px;">• Baja tus ingresos en <strong>${fmtMon(r.base, plan.payload.moneda)}</strong>: ${plan.lineas.map(l => `${revEsc(nombreSub(l.subcuenta_id))} ${fmt(Math.abs(l.importe))}`).join(' · ')}</div>
+      ${r.iva ? `<div>• Baja el IVA trasladado en <strong>${fmtMon(r.iva, plan.payload.moneda)}</strong></div>` : ''}<div>• Reduce lo que el cliente te debe en <strong>${fmtMon(r.total, plan.payload.moneda)}</strong></div></div>`; }
+    $('nccConfirmar').disabled = !plan.ok;
+  };
+  const refrescar = () => { pintarFacturas(); pintarPreview(); };
+  $('nccCliente').addEventListener('change', async () => { E.clienteId = $('nccCliente').value; E.facturaId = ''; E.lineas = []; await cargar(); refrescar(); });
+  $('nccFactura').addEventListener('change', async () => { E.facturaId = $('nccFactura').value; E.compensar = true; await cargarLineas(); refrescar(); });
+  $('nccFecha').addEventListener('input', () => { E.fecha = $('nccFecha').value; pintarPreview(); }); $('nccNumero').addEventListener('input', () => { E.numero = $('nccNumero').value; pintarPreview(); });
+  $('nccTotal').addEventListener('input', () => pintarPreview()); $('nccMotivo').addEventListener('change', () => { E.motivo = $('nccMotivo').value; pintarPreview(); }); $('nccNota').addEventListener('input', () => { E.nota = $('nccNota').value; pintarPreview(); });
+  $('nccSub').addEventListener('change', () => { E.subcuentaId = $('nccSub').value; pintarPreview(); }); $('nccPct').addEventListener('change', () => { E.pct = Number($('nccPct').value); pintarPreview(); });
+  $('nccEf').addEventListener('change', () => { E.ef = $('nccEf').value; $('nccUuidWrap').style.display = E.ef === 'facturada' ? '' : 'none'; pintarPreview(); }); $('nccUuid').addEventListener('input', () => { E.uuid = $('nccUuid').value; });
+  $('nccTodo').addEventListener('click', (ev) => { ev.preventDefault(); const m = maxAcreditable(); if (m === null) { toast('Primero elige la factura que corrige.', 'error'); return; } $('nccTotal').value = fmtInputVal(m); pintarPreview(); });
+  refrescar();
+  $('nccConfirmar').addEventListener('click', async () => {
+    const btn = $('nccConfirmar'); if (btn.disabled) return; btn.disabled = true;
+    const plan = calcular(); if (!plan.ok) { toast(plan.errores[0], 'error'); pintarPreview(); return; }
+    const cli = clientes.find(c => c.id === E.clienteId); if (!cli) { toast('Elige el cliente.', 'error'); pintarPreview(); return; }
+    if (await bloqueadoPorCierre(b.id, E.fecha)) { pintarPreview(); return; }
+    const f = orig(), total = leerMonto($('nccTotal').value) || 0, compensar = !!f && !!$('nccComp') && $('nccComp').checked, folio = await siguienteFolio(b.id, 'factura_cliente');
+    const { data: nueva, error } = await sb.from('fz_facturas_clientes').insert({ business_id: b.id, cliente_id: cli.id, folio, ...plan.payload }).select().single();
+    if (error || !nueva) { toast('No se pudo crear la nota: ' + ((error && error.message) || ''), 'error'); pintarPreview(); return; }
+    const { error: eL } = await sb.from('fz_facturas_clientes_lineas').insert(plan.lineas.map(l => ({ ...l, factura_id: nueva.id, business_id: b.id })));
+    if (eL) { await sb.from('fz_facturas_clientes').delete().eq('id', nueva.id); toast('No se pudieron guardar las líneas de la nota: ' + eL.message, 'error'); pintarPreview(); return; }
+    let nota = '', falloComp = '';
+    if (compensar) { // aplicación directa (el cobro "manual" no deja filas de cobros aplicados): la factura sube lo cobrado y la nota queda saldada
+      const nuevoPagado = cfdiR2(Number(f.importe_pagado || 0) + total), est = nuevoPagado >= Number(f.total) - 0.01 ? 'Pagado' : 'Parcial';
+      const { error: e1 } = await sb.from('fz_facturas_clientes').update({ importe_pagado: nuevoPagado, estatus: est, fecha_pago: E.fecha }).eq('id', f.id);
+      if (e1) falloComp = e1.message; else { const { error: e2 } = await sb.from('fz_facturas_clientes').update({ estatus: 'Pagado', importe_pagado: nueva.total, fecha_pago: E.fecha }).eq('id', nueva.id); if (e2) { falloComp = e2.message; await sb.from('fz_facturas_clientes').update({ importe_pagado: f.importe_pagado || 0, estatus: f.estatus, fecha_pago: f.fecha_pago || null }).eq('id', f.id); } else nota = ` y se aplicó contra la factura #${f.folio}`; }
+    }
+    registrarAuditoria(b.id, 'crear', 'Facturas de clientes', `Nota de crédito ${plan.payload.numero_factura} por ${fmtMon(total, plan.payload.moneda)} a ${nombreCli(cli)}${f ? ' (corrige #' + f.folio + ')' : ''}${nota ? ' — aplicada' : ''}`);
+    cerrar(); toast(`Nota de crédito ${plan.payload.numero_factura} creada${nota}.${falloComp ? ' No se pudo aplicar contra la factura (' + falloComp + '): queda como crédito del cliente.' : ''}`, falloComp ? 'error' : undefined); if (alCambiar) alCambiar();
   });
 }
 
