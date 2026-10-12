@@ -149,6 +149,14 @@ function prefijoMoneda(moneda) {
   return moneda + ' ';
 }
 
+// Importe con el prefijo de su moneda: "US $4,060.00" · "$4,060.00" (pesos) · "CAD $1,000.00"
+function fmtMon(monto, moneda) { const p = prefijoMoneda(moneda); return `${p}${p && !p.endsWith(' ') ? ' ' : ''}${fmt(monto)}`; }
+function fmtMonNeg(monto, moneda) { const p = prefijoMoneda(moneda); return `${p}${p && !p.endsWith(' ') ? ' ' : ''}${fmtNeg(monto)}`; }
+// Suma una lista por moneda → { MXN: 100, USD: 4060 } (las filas sin moneda son pesos)
+function sumarPorMoneda(lista, valor, moneda = (x) => x.moneda) { const o = {}; lista.forEach(x => { const m = moneda(x) || 'MXN'; o[m] = (o[m] || 0) + (Number(valor(x)) || 0); }); return o; }
+// "$100.00 · US $4,060.00" — pesos primero y luego cada divisa
+function fmtPorMoneda(obj) { const ks = Object.keys(obj).sort((a, b) => (a === 'MXN' ? -1 : b === 'MXN' ? 1 : a.localeCompare(b))); return ks.map(k => fmtMon(redondearMoneda(obj[k]), k)).join(' · ') || fmt(0); }
+
 // ============================================================
 // MULTIMONEDA BANCARIA — regla única, agnóstica de moneda concreta (nunca "si es USD…").
 // depositos/cargos en fz_bancos_mov/fz_efectivo_mov SIEMPRE deben quedar en la moneda PROPIA de
@@ -16267,17 +16275,22 @@ async function renderDirectorioProveedores(el, b) {
   const grupos = {};
   (all || []).forEach(f => {
     const key = claveProveedor(f);
-    if (!grupos[key]) grupos[key] = { key, nombre: nombreProveedor(f), facturado: 0, pagado: 0, cantidad: 0, porMoneda: {} };
+    if (!grupos[key]) grupos[key] = { key, nombre: nombreProveedor(f), facturado: 0, pagado: 0, cantidad: 0, porMoneda: {}, facPorMon: {}, pagPorMon: {}, pendienteMxn: 0 };
     grupos[key].facturado += Number(f.importe) || 0;
     grupos[key].pagado += Number(f.importe_pagado) || 0;
     grupos[key].cantidad += 1;
+    // por moneda (nunca se suman dólares con pesos) y el saldo en pesos al tipo de cambio de cada factura, solo para ordenar
+    const monF = f.moneda || 'MXN', tcF = monF !== 'MXN' ? (Number(f.tipo_cambio) || 1) : 1;
+    grupos[key].facPorMon[monF] = (grupos[key].facPorMon[monF] || 0) + (Number(f.importe) || 0);
+    grupos[key].pagPorMon[monF] = (grupos[key].pagPorMon[monF] || 0) + (Number(f.importe_pagado) || 0);
+    grupos[key].pendienteMxn += ((Number(f.importe) || 0) - (Number(f.importe_pagado) || 0)) * tcF;
     const pendFactura = redondearMoneda((Number(f.importe)||0) - (Number(f.importe_pagado)||0));
     if (Math.abs(pendFactura) > 0.004) {
       const mon = f.moneda || 'MXN';
       grupos[key].porMoneda[mon] = (grupos[key].porMoneda[mon] || 0) + pendFactura;
     }
   });
-  const lista = Object.values(grupos).map(g => ({ ...g, pendiente: g.facturado - g.pagado })).sort((a,b) => b.pendiente - a.pendiente);
+  const lista = Object.values(grupos).map(g => ({ ...g, pendiente: g.facturado - g.pagado })).sort((a,b) => b.pendienteMxn - a.pendienteMxn);
 
   // Resumen general: por pagar, pagado este mes, facturas pendientes, pendientes de desglosar
   const mesActual = STATE.currentMonth;
@@ -16328,8 +16341,8 @@ async function renderDirectorioProveedores(el, b) {
               <td data-rol="principal">${g.nombre}</td>
               <td data-rol="meta">${g.cantidad} factura(s)</td>
               <td data-rol="meta">${monedaTexto}</td>
-              <td class="num" data-rol="meta">${fmt(g.facturado)}</td>
-              <td class="num" data-rol="meta">${fmt(g.pagado)}</td>
+              <td class="num" data-rol="meta">${Object.keys(g.facPorMon).some(m => m !== 'MXN') ? fmtPorMoneda(g.facPorMon) : fmt(g.facturado)}</td>
+              <td class="num" data-rol="meta">${Object.keys(g.pagPorMon).some(m => m !== 'MXN') ? fmtPorMoneda(g.pagPorMon) : fmt(g.pagado)}</td>
               <td class="num" data-rol="importe" style="font-weight:700;">${saldoTexto}</td>
             </tr>`;}).join('') : `<tr><td colspan="6" class="empty">Aún no hay proveedores registrados.</td></tr>`}
           </tbody>
@@ -16368,11 +16381,18 @@ async function getTransaccionesProveedor(businessId, facturas) {
     const partes = [prefijoTercero, refOriginal && refOriginal !== '—' ? refOriginal : null].filter(Boolean);
     return partes.length ? partes.join(' · ') : '—';
   };
+  const facturaPorId = Object.fromEntries(facturas.map(f => [f.id, f]));
+  const monedaDe = (f) => (f && f.moneda) || 'MXN';
+  const tcDe = (f) => (monedaDe(f) !== 'MXN') ? (Number(f.tipo_cambio) || 1) : 1;
+  const hayDivisas = facturas.some(f => monedaDe(f) !== 'MXN'); // sin divisas todo queda exactamente como siempre
+  let fxRealizada = 0; // pesos de más (+) o de menos (−) que se pagaron contra el tipo de cambio de la factura
 
   facturas.forEach(f => {
+    const mon = monedaDe(f), tc = tcDe(f);
     transacciones.push({
       fecha: f.fecha, tipo: 'Factura', numero: f.factura || 's/f', monto: Number(f.importe) || 0,
       saldo: redondearMoneda(Number(f.importe||0) - Number(f.importe_pagado||0)),
+      moneda: mon, tc: mon !== 'MXN' ? tc : null, montoMxn: mon !== 'MXN' ? redondearMoneda((Number(f.importe) || 0) * tc) : (Number(f.importe) || 0),
       origen: { tipo: 'proveedor', id: f.id, fecha: f.fecha },
     });
   });
@@ -16387,34 +16407,77 @@ async function getTransaccionesProveedor(businessId, facturas) {
     const p = polizaMap[l.poliza_id];
     if (!p) return;
     if (!(Number(l.cargo) > 0.004)) return; // sin cargo real no es un pago (ej. la línea de abono que originó la provisión)
+    const f = facturaPorId[l.proveedor_factura_id], mon = monedaDe(f), tc = tcDe(f);
+    // un pago por póliza ligado a una factura en divisa se cuenta en la moneda de la factura (así lo suma el sistema a lo pagado)
     transacciones.push({
       fecha: p.fecha, tipo: 'Pago — Póliza de diario', numero: componerReferencia(`#${p.numero ?? ''}`), monto: -(Number(l.cargo) || 0),
+      moneda: mon, tc: mon !== 'MXN' ? tc : null, montoMxn: -(mon !== 'MXN' ? redondearMoneda((Number(l.cargo) || 0) * tc) : (Number(l.cargo) || 0)),
       origen: { tipo: 'poliza', id: p.id, fecha: p.fecha },
     });
   });
 
-  const [bmQ, emQ] = await Promise.all([
+  const [bmQ, emQ, cuentasQ, cajasQ] = await Promise.all([
     sb.from('fz_bancos_mov').select('*').eq('business_id', businessId).eq('tipo_salida', 'proveedor'),
     sb.from('fz_efectivo_mov').select('*').eq('business_id', businessId).eq('tipo_salida', 'proveedor'),
+    hayDivisas ? sb.from('fz_bancos_cuentas').select('id,moneda').eq('business_id', businessId) : Promise.resolve({ data: [] }),
+    hayDivisas ? sb.from('fz_efectivo_monedas').select('id,nombre,tc_reporte').eq('business_id', businessId) : Promise.resolve({ data: [] }),
   ]);
+  // Lo que cada pago aplicó a cada factura, en la moneda de la factura (solo hace falta si hay facturas en divisa)
+  const appsPorOrigen = {};
+  if (hayDivisas) {
+    const idsForaneos = facturas.filter(f => monedaDe(f) !== 'MXN').map(f => f.id);
+    for (let i = 0; i < idsForaneos.length; i += 100) {
+      const { data } = await sb.from('fz_pagos_aplicados').select('factura_id,monto,tipo_cambio,origen_tabla,origen_id').eq('business_id', businessId).in('factura_id', idsForaneos.slice(i, i + 100));
+      (data || []).forEach(a => { (appsPorOrigen[`${a.origen_tabla}|${a.origen_id}`] = appsPorOrigen[`${a.origen_tabla}|${a.origen_id}`] || []).push(a); });
+    }
+  }
+  const monedaCuentaBanco = Object.fromEntries((cuentasQ.data || []).map(c => [c.id, String(c.moneda || 'MXN').toUpperCase()]));
+  const monedaCaja = Object.fromEntries((cajasQ.data || []).map(c => [c.id, codigoMonedaDeCaja(c.nombre, c.tc_reporte)]));
+  // Un pago en divisa: monto en la MONEDA DE LA FACTURA (lo que aplicó), tipo de cambio real del pago y su equivalente en pesos
+  const pagoEnDivisa = (m, tabla, monedaCuenta) => {
+    const ligadas = facturaIdsDe(m).filter(id => facturaPorId[id]);
+    const fRef = facturaPorId[ligadas.find(id => monedaDe(facturaPorId[id]) !== 'MXN')];
+    if (!fRef) return null; // pago de facturas en pesos: se muestra como siempre
+    const mon = monedaDe(fRef), tcHist = Number(m.tipo_cambio_historico) || tcDe(fRef);
+    const apps = (appsPorOrigen[`${tabla}|${m.id}`] || []).filter(a => facturaPorId[a.factura_id]);
+    let montoDoc, tcPago;
+    if (apps.length) {
+      montoDoc = apps.reduce((a, x) => a + (Number(x.monto) || 0), 0);
+      const tcsApp = apps.map(a => ({ monto: Number(a.monto) || 0, tc: Number(a.tipo_cambio) || tcHist, tcFactura: tcDe(facturaPorId[a.factura_id]) }));
+      tcPago = montoDoc > 0 ? tcsApp.reduce((a, x) => a + x.monto * x.tc, 0) / montoDoc : tcHist;
+      tcsApp.forEach(x => { fxRealizada += x.monto * (x.tc - x.tcFactura); });
+    } else {
+      tcPago = tcHist;
+      montoDoc = monedaCuenta === mon ? (Number(m.cargos) || 0) : (tcPago > 0 ? (Number(m.cargos) || 0) / tcPago : (Number(m.cargos) || 0));
+    }
+    const equivalente = (m.equivalente_mxn_historico !== null && m.equivalente_mxn_historico !== undefined) ? Number(m.equivalente_mxn_historico)
+      : (monedaCuenta === 'MXN' ? (Number(m.cargos) || 0) : redondearMoneda(montoDoc * tcPago));
+    return { moneda: mon, tc: tcPago, monto: -redondearMoneda(montoDoc), montoMxn: -redondearMoneda(equivalente) };
+  };
   (bmQ.data || []).forEach(m => {
     if (!facturaIdsDe(m).some(id => facturaIds.includes(id))) return;
+    const div = hayDivisas ? pagoEnDivisa(m, 'fz_bancos_mov', monedaCuentaBanco[m.cuenta_id] || 'MXN') : null;
     transacciones.push({
-      fecha: m.fecha, tipo: 'Pago — Banco', numero: componerReferencia(m.concepto || m.descripcion), monto: -(Number(m.cargos) || 0),
+      fecha: m.fecha, tipo: 'Pago — Banco', numero: componerReferencia(m.concepto || m.descripcion),
+      monto: div ? div.monto : -(Number(m.cargos) || 0), moneda: div ? div.moneda : 'MXN', tc: div ? div.tc : null, montoMxn: div ? div.montoMxn : -(Number(m.cargos) || 0),
       origen: { tipo: 'bancos', id: m.id, cuentaId: m.cuenta_id, fecha: m.fecha },
     });
   });
   (emQ.data || []).forEach(m => {
     if (!facturaIdsDe(m).some(id => facturaIds.includes(id))) return;
+    const div = hayDivisas ? pagoEnDivisa(m, 'fz_efectivo_mov', monedaCaja[m.moneda_id] || 'MXN') : null;
     transacciones.push({
-      fecha: m.fecha, tipo: 'Pago — Efectivo', numero: componerReferencia(m.descripcion || m.proveedor), monto: -(Number(m.cargos) || 0),
+      fecha: m.fecha, tipo: 'Pago — Efectivo', numero: componerReferencia(m.descripcion || m.proveedor),
+      monto: div ? div.monto : -(Number(m.cargos) || 0), moneda: div ? div.moneda : 'MXN', tc: div ? div.tc : null, montoMxn: div ? div.montoMxn : -(Number(m.cargos) || 0),
       origen: { tipo: 'efectivo', id: m.id, monedaId: m.moneda_id, fecha: m.fecha },
     });
   });
 
   transacciones.sort((a,b) => a.fecha.localeCompare(b.fecha) || (a.tipo==='Factura'?-1:1));
-  let saldo = 0;
-  transacciones.forEach(t => { saldo += t.monto; t.saldoAcumulado = saldo; });
+  // El saldo acumulado se lleva POR MONEDA: nunca se suman dólares con pesos
+  const acumulado = {};
+  transacciones.forEach(t => { acumulado[t.moneda] = (acumulado[t.moneda] || 0) + t.monto; t.saldoAcumulado = acumulado[t.moneda]; });
+  transacciones.fxRealizada = redondearMoneda(fxRealizada);
   return transacciones.reverse(); // más reciente primero, como en QuickBooks
 }
 
@@ -16437,13 +16500,19 @@ async function renderProveedorDetalle(el, b) {
   const totalPagado = facturas.reduce((s,f) => s + (Number(f.importe_pagado)||0), 0);
   const pendiente = totalFacturado - totalPagado;
   const transacciones = await getTransaccionesProveedor(b.id, facturas);
+  // Con facturas en divisa: totales POR MONEDA (nunca se suman dólares con pesos) y su equivalente en pesos al tipo de cambio de cada factura
+  const hayDivisas = transacciones.some(t => t.moneda && t.moneda !== 'MXN');
+  const eqMxn = (f, v) => (f.moneda && f.moneda !== 'MXN') ? (Number(v) || 0) * (Number(f.tipo_cambio) || 1) : (Number(v) || 0);
+  const kpiDivisa = (valor) => `${fmtPorMoneda(sumarPorMoneda(facturas, valor))}<div style="font-size:11px;font-weight:400;color:var(--muted);margin-top:2px;">≈ ${fmt(facturas.reduce((s, f) => s + eqMxn(f, valor(f)), 0))} MXN al tipo de cambio de cada factura</div>`;
+  const fxReal = transacciones.fxRealizada || 0;
 
   el.innerHTML = `
     <button class="btn btn-ghost btn-sm" id="provDetalleVolver" style="margin-bottom:14px;">← Volver al directorio</button>
     <div class="kpi-grid kpi-grid-mobile-compact" style="margin-bottom:14px;">
-      <div class="kpi"><div class="label">Total facturado</div><div class="value num">${fmt(totalFacturado)}</div></div>
-      <div class="kpi"><div class="label">Total pagado</div><div class="value num green">${fmt(totalPagado)}</div></div>
-      <div class="kpi"><div class="label">Saldo pendiente</div><div class="value num ${pendiente>0.004?'red':'green'}">${fmt(pendiente)}</div></div>
+      <div class="kpi"><div class="label">Total facturado</div><div class="value num">${hayDivisas ? kpiDivisa(f => f.importe) : fmt(totalFacturado)}</div></div>
+      <div class="kpi"><div class="label">Total pagado</div><div class="value num green">${hayDivisas ? kpiDivisa(f => f.importe_pagado) : fmt(totalPagado)}</div></div>
+      <div class="kpi"><div class="label">Saldo pendiente</div><div class="value num ${pendiente>0.004?'red':'green'}">${hayDivisas ? kpiDivisa(f => Number(f.importe||0) - Number(f.importe_pagado||0)) : fmt(pendiente)}</div></div>
+      ${hayDivisas && Math.abs(fxReal) > 0.004 ? `<div class="kpi"><div class="label">${fxReal > 0 ? 'Pérdida' : 'Ganancia'} cambiaria realizada</div><div class="value num ${fxReal > 0 ? 'red' : 'green'}">${fmt(Math.abs(fxReal))}</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">pagado vs. tipo de cambio de la factura</div></div>` : ''}
     </div>
     <div class="card">
       <div class="card-head">
@@ -16456,17 +16525,19 @@ async function renderProveedorDetalle(el, b) {
       </div>
       <div class="table-wrap scroll-sticky">
         <table>
-          <thead><tr><th>Fecha</th><th>Tipo</th><th>Referencia</th><th class="num">Monto</th><th class="num">Saldo</th><th class="num">Saldo acumulado</th><th></th></tr></thead>
+          <thead><tr><th>Fecha</th><th>Tipo</th><th>Referencia</th>${hayDivisas ? '<th>Moneda</th><th class="num">TC</th>' : ''}<th class="num">Monto</th>${hayDivisas ? '<th class="num">Equivalente MXN</th>' : ''}<th class="num">Saldo</th><th class="num">Saldo acumulado</th><th></th></tr></thead>
           <tbody>
             ${transacciones.length ? transacciones.map(t => `<tr>
               <td>${fechaCorta(t.fecha)}</td>
               <td>${t.tipo}</td>
               <td>${t.numero}</td>
-              <td class="num ${t.monto<0?'red':''}">${t.monto<0?'-':''}${fmt(Math.abs(t.monto))}</td>
-              <td class="num" style="${t.saldo!=null && Math.abs(t.saldo)>0.004?'color:var(--gold);font-weight:600;':''}">${t.saldo!=null ? fmtNeg(t.saldo) : '—'}</td>
-              <td class="num" style="font-weight:600;">${fmtNeg(t.saldoAcumulado)}</td>
+              ${hayDivisas ? `<td>${t.moneda || 'MXN'}</td><td class="num">${t.moneda && t.moneda !== 'MXN' ? fmtTC(t.tc || 1) : '—'}</td>` : ''}
+              <td class="num ${t.monto<0?'red':''}">${t.monto<0?'-':''}${hayDivisas ? fmtMon(Math.abs(t.monto), t.moneda) : fmt(Math.abs(t.monto))}</td>
+              ${hayDivisas ? `<td class="num ${t.montoMxn<0?'red':''}">${t.moneda && t.moneda !== 'MXN' ? `${t.montoMxn<0?'-':''}${fmt(Math.abs(t.montoMxn))}` : '—'}</td>` : ''}
+              <td class="num" style="${t.saldo!=null && Math.abs(t.saldo)>0.004?'color:var(--gold);font-weight:600;':''}">${t.saldo!=null ? (hayDivisas ? fmtMonNeg(t.saldo, t.moneda) : fmtNeg(t.saldo)) : '—'}</td>
+              <td class="num" style="font-weight:600;">${hayDivisas ? fmtMonNeg(t.saldoAcumulado, t.moneda) : fmtNeg(t.saldoAcumulado)}</td>
               <td><button class="btn btn-ghost btn-sm ${t.origen.tipo==='proveedor'?'ver-factura-btn':(t.origen.tipo==='bancos'||t.origen.tipo==='efectivo'?'ver-desglose-pago-btn':'abrir-origen-btn')}" data-origen='${JSON.stringify(t.origen).replace(/'/g,'&apos;')}' style="font-size:11px;padding:3px 8px;">Ver / Editar</button></td>
-            </tr>`).join('') : `<tr><td colspan="7" class="empty">Sin transacciones.</td></tr>`}
+            </tr>`).join('') : `<tr><td colspan="${hayDivisas ? 10 : 7}" class="empty">Sin transacciones.</td></tr>`}
           </tbody>
         </table>
       </div>
@@ -16686,13 +16757,17 @@ async function renderClienteDetalle(el, b) {
   const totalFacturado = lista.reduce((s,f)=>s+(Number(f.total)||0),0);
   const totalPagado = lista.reduce((s,f)=>s+(Number(f.importe_pagado)||0),0);
   const pendiente = totalFacturado - totalPagado;
+  // Con facturas en divisa: totales POR MONEDA y su equivalente en pesos al tipo de cambio de cada factura
+  const hayDivisas = lista.some(f => f.moneda && f.moneda !== 'MXN');
+  const eqMxn = (f, v) => (f.moneda && f.moneda !== 'MXN') ? (Number(v) || 0) * (Number(f.tipo_cambio) || 1) : (Number(v) || 0);
+  const kpiDivisa = (valor) => `${fmtPorMoneda(sumarPorMoneda(lista, valor))}<div style="font-size:11px;font-weight:400;color:var(--muted);margin-top:2px;">≈ ${fmt(lista.reduce((s, f) => s + eqMxn(f, valor(f)), 0))} MXN al tipo de cambio de cada factura</div>`;
 
   el.innerHTML = `
     <button class="btn btn-ghost btn-sm" id="clienteDetalleVolver" style="margin-bottom:14px;">← Volver al directorio</button>
     <div class="kpi-grid kpi-grid-mobile-compact" style="margin-bottom:14px;">
-      <div class="kpi"><div class="label">Total facturado</div><div class="value num">${fmt(totalFacturado)}</div></div>
-      <div class="kpi"><div class="label">Total pagado</div><div class="value num green">${fmt(totalPagado)}</div></div>
-      <div class="kpi"><div class="label">Saldo pendiente</div><div class="value num ${pendiente>0.004?'red':'green'}">${fmt(pendiente)}</div></div>
+      <div class="kpi"><div class="label">Total facturado</div><div class="value num">${hayDivisas ? kpiDivisa(f => f.total) : fmt(totalFacturado)}</div></div>
+      <div class="kpi"><div class="label">Total pagado</div><div class="value num green">${hayDivisas ? kpiDivisa(f => f.importe_pagado) : fmt(totalPagado)}</div></div>
+      <div class="kpi"><div class="label">Saldo pendiente</div><div class="value num ${pendiente>0.004?'red':'green'}">${hayDivisas ? kpiDivisa(f => Number(f.total||0) - Number(f.importe_pagado||0)) : fmt(pendiente)}</div></div>
     </div>
     <div class="card">
       <div class="card-head"><h3>${cliente.razon_social || cliente.nombre_comercial}</h3>${cliente.razon_social ? `<span class="hint">${cliente.nombre_comercial}</span>` : ''}</div>
@@ -16701,7 +16776,7 @@ async function renderClienteDetalle(el, b) {
           <thead><tr>
             <th>Fecha</th><th>Folio</th><th>No. Factura</th>
             <th>Moneda</th><th class="num">TC</th>
-            <th class="num">Total</th><th class="num">Pagado</th><th class="num">Saldo</th>
+            <th class="num">Total</th>${hayDivisas ? '<th class="num">Total en MXN</th>' : ''}<th class="num">Pagado</th><th class="num">Saldo</th>
             <th>Vencimiento</th><th class="num">Días retraso</th>
             <th>Estatus</th><th>Fiscal</th><th></th>
           </tr></thead>
@@ -16717,6 +16792,7 @@ async function renderClienteDetalle(el, b) {
                 <td>${f.moneda || 'MXN'}</td>
                 <td class="num">${esMxn ? '—' : fmtTC(f.tipo_cambio || 1)}</td>
                 <td class="num">${prefijoMoneda(f.moneda)} ${fmt(f.total)}</td>
+                ${hayDivisas ? `<td class="num" title="Total × tipo de cambio de la factura">${esMxn ? '—' : fmt(redondearMoneda(Number(f.total) * (Number(f.tipo_cambio) || 1)))}</td>` : ''}
                 <td class="num">${prefijoMoneda(f.moneda)} ${fmt(f.importe_pagado||0)}</td>
                 <td class="num" style="${saldo>0.004?'color:var(--gold);font-weight:600;':''}">${prefijoMoneda(f.moneda)} ${fmt(saldo)}</td>
                 <td>${f.fecha_vencimiento ? fechaCorta(f.fecha_vencimiento) : '—'}</td>
@@ -16725,7 +16801,7 @@ async function renderClienteDetalle(el, b) {
                 <td>${ESTATUS_FISCAL_BADGE[f.estatus_fiscal] || ESTATUS_FISCAL_BADGE.no_aplica}</td>
                 ${facturaMenuHtml(f.id)}
               </tr>`;
-            }).join('') : `<tr><td colspan="13" class="empty">Este cliente aún no tiene facturas.</td></tr>`}
+            }).join('') : `<tr><td colspan="${hayDivisas ? 14 : 13}" class="empty">Este cliente aún no tiene facturas.</td></tr>`}
           </tbody>
         </table>
       </div>
