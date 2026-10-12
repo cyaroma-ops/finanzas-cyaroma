@@ -1691,12 +1691,16 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <input type="text" id="newProveedorCatRazonSocial" placeholder="Ej. Distribuidora ABC SA de CV">
       </div>
     </div>
+    <div class="field">
+      <label>RFC (opcional)</label>
+      <input type="text" id="newProveedorCatRfc" placeholder="Ej. ABC010101AB1" maxlength="13" autocomplete="off" style="text-transform:uppercase;">
+    </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="closeProveedoresCat">Cerrar</button>
       <button class="btn btn-ghost" id="importProveedoresBtn">📥 Importar Excel</button>
       <button class="btn btn-gold" id="saveProveedorCat">+ Agregar proveedor</button>
     </div>
-    <p style="font-size:11px;color:var(--muted);margin-top:10px;">El Excel debe tener columnas "Nombre Comercial" y "Razón Social" (una fila por proveedor).</p>
+    <p style="font-size:11px;color:var(--muted);margin-top:10px;">El Excel debe tener columnas "Nombre Comercial" y "Razón Social" (una fila por proveedor); opcionalmente "RFC". Si el proveedor ya existe no se duplica y, si le faltaba, se le completa el RFC.</p>
   </div>
 </div>
 

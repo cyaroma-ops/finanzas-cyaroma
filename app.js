@@ -12959,6 +12959,22 @@ async function renderCuentasList(businessId) {
 /* ============================================================
    CATÁLOGO DE PROVEEDORES
    ============================================================ */
+// RFC escrito a mano: sin espacios ni guiones, en mayúsculas. Vacío es válido (es opcional); un RFC genérico o repetido no.
+function provValidarRfcCatalogo(texto, catalogo, excluirId) {
+  const rfc = String(texto || '').toUpperCase().replace(/[\s-]/g, '');
+  if (!rfc) return { ok: true, rfc: null };
+  if (['XAXX010101000', 'XEXX010101000'].includes(rfc)) return { ok: false, error: 'Ese RFC es genérico (público en general / extranjero): no identifica a un proveedor.' };
+  if (!provRfcValido(rfc)) return { ok: false, error: 'RFC no válido: son 12 caracteres (persona moral) o 13 (persona física), por ejemplo ABC010101AB1.' };
+  const otro = (catalogo || []).find(p => p.activo !== false && p.id !== excluirId && provRfc(p.rfc) === rfc);
+  if (otro) return { ok: false, error: `Ya existe un proveedor con ese RFC: «${provNombreVisible(otro)}».` };
+  return { ok: true, rfc };
+}
+// un proveedor ya registrado con el mismo nombre (sin contar «S.A. de C.V.»): se avisa antes de duplicarlo
+function provBuscarParecido(catalogo, nombre, razon, rfc) {
+  const claves = [provNormNombre(razon), provNormNombre(nombre)].filter(k => k.length >= 3);
+  return (catalogo || []).find(p => p.activo !== false && claves.some(k => [p.razon_social, p.nombre, p.nombre_comercial].some(n => provNormNombre(n) === k))
+    && !(rfc && provRfc(p.rfc) && provRfc(p.rfc) !== rfc)) || null; // un RFC distinto es otro contribuyente: no es un parecido
+}
 async function loadProveedoresCatalogo(businessId) {
   const { data } = await sb.from('fz_proveedores_catalogo').select('*').eq('business_id', businessId).eq('activo', true).order('nombre');
   return data || [];
@@ -12971,10 +12987,18 @@ async function openProveedoresCatModal(businessId, onClose) {
     const nombre = document.getElementById('newProveedorCatNombre').value.trim();
     const razon_social = document.getElementById('newProveedorCatRazonSocial').value.trim() || null;
     if (!nombre) { toast('Escribe un nombre.', 'error'); return; }
-    const { error } = await sb.from('fz_proveedores_catalogo').insert({ business_id: businessId, nombre, nombre_comercial: nombre, razon_social });
-    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    const existentes = await loadProveedoresCatalogo(businessId);
+    const v = provValidarRfcCatalogo((document.getElementById('newProveedorCatRfc') || {}).value, existentes, null);
+    if (!v.ok) { toast(v.error, 'error'); return; }
+    const parecido = provBuscarParecido(existentes, nombre, razon_social, v.rfc);
+    if (parecido && !confirm(`Ya existe «${provNombreVisible(parecido)}» con un nombre parecido. Si es el mismo proveedor, mejor no lo dupliques${parecido.rfc || !v.rfc ? '' : ': puedes agregarle el RFC con "+ Agregar RFC" en la lista'}. ¿Agregarlo de todos modos?`)) return;
+    const fila = { business_id: businessId, nombre, nombre_comercial: nombre, razon_social };
+    if (v.rfc) fila.rfc = v.rfc;
+    const { error } = await sb.from('fz_proveedores_catalogo').insert(fila);
+    if (error) { toast(/rfc/i.test(error.message) ? 'No se pudo guardar el RFC: falta correr migracion_cfdi_clasificar.sql en Supabase.' : 'Error: ' + error.message, 'error'); return; }
     document.getElementById('newProveedorCatNombre').value = '';
     document.getElementById('newProveedorCatRazonSocial').value = '';
+    if (document.getElementById('newProveedorCatRfc')) document.getElementById('newProveedorCatRfc').value = '';
     renderProveedoresCatList(businessId);
   };
   document.getElementById('importProveedoresBtn').onclick = () => openImportExcelModal('proveedores', businessId, () => renderProveedoresCatList(businessId));
@@ -12983,14 +13007,29 @@ async function renderProveedoresCatList(businessId) {
   const provs = await loadProveedoresCatalogo(businessId);
   const box = document.getElementById('proveedoresCatList');
   if (!provs.length) { box.innerHTML = `<div class="empty" style="padding:16px;">Aún no hay proveedores. Agrega el primero abajo.</div>`; return; }
+  // (ya no hay botón para quitar proveedores desde aquí: un proveedor repetido se resuelve con "Unificar duplicados" en Proveedores, que mueve sus facturas y no pierde nada)
   box.innerHTML = provs.map(p => `
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 4px;border-bottom:1px solid var(--line);">
-      <div><strong>${p.nombre_comercial || p.nombre}</strong>${p.razon_social ? `<div style="color:var(--muted);font-size:12px;">${p.razon_social}</div>` : ''}</div>
-      <button class="row-del provcat-del" data-id="${p.id}" style="font-size:16px;">✕</button>
+    <div class="provcat-item" data-id="${p.id}" style="padding:8px 4px;border-bottom:1px solid var(--line);">
+      <div><strong>${revEsc(p.nombre_comercial || p.nombre)}</strong>${p.razon_social ? `<div style="color:var(--muted);font-size:12px;">${revEsc(p.razon_social)}</div>` : ''}</div>
+      <div class="provcat-rfc" style="font-size:12px;margin-top:2px;">${provRfcValido(p.rfc) ? `<span style="color:var(--muted);">RFC:</span> <strong>${revEsc(provRfc(p.rfc))}</strong> <a href="#" class="provcat-rfc-edit" data-id="${p.id}" style="margin-left:6px;">cambiar</a>` : `<a href="#" class="provcat-rfc-edit" data-id="${p.id}" style="color:var(--red);">+ Agregar RFC</a>`}</div>
     </div>`).join('');
-  box.querySelectorAll('.provcat-del').forEach(btn => btn.addEventListener('click', async () => {
-    await sb.from('fz_proveedores_catalogo').update({ activo: false }).eq('id', btn.dataset.id);
-    renderProveedoresCatList(businessId);
+  box.querySelectorAll('.provcat-rfc-edit').forEach(a => a.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    const p = provs.find(x => x.id === a.dataset.id), cont = a.closest('.provcat-rfc');
+    cont.innerHTML = `<input type="text" class="cell provcat-rfc-input" value="${revEsc(p.rfc || '')}" maxlength="13" placeholder="Ej. ABC010101AB1" autocomplete="off" style="width:150px;text-transform:uppercase;"> <button class="btn btn-gold btn-sm provcat-rfc-guardar">Guardar</button> <button class="btn btn-ghost btn-sm provcat-rfc-cancelar">Cancelar</button>`;
+    const input = cont.querySelector('.provcat-rfc-input'); input.focus();
+    cont.querySelector('.provcat-rfc-cancelar').addEventListener('click', () => renderProveedoresCatList(businessId));
+    cont.querySelector('.provcat-rfc-guardar').addEventListener('click', async () => {
+      const v = provValidarRfcCatalogo(input.value, provs, p.id);
+      if (!v.ok) { toast(v.error, 'error'); return; }
+      const actual = provRfcValido(p.rfc) ? provRfc(p.rfc) : null;
+      if (v.rfc === actual) { renderProveedoresCatList(businessId); return; }
+      if (actual && !confirm(`El RFC identifica al proveedor. ¿${v.rfc ? `Cambiar el RFC de «${provNombreVisible(p)}» de ${actual} a ${v.rfc}` : `Quitarle el RFC ${actual} a «${provNombreVisible(p)}»`}?`)) return;
+      const { error } = await sb.from('fz_proveedores_catalogo').update({ rfc: v.rfc }).eq('id', p.id).eq('business_id', businessId);
+      if (error) { toast(/rfc/i.test(error.message) ? 'No se pudo guardar el RFC: falta correr migracion_cfdi_clasificar.sql en Supabase.' : 'Error: ' + error.message, 'error'); return; }
+      registrarAuditoria(businessId, 'editar', 'Proveedores', `RFC de «${provNombreVisible(p)}»: ${actual || '(sin RFC)'} → ${v.rfc || '(sin RFC)'}`);
+      toast(v.rfc ? 'RFC guardado.' : 'RFC quitado.'); renderProveedoresCatList(businessId);
+    });
   }));
 }
 
@@ -13319,6 +13358,26 @@ async function descargarPlantillaVentas(businessId) {
   XLSX.writeFile(wb, 'plantilla-ventas.xlsx');
 }
 
+// Importación de proveedores: NO duplica (si el proveedor ya existe por RFC o por nombre se omite) y, si al existente le faltaba el RFC y el archivo lo trae, se lo completa.
+// Un RFC distinto al que ya tiene es otro contribuyente: se agrega como proveedor nuevo. Un RFC mal formado no frena la fila: se importa sin RFC y se avisa.
+async function provImportarFilas(businessId, filas, existentes) {
+  const lista = existentes.map(p => ({ ...p })), nuevos = [], completar = [];
+  const r = { nuevos: 0, completados: 0, yaExistian: 0, rfcInvalidos: 0, sinNombre: 0 };
+  for (const f of filas) {
+    if (!f.nombre) { r.sinNombre++; continue; }
+    const v = f.rfcTexto ? provValidarRfcCatalogo(f.rfcTexto, [], null) : { ok: true, rfc: null }; // la repetición se resuelve contra el catálogo más abajo
+    let rfc = v.ok ? v.rfc : null; if (f.rfcTexto && !v.ok) r.rfcInvalidos++;
+    let ex = rfc ? lista.find(p => p.activo !== false && provRfc(p.rfc) === rfc) : null;
+    if (!ex) { const claves = [provNormNombre(f.razon), provNormNombre(f.nombre)].filter(k => k.length >= 3); ex = lista.find(p => p.activo !== false && claves.some(k => [p.razon_social, p.nombre, p.nombre_comercial].some(n => provNormNombre(n) === k)) && !(rfc && provRfc(p.rfc) && provRfc(p.rfc) !== rfc)); }
+    if (ex) { if (rfc && !provRfc(ex.rfc)) { ex.rfc = rfc; completar.push({ id: ex.id, rfc }); r.completados++; } else r.yaExistian++; continue; }
+    const fila = { business_id: businessId, nombre: f.nombre, nombre_comercial: f.nombre, razon_social: f.razon || null }; if (rfc) fila.rfc = rfc;
+    nuevos.push(fila); lista.push({ ...fila, id: 'nuevo-' + nuevos.length, activo: true }); r.nuevos++;
+  }
+  if (nuevos.length) { const { error } = await sb.from('fz_proveedores_catalogo').insert(nuevos); if (error) return { error }; }
+  for (const c of completar) { const { error } = await sb.from('fz_proveedores_catalogo').update({ rfc: c.rfc }).eq('id', c.id).eq('business_id', businessId); if (error) return { error }; }
+  if (completar.length) registrarAuditoria(businessId, 'editar', 'Proveedores', `Importación: RFC completados en ${completar.length} proveedor(es)`);
+  return r;
+}
 function openImportExcelModal(tipo, businessId, onDone, extra) {
   const input = document.createElement('input');
   input.type = 'file';
@@ -13334,15 +13393,12 @@ function openImportExcelModal(tipo, businessId, onDone, extra) {
       if (!rows.length) { toast('El archivo no tiene filas.', 'error'); return; }
 
       if (tipo === 'proveedores') {
-        const payload = rows.map(r => {
-          const nombre_comercial = buscarColumna(r, ['nombre comercial', 'nombre', 'proveedor']) || '';
-          const razon_social = buscarColumna(r, ['razon social', 'razón social']) || null;
-          return { business_id: businessId, nombre: String(nombre_comercial).trim(), nombre_comercial: String(nombre_comercial).trim(), razon_social: razon_social ? String(razon_social).trim() : null };
-        }).filter(p => p.nombre);
-        if (!payload.length) { toast('No se encontró la columna "Nombre Comercial" en el archivo.', 'error'); return; }
-        const { error } = await sb.from('fz_proveedores_catalogo').insert(payload);
-        if (error) { toast('Error al importar: ' + error.message, 'error'); return; }
-        toast(`${payload.length} proveedores importados.`);
+        const { data: existentes } = await sb.from('fz_proveedores_catalogo').select('*').eq('business_id', businessId).eq('activo', true);
+        const filas = rows.map(r => ({ nombre: String(buscarColumna(r, ['nombre comercial', 'nombre', 'proveedor']) || '').trim(), razon: String(buscarColumna(r, ['razon social', 'razón social']) || '').trim(), rfcTexto: String(buscarColumna(r, ['rfc']) || '').trim() }));
+        if (!filas.some(f => f.nombre)) { toast('No se encontró la columna "Nombre Comercial" en el archivo.', 'error'); return; }
+        const res = await provImportarFilas(businessId, filas, existentes || []);
+        if (res.error) { toast(/rfc/i.test(res.error.message) ? 'No se pudo importar el RFC: falta correr migracion_cfdi_clasificar.sql en Supabase.' : 'Error al importar: ' + res.error.message, 'error'); return; }
+        toast(`Importación: ${res.nuevos} nuevo(s) · ${res.completados} RFC completado(s) · ${res.yaExistian} ya existía(n)${res.rfcInvalidos ? ` · ${res.rfcInvalidos} con RFC no válido (sin RFC)` : ''}.`, res.rfcInvalidos ? 'error' : undefined);
 
       } else if (tipo === 'facturas') {
         const { data: catalogo } = await sb.from('fz_proveedores_catalogo').select('*').eq('business_id', businessId);
