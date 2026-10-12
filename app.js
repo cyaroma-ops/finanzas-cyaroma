@@ -22656,12 +22656,14 @@ async function abrirCfdiClasificar(id) {
     const cat = cuerpo.querySelector('#clsCat'); if (cat) cat.addEventListener('change', () => { E.cat = cat.value; pintar(); });
   };
   bg.innerHTML = `<div class="modal" style="width:min(780px,96vw);max-height:92vh;overflow:auto;"><h3>Clasificar CFDI como gasto</h3><div id="clsCuerpo"></div>
+    <label style="display:flex;gap:8px;align-items:flex-start;margin:12px 0 0;font-size:12.5px;"><input type="checkbox" id="clsAdjPdf" checked style="margin-top:2px;"><span><strong>Adjuntar a la factura el PDF del CFDI</strong> <span style="color:var(--muted);">(representación impresa que se arma sola desde el XML; es el PDF que antes cargabas a mano)</span></span></label>
     <div class="modal-actions"><button class="btn btn-ghost" id="clsCancelar">Cancelar</button><button class="btn btn-gold" id="clsConfirmar">Clasificar y crear la factura</button></div></div>`;
   document.body.appendChild(bg);
   bg.querySelector('#clsCancelar').addEventListener('click', cerrar);
   pintar();
   bg.querySelector('#clsConfirmar').addEventListener('click', async () => {
     const btn = bg.querySelector('#clsConfirmar'); if (btn.disabled) return;
+    const adjPdf = !!(bg.querySelector('#clsAdjPdf') || {}).checked;
     btn.disabled = true; const falla = (m) => { toast(m, 'error'); btn.disabled = false; };
     // se vuelve a verificar: otra persona pudo clasificarlo, cancelarlo o cerrar el periodo mientras esta pantalla estaba abierta
     const { data: c2 } = await sb.from('fz_cfdi').select('estado,estatus_sat').eq('id', c.id).maybeSingle();
@@ -22696,7 +22698,8 @@ async function abrirCfdiClasificar(id) {
           } else if (provRfc(pd.rfc) !== provRfc(rfcE)) avisoRfc = ` Ojo: el proveedor de esa factura tiene otro RFC (${provRfc(pd.rfc)}) y el CFDI trae ${rfcE}; no se cambió.`;
         }
       }
-      cerrar(); toast(`CFDI ligado a la factura existente.${rfcGuardado ? ` Se guardó el RFC ${provRfc(rfcE)} del proveedor.` : ''}${avisoRfc}`, avisoRfc ? 'error' : undefined); renderCfdi(); return;
+      let notaPdf = '', pdfMal = false; if (adjPdf) { const rp = await cfdiAdjuntarPdfAFactura(b, c, fid); pdfMal = !rp.ok; notaPdf = rp.ok ? (rp.yaEstaba ? '' : ' PDF del CFDI adjunto a la factura.') : ` (No se pudo adjuntar el PDF: ${rp.error})`; }
+      cerrar(); toast(`CFDI ligado a la factura existente.${rfcGuardado ? ` Se guardó el RFC ${provRfc(rfcE)} del proveedor.` : ''}${notaPdf}${avisoRfc}`, (avisoRfc || pdfMal) ? 'error' : undefined); renderCfdi(); return;
     }
     const plan = cfdiPlanFactura({ cfdi: c, conceptos, subcuentas: E.subs, modoFiscal, categoriaRetencion: E.cat });
     if (!plan.ok) return falla(plan.errores[0]);
@@ -22716,7 +22719,8 @@ async function abrirCfdiClasificar(id) {
     const eC = await marcar(fac.id, `Factura de proveedor ${plan.payload.factura} · ${plan.desglose.length} subcuenta(s) · ${modoFiscal ? 'IVA separado (fiscal)' : 'gasto con IVA incluido (financiero)'}`);
     if (eC) { await sb.from('fz_proveedores').delete().eq('id', fac.id); if (provNuevoId) await sb.from('fz_proveedores_catalogo').delete().eq('id', provNuevoId); return falla('No se pudo registrar la clasificación; se canceló la factura que se había creado: ' + eC.message); }
     registrarAuditoria(b.id, 'crear', 'Proveedores', `${provNombre} — factura ${plan.payload.factura} — ${fmt(plan.payload.importe)} (clasificada desde el CFDI ${c.uuid})`);
-    cerrar(); toast(`Factura ${plan.payload.factura} creada y CFDI clasificado.`); renderCfdi();
+    let notaPdf = '', pdfMal = false; if (adjPdf) { const rp = await cfdiAdjuntarPdfAFactura(b, c, fac.id); pdfMal = !rp.ok; notaPdf = rp.ok ? (rp.yaEstaba ? '' : ' PDF del CFDI adjunto a la factura.') : ` (No se pudo adjuntar el PDF: ${rp.error})`; }
+    cerrar(); toast(`Factura ${plan.payload.factura} creada y CFDI clasificado.${notaPdf}`, pdfMal ? 'error' : undefined); renderCfdi();
   });
 }
 // si la factura ligada se eliminó, el CFDI se puede volver a clasificar
@@ -22732,6 +22736,200 @@ async function cfdiReabrirClasificacion(id) {
   if (error) { toast('No se pudo: ' + error.message, 'error'); return; }
   await sb.from('fz_cfdi_bitacora').insert({ business_id: b.id, cfdi_id: c.id, accion: 'clasificacion', valor_anterior: 'clasificado', valor_nuevo: 'por_clasificar', motivo: 'La factura ligada ya no existe', fuente: 'manual', usuario_email: usuario });
   toast('El CFDI quedó otra vez por clasificar.'); renderCfdi();
+}
+
+// ============================================================================================================
+// CFDI — PDF (representación impresa) generado AL MOMENTO desde el XML original guardado. El XML es el comprobante fiscal; el PDF es solo su representación impresa
+// (partes, conceptos, impuestos, importe con letra, folio fiscal, sellos, cadena original y el código QR de verificación del SAT). No se guarda aparte: se arma cada vez.
+// ============================================================================================================
+const CFDI_CAT_REGIMEN = { '601': 'General de Ley Personas Morales', '603': 'Personas Morales con Fines no Lucrativos', '605': 'Sueldos y Salarios e Ingresos Asimilados a Salarios', '606': 'Arrendamiento', '607': 'Régimen de Enajenación o Adquisición de Bienes', '608': 'Demás ingresos', '610': 'Residentes en el Extranjero sin Establecimiento Permanente en México', '611': 'Ingresos por Dividendos (socios y accionistas)', '612': 'Personas Físicas con Actividades Empresariales y Profesionales', '614': 'Ingresos por intereses', '615': 'Régimen de los ingresos por obtención de premios', '616': 'Sin obligaciones fiscales', '620': 'Sociedades Cooperativas de Producción que optan por diferir sus ingresos', '621': 'Incorporación Fiscal', '622': 'Actividades Agrícolas, Ganaderas, Silvícolas y Pesqueras', '623': 'Opcional para Grupos de Sociedades', '624': 'Coordinados', '625': 'Régimen de las Actividades Empresariales con ingresos a través de Plataformas Tecnológicas', '626': 'Régimen Simplificado de Confianza' };
+const CFDI_CAT_USO = { 'G01': 'Adquisición de mercancías', 'G02': 'Devoluciones, descuentos o bonificaciones', 'G03': 'Gastos en general', 'I01': 'Construcciones', 'I02': 'Mobiliario y equipo de oficina por inversiones', 'I03': 'Equipo de transporte', 'I04': 'Equipo de cómputo y accesorios', 'I05': 'Dados, troqueles, moldes, matrices y herramental', 'I06': 'Comunicaciones telefónicas', 'I07': 'Comunicaciones satelitales', 'I08': 'Otra maquinaria y equipo', 'D01': 'Honorarios médicos, dentales y gastos hospitalarios', 'D02': 'Gastos médicos por incapacidad o discapacidad', 'D03': 'Gastos funerales', 'D04': 'Donativos', 'D05': 'Intereses reales por créditos hipotecarios', 'D06': 'Aportaciones voluntarias al SAR', 'D07': 'Primas por seguros de gastos médicos', 'D08': 'Gastos de transportación escolar obligatoria', 'D09': 'Depósitos en cuentas para el ahorro, primas de pensiones', 'D10': 'Pagos por servicios educativos (colegiaturas)', 'S01': 'Sin efectos fiscales', 'CP01': 'Pagos', 'CN01': 'Nómina', 'P01': 'Por definir' };
+const CFDI_CAT_FORMA = { '01': 'Efectivo', '02': 'Cheque nominativo', '03': 'Transferencia electrónica de fondos', '04': 'Tarjeta de crédito', '05': 'Monedero electrónico', '06': 'Dinero electrónico', '08': 'Vales de despensa', '12': 'Dación en pago', '13': 'Pago por subrogación', '14': 'Pago por consignación', '15': 'Condonación', '17': 'Compensación', '23': 'Novación', '24': 'Confusión', '25': 'Remisión de deuda', '26': 'Prescripción o caducidad', '27': 'A satisfacción del acreedor', '28': 'Tarjeta de débito', '29': 'Tarjeta de servicios', '30': 'Aplicación de anticipos', '31': 'Intermediario pagos', '99': 'Por definir' };
+const CFDI_CAT_METODO = { 'PUE': 'Pago en una sola exhibición', 'PPD': 'Pago en parcialidades o diferido' };
+const CFDI_CAT_IMPUESTO = { '001': 'ISR', '002': 'IVA', '003': 'IEPS' };
+const cfdiCat = (cat, k) => { const v = String(k || '').trim(); return v ? (cat[v] ? `${v} - ${cat[v]}` : v) : '-'; };
+// importe con letra (enteros hasta 999,999,999,999)
+function cfdiNumeroLetras(n) {
+  const U = ['', 'UN', 'DOS', 'TRES', 'CUATRO', 'CINCO', 'SEIS', 'SIETE', 'OCHO', 'NUEVE', 'DIEZ', 'ONCE', 'DOCE', 'TRECE', 'CATORCE', 'QUINCE', 'DIECISEIS', 'DIECISIETE', 'DIECIOCHO', 'DIECINUEVE', 'VEINTE', 'VEINTIUN', 'VEINTIDOS', 'VEINTITRES', 'VEINTICUATRO', 'VEINTICINCO', 'VEINTISEIS', 'VEINTISIETE', 'VEINTIOCHO', 'VEINTINUEVE'];
+  const D = ['', '', '', 'TREINTA', 'CUARENTA', 'CINCUENTA', 'SESENTA', 'SETENTA', 'OCHENTA', 'NOVENTA'];
+  const C = ['', 'CIENTO', 'DOSCIENTOS', 'TRESCIENTOS', 'CUATROCIENTOS', 'QUINIENTOS', 'SEISCIENTOS', 'SETECIENTOS', 'OCHOCIENTOS', 'NOVECIENTOS'];
+  const menor1000 = (x) => { if (x === 100) return 'CIEN'; const c = Math.floor(x / 100), r = x % 100; let t = C[c]; if (r) { if (r < 30) t += (t ? ' ' : '') + U[r]; else { const d = Math.floor(r / 10), u = r % 10; t += (t ? ' ' : '') + D[d] + (u ? ' Y ' + U[u] : ''); } } return t; };
+  const letras = (x) => {
+    if (x >= 1e6) { const m = Math.floor(x / 1e6), r = x % 1e6; return (m === 1 ? 'UN MILLON' : letras(m) + ' MILLONES') + (r ? ' ' + letras(r) : ' DE'); }
+    if (x >= 1000) { const k = Math.floor(x / 1000), r = x % 1000; return (k === 1 ? 'MIL' : letras(k) + ' MIL') + (r ? ' ' + menor1000(r) : ''); }
+    return menor1000(x);
+  };
+  n = Math.floor(Number(n) || 0); return n === 0 ? 'CERO' : letras(n);
+}
+function cfdiImporteConLetra(total, moneda) {
+  const m = String(moneda || 'MXN').toUpperCase(); if (m === 'XXX') return 'CERO';
+  let t = Math.round((Number(total) || 0) * 100) / 100, p = Math.floor(t), c = Math.round((t - p) * 100); if (c === 100) { p += 1; c = 0; }
+  const cc = String(c).padStart(2, '0'), enteros = cfdiNumeroLetras(p).replace(/ DE$/, '');
+  const dePesos = /MILLON(ES)?$/.test(enteros) ? ' DE' : '';
+  if (m === 'MXN') return `${enteros}${dePesos} ${p === 1 ? 'PESO' : 'PESOS'} ${cc}/100 M.N.`;
+  if (m === 'USD') return `${enteros}${dePesos} ${p === 1 ? 'DÓLAR' : 'DÓLARES'} ${cc}/100 USD`;
+  if (m === 'EUR') return `${enteros}${dePesos} ${p === 1 ? 'EURO' : 'EUROS'} ${cc}/100 EUR`;
+  return `${enteros} ${cc}/100 ${m}`;
+}
+// lectura COMPLETA del XML para el PDF (el lector de la bandeja no se toca)
+function cfdiLeerParaPdf(xmlTexto) {
+  let doc; try { doc = new DOMParser().parseFromString(xmlTexto, 'application/xml'); } catch (e) { return { ok: false, motivo: 'El archivo no es un XML válido' }; }
+  if (!doc || !doc.documentElement || doc.getElementsByTagName('parsererror').length) return { ok: false, motivo: 'El archivo no es un XML válido' };
+  const ln = (el) => el.localName || String(el.nodeName).split(':').pop(), hijos = (el, n) => [...el.children].filter(c => ln(c) === n), hijo = (el, n) => hijos(el, n)[0] || null, desc = (el, n) => [...el.getElementsByTagNameNS('*', n)];
+  const a = (el, ...ns) => { if (!el) return ''; for (const n of ns) { const v = el.getAttribute(n); if (v !== null && v !== '') return v; } return ''; }, num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
+  const raiz = doc.documentElement; if (ln(raiz) !== 'Comprobante') return { ok: false, motivo: 'No es un comprobante CFDI' };
+  const comp = hijo(raiz, 'Complemento'), tim = comp ? desc(comp, 'TimbreFiscalDigital')[0] : null; if (!tim) return { ok: false, motivo: 'El CFDI no está timbrado' };
+  const emi = hijo(raiz, 'Emisor'), rec = hijo(raiz, 'Receptor'); if (!emi || !rec) return { ok: false, motivo: 'Falta el emisor o el receptor' };
+  const imps = (nodo, pad) => { const o = { traslados: [], retenciones: [] }; if (!nodo) return o; const t = hijo(nodo, 'Traslados'), r = hijo(nodo, 'Retenciones');
+    if (t) hijos(t, 'Traslado').forEach(x => o.traslados.push({ base: num(a(x, 'Base')), impuesto: a(x, 'Impuesto'), tipoFactor: a(x, 'TipoFactor'), tasa: a(x, 'TasaOCuota'), importe: num(a(x, 'Importe')) }));
+    if (r) hijos(r, 'Retencion').forEach(x => o.retenciones.push({ base: num(a(x, 'Base')), impuesto: a(x, 'Impuesto'), tipoFactor: a(x, 'TipoFactor'), tasa: a(x, 'TasaOCuota'), importe: num(a(x, 'Importe')) })); return o; };
+  const cs = hijo(raiz, 'Conceptos');
+  const conceptos = cs ? hijos(cs, 'Concepto').map(c => ({ clave: a(c, 'ClaveProdServ'), noIdent: a(c, 'NoIdentificacion'), cantidad: a(c, 'Cantidad'), claveUnidad: a(c, 'ClaveUnidad'), unidad: a(c, 'Unidad'), descripcion: a(c, 'Descripcion'), valorUnitario: num(a(c, 'ValorUnitario')), importe: num(a(c, 'Importe')), descuento: num(a(c, 'Descuento')), objetoImp: a(c, 'ObjetoImp'), ...imps(hijo(c, 'Impuestos')) })) : [];
+  const gi = hijo(raiz, 'Impuestos'), global = imps(gi);
+  const pagosNodo = comp ? desc(comp, 'Pagos')[0] : null, nomNodo = comp ? desc(comp, 'Nomina')[0] : null;
+  const pagos = pagosNodo ? desc(pagosNodo, 'Pago').map(p => ({ fecha: a(p, 'FechaPago'), forma: a(p, 'FormaDePagoP'), moneda: a(p, 'MonedaP'), monto: num(a(p, 'Monto')), tc: a(p, 'TipoCambioP'), documentos: [...p.children].filter(c => ln(c) === 'DoctoRelacionado').map(d => ({ uuid: a(d, 'IdDocumento'), serie: a(d, 'Serie'), folio: a(d, 'Folio'), moneda: a(d, 'MonedaDR'), parcialidad: a(d, 'NumParcialidad'), anterior: num(a(d, 'ImpSaldoAnt')), pagado: num(a(d, 'ImpPagado')), insoluto: num(a(d, 'ImpSaldoInsoluto')) })) })) : [];
+  const tipo = a(raiz, 'TipoDeComprobante').toUpperCase();
+  return { ok: true, d: {
+    version: a(raiz, 'Version'), tipo, tipoTxt: CFDI_TIPOS[tipo] || tipo, serie: a(raiz, 'Serie'), folio: a(raiz, 'Folio'), fecha: a(raiz, 'Fecha'), formaPago: a(raiz, 'FormaPago'), metodoPago: a(raiz, 'MetodoPago'), condiciones: a(raiz, 'CondicionesDePago'),
+    moneda: a(raiz, 'Moneda') || 'MXN', tipoCambio: a(raiz, 'TipoCambio'), subtotal: num(a(raiz, 'SubTotal')), descuento: num(a(raiz, 'Descuento')), total: num(a(raiz, 'Total')), lugar: a(raiz, 'LugarExpedicion'), exportacion: a(raiz, 'Exportacion'), noCertificado: a(raiz, 'NoCertificado'), sello: a(raiz, 'Sello'),
+    emisor: { rfc: a(emi, 'Rfc').toUpperCase(), nombre: a(emi, 'Nombre'), regimen: a(emi, 'RegimenFiscal') }, receptor: { rfc: a(rec, 'Rfc').toUpperCase(), nombre: a(rec, 'Nombre'), cp: a(rec, 'DomicilioFiscalReceptor'), regimen: a(rec, 'RegimenFiscalReceptor'), uso: a(rec, 'UsoCFDI') },
+    conceptos, impuestos: { ...global, totalTrasladados: a(gi, 'TotalImpuestosTrasladados'), totalRetenidos: a(gi, 'TotalImpuestosRetenidos') },
+    relacionados: hijos(raiz, 'CfdiRelacionados').map(r => ({ tipo: a(r, 'TipoRelacion'), uuids: hijos(r, 'CfdiRelacionado').map(x => a(x, 'UUID').toUpperCase()) })), pagos,
+    nomina: nomNodo ? { tipo: a(nomNodo, 'TipoNomina'), fechaPago: a(nomNodo, 'FechaPago'), inicio: a(nomNodo, 'FechaInicialPago'), fin: a(nomNodo, 'FechaFinalPago'), dias: a(nomNodo, 'NumDiasPagados') } : null,
+    timbre: { version: a(tim, 'Version'), uuid: a(tim, 'UUID').toUpperCase(), fecha: a(tim, 'FechaTimbrado'), rfcProv: a(tim, 'RfcProvCertif'), leyenda: a(tim, 'Leyenda'), selloCfd: a(tim, 'SelloCFD'), noCertSat: a(tim, 'NoCertificadoSAT'), selloSat: a(tim, 'SelloSAT') } } };
+}
+// cadena original del complemento de certificación digital del SAT (TFD 1.1)
+function cfdiCadenaOriginal(t) { return '||' + [t.version, t.uuid, t.fecha, t.rfcProv, t.leyenda, t.selloCfd, t.noCertSat].filter(x => x !== '' && x !== undefined && x !== null).join('|') + '||'; }
+// URL que codifica el QR de verificación del SAT: el total con 10 enteros y 6 decimales y los últimos 8 caracteres del sello
+function cfdiUrlVerificacion(d) { return `https://verificacfdi.facturaelectronica.sat.gob.mx/default.aspx?id=${d.timbre.uuid}&re=${d.emisor.rfc}&rr=${d.receptor.rfc}&tt=${d.total.toFixed(6).padStart(17, '0')}&fe=${String(d.sello || d.timbre.selloCfd).slice(-8)}`; }
+// el PDF estándar solo admite Latin-1: se sustituye lo que no existe en esa tabla
+const pdfTxt = (v) => String(v === null || v === undefined ? '' : v).replace(/[\u2013\u2014]/g, '-').replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"').replace(/\u2026/g, '...').replace(/\u00A0/g, ' ').replace(/[^\x09\x0A\x0D\x20-\x7E\u00A1-\u00FF]/g, '?');
+function cfdiConstruirPdf(d, opciones = {}) {
+  const { jsPDF } = window.jspdf, doc = new jsPDF({ unit: 'pt', format: 'letter' });
+  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 36, AN = W - 2 * M, NAVY = [10, 31, 61], GRIS = [102, 112, 133], LIN = [214, 219, 228], TXT = [20, 25, 35];
+  let y = M;
+  const col = (c) => doc.setTextColor(c[0], c[1], c[2]);
+  const txt = (t, x, yy, o = {}) => { doc.setFont('helvetica', o.b ? 'bold' : 'normal'); doc.setFontSize(o.s || 8.5); col(o.c || TXT); doc.text(pdfTxt(t), x, yy, o.a ? { align: o.a } : undefined); };
+  const par = (t, x, yy, w, o = {}) => { doc.setFont('helvetica', o.b ? 'bold' : 'normal'); doc.setFontSize(o.s || 8.5); col(o.c || TXT); const ls = doc.splitTextToSize(pdfTxt(t), w); doc.text(ls, x, yy); return ls.length * (o.s || 8.5) * 1.2; };
+  const espacio = (h) => { if (y + h > H - 54) { doc.addPage(); y = M; } };
+  const fm = (n) => (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const sf = [d.serie, d.folio].filter(Boolean).join('-') || '-';
+  // ---- encabezado: emisor (izquierda) y datos del comprobante (derecha) ----
+  const xD = W - M - 200; let yi = y + 8;
+  yi += par(d.emisor.nombre || d.emisor.rfc, M, yi, xD - M - 14, { b: true, s: 12, c: NAVY }) + 4;
+  txt(`RFC: ${d.emisor.rfc}`, M, yi); yi += 12; yi += par(`Régimen fiscal: ${cfdiCat(CFDI_CAT_REGIMEN, d.emisor.regimen)}`, M, yi, xD - M - 14, { s: 8 });
+  doc.setDrawColor(LIN[0], LIN[1], LIN[2]); doc.setLineWidth(0.6); doc.roundedRect(xD, y, 200, 98, 3, 3);
+  txt('COMPROBANTE FISCAL DIGITAL POR INTERNET', xD + 8, y + 12, { s: 6.5, c: GRIS, b: true }); txt(`${d.tipoTxt.toUpperCase()}`, xD + 8, y + 27, { s: 12, b: true, c: NAVY });
+  txt(`Serie y folio: ${sf}`, xD + 8, y + 41); txt(`Fecha de emisión: ${String(d.fecha).replace('T', ' ')}`, xD + 8, y + 53); txt(`Lugar de expedición: ${d.lugar || '-'}`, xD + 8, y + 65);
+  txt('Folio fiscal (UUID):', xD + 8, y + 78, { s: 7, c: GRIS }); txt(d.timbre.uuid, xD + 8, y + 89, { s: 7.5, b: true });
+  y = Math.max(yi, y + 98) + 12;
+  if (opciones.cancelado) { // un CFDI que se marcó como cancelado no debe poder usarse como comprobante por error
+    doc.setFillColor(253, 232, 232); doc.setDrawColor(192, 57, 43); doc.setLineWidth(0.8); doc.roundedRect(M, y - 2, AN, 24, 3, 3, 'FD');
+    txt('CFDI CANCELADO', M + 10, y + 11, { s: 11, b: true, c: [192, 57, 43] }); txt(`Marcado como cancelado ante el SAT en este sistema${opciones.fecha ? ' el ' + String(opciones.fecha).slice(0, 10) : ''}: este PDF no sirve para deducir ni acreditar.`, M + 112, y + 11, { s: 7.5, c: [192, 57, 43] }); y += 32; }
+  // ---- receptor ----
+  doc.line(M, y, W - M, y); y += 11; txt('RECEPTOR', M, y, { s: 7, b: true, c: GRIS }); y += 11;
+  y += par(d.receptor.nombre || d.receptor.rfc, M, y, AN * 0.62, { b: true, s: 10, c: NAVY }) + 2;
+  // las líneas de la derecha se parten dentro del ancho disponible (un régimen o un uso largos no deben salirse de la hoja)
+  const xR = M + AN * 0.34, wR = W - M - xR;
+  txt(`RFC: ${d.receptor.rfc}`, M, y); const hUso = par(`Uso del CFDI: ${cfdiCat(CFDI_CAT_USO, d.receptor.uso)}`, xR, y, wR, { s: 8 }); y += Math.max(12, hUso + 2);
+  if (d.receptor.cp || d.receptor.regimen) { txt(`Domicilio fiscal (C.P.): ${d.receptor.cp || '-'}`, M, y); const hReg = par(`Régimen fiscal: ${cfdiCat(CFDI_CAT_REGIMEN, d.receptor.regimen)}`, xR, y, wR, { s: 8 }); y += Math.max(12, hReg + 2); }
+  y += 3; doc.line(M, y, W - M, y); y += 11;
+  // ---- datos del comprobante ----
+  const datos = [['Forma de pago', cfdiCat(CFDI_CAT_FORMA, d.formaPago)], ['Método de pago', cfdiCat(CFDI_CAT_METODO, d.metodoPago)], ['Moneda', d.moneda + (d.tipoCambio && d.moneda !== 'MXN' ? `  (tipo de cambio ${d.tipoCambio})` : '')], ['Exportación', d.exportacion ? (d.exportacion === '01' ? '01 - No aplica' : d.exportacion) : '-'], ['Versión del CFDI', d.version || '-']];
+  if (d.condiciones) datos.push(['Condiciones de pago', d.condiciones]);
+  let yd = y; for (let i = 0; i < datos.length; i += 2) { let alto = 13; [datos[i], datos[i + 1]].forEach((f, k) => { if (!f) return; const xx = M + k * (AN / 2); txt(f[0] + ':', xx, yd, { s: 7.5, c: GRIS }); alto = Math.max(alto, par(f[1], xx + 78, yd, AN / 2 - 84, { s: 8 }) + 3); }); yd += alto; } y = yd + 4;
+  if (d.relacionados.length) { d.relacionados.forEach(r => { espacio(14); y += par(`CFDI relacionados (tipo de relación ${r.tipo}): ${r.uuids.join(', ')}`, M, y, AN, { s: 7.5 }) + 2; }); }
+  // ---- conceptos ----
+  espacio(60);
+  const imp1 = (x) => `${CFDI_CAT_IMPUESTO[x.impuesto] || x.impuesto} ${x.tipoFactor}${x.tasa ? ' ' + (x.tipoFactor === 'Tasa' ? (parseFloat(x.tasa) * 100).toFixed(2) + '%' : x.tasa) : ''}${x.tipoFactor !== 'Exento' ? ` (base ${fm(x.base)} importe ${fm(x.importe)})` : ''}`;
+  if (d.conceptos.length) doc.autoTable({ startY: y, margin: { left: M, right: M }, theme: 'grid',
+    head: [['Clave', 'Cant.', 'Unidad', 'Descripción', 'Valor unit.', 'Descuento', 'Importe']],
+    body: d.conceptos.map(c => [pdfTxt(c.clave + (c.noIdent ? `\n${c.noIdent}` : '')), pdfTxt(c.cantidad), pdfTxt([c.claveUnidad, c.unidad].filter(Boolean).join('\n')), pdfTxt(c.descripcion + [...c.traslados.map(x => 'Traslado: ' + imp1(x)), ...c.retenciones.map(x => 'Retención: ' + imp1(x))].map(t => '\n' + t).join('')), fm(c.valorUnitario), c.descuento ? fm(c.descuento) : '-', fm(c.importe)]),
+    styles: { font: 'helvetica', fontSize: 7.5, cellPadding: 3.2, lineColor: LIN, lineWidth: 0.4, textColor: TXT, valign: 'top' }, headStyles: { fillColor: NAVY, textColor: 255, fontStyle: 'bold' },
+    columnStyles: { 0: { cellWidth: 56 }, 1: { cellWidth: 36, halign: 'right' }, 2: { cellWidth: 44 }, 3: { cellWidth: 'auto' }, 4: { cellWidth: 56, halign: 'right' }, 5: { cellWidth: 48, halign: 'right' }, 6: { cellWidth: 58, halign: 'right' } } });
+  y = (doc.lastAutoTable ? doc.lastAutoTable.finalY : y) + 12;
+  // ---- complemento de pagos / nómina ----
+  if (d.pagos.length) { espacio(50); txt('COMPLEMENTO DE PAGO', M, y, { s: 7, b: true, c: GRIS }); y += 5;
+    const filas = []; d.pagos.forEach(p => { filas.push([pdfTxt(String(p.fecha).replace('T', ' ')), pdfTxt(cfdiCat(CFDI_CAT_FORMA, p.forma)), p.moneda, fm(p.monto), '', '', '']); p.documentos.forEach(x => filas.push(['', pdfTxt(`Documento ${x.uuid}\n${[x.serie, x.folio].filter(Boolean).join('-')}  parcialidad ${x.parcialidad || '-'}`), x.moneda, '', fm(x.anterior), fm(x.pagado), fm(x.insoluto)])); });
+    doc.autoTable({ startY: y, margin: { left: M, right: M }, theme: 'grid', head: [['Fecha de pago', 'Forma / documento relacionado', 'Moneda', 'Monto', 'Saldo anterior', 'Pagado', 'Saldo insoluto']], body: filas, styles: { font: 'helvetica', fontSize: 7, cellPadding: 2.6, lineColor: LIN, lineWidth: 0.4, textColor: TXT }, headStyles: { fillColor: NAVY, textColor: 255 }, columnStyles: { 3: { halign: 'right' }, 4: { halign: 'right' }, 5: { halign: 'right' }, 6: { halign: 'right' } } });
+    y = doc.lastAutoTable.finalY + 12; }
+  if (d.nomina) { espacio(40); txt(`NÓMINA: tipo ${d.nomina.tipo || '-'} · pago ${d.nomina.fechaPago || '-'} · periodo ${d.nomina.inicio || '-'} a ${d.nomina.fin || '-'} · ${d.nomina.dias || '-'} día(s) pagados`, M, y, { s: 8 }); y += 14; }
+  // ---- totales e importe con letra ----
+  const lineas = [['Subtotal', fm(d.subtotal)]]; if (d.descuento) lineas.push(['Descuento', '-' + fm(d.descuento)]);
+  d.impuestos.traslados.forEach(x => { if (x.tipoFactor !== 'Exento') lineas.push([`${CFDI_CAT_IMPUESTO[x.impuesto] || x.impuesto}${x.tasa && x.tipoFactor === 'Tasa' ? ' ' + (parseFloat(x.tasa) * 100).toFixed(2) + '%' : ''} trasladado`, fm(x.importe)]); });
+  d.impuestos.retenciones.forEach(x => lineas.push([`${CFDI_CAT_IMPUESTO[x.impuesto] || x.impuesto} retenido`, '-' + fm(x.importe)]));
+  espacio(lineas.length * 13 + 40); const xT = W - M - 210, yT = y;
+  txt('Importe con letra:', M, y + 8, { s: 7, c: GRIS, b: true }); par(cfdiImporteConLetra(d.total, d.moneda), M, y + 20, AN - 240, { s: 8.5, b: true });
+  lineas.forEach((l, i) => { txt(l[0], xT, y + 8 + i * 13, { s: 8 }); txt(l[1], W - M, y + 8 + i * 13, { s: 8, a: 'right' }); });
+  const yTot = y + 8 + lineas.length * 13; doc.setDrawColor(NAVY[0], NAVY[1], NAVY[2]); doc.setLineWidth(0.8); doc.line(xT, yTot - 8, W - M, yTot - 8);
+  txt(`Total ${d.moneda}`, xT, yTot + 4, { s: 10, b: true, c: NAVY }); txt(fm(d.total), W - M, yTot + 4, { s: 10, b: true, c: NAVY, a: 'right' });
+  y = Math.max(yTot + 14, yT + 50) + 8;
+  // ---- timbre: QR, folio fiscal, sellos y cadena original ----
+  const t = d.timbre, sCfd = String(d.sello || t.selloCfd), cadena = cfdiCadenaOriginal(t); doc.setLineWidth(0.6); doc.setDrawColor(LIN[0], LIN[1], LIN[2]);
+  const hSellos = (n) => doc.splitTextToSize(pdfTxt(n), AN - 118).length * 6.8 + 10;
+  espacio(108 + hSellos(sCfd) + hSellos(t.selloSat) + hSellos(cadena)); doc.line(M, y, W - M, y); y += 8; const yq = y;
+  if (typeof qrcode === 'function') { try { const qr = qrcode(0, 'M'); qr.addData(cfdiUrlVerificacion(d)); qr.make(); const n = qr.getModuleCount(), tam = 100, mod = tam / n; doc.setFillColor(0, 0, 0); for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (qr.isDark(r, c)) doc.rect(M + c * mod, yq + r * mod, mod + 0.2, mod + 0.2, 'F'); } catch (e) { txt('(No se pudo dibujar el código QR)', M, yq + 10, { s: 7, c: GRIS }); } }
+  else txt('(Sin librería de código QR)', M, yq + 10, { s: 7, c: GRIS });
+  const xB = M + 112; let yb = yq + 6;
+  const campo = (k, v) => { txt(k, xB, yb, { s: 6.5, b: true, c: GRIS }); yb += 8; yb += par(v, xB, yb, AN - 118, { s: 7.5 }) + 3; };
+  campo('FOLIO FISCAL (UUID)', t.uuid); campo('NO. DE SERIE DEL CERTIFICADO DEL EMISOR', d.noCertificado || '-'); campo('NO. DE SERIE DEL CERTIFICADO DEL SAT', t.noCertSat || '-'); campo('FECHA Y HORA DE CERTIFICACIÓN', String(t.fecha).replace('T', ' ')); campo('RFC DEL PROVEEDOR DE CERTIFICACIÓN', t.rfcProv || '-');
+  y = Math.max(yq + 106, yb) + 4;
+  const sello = (k, v) => { espacio(30); txt(k, M, y, { s: 6.5, b: true, c: GRIS }); y += 8; y += par(v, M, y, AN, { s: 6 }) + 5; };
+  sello('SELLO DIGITAL DEL CFDI', sCfd); sello('SELLO DIGITAL DEL SAT', t.selloSat); sello('CADENA ORIGINAL DEL COMPLEMENTO DE CERTIFICACIÓN DIGITAL DEL SAT', cadena);
+  // ---- pie de cada página ----
+  const n = doc.getNumberOfPages();
+  for (let i = 1; i <= n; i++) { doc.setPage(i); doc.setDrawColor(LIN[0], LIN[1], LIN[2]); doc.line(M, H - 40, W - M, H - 40);
+    txt('Representación impresa de un CFDI generada a partir de su XML. El comprobante fiscal digital es el archivo XML; verifica su validez en el portal del SAT (verificacfdi.facturaelectronica.sat.gob.mx).', M, H - 29, { s: 6.2, c: GRIS }); txt(`${d.timbre.uuid}  ·  Página ${i} de ${n}`, W - M, H - 19, { s: 6.2, c: GRIS, a: 'right' }); }
+  return doc;
+}
+function cfdiBase(c) { return `${String(c.fecha || '').slice(0, 10)}_${String((c.direccion === 'emitido' ? c.rfc_receptor : c.rfc_emisor) || '').replace(/[^A-Za-z0-9&]/g, '')}_${[c.serie, c.folio].filter(Boolean).join('-').replace(/[^A-Za-z0-9-]/g, '') || 'sf'}_${String(c.uuid).slice(0, 8)}`; }
+// XML original guardado → texto (y bytes originales)
+async function cfdiXmlDe(b, c) {
+  const ruta = c.xml_path || `${b.id}/${c.uuid}.xml`;
+  const { data, error } = await sb.storage.from('cfdi').download(ruta);
+  if (error || !data) return { ok: false, motivo: 'No se pudo leer el XML guardado: ' + ((error && error.message) || 'no existe en el almacén') };
+  const bytes = await cfdiBytesDe(data); return { ok: true, bytes, texto: cfdiDecodificar(bytes) };
+}
+// arma el PDF de un CFDI: devuelve { bytes, nombre } o { ok:false, motivo }
+async function cfdiGenerarPdf(b, c) {
+  const x = await cfdiXmlDe(b, c); if (!x.ok) return x;
+  const l = cfdiLeerParaPdf(x.texto); if (!l.ok) return { ok: false, motivo: 'No se pudo leer el XML: ' + l.motivo };
+  if (!window.jspdf || !window.jspdf.jsPDF) return { ok: false, motivo: 'Falta la librería de PDF (jsPDF)' };
+  try { const doc = cfdiConstruirPdf(l.d, { cancelado: c.estatus_sat === 'cancelado', fecha: c.estatus_sat_fecha }); return { ok: true, bytes: doc.output('arraybuffer'), nombre: cfdiBase(c) + '.pdf', xmlBytes: x.bytes, xmlNombre: cfdiBase(c) + '.xml' }; }
+  catch (e) { return { ok: false, motivo: 'No se pudo armar el PDF: ' + ((e && e.message) || e) }; }
+}
+function cfdiGuardarArchivo(blob, nombre) { const url = URL.createObjectURL(blob), a = document.createElement('a'); a.href = url; a.download = nombre; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000); }
+async function cfdiDescargarPdf(b, c) {
+  const r = await cfdiGenerarPdf(b, c); if (!r.ok) { toast(r.motivo, 'error'); return; }
+  cfdiGuardarArchivo(new Blob([new Uint8Array(r.bytes)], { type: 'application/pdf' }), r.nombre);
+}
+async function cfdiDescargarZip(b, c) {
+  if (typeof JSZip === 'undefined') { toast('Falta la librería para armar el ZIP.', 'error'); return; }
+  const r = await cfdiGenerarPdf(b, c); if (!r.ok) { toast(r.motivo, 'error'); return; }
+  const zip = new JSZip(); zip.file(r.xmlNombre, r.xmlBytes); zip.file(r.nombre, r.bytes);
+  cfdiGuardarArchivo(await zip.generateAsync({ type: 'blob' }), cfdiBase(c) + '.zip');
+}
+// varios CFDI en un solo ZIP (XML y PDF de cada uno). tope para no congelar el navegador
+const CFDI_ZIP_MAX = 200;
+async function cfdiDescargarLote(b, lista, alAvanzar) {
+  if (typeof JSZip === 'undefined') { toast('Falta la librería para armar el ZIP.', 'error'); return null; }
+  if (!lista.length) { toast('No hay CFDI para descargar.', 'error'); return null; }
+  if (lista.length > CFDI_ZIP_MAX) { toast(`Son ${lista.length} CFDI: afina los filtros (máximo ${CFDI_ZIP_MAX} por descarga).`, 'error'); return null; }
+  const zip = new JSZip(), fallas = []; let hechos = 0;
+  for (const c of lista) { const r = await cfdiGenerarPdf(b, c); if (r.ok) { zip.file(r.xmlNombre, r.xmlBytes); zip.file(r.nombre, r.bytes); } else fallas.push(`${[c.serie, c.folio].filter(Boolean).join('-') || c.uuid}: ${r.motivo}`); hechos++; if (alAvanzar) alAvanzar(hechos, lista.length); }
+  if (fallas.length) zip.file('_errores.txt', fallas.join('\n'));
+  const blob = await zip.generateAsync({ type: 'blob' }); cfdiGuardarArchivo(blob, `CFDI_${b.rfc || 'negocio'}_${todayStr()}.zip`);
+  return { total: lista.length, fallas };
+}
+// adjunta el PDF del CFDI a la factura de proveedor (como el PDF que antes se cargaba a mano). No duplica si ya está.
+async function cfdiAdjuntarPdfAFactura(b, c, facturaId) {
+  const r = await cfdiGenerarPdf(b, c); if (!r.ok) return { ok: false, error: r.motivo };
+  const { data: ya } = await sb.from('fz_adjuntos').select('archivo_nombre').eq('tabla', 'fz_proveedores').eq('registro_id', facturaId);
+  if ((ya || []).some(a => a.archivo_nombre === r.nombre)) return { ok: true, yaEstaba: true };
+  const file = new File([new Uint8Array(r.bytes)], r.nombre, { type: 'application/pdf' });
+  const subido = await subirAdjunto('fz_proveedores', facturaId, b.id, file); if (!subido) return { ok: false, error: 'no se pudo subir el archivo' };
+  const { error } = await sb.from('fz_adjuntos').insert({ business_id: b.id, tabla: 'fz_proveedores', registro_id: facturaId, archivo_path: subido.path, archivo_nombre: subido.nombre });
+  return error ? { ok: false, error: error.message } : { ok: true };
 }
 
 // ---- pantalla: bandeja ----
@@ -22820,7 +23018,7 @@ function pintarCfdi(el, b) {
       <input type="file" id="cfdiArchivos" multiple accept=".xml,.zip,application/xml,text/xml,application/zip" style="display:none;">
     </div>
     <div class="card">
-      <div class="card-head"><h3>Comprobantes</h3><span class="hint">${visibles.length} de ${todos.length}</span></div>
+      <div class="card-head"><h3>Comprobantes</h3><div style="display:flex;gap:8px;align-items:center;"><span class="hint">${visibles.length} de ${todos.length}</span>${visibles.length ? '<button class="btn btn-ghost btn-sm" id="cfdiZipLote" title="Descarga el XML y el PDF de cada comprobante que estás viendo (máximo 200)">Descargar XML + PDF (ZIP)</button>' : ''}</div></div>
       ${filtrosHtml}
       <div class="table-wrap scroll-sticky"><table class="tabla-operativa"><thead><tr><th>Fecha</th><th>Dirección</th><th>Serie / Folio</th><th>Contraparte</th><th class="num">Total</th><th class="num">IVA</th><th>Estatus SAT</th><th></th></tr></thead><tbody>
         ${visibles.length ? visibles.slice(0, MAX).map(c => `<tr>
@@ -22838,6 +23036,8 @@ function pintarCfdi(el, b) {
   const buscar = el.querySelector('#cfdiBuscar'); if (buscar) buscar.addEventListener('input', () => { STATE_cfdi.q = buscar.value; clearTimeout(buscar._t); buscar._t = setTimeout(() => { pintarCfdi(el, b); const n = el.querySelector('#cfdiBuscar'); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }, 250); });
   el.querySelectorAll('.cfdi-ver').forEach(x => x.addEventListener('click', () => abrirCfdiDetalle(x.dataset.id)));
   el.querySelectorAll('.cfdi-estatus').forEach(x => x.addEventListener('click', () => abrirCfdiEstatus(x.dataset.id)));
+  const zl = el.querySelector('#cfdiZipLote');
+  if (zl) zl.addEventListener('click', async () => { const txtIni = zl.textContent; zl.disabled = true; const r = await cfdiDescargarLote(b, visibles, (h, t) => { zl.textContent = `Generando ${h} de ${t}…`; }); zl.disabled = false; zl.textContent = txtIni; if (r) toast(`ZIP listo: ${r.total - r.fallas.length} CFDI con XML y PDF${r.fallas.length ? ` · ${r.fallas.length} con problema (ver _errores.txt)` : ''}.`, r.fallas.length ? 'error' : undefined); });
   el.querySelectorAll('.cfdi-clasificar').forEach(x => x.addEventListener('click', () => abrirCfdiClasificar(x.dataset.id)));
   el.querySelectorAll('.cfdi-reabrir').forEach(x => x.addEventListener('click', () => cfdiReabrirClasificacion(x.dataset.id)));
   const drop = el.querySelector('#cfdiDrop'), input = el.querySelector('#cfdiArchivos');
@@ -22904,6 +23104,7 @@ async function abrirCfdiDetalle(id) {
   bg.innerHTML = `<div class="modal" style="width:min(960px,96vw);max-height:92vh;overflow:auto;">
     <h3>${CFDI_TIPOS[c.tipo_comprobante]} ${c.direccion === 'emitido' ? 'emitido' : 'recibido'} · ${revEsc([c.serie, c.folio].filter(Boolean).join('-') || c.uuid.slice(0, 8))}</h3>
     <p style="font-size:11.5px;color:var(--muted);margin:0 0 8px;">UUID ${revEsc(c.uuid)} · CFDI ${revEsc(c.version || '')}</p>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin:0 0 10px;"><button class="btn btn-ghost btn-sm" id="cdXml">Descargar XML</button><button class="btn btn-ghost btn-sm" id="cdPdf">Descargar PDF</button><button class="btn btn-ghost btn-sm" id="cdZip">XML + PDF (ZIP)</button>${c.estado === 'clasificado' && factLigada ? '<button class="btn btn-ghost btn-sm" id="cdAdj">Adjuntar PDF a la factura</button>' : ''}</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:18px;">
       <div style="min-width:0;">${par('Fecha', fechaCorta(c.fecha))}${par('Emisor', parte(c.nombre_emisor, c.rfc_emisor))}${par('Receptor', parte(c.nombre_receptor, c.rfc_receptor))}${par('Uso del CFDI', revEsc(c.uso_cfdi))}${par('Método / forma de pago', revEsc([c.metodo_pago, c.forma_pago].filter(Boolean).join(' / ')))}${c.moneda && c.moneda !== 'MXN' ? par('Moneda', `${revEsc(c.moneda)}${c.tipo_cambio ? ` · tipo de cambio ${fmtTC(c.tipo_cambio)}` : ''}`) : ''}</div>
       <div style="min-width:0;">${imp('Subtotal', fmtMon(c.subtotal, c.moneda))}${imp('Descuento', fmtMon(c.descuento, c.moneda))}${imp('IVA trasladado', fmtMon(c.iva_trasladado, c.moneda))}${Number(c.ieps_trasladado) ? imp('IEPS trasladado', fmtMon(c.ieps_trasladado, c.moneda)) : ''}${imp('IVA retenido', fmtMon(c.iva_retenido, c.moneda))}${imp('ISR retenido', fmtMon(c.isr_retenido, c.moneda))}${imp('Total', fmtMon(c.total, c.moneda), true)}</div>
@@ -22918,11 +23119,14 @@ async function abrirCfdiDetalle(id) {
     ${(c.relacionados || []).length ? `<h4 style="font-size:13px;margin:14px 0 6px;">CFDI relacionados</h4><div style="font-size:12px;">${c.relacionados.map(r => `Relación ${revEsc(r.tipo_relacion)}: ${r.uuids.map(revEsc).join(', ')}`).join('<br>')}</div>` : ''}
     ${(c.pagos || []).length ? `<h4 style="font-size:13px;margin:14px 0 6px;">Pagos que ampara este complemento</h4><div style="font-size:12px;">${c.pagos.map(p => `${revEsc(String(p.fecha_pago).slice(0, 10))} · ${fmtMon(p.monto, p.moneda || 'MXN')}<br>${(p.documentos || []).map(d => `&nbsp;&nbsp;↳ ${revEsc(d.uuid)} · parcialidad ${revEsc(d.parcialidad)} · pagado ${fmt(d.pagado)} · saldo insoluto ${fmt(d.saldo_insoluto)}`).join('<br>')}`).join('<br>')}</div>` : ''}
     <h4 style="font-size:13px;margin:14px 0 6px;">Bitácora</h4>
-    <div style="max-height:150px;overflow:auto;"><table class="tabla-operativa"><thead><tr><th>Fecha</th><th>Acción</th><th>Cambio</th><th>Motivo</th><th>Usuario</th></tr></thead><tbody>${(bit || []).length ? bit.map(x => `<tr><td style="white-space:nowrap;">${revEsc(String(x.created_at).replace('T', ' ').slice(0, 16))}</td><td>${x.accion === 'carga' ? 'Carga' : 'Estatus SAT'}</td><td>${revEsc([x.valor_anterior, x.valor_nuevo].filter(v => v).map(lbl).join(' → '))}</td><td style="overflow-wrap:anywhere;">${revEsc(x.motivo || '')}${x.fuente && x.fuente !== 'carga' ? ` <span style="color:var(--muted);">(${revEsc(x.fuente)})</span>` : ''}</td><td>${revEsc(x.usuario_email || '')}</td></tr>`).join('') : '<tr><td colspan="5" class="empty">Sin movimientos.</td></tr>'}</tbody></table></div>
-    <div class="modal-actions"><button class="btn btn-ghost" id="cdCerrar">Cerrar</button><button class="btn btn-ghost" id="cdXml">Descargar XML</button>${cfdiEsClasificable(c) ? '<button class="btn btn-gold" id="cdClasificar">Clasificar</button>' : ''}${puedeCambiar ? '<button class="btn btn-gold" id="cdEstatus">Cambiar estatus</button>' : ''}</div></div>`;
+    <div style="max-height:150px;overflow:auto;"><table class="tabla-operativa"><thead><tr><th>Fecha</th><th>Acción</th><th>Cambio</th><th>Motivo</th><th>Usuario</th></tr></thead><tbody>${(bit || []).length ? bit.map(x => `<tr><td style="white-space:nowrap;">${revEsc(String(x.created_at || '').replace('T', ' ').slice(0, 16))}</td><td>${x.accion === 'carga' ? 'Carga' : 'Estatus SAT'}</td><td>${revEsc([x.valor_anterior, x.valor_nuevo].filter(v => v).map(lbl).join(' → '))}</td><td style="overflow-wrap:anywhere;">${revEsc(x.motivo || '')}${x.fuente && x.fuente !== 'carga' ? ` <span style="color:var(--muted);">(${revEsc(x.fuente)})</span>` : ''}</td><td>${revEsc(x.usuario_email || '')}</td></tr>`).join('') : '<tr><td colspan="5" class="empty">Sin movimientos.</td></tr>'}</tbody></table></div>
+    <div class="modal-actions"><button class="btn btn-ghost" id="cdCerrar">Cerrar</button>${cfdiEsClasificable(c) ? '<button class="btn btn-gold" id="cdClasificar">Clasificar</button>' : ''}${puedeCambiar ? '<button class="btn btn-gold" id="cdEstatus">Cambiar estatus</button>' : ''}</div></div>`;
   document.body.appendChild(bg);
   bg.querySelector('#cdCerrar').addEventListener('click', () => bg.remove());
   bg.querySelector('#cdXml').addEventListener('click', () => cfdiDescargarXml(c));
+  bg.querySelector('#cdPdf').addEventListener('click', () => cfdiDescargarPdf(biz(), c));
+  bg.querySelector('#cdZip').addEventListener('click', () => cfdiDescargarZip(biz(), c));
+  const ad = bg.querySelector('#cdAdj'); if (ad) ad.addEventListener('click', async () => { ad.disabled = true; const rp = await cfdiAdjuntarPdfAFactura(biz(), c, factLigada.id); toast(rp.ok ? (rp.yaEstaba ? 'La factura ya tenía adjunto el PDF de este CFDI.' : 'PDF del CFDI adjunto a la factura.') : 'No se pudo adjuntar el PDF: ' + rp.error, rp.ok ? undefined : 'error'); ad.disabled = false; });
   const e = bg.querySelector('#cdEstatus'); if (e) e.addEventListener('click', () => { bg.remove(); abrirCfdiEstatus(c.id); });
   const k = bg.querySelector('#cdClasificar'); if (k) k.addEventListener('click', () => { bg.remove(); abrirCfdiClasificar(c.id); });
 }
