@@ -23889,6 +23889,169 @@ function revDevolucionesCliente(ctx) {
   return { ...base, items: items.slice(0, 120), ...(items.length > 120 ? { nota: `Se muestran 120 de ${items.length}.` } : {}) };
 }
 
+// ============================================================================================================
+// BUSCADOR UNIVERSAL (botón «Buscar» de la barra superior, o Ctrl/Cmd+K, o «/»).
+// Busca en el NEGOCIO ACTUAL: proveedores, clientes, facturas de proveedor y de cliente, CFDI, activos fijos y pagos por clasificar (se cargan una vez al abrir y se filtran en memoria, sin
+// distinguir acentos ni mayúsculas) y, en la base de datos, movimientos de Banco y Efectivo y pólizas con sus líneas (ahí SÍ distingue acentos). Varios términos se combinan (todos deben
+// coincidir). Un término numérico busca el importe EXACTO (1,160.00 · $1160) y también folios/números; una fecha (09/10/2026 · 2026-10-09) busca por fecha. Solo lee: no cambia nada.
+// ============================================================================================================
+const BUSQ_GRUPOS = [ { id: 'proveedores', nombre: 'Proveedores' }, { id: 'clientes', nombre: 'Clientes' }, { id: 'facturasProv', nombre: 'Facturas de proveedor' }, { id: 'facturasCli', nombre: 'Facturas de cliente' }, { id: 'cfdi', nombre: 'CFDI' }, { id: 'polizas', nombre: 'Pólizas' }, { id: 'bancos', nombre: 'Bancos' }, { id: 'efectivo', nombre: 'Efectivo' }, { id: 'otros', nombre: 'Activos y pagos por clasificar' } ];
+const BUSQ_MAX_TERMINOS = 8, BUSQ_POR_GRUPO = 5, BUSQ_MAX_LOCAL = 40, BUSQ_LIMITE_SERVIDOR = 12, BUSQ_TTL_MS = 45000;
+let STATE_busq = { token: 0, datos: null, datosListos: null, q: '', resultados: {}, servidor: 'reposo', fallos: [], filtro: 'todo', expandidos: {}, activo: 0, visibles: [], temporizador: null, bg: null, negocioId: null };
+function busquedaFechaValida(iso) { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso); if (!m) return false; const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])); return d.getUTCFullYear() === +m[1] && d.getUTCMonth() === +m[2] - 1 && d.getUTCDate() === +m[3]; }
+// «holbox 1,708.48 09/10/2026» → términos de texto (sin acentos), de importe/número y de fecha. Un texto sin ningún término útil (una sola letra) no busca.
+function busquedaParsear(q) {
+  const terminos = [];
+  for (const p of String(q || '').trim().split(/\s+/).filter(Boolean)) {
+    const sinPeso = p.replace(/^\$/, '');
+    if (/^(\d{1,3}(,\d{3})+|\d+)(\.\d+)?$/.test(sinPeso)) { const crudo = sinPeso.replace(/,/g, ''); terminos.push({ tipo: 'num', crudo, num: Number(crudo) }); continue; }
+    let m = /^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/.exec(p);
+    if (m) { const iso = `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`; if (busquedaFechaValida(iso)) { terminos.push({ tipo: 'fecha', iso }); continue; } }
+    if (busquedaFechaValida(p)) { terminos.push({ tipo: 'fecha', iso: p }); continue; }
+    cfdiNorm(p).split(' ').filter(Boolean).forEach(t => terminos.push({ tipo: 'txt', t }));
+  }
+  const lista = terminos.slice(0, BUSQ_MAX_TERMINOS), util = lista.some(t => t.tipo !== 'txt') || lista.reduce((n, t) => n + t.t.length, 0) >= 2; // «m-1» = «M» + «1»: cuenta lo escrito en total, no cada pedazo
+  return { terminos: util ? lista : [], vacia: !util };
+}
+function busquedaCoincide(it, ts) { return ts.every(t => t.tipo === 'txt' ? it.h.includes(t.t) : t.tipo === 'fecha' ? it.fechas.includes(t.iso) : (it.montos.some(m => Math.abs(Math.abs(m) - t.num) < 0.005) || it.h.includes(t.crudo.replace('.', ' ')))); }
+function busquedaPuntaje(it, ts) { let p = 0; const completa = ts.filter(t => t.tipo === 'txt').map(t => t.t).join(' '); if (completa && it.exactos.includes(completa)) p += 4; /* el folio, UUID o RFC completo (aunque lleve guiones) */ ts.forEach(t => { const clave = t.tipo === 'txt' ? t.t : (t.tipo === 'num' ? t.crudo : ''); if (clave && it.exactos.includes(clave)) p += 3; else if (t.tipo === 'num' && it.montos.some(m => Math.abs(Math.abs(m) - t.num) < 0.005)) p += 2; else if (t.tipo === 'txt' && it.titN.startsWith(t.t)) p += 1; }); return p; }
+const BUSQ_ACENTOS = { A: 'AÁÀÂÄ', E: 'EÉÈÊË', I: 'IÍÌÎÏ', O: 'OÓÒÔÖ', U: 'UÚÙÛÜ', N: 'NÑ' };
+function busquedaPatron(t) { return String(t).toUpperCase().split('').map(ch => BUSQ_ACENTOS[ch] ? `[${BUSQ_ACENTOS[ch]}${BUSQ_ACENTOS[ch].toLowerCase()}]` : ch.replace(/[.*+?^${}()|[\]\\\/-]/g, '\\$&')).join(''); }
+function busquedaResaltar(texto, ts) { // el texto se escapa ANTES de pintarlo; lo que coincide va en <mark>
+  const t = String(texto == null ? '' : texto), pats = ts.filter(x => x.tipo === 'txt' || x.tipo === 'num').map(x => busquedaPatron(x.tipo === 'txt' ? x.t : x.crudo)); if (!pats.length) return revEsc(t);
+  return t.split(new RegExp('(' + pats.join('|') + ')', 'gi')).map((p, i) => i % 2 ? `<mark>${revEsc(p)}</mark>` : revEsc(p)).join('');
+}
+async function busquedaCargarDatos(b) { // se cargan solo las columnas necesarias; si una tabla falla (p. ej. CFDI sin migrar) se omite y se avisa
+  const fallos = [], leer = async (nombre, tabla, cols) => { try { const { data, error } = await fetchTodasLasPaginas(() => sb.from(tabla).select(cols).eq('business_id', b.id).order('id')); if (error) throw error; return data || []; } catch (e) { fallos.push(nombre); return []; } };
+  const [catalogo, clientes, factProv, factCli, cfdi, activos, porClasificar, cuentas, monedas] = await Promise.all([
+    leer('Proveedores', 'fz_proveedores_catalogo', 'id,nombre,nombre_comercial,razon_social,rfc,activo'), leer('Clientes', 'fz_clientes', 'id,razon_social,nombre_comercial,rfc,telefono,activo'),
+    leer('Facturas de proveedor', 'fz_proveedores', 'id,proveedor_id,fecha,proveedor,factura,folio,importe,importe_pagado,estatus,moneda,tipo_documento,cfdi_uuid'),
+    leer('Facturas de cliente', 'fz_facturas_clientes', 'id,cliente_id,folio,numero_factura,fecha,total,importe_pagado,estatus,folio_fiscal,moneda,tipo_documento,notas'),
+    leer('CFDI', 'fz_cfdi', 'id,uuid,direccion,tipo_comprobante,fecha,serie,folio,rfc_emisor,nombre_emisor,rfc_receptor,nombre_receptor,total,moneda,estado,estatus_sat'),
+    leer('Activos fijos', 'fz_activos_fijos', 'id,nombre,categoria,costo_adquisicion,fecha_adquisicion,activo'), leer('Pagos por clasificar', 'fz_pagos_por_clasificar', 'id,fecha,monto,proveedor_tentativo,descripcion,estado'),
+    leer('Cuentas de banco', 'fz_bancos_cuentas', 'id,nombre'), leer('Cajas de efectivo', 'fz_efectivo_monedas', 'id,nombre')]);
+  return { catalogo, clientes, factProv, factCli, cfdi, activos, porClasificar, cuentas, monedas, fallos, t: Date.now(), negocioId: b.id };
+}
+function busquedaItem(g, id, titulo, detalle, monto, moneda, fecha, textos, montos, exactos, ir, extra = {}) {
+  return { g, id, titulo, detalle, monto, moneda: moneda || 'MXN', fecha: fecha || '', h: cfdiNorm(textos.filter(x => x != null && x !== '').join(' ')), montos: montos.map(Number).filter(Number.isFinite), fechas: fecha ? [String(fecha).slice(0, 10)] : [], exactos: exactos.map(cfdiNorm).filter(Boolean), titN: cfdiNorm(titulo), ir, ...extra };
+}
+// pasa los datos cargados a «renglones buscables» de cada grupo (con a dónde llevar al abrir cada uno)
+function busquedaConstruir(D, b) {
+  const R = {}, nCli = (c) => c.razon_social && c.razon_social !== c.nombre_comercial ? `${c.razon_social} — ${c.nombre_comercial}` : (c.nombre_comercial || c.razon_social || ''), cliPorId = Object.fromEntries(D.clientes.map(c => [c.id, c])), provPorId = Object.fromEntries(D.catalogo.map(p => [p.id, p]));
+  const saldoProv = {}, nProv = {}, saldoCli = {}, nCliFact = {};
+  D.factProv.forEach(f => { if (f.proveedor_id) { saldoProv[f.proveedor_id] = (saldoProv[f.proveedor_id] || 0) + (Number(f.importe) || 0) - (Number(f.importe_pagado) || 0); nProv[f.proveedor_id] = (nProv[f.proveedor_id] || 0) + 1; } });
+  D.factCli.forEach(f => { if (f.cliente_id) { saldoCli[f.cliente_id] = (saldoCli[f.cliente_id] || 0) + (Number(f.total) || 0) - (Number(f.importe_pagado) || 0); nCliFact[f.cliente_id] = (nCliFact[f.cliente_id] || 0) + 1; } });
+  R.proveedores = D.catalogo.map(p => busquedaItem('proveedores', p.id, provNombreVisible(p), `${p.rfc ? 'RFC ' + p.rfc + ' · ' : ''}${nProv[p.id] || 0} factura(s)${p.activo === false ? ' · desactivado' : ''}`, saldoProv[p.id] || 0, 'MXN', '', [p.nombre, p.nombre_comercial, p.razon_social, p.rfc], [], [p.rfc], async () => {
+    if (nProv[p.id]) { STATE_provVista = 'detalle'; STATE_provDetalleKey = 'id:' + p.id; await irASeccion('proveedores'); } else { await irASeccion('proveedores'); await openProveedoresCatModal(b.id); const q = document.getElementById('mcpBuscar'); if (q) { q.value = p.nombre_comercial || p.nombre || ''; q.dispatchEvent(new Event('input')); } } }, { rotuloMonto: 'saldo' }));
+  R.clientes = D.clientes.map(c => busquedaItem('clientes', c.id, nCli(c), `${c.rfc ? 'RFC ' + c.rfc + ' · ' : ''}${nCliFact[c.id] || 0} factura(s)${c.activo === false ? ' · desactivado' : ''}`, saldoCli[c.id] || 0, 'MXN', '', [c.razon_social, c.nombre_comercial, c.rfc, c.telefono], [], [c.rfc], async () => { STATE_clientesVista = 'detalle'; STATE_clienteDetalleId = c.id; await irASeccion('clientes'); }, { rotuloMonto: 'saldo' }));
+  R.facturasProv = D.factProv.map(f => { const nota = f.tipo_documento === 'nota_credito', nom = provPorId[f.proveedor_id] ? provNombreVisible(provPorId[f.proveedor_id]) : (f.proveedor || '(sin proveedor)'), saldo = (Number(f.importe) || 0) - (Number(f.importe_pagado) || 0);
+    return busquedaItem('facturasProv', f.id, `${nota ? 'Nota de crédito' : 'Factura'} ${f.factura || (f.folio ? '#' + f.folio : 's/f')} · ${nom}`, `${fechaCorta(f.fecha)} · ${f.estatus || ''}${saldo > 0.004 && !nota ? ' · saldo ' + fmtMon(saldo, f.moneda) : ''}`, Number(f.importe) || 0, f.moneda, f.fecha, [f.factura, f.folio, f.proveedor, nom, f.cfdi_uuid, f.estatus, nota ? 'nota de credito' : ''], [f.importe, saldo], [f.factura, f.folio, f.cfdi_uuid], () => abrirOrigenDesdeDetalle({ tipo: 'proveedor', id: f.id }, b.id)); });
+  R.facturasCli = D.factCli.map(f => { const nota = f.tipo_documento === 'nota_credito', nom = cliPorId[f.cliente_id] ? nCli(cliPorId[f.cliente_id]) : '(cliente eliminado)', saldo = (Number(f.total) || 0) - (Number(f.importe_pagado) || 0);
+    return busquedaItem('facturasCli', f.id, `${nota ? 'Nota de crédito' : 'Factura'} ${f.numero_factura || '#' + f.folio} · ${nom}`, `${fechaCorta(f.fecha)} · ${f.estatus || ''}${saldo > 0.004 && !nota ? ' · saldo ' + fmtMon(saldo, f.moneda) : ''}`, Number(f.total) || 0, f.moneda, f.fecha, [f.numero_factura, f.folio, f.folio_fiscal, f.notas, nom, f.estatus, nota ? 'nota de credito' : ''], [f.total, saldo], [f.numero_factura, f.folio, f.folio_fiscal], () => abrirOrigenDesdeDetalle({ tipo: 'factura_cliente', id: f.id }, b.id)); });
+  const TIPO_CFDI = { I: 'Ingreso', E: 'Egreso', P: 'Pago', N: 'Nómina', T: 'Traslado' };
+  R.cfdi = D.cfdi.map(c => { const ref = [c.serie, c.folio].filter(Boolean).join('-') || String(c.uuid || '').slice(0, 8), recibido = c.direccion === 'recibido', otro = recibido ? c.nombre_emisor : c.nombre_receptor;
+    return busquedaItem('cfdi', c.id, `CFDI ${TIPO_CFDI[c.tipo_comprobante] || c.tipo_comprobante} ${ref} · ${otro || (recibido ? c.rfc_emisor : c.rfc_receptor)}`, `${recibido ? 'Recibido' : 'Emitido'} · ${fechaCorta(c.fecha)} · ${c.estatus_sat === 'cancelado' ? 'cancelado' : (c.estado || '').replace('_', ' ')}`, Number(c.total) || 0, c.moneda, c.fecha, [c.uuid, c.serie, c.folio, c.rfc_emisor, c.nombre_emisor, c.rfc_receptor, c.nombre_receptor, TIPO_CFDI[c.tipo_comprobante], recibido ? 'recibido' : 'emitido', c.estado], [c.total], [c.uuid, c.folio, c.rfc_emisor, c.rfc_receptor], () => abrirCfdiDetalle(c.id)); });
+  R.otros = [...D.activos.map(a => busquedaItem('otros', a.id, `Activo fijo · ${a.nombre}`, `${a.categoria || ''}${a.fecha_adquisicion ? ' · ' + fechaCorta(a.fecha_adquisicion) : ''}${a.activo === false ? ' · dado de baja' : ''}`, Number(a.costo_adquisicion) || 0, 'MXN', a.fecha_adquisicion, [a.nombre, a.categoria, 'activo fijo'], [a.costo_adquisicion], [], () => irASeccion('activosfijos'))),
+    ...D.porClasificar.map(p => busquedaItem('otros', p.id, `Pago por clasificar · ${p.proveedor_tentativo || p.descripcion || ''}`, `${fechaCorta(p.fecha)} · ${p.estado || ''}`, Number(p.monto) || 0, 'MXN', p.fecha, [p.proveedor_tentativo, p.descripcion, 'pago por clasificar', p.estado], [p.monto], [], () => irASeccion('pagosclasificar')))];
+  return R;
+}
+// movimientos de Banco/Efectivo y pólizas: consulta en la base (cada término es un .or entre columnas; los términos se encadenan = todos deben coincidir). Los términos ya vienen sin comas, paréntesis ni comodines.
+// palabras de 6+ letras: vocales y «n» como comodín de UN carácter (DEPRECIACION → D_PR_C__C__N) para que encuentre el texto con o sin acento; las cortas se buscan tal cual (si no, «pago» traería «pego», «pigo»…)
+function busquedaPatronServidor(t) { return /^[A-Z]+$/.test(t) && t.length >= 6 ? t.replace(/[AEIOUN]/g, '_') : t; }
+async function busquedaServidor(b, parsed, D) {
+  const out = { bancos: [], efectivo: [], polizas: [], fallos: [] }, ts = parsed.terminos, hayFecha = ts.some(t => t.tipo === 'fecha');
+  const aplicar = (q, cols, colsMonto, colsEntero, colFecha) => { ts.forEach(t => { const c = []; if (t.tipo === 'txt') cols.forEach(x => c.push(`${x}.ilike.%${busquedaPatronServidor(t.t)}%`)); else if (t.tipo === 'fecha') { if (colFecha) c.push(`${colFecha}.eq.${t.iso}`); } else { cols.forEach(x => c.push(`${x}.ilike.%${t.crudo}%`)); colsMonto.forEach(x => c.push(`${x}.eq.${t.crudo}`)); if (Number.isInteger(t.num)) colsEntero.forEach(x => c.push(`${x}.eq.${t.num}`)); } if (c.length) q = q.or(c.join(',')); }); return q; };
+  const seguro = async (nombre, fn) => { try { await fn(); } catch (e) { out.fallos.push(nombre); } };
+  const nCuenta = Object.fromEntries((D.cuentas || []).map(c => [c.id, c.nombre])), nMoneda = Object.fromEntries((D.monedas || []).map(c => [c.id, c.nombre]));
+  await Promise.all([
+    seguro('Bancos', async () => { const { data, error } = await aplicar(sb.from('fz_bancos_mov').select('id,cuenta_id,fecha,descripcion,concepto,referencia,proveedor,cargos,depositos').eq('business_id', b.id), ['descripcion', 'concepto', 'referencia', 'proveedor'], ['cargos', 'depositos'], [], 'fecha').order('fecha', { ascending: false }).limit(BUSQ_LIMITE_SERVIDOR); if (error) throw error;
+      out.bancos = (data || []).map(m => busquedaItem('bancos', m.id, m.descripcion || m.concepto || m.proveedor || 'Movimiento', `${nCuenta[m.cuenta_id] || 'Banco'} · ${fechaCorta(m.fecha)}${m.referencia ? ' · ' + m.referencia : ''}`, Number(m.depositos) > 0 ? Number(m.depositos) : -(Number(m.cargos) || 0), 'MXN', m.fecha, [m.descripcion, m.concepto, m.referencia, m.proveedor], [m.cargos, m.depositos], [m.referencia], () => abrirOrigenDesdeDetalle({ tipo: 'bancos', id: m.id, cuentaId: m.cuenta_id, fecha: m.fecha }, b.id))); }),
+    seguro('Efectivo', async () => { const { data, error } = await aplicar(sb.from('fz_efectivo_mov').select('id,moneda_id,fecha,descripcion,proveedor,factura,cargos,depositos').eq('business_id', b.id), ['descripcion', 'proveedor', 'factura'], ['cargos', 'depositos'], [], 'fecha').order('fecha', { ascending: false }).limit(BUSQ_LIMITE_SERVIDOR); if (error) throw error;
+      out.efectivo = (data || []).map(m => busquedaItem('efectivo', m.id, m.descripcion || m.proveedor || 'Movimiento de efectivo', `${nMoneda[m.moneda_id] || 'Efectivo'} · ${fechaCorta(m.fecha)}${m.factura ? ' · ' + m.factura : ''}`, Number(m.depositos) > 0 ? Number(m.depositos) : -(Number(m.cargos) || 0), 'MXN', m.fecha, [m.descripcion, m.proveedor, m.factura], [m.cargos, m.depositos], [m.factura], () => abrirOrigenDesdeDetalle({ tipo: 'efectivo', id: m.id, monedaId: m.moneda_id, fecha: m.fecha }, b.id))); }),
+    seguro('Pólizas', async () => {
+      const cab = aplicar(sb.from('fz_polizas').select('id,numero,fecha,concepto').eq('business_id', b.id), ['concepto'], [], ['numero'], 'fecha').order('fecha', { ascending: false }).limit(BUSQ_LIMITE_SERVIDOR);
+      const lin = hayFecha ? null : aplicar(sb.from('fz_polizas_lineas').select('poliza_id,descripcion,referencia,proveedor,cargo,abono').eq('business_id', b.id), ['descripcion', 'referencia', 'proveedor'], ['cargo', 'abono'], [], null).limit(40);
+      const [r1, r2] = await Promise.all([cab, lin || Promise.resolve({ data: [] })]); if (r1.error) throw r1.error; if (r2.error) throw r2.error;
+      const directas = (r1.data || []), porLinea = {}; (r2.data || []).forEach(l => { if (!porLinea[l.poliza_id]) porLinea[l.poliza_id] = l; });
+      const idsL = Object.keys(porLinea).filter(id => !directas.some(p => p.id === id)).slice(0, 20); let extra = [];
+      if (idsL.length) { const r3 = await sb.from('fz_polizas').select('id,numero,fecha,concepto').eq('business_id', b.id).in('id', idsL).order('fecha', { ascending: false }).limit(BUSQ_LIMITE_SERVIDOR); if (r3.error) throw r3.error; extra = r3.data || []; }
+      out.polizas = [...directas, ...extra].slice(0, BUSQ_LIMITE_SERVIDOR).map(p => { const l = porLinea[p.id]; return busquedaItem('polizas', p.id, `Póliza ${p.numero != null ? '#' + p.numero : ''} · ${p.concepto || ''}`.trim(), `${fechaCorta(p.fecha)}${l ? ' · línea: ' + (l.descripcion || l.referencia || l.proveedor || '') + ' ' + fmt(Number(l.cargo) || Number(l.abono) || 0) : ''}`, null, 'MXN', p.fecha, [p.concepto, p.numero, l && l.descripcion, l && l.referencia, l && l.proveedor], [], [p.numero], () => openPolizaModal(p.id, b.id)); }); }) ]);
+  return out;
+}
+function busquedaRecientes() { try { return JSON.parse(localStorage.getItem('finanzas_busquedas_recientes') || '[]').filter(x => typeof x === 'string').slice(0, 6); } catch (_) { return []; } }
+function busquedaGuardarReciente(q) { const t = String(q || '').trim(); if (t.length < 2) return; try { localStorage.setItem('finanzas_busquedas_recientes', JSON.stringify([t, ...busquedaRecientes().filter(x => x !== t)].slice(0, 6))); } catch (_) { /* sin almacenamiento */ } }
+function inyectarEstilosBusqueda() {
+  if (document.getElementById('estiloBusquedaGlobal')) return; const st = document.createElement('style'); st.id = 'estiloBusquedaGlobal';
+  st.textContent = `#busquedaGlobalBtn{display:inline-flex;align-items:center;gap:6px;}#busquedaGlobalBtn .bq-kbd{font-size:10.5px;color:var(--muted);border:1px solid var(--line);border-radius:5px;padding:0 5px;line-height:16px;}
+#modalBusquedaGlobal{align-items:flex-start;padding:7vh 10px 10px;}#modalBusquedaGlobal .bq-modal{width:min(780px,100%);max-height:min(82vh,720px);padding:0;display:flex;flex-direction:column;overflow:hidden;}
+.bq-head{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line);flex-shrink:0;}.bq-head svg{flex-shrink:0;color:var(--muted);}
+.bq-head input{flex:1;min-width:0;border:none;outline:none;font-size:16px;background:transparent;padding:6px 0;}.bq-x{flex-shrink:0;width:30px;height:30px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--muted);font-size:19px;line-height:1;cursor:pointer;padding:0;}
+.bq-sub{padding:7px 14px;font-size:11.5px;color:var(--muted);border-bottom:1px solid var(--line);flex-shrink:0;}.bq-chips{display:flex;gap:6px;flex-wrap:wrap;padding:8px 14px 0;flex-shrink:0;}
+.bq-chip{border:1px solid var(--line);background:#fff;border-radius:20px;padding:3px 10px;font-size:11.5px;cursor:pointer;color:var(--ink);}.bq-chip.on{background:var(--navy-1,#0a1f3d);color:#fff;border-color:transparent;}
+.bq-lista{flex:1;min-height:80px;overflow-y:auto;padding:6px 8px 8px;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;}.bq-grupo{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;font-weight:700;color:var(--muted);padding:10px 8px 4px;}
+.bq-res{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;width:100%;text-align:left;border:none;background:none;border-radius:8px;padding:8px;cursor:pointer;font-family:inherit;}.bq-res:hover,.bq-res.act{background:#eef3fb;}
+.bq-res .bq-t{font-size:13.5px;font-weight:600;color:var(--ink);overflow-wrap:anywhere;}.bq-res .bq-d{font-size:11.5px;color:var(--muted);overflow-wrap:anywhere;margin-top:1px;}.bq-res .bq-m{flex-shrink:0;font-size:13px;font-weight:700;white-space:nowrap;text-align:right;}.bq-res .bq-m small{display:block;font-size:10px;font-weight:400;color:var(--muted);}
+.bq-res mark{background:#fff0b3;color:inherit;border-radius:3px;padding:0 1px;}.bq-mas{border:none;background:none;color:var(--blue,#1a56c4);font-size:12px;cursor:pointer;padding:4px 8px;}.bq-vacio{padding:18px 12px;font-size:13px;color:var(--muted);text-align:center;line-height:1.5;}
+.bq-pie{padding:7px 14px;font-size:11px;color:var(--muted);border-top:1px solid var(--line);flex-shrink:0;}.bq-rec{display:block;width:100%;text-align:left;border:none;background:none;padding:7px 8px;font-size:13px;cursor:pointer;border-radius:8px;}.bq-rec:hover{background:#eef3fb;}
+@media (max-width:900px){#busquedaGlobalBtn .bq-txt,#busquedaGlobalBtn .bq-kbd{display:none;}}
+@media (max-width:760px){#modalBusquedaGlobal{padding:8px;top:var(--mcp-top,0px);bottom:auto;height:var(--mcp-vh,100dvh);}#modalBusquedaGlobal .bq-modal{width:100%;max-height:100%;}.bq-pie{display:none;}}`;
+  document.head.appendChild(st);
+}
+async function abrirBuscadorUniversal(consultaInicial) {
+  const b = biz(); if (!b) { toast('Elige un negocio para poder buscar.', 'error'); return; }
+  inyectarEstilosBusqueda(); const E = STATE_busq;
+  if (!E.bg) {
+    const bg = document.createElement('div'); bg.className = 'modal-bg'; bg.id = 'modalBusquedaGlobal'; bg.setAttribute('role', 'dialog'); bg.setAttribute('aria-modal', 'true'); bg.setAttribute('aria-label', 'Buscar en todo');
+    bg.innerHTML = `<div class="modal bq-modal"><div class="bq-head"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg><input id="bqInput" type="search" autocomplete="off" spellcheck="false" enterkeyhint="search" aria-label="Buscar" placeholder="Proveedor, cliente, factura, folio, UUID, RFC, importe, póliza…"><button type="button" class="bq-x" id="bqCerrar" aria-label="Cerrar">&times;</button></div><div class="bq-sub" id="bqSub"></div><div class="bq-chips" id="bqChips"></div><div class="bq-lista" id="bqLista" role="listbox" aria-live="polite"></div><div class="bq-pie">↑↓ para moverte · Enter para abrir · Esc para cerrar · Varias palabras se combinan · Importes: 1,160.00 · Fechas: 09/10/2026</div></div>`;
+    document.body.appendChild(bg); E.bg = bg; mcpPrepararTeclado(bg);
+    bg.addEventListener('click', (e) => { if (e.target === bg) cerrarBuscadorUniversal(); }); bg.querySelector('#bqCerrar').addEventListener('click', cerrarBuscadorUniversal);
+    const inp = bg.querySelector('#bqInput'); inp.addEventListener('input', () => busquedaEscribir(inp.value));
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); cerrarBuscadorUniversal(); } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); const n = E.visibles.length; if (n) { E.activo = (E.activo + (e.key === 'ArrowDown' ? 1 : -1) + n) % n; busquedaPintar(false); } } else if (e.key === 'Enter') { e.preventDefault(); const it = E.visibles[E.activo]; if (it) busquedaAbrirItem(it); } });
+    bg.querySelector('#bqLista').addEventListener('click', (e) => { const r = e.target.closest('.bq-res'), m = e.target.closest('.bq-mas'), c = e.target.closest('.bq-rec'); if (r) { const it = E.visibles[Number(r.dataset.i)]; if (it) busquedaAbrirItem(it); } else if (m) { E.expandidos[m.dataset.g] = true; busquedaPintar(false); } else if (c) { const i = bg.querySelector('#bqInput'); i.value = c.dataset.q; busquedaEscribir(c.dataset.q); i.focus(); } });
+    bg.querySelector('#bqChips').addEventListener('click', (e) => { const c = e.target.closest('.bq-chip'); if (c) { E.filtro = c.dataset.f; E.activo = 0; busquedaPintar(false); } });
+  }
+  E.q = ''; E.resultados = {}; E.servidor = 'reposo'; E.fallos = []; E.filtro = 'todo'; E.expandidos = {}; E.activo = 0; E.bg.classList.add('show'); const inp = E.bg.querySelector('#bqInput'); inp.value = '';
+  E.bg.querySelector('#bqSub').textContent = `Buscando en: ${b.name || 'este negocio'}`; busquedaPintar(false); setTimeout(() => inp.focus(), 30);
+  if (!E.datos || E.negocioId !== b.id || Date.now() - E.datos.t > BUSQ_TTL_MS) { E.negocioId = b.id; E.datos = null; E.datosListos = busquedaCargarDatos(b).then(D => { if (E.negocioId === b.id) { E.datos = D; E.fallos = D.fallos.slice(); E.locales = busquedaConstruir(D, b); } busquedaPintar(false); return D; }).catch(() => { E.datosListos = null; busquedaPintar(false); }); busquedaPintar(false); }
+  if (consultaInicial) { inp.value = consultaInicial; busquedaEscribir(consultaInicial); }
+}
+function cerrarBuscadorUniversal() { if (STATE_busq.bg) STATE_busq.bg.classList.remove('show'); clearTimeout(STATE_busq.temporizador); STATE_busq.token++; }
+async function busquedaAbrirItem(it) { busquedaGuardarReciente(STATE_busq.q); cerrarBuscadorUniversal(); try { await it.ir(); } catch (e) { toast('No se pudo abrir: ' + ((e && e.message) || e), 'error'); } }
+function busquedaEscribir(valor) {
+  const E = STATE_busq, b = biz(); E.q = valor; E.activo = 0; E.expandidos = {}; clearTimeout(E.temporizador); const token = ++E.token, parsed = busquedaParsear(valor);
+  if (parsed.vacia || !b) { E.resultados = {}; E.servidor = 'reposo'; busquedaPintar(false); return; }
+  const filtrarLocal = () => { const R = E.locales || {}, out = {}; Object.keys(R).forEach(g => { const hits = R[g].filter(it => busquedaCoincide(it, parsed.terminos)); hits.forEach(it => { it._p = busquedaPuntaje(it, parsed.terminos); }); out[g] = hits.sort((a, z) => z._p - a._p || String(z.fecha).localeCompare(String(a.fecha))).slice(0, BUSQ_MAX_LOCAL); }); return out; };
+  E.resultados = E.datos ? filtrarLocal() : {}; E.servidor = 'esperando'; busquedaPintar(true);
+  E.temporizador = setTimeout(async () => { // lo de la base se consulta un instante después de dejar de escribir, y solo cuenta si sigue siendo la misma búsqueda
+    try { if (!E.datos && E.datosListos) await E.datosListos; if (token !== E.token) return; if (!E.datos) { E.servidor = 'error'; busquedaPintar(false); return; } E.resultados = { ...filtrarLocal() }; const S = await busquedaServidor(b, parsed, E.datos); if (token !== E.token) return;
+      ['bancos', 'efectivo', 'polizas'].forEach(g => { E.resultados[g] = S[g]; }); E.fallos = [...new Set([...(E.datos.fallos || []), ...S.fallos])]; E.servidor = 'listo'; } catch (e) { if (token !== E.token) return; E.servidor = 'error'; }
+    busquedaPintar(false); }, 250);
+}
+function busquedaPintar(cargandoServidor) {
+  const E = STATE_busq, bg = E.bg; if (!bg) return; const lista = bg.querySelector('#bqLista'), chips = bg.querySelector('#bqChips'), parsed = busquedaParsear(E.q), ts = parsed.terminos;
+  if (parsed.vacia) { chips.innerHTML = ''; E.visibles = []; const rec = busquedaRecientes(); lista.innerHTML = `${E.datos ? '' : '<div class="bq-vacio">Preparando la búsqueda…</div>'}${rec.length ? `<div class="bq-grupo">Búsquedas recientes</div>${rec.map(r => `<button type="button" class="bq-rec" data-q="${revEsc(r)}">${revEsc(r)}</button>`).join('')}` : ''}<div class="bq-vacio">${E.q.trim() ? 'Escribe al menos 2 letras o un número.' : 'Escribe para buscar proveedores, clientes, facturas, CFDI, pólizas, movimientos de banco y efectivo.<br>Puedes buscar por nombre, RFC, folio, UUID, <strong>importe exacto</strong> (1,160.00), fecha (09/10/2026) o número de póliza, y combinar varias palabras.'}</div>${E.fallos.length ? `<div class="bq-vacio" style="color:#9a6a00;">No se pudo cargar: ${revEsc(E.fallos.join(', '))}.</div>` : ''}`; return; }
+  const grupos = BUSQ_GRUPOS.filter(g => (E.resultados[g.id] || []).length); chips.innerHTML = grupos.length ? `<button type="button" class="bq-chip ${E.filtro === 'todo' ? 'on' : ''}" data-f="todo">Todo</button>${grupos.map(g => `<button type="button" class="bq-chip ${E.filtro === g.id ? 'on' : ''}" data-f="${g.id}">${revEsc(g.nombre)} ${E.resultados[g.id].length}</button>`).join('')}` : '';
+  if (E.filtro !== 'todo' && !grupos.some(g => g.id === E.filtro)) E.filtro = 'todo'; const visibles = []; let html = '';
+  grupos.filter(g => E.filtro === 'todo' || E.filtro === g.id).forEach(g => { const todos = E.resultados[g.id], tope = E.filtro === g.id || E.expandidos[g.id] ? todos.length : BUSQ_POR_GRUPO, mostrar = todos.slice(0, tope);
+    html += `<div class="bq-grupo">${revEsc(g.nombre)}</div>` + mostrar.map(it => { const i = visibles.push(it) - 1, neg = it.monto != null && it.monto < 0;
+      return `<button type="button" class="bq-res ${i === E.activo ? 'act' : ''}" role="option" aria-selected="${i === E.activo}" data-i="${i}"><span style="min-width:0;"><div class="bq-t">${busquedaResaltar(it.titulo, ts)}</div><div class="bq-d">${busquedaResaltar(it.detalle, ts)}</div></span>${it.monto != null ? `<span class="bq-m" style="color:${neg ? 'var(--red)' : 'var(--ink)'};">${fmtMon(it.monto, it.moneda)}${it.rotuloMonto ? `<small>${it.rotuloMonto}</small>` : ''}</span>` : ''}</button>`; }).join('')
+      + (todos.length > tope ? `<button type="button" class="bq-mas" data-g="${g.id}">Mostrar ${todos.length - tope} más de ${revEsc(g.nombre)}</button>` : ''); });
+  E.visibles = visibles; if (E.activo >= visibles.length) E.activo = 0;
+  const estado = !E.datos ? '<div class="bq-vacio">Preparando la búsqueda…</div>' : '';
+  const nota = (cargandoServidor || E.servidor === 'esperando') ? '<div class="bq-vacio" style="padding:8px;">Buscando también en Bancos, Efectivo y Pólizas…</div>' : (E.servidor === 'error' ? '<div class="bq-vacio" style="color:#9a6a00;">No se pudo consultar Bancos, Efectivo y Pólizas. Inténtalo de nuevo.</div>' : '');
+  const aviso = E.fallos.length ? `<div class="bq-vacio" style="color:#9a6a00;padding:8px;">No se pudo cargar: ${revEsc(E.fallos.join(', '))}.</div>` : '';
+  const vacio = !visibles.length && E.datos && E.servidor !== 'esperando' && !cargandoServidor ? `<div class="bq-vacio">Sin resultados para «${revEsc(E.q.trim())}».<br>Revisa la ortografía o usa menos palabras. En Bancos, Efectivo y Pólizas, una palabra de menos de 6 letras no encuentra textos con acento (por ejemplo «año»).</div>` : '';
+  lista.innerHTML = estado + html + nota + vacio + aviso; const act = lista.querySelector('.bq-res.act'); if (act && act.scrollIntoView) act.scrollIntoView({ block: 'nearest' });
+}
+(function activarBuscadorUniversal() {
+  const btn = document.getElementById('busquedaGlobalBtn'); if (btn) { const mac = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || ''); const k = btn.querySelector('.bq-kbd'); if (k) k.textContent = mac ? '⌘K' : 'Ctrl K'; btn.addEventListener('click', () => abrirBuscadorUniversal()); }
+  document.addEventListener('keydown', (e) => {
+    if (!STATE || !STATE.user) return; const t = e.target, escribiendo = t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable);
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && String(e.key).toLowerCase() === 'k') { e.preventDefault(); abrirBuscadorUniversal(); }
+    else if (e.key === '/' && !escribiendo && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); abrirBuscadorUniversal(); }
+  });
+})();
+
 // ---- pantalla: bandeja ----
 const cfdiBadgeSat = (e) => {
   const color = { vigente: ['#e7f6ec', '#1e7a46'], cancelado: ['#fde8e8', '#c0392b'], en_proceso: ['#fff4dd', '#9a6a00'], no_encontrado: ['#fde8e8', '#c0392b'], no_verificado: ['#eef1f6', '#667085'] }[e] || ['#eef1f6', '#667085'];
