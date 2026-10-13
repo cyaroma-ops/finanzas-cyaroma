@@ -12263,6 +12263,7 @@ async function renderConfiguracion() {
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgUsuarios', 'Usuarios autorizados', 'Quién puede entrar a Finanzas y a qué negocios.') : ''}
       ${tarjetaConfigHtml('cfgAuditoria', 'Auditoría', b ? `Quién creó, editó o eliminó cada registro en ${b.name}.` : 'Selecciona un negocio para ver su auditoría.')}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgMfa', 'Autenticación de dos pasos', 'Protege tu cuenta con un código adicional al iniciar sesión.') : ''}
+      ${STATE.esAdministrador ? tarjetaConfigHtml('cfgRespaldo', 'Respaldo completo', respaldoEstadoHtml()) : ''}
     `)}
     <p style="font-size:13px;font-weight:700;color:var(--navy-1);margin-bottom:10px;">Análisis</p>
     ${grid(`
@@ -12273,6 +12274,7 @@ async function renderConfiguracion() {
   ir('cfgCatalogo', 'catalogo');
   ir('cfgNegocios', 'negocios');
   ir('cfgAuditoria', 'auditoria');
+  const respBtn = document.getElementById('cfgRespaldo'); if (respBtn) respBtn.addEventListener('click', () => abrirRespaldoCompleto());
   const cierreBtn = document.getElementById('cfgCierre');
   if (cierreBtn) cierreBtn.addEventListener('click', () => { if (b) abrirModalCierrePeriodo(b.id); else toast('Selecciona un negocio primero.', 'error'); });
   const tcCierreBtn = document.getElementById('cfgTcCierre');
@@ -24051,6 +24053,91 @@ function busquedaPintar(cargandoServidor) {
     else if (e.key === '/' && !escribiendo && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); abrirBuscadorUniversal(); }
   });
 })();
+
+// ============================================================================================================
+// RESPALDO COMPLETO (Configuración → Administración → «Respaldo completo»; solo administradores).
+// Descarga un ZIP con LAS 70 TABLAS de Finanzas (todas las filas que tu usuario puede leer: todos los negocios), cada una verificada contra su conteo real, y opcionalmente los archivos de los buckets
+// «adjuntos» y «cfdi». Solo LEE: no cambia nada en la base. No incluye: usuarios/contraseñas/MFA de Supabase Auth, tablas de otras apps del mismo proyecto, ni el esquema/políticas (están en schema.sql).
+// El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
+// ============================================================================================================
+const RESPALDO_TABLAS = [['fz_cuentas_mayor', ['id']], ['fz_subcuentas', ['id']], ['fz_polizas', ['id']], ['fz_polizas_lineas', ['id']], ['fz_proveedores_catalogo', ['id']], ['fz_proveedores', ['id']], ['fz_ventas', ['id']], ['fz_conceptos_venta', ['id']], ['fz_conceptos_sistema', ['id']], ['fz_conceptos', ['id']], ['fz_efectivo_monedas', ['id']], ['fz_efectivo_mov', ['id']], ['fz_bancos_cuentas', ['id']], ['fz_bancos_mov', ['id']], ['fz_pl_gastos', ['id']], ['fz_usuarios_autorizados', ['id']], ['fz_usuario_negocios', ['id']], ['fz_auditoria', ['id']], ['fz_adjuntos', ['id']], ['fz_pagos_aplicados', ['id']], ['fz_clientes', ['id']], ['fz_productos_servicios', ['id']], ['fz_folios_contador', ['business_id', 'tipo']], ['fz_facturas_clientes', ['id']], ['fz_facturas_clientes_lineas', ['id']], ['fz_cobros_aplicados', ['id']], ['fz_ordenes_venta', ['id']], ['fz_ordenes_venta_lineas', ['id']], ['fz_conciliaciones_bancarias', ['id']], ['fz_cierres_periodo', ['id']], ['fz_tc_cierre', ['id']], ['fz_tipos_cambio_cierre', ['id']], ['fz_cfdi', ['id']], ['fz_cfdi_bitacora', ['id']], ['fz_activos_fijos', ['id']], ['fz_depreciaciones_generadas', ['id']], ['fz_inpc_valores', ['id']], ['fz_recargos_tasas', ['id']], ['fz_pagos_impuestos', ['id']], ['fz_isr_datos_anuales', ['id']], ['fz_isr_conceptos', ['id']], ['fz_provisiones_fiscales', ['id']], ['fz_iva_realizaciones', ['id']], ['fz_aplicaciones_pago_fiscal', ['id']], ['fz_regimenes_fiscales_negocio', ['id']], ['fz_dias_inhabiles_fiscales', ['id']], ['fz_declaraciones_fiscales', ['id']], ['fz_reglas_vencimiento_impuesto', []], ['fz_calendario_fiscal_validacion', []], ['fz_catalogo_regimenes_fiscales', []], ['fz_papeles_trabajo', ['id']], ['fz_papel_conceptos', ['id']], ['fz_papel_concepto_fuentes', ['id']], ['fz_papel_concepto_accesorios', ['id']], ['fz_papel_historial', ['id']], ['fz_papel_soportes', ['id']], ['fz_mapeo_cuenta_concepto_fiscal', ['id']], ['fz_perdidas_fiscales', ['id']], ['fz_perdidas_fiscales_actualizaciones', ['id']], ['fz_perdidas_fiscales_aplicaciones', ['id']], ['fz_perdidas_fiscales_cierres', ['id']], ['fz_perdidas_fiscales_historial', ['id']], ['fz_perdidas_fiscales_soportes', ['id']], ['fz_ptu_eventos', ['id']], ['fz_ptu_historial', ['id']], ['fz_pagos_por_clasificar', ['id']], ['fz_iva_saldos_favor', ['id']], ['fz_iva_saldos_favor_movimientos', ['id']], ['fz_iva_saldos_favor_devoluciones', ['id']], ['fz_iva_saldo_favor_periodo_activo', ['id']]];
+const RESPALDO_BUCKETS = ['adjuntos', 'cfdi'], RESPALDO_MAX_ARCHIVOS_BYTES = 400 * 1024 * 1024, RESPALDO_AVISO_DIAS = 7;
+function respaldoEstado() { try { return JSON.parse(localStorage.getItem('finanzas_ultimo_respaldo') || 'null'); } catch (_) { return null; } }
+function respaldoDiasDesde(iso) { return Math.floor((Date.now() - new Date(iso).getTime()) / 86400000); }
+function respaldoEstadoHtml() { // texto de la tarjeta de Configuración
+  const e = respaldoEstado();
+  if (!e || !e.fecha) return '<span style="color:var(--red);font-weight:600;">⚠ Nunca has descargado un respaldo completo.</span> Descarga las 70 tablas de Finanzas (y opcionalmente sus archivos) en un ZIP.';
+  const d = respaldoDiasDesde(e.fecha), cuando = d <= 0 ? 'hoy' : (d === 1 ? 'ayer' : `hace ${d} días`), viejo = d >= RESPALDO_AVISO_DIAS;
+  return `${viejo ? '<span style="color:var(--red);font-weight:600;">⚠ ' : '<span style="color:var(--green);font-weight:600;">✓ '}Último respaldo: ${cuando}</span> (${fechaCorta(e.fecha.slice(0, 10))} · ${Number(e.filas || 0).toLocaleString('es-MX')} filas${e.archivos ? ' · ' + e.archivos + ' archivos' : ''}${e.avisos ? ' · ' + e.avisos + ' aviso(s)' : ''}).${viejo ? ' Ya pasó más de una semana.' : ''}`;
+}
+async function respaldoLeerTabla(tabla, orden) { // todas las filas (de 1000 en 1000) y, aparte, el conteo real para comprobar que no falte ninguna
+  const { data, error } = await fetchTodasLasPaginas(() => { let q = sb.from(tabla).select('*'); orden.forEach(c => { q = q.order(c); }); return q; });
+  if (error) return { filas: [], error, esperado: null };
+  const { count, error: eC } = await sb.from(tabla).select('*', { count: 'exact', head: true });
+  return { filas: data || [], error: null, esperado: eC ? null : count };
+}
+async function respaldoListarArchivos(bucket, prefijo = '') { // recorre carpetas; en Supabase una carpeta viene con id = null
+  const out = []; let offset = 0;
+  for (;;) {
+    const { data, error } = await sb.storage.from(bucket).list(prefijo, { limit: 100, offset, sortBy: { column: 'name', order: 'asc' } }); if (error) throw error;
+    const pag = data || []; for (const e of pag) { const ruta = prefijo ? `${prefijo}/${e.name}` : e.name; if (e.id === null || e.id === undefined) out.push(...await respaldoListarArchivos(bucket, ruta)); else out.push({ ruta, bytes: Number(e.metadata && e.metadata.size) || 0 }); }
+    if (pag.length < 100) break; offset += 100;
+  }
+  return out;
+}
+async function respaldoConstruir({ incluirArchivos, alProgreso, control }) {
+  const zip = new JSZip(), man = { tipo: 'Respaldo completo de Finanzas', fecha: new Date().toISOString(), usuario: (STATE.user && STATE.user.email) || '', tablas: {}, errores: [], avisos: [], archivos: { incluidos: 0, bytes: 0, omitidos: [] }, totalFilas: 0 };
+  const avisar = (t) => { if (alProgreso) alProgreso(t); }, cancelado = () => { if (control && control.cancelado) throw new Error('cancelado'); };
+  for (let i = 0; i < RESPALDO_TABLAS.length; i++) {
+    cancelado(); const [tabla, orden] = RESPALDO_TABLAS[i]; avisar({ fase: 'tablas', i: i + 1, n: RESPALDO_TABLAS.length, nombre: tabla });
+    const r = await respaldoLeerTabla(tabla, orden);
+    if (r.error) { man.errores.push(`${tabla}: no se pudo leer (${r.error.message || r.error})`); man.tablas[tabla] = { filas: 0, esperado: null, ok: false }; zip.file(`datos/${tabla}.json`, '[]'); continue; }
+    const ok = r.esperado === null || r.esperado === r.filas.length; man.tablas[tabla] = { filas: r.filas.length, esperado: r.esperado, ok }; man.totalFilas += r.filas.length;
+    if (!ok) man.errores.push(`${tabla}: se esperaban ${r.esperado} filas y se leyeron ${r.filas.length}`);
+    zip.file(`datos/${tabla}.json`, JSON.stringify(r.filas));
+  }
+  if (incluirArchivos) {
+    for (const bucket of RESPALDO_BUCKETS) {
+      cancelado(); avisar({ fase: 'listando', nombre: bucket }); let lista = [];
+      try { lista = await respaldoListarArchivos(bucket); } catch (e) { man.avisos.push(`${bucket}: no se pudo listar (${(e && e.message) || e})`); continue; }
+      for (let i = 0; i < lista.length; i++) {
+        cancelado(); const a = lista[i]; avisar({ fase: 'archivos', bucket, i: i + 1, n: lista.length, nombre: a.ruta });
+        if (man.archivos.bytes + a.bytes > RESPALDO_MAX_ARCHIVOS_BYTES) { man.archivos.omitidos.push(`${bucket}/${a.ruta} (se alcanzó el tope de ${Math.round(RESPALDO_MAX_ARCHIVOS_BYTES / 1048576)} MB)`); continue; }
+        try { const { data, error } = await sb.storage.from(bucket).download(a.ruta); if (error || !data) throw error || new Error('vacío'); zip.file(`archivos/${bucket}/${a.ruta}`, data); man.archivos.incluidos++; man.archivos.bytes += a.bytes; }
+        catch (e) { man.archivos.omitidos.push(`${bucket}/${a.ruta} (${(e && e.message) || 'no se pudo descargar'})`); }
+      }
+    }
+    if (man.archivos.omitidos.length) man.avisos.push(`${man.archivos.omitidos.length} archivo(s) no se incluyeron: revisa manifiesto.json`);
+  }
+  zip.file('manifiesto.json', JSON.stringify(man, null, 2));
+  zip.file('LEEME.txt', ['RESPALDO COMPLETO DE FINANZAS', `Generado: ${man.fecha}`, `Por: ${man.usuario}`, '', 'QUÉ CONTIENE', `- datos/*.json: una tabla por archivo (${RESPALDO_TABLAS.length} tablas, ${man.totalFilas} filas en total), con TODAS las filas que ese usuario podía leer (todos los negocios).`, incluirArchivos ? `- archivos/: ${man.archivos.incluidos} archivos de los almacenes ${RESPALDO_BUCKETS.join(' y ')}.` : '- No se incluyeron los archivos adjuntos ni los XML de CFDI.', '- manifiesto.json: filas por tabla, comprobación contra el conteo real y avisos.', '', 'QUÉ NO CONTIENE', '- Usuarios, contraseñas ni verificación en dos pasos de Supabase Auth (la lista de correos autorizados sí va en datos/fz_usuarios_autorizados.json).', '- Tablas de otras aplicaciones que compartan el mismo proyecto de Supabase.', '- El esquema ni las políticas de seguridad (están en schema.sql).', '', 'CUIDADOS', '- Contiene información financiera sensible: guárdalo en un lugar privado y cifrado; no lo envíes por correo.', '- Descargas periódicas: este archivo es una foto de ese momento.', '- Restaurar NO es automático: pídelo y se hace con un script. Conviene probar la restauración en un proyecto de prueba antes de necesitarla.'].join('\n'));
+  return { zip, manifiesto: man };
+}
+function abrirRespaldoCompleto() {
+  if (!STATE.esAdministrador) { toast('Solo un administrador puede descargar el respaldo completo.', 'error'); return; }
+  const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalRespaldoCompleto'; const control = { cancelado: false }; let corriendo = false; const cerrar = () => { control.cancelado = true; bg.remove(); };
+  bg.innerHTML = `<div class="modal" style="width:min(560px,96vw);max-height:92vh;overflow:auto;"><h3>Respaldo completo</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 8px;">Descarga un ZIP con <strong>las ${RESPALDO_TABLAS.length} tablas de Finanzas</strong> (todos los negocios que puedes ver). Solo lee: no cambia nada. Cada tabla se comprueba contra su conteo real.</p>
+    <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;margin:8px 0;"><input type="checkbox" id="rcArchivos" checked style="margin-top:3px;"><span><strong>Incluir archivos</strong> (adjuntos y XML de CFDI). Puede tardar y pesar bastante; tope de ${Math.round(RESPALDO_MAX_ARCHIVOS_BYTES / 1048576)} MB.</span></label>
+    <div style="font-size:11.5px;color:var(--muted);margin-bottom:8px;">No incluye usuarios ni contraseñas de Supabase Auth, ni tablas de otras apps del proyecto. Guárdalo en un lugar privado.</div>
+    <div id="rcEstado" style="font-size:12.5px;"></div><div style="height:8px;background:#eef1f6;border-radius:6px;overflow:hidden;margin:8px 0;display:none;" id="rcBarraWrap"><div id="rcBarra" style="height:100%;width:0;background:var(--gold,#b8892b);transition:width .15s;"></div></div>
+    <div class="modal-actions" style="position:sticky;bottom:0;background:#fff;border-top:1px solid var(--line);padding:12px 0 2px;margin-top:12px;z-index:2;"><button class="btn btn-ghost" id="rcCerrar">Cancelar</button><button class="btn btn-gold" id="rcIniciar">Descargar respaldo</button></div></div>`;
+  document.body.appendChild(bg); const $ = (id) => bg.querySelector('#' + id); $('rcCerrar').addEventListener('click', cerrar);
+  $('rcIniciar').addEventListener('click', async () => {
+    if (corriendo) return; corriendo = true; $('rcIniciar').disabled = true; $('rcArchivos').disabled = true; $('rcBarraWrap').style.display = ''; $('rcCerrar').textContent = 'Cancelar';
+    const alProgreso = (p) => { if (!bg.isConnected) return; const pct = p.fase === 'tablas' ? (p.i / p.n) * (($('rcArchivos').checked) ? 55 : 95) : (p.fase === 'archivos' ? 55 + (p.i / Math.max(p.n, 1)) * 40 : 55);
+      $('rcBarra').style.width = Math.min(95, pct) + '%'; $('rcEstado').textContent = p.fase === 'tablas' ? `Tabla ${p.i} de ${p.n}: ${p.nombre}` : (p.fase === 'archivos' ? `Archivo ${p.i} de ${p.n} (${p.bucket})` : `Revisando ${p.nombre}…`); };
+    try {
+      const { zip, manifiesto } = await respaldoConstruir({ incluirArchivos: $('rcArchivos').checked, alProgreso, control }); if (control.cancelado) return;
+      $('rcEstado').textContent = 'Comprimiendo…'; const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } }); if (control.cancelado) return;
+      descargarArchivo(blob, `Respaldo Finanzas COMPLETO - ${todayStr()}.zip`);
+      const avisos = manifiesto.errores.length + manifiesto.avisos.length; try { localStorage.setItem('finanzas_ultimo_respaldo', JSON.stringify({ fecha: manifiesto.fecha, filas: manifiesto.totalFilas, archivos: manifiesto.archivos.incluidos, avisos })); } catch (_) { /* sin almacenamiento */ }
+      const b = biz(); if (b) registrarAuditoria(b.id, 'exportar', 'Configuración', `Descargó el respaldo completo (${manifiesto.totalFilas} filas, ${manifiesto.archivos.incluidos} archivos, ${avisos} aviso(s))`);
+      $('rcBarra').style.width = '100%'; $('rcEstado').innerHTML = `<strong style="color:var(--green);">✓ Listo.</strong> ${manifiesto.totalFilas.toLocaleString('es-MX')} filas de ${Object.keys(manifiesto.tablas).length} tablas${manifiesto.archivos.incluidos ? ` y ${manifiesto.archivos.incluidos} archivos` : ''}.${avisos ? `<div style="color:#9a6a00;margin-top:6px;">⚠ ${avisos} aviso(s):<br>${[...manifiesto.errores, ...manifiesto.avisos].slice(0, 8).map(revEsc).join('<br>')}<br>El detalle completo está en manifiesto.json dentro del ZIP.</div>` : ' Todas las tablas coinciden con su conteo real.'}`;
+      $('rcCerrar').textContent = 'Cerrar'; const c = document.getElementById('cfgRespaldo'); if (c) { const p = c.querySelector('p'); if (p) p.innerHTML = respaldoEstadoHtml(); }
+    } catch (e) { if (control.cancelado || (e && e.message === 'cancelado')) return; $('rcEstado').innerHTML = `<span style="color:var(--red);">No se pudo completar: ${revEsc((e && e.message) || e)}</span>`; $('rcIniciar').disabled = false; $('rcArchivos').disabled = false; corriendo = false; }
+  });
+}
 
 // ---- pantalla: bandeja ----
 const cfdiBadgeSat = (e) => {
