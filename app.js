@@ -11394,6 +11394,11 @@ async function pintarRecargos(contenido) {
     </div>
   `;
 
+  if (!STATE.esAdministrador) { // el INPC y las tasas son datos globales: solo un administrador los edita (la base de datos lo exige); el resto los consulta
+    contenido.querySelectorAll('.inpc-input, .tasa-input').forEach(inp => { inp.disabled = true; });
+    ['inpcGuardarBtn', 'tasaGuardarBtn'].forEach(id => { const bt = document.getElementById(id); if (bt) { bt.disabled = true; bt.textContent = 'Solo un administrador puede guardar'; } });
+    contenido.insertAdjacentHTML('afterbegin', '<div id="recargosSoloAdmin" style="padding:9px 12px;margin-bottom:12px;border:1px solid #e6c768;background:#fff8e1;border-radius:8px;font-size:12.5px;max-width:700px;"><strong>Solo un administrador puede editar el INPC y las tasas de recargos.</strong> Tú puedes consultarlos y se usan normalmente en tus cálculos.</div>');
+  }
   document.getElementById('recargosAnioSel').addEventListener('change', async (e) => {
     STATE_recargosAnio = e.target.value;
     await pintarRecargos(contenido);
@@ -11418,17 +11423,21 @@ async function pintarRecargos(contenido) {
   document.getElementById('inpcGuardarBtn').addEventListener('click', async () => {
     const filas = [...contenido.querySelectorAll('.inpc-input')].map(inp => ({ periodo: inp.dataset.periodo, valor: leerMonto(inp.value) })).filter(r => r.valor);
     if (!filas.length) { toast('No hay valores para guardar.', 'error'); return; }
+    if (!STATE.esAdministrador) { toast('Solo un administrador puede editar el INPC.', 'error'); return; }
     const { error } = await sb.from('fz_inpc_valores').upsert(filas, { onConflict: 'periodo' });
-    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    if (error) { toast(/row-level security|permission denied|policy/i.test(error.message || '') ? 'Tu usuario no tiene permiso para editar el INPC: pídeselo a un administrador.' : 'Error: ' + error.message, 'error'); return; }
     toast(`${filas.length} valor(es) de INPC guardado(s).`);
+    { const b = biz(); if (b) registrarAuditoria(b.id, 'editar', 'INPC y recargos', `Guardó ${filas.length} valor(es) de INPC (${filas.map(f => f.periodo).sort().join(', ')})`); }
     await pintarRecargos(contenido);
   });
   document.getElementById('tasaGuardarBtn').addEventListener('click', async () => {
     const filas = [...contenido.querySelectorAll('.tasa-input')].map(inp => ({ periodo: inp.dataset.periodo, tasa: leerMonto(inp.value) })).filter(r => r.tasa);
     if (!filas.length) { toast('No hay valores para guardar.', 'error'); return; }
+    if (!STATE.esAdministrador) { toast('Solo un administrador puede editar las tasas de recargos.', 'error'); return; }
     const { error } = await sb.from('fz_recargos_tasas').upsert(filas, { onConflict: 'periodo' });
-    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    if (error) { toast(/row-level security|permission denied|policy/i.test(error.message || '') ? 'Tu usuario no tiene permiso para editar las tasas: pídeselo a un administrador.' : 'Error: ' + error.message, 'error'); return; }
     toast(`${filas.length} tasa(s) guardada(s).`);
+    { const b = biz(); if (b) registrarAuditoria(b.id, 'editar', 'INPC y recargos', `Guardó ${filas.length} tasa(s) de recargos (${filas.map(f => f.periodo).sort().join(', ')})`); }
     await pintarRecargos(contenido);
   });
   document.getElementById('calcBtn').addEventListener('click', async () => {
