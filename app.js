@@ -12273,6 +12273,7 @@ async function renderConfiguracion() {
       ${tarjetaConfigHtml('cfgAuditoria', 'Auditoría', b ? `Quién creó, editó o eliminó cada registro en ${b.name}.` : 'Selecciona un negocio para ver su auditoría.')}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgMfa', 'Autenticación de dos pasos', 'Protege tu cuenta con un código adicional al iniciar sesión.') : ''}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgRespaldo', 'Respaldo completo', respaldoEstadoHtml()) : ''}
+      ${STATE.esAdministrador ? tarjetaConfigHtml('cfgRestaurarArchivos', 'Restaurar archivos', 'Vuelve a subir los adjuntos y XML de CFDI de un respaldo completo. No sobrescribe nada y comprueba que no falte ninguno.') : ''}
     `)}
     <p style="font-size:13px;font-weight:700;color:var(--navy-1);margin-bottom:10px;">Análisis</p>
     ${grid(`
@@ -12284,6 +12285,7 @@ async function renderConfiguracion() {
   ir('cfgNegocios', 'negocios');
   ir('cfgAuditoria', 'auditoria');
   const respBtn = document.getElementById('cfgRespaldo'); if (respBtn) respBtn.addEventListener('click', () => abrirRespaldoCompleto());
+  const raBtn = document.getElementById('cfgRestaurarArchivos'); if (raBtn) raBtn.addEventListener('click', () => abrirRestaurarArchivos());
   const cierreBtn = document.getElementById('cfgCierre');
   if (cierreBtn) cierreBtn.addEventListener('click', () => { if (b) abrirModalCierrePeriodo(b.id); else toast('Selecciona un negocio primero.', 'error'); });
   const tcCierreBtn = document.getElementById('cfgTcCierre');
@@ -24145,6 +24147,99 @@ function abrirRespaldoCompleto() {
       $('rcBarra').style.width = '100%'; $('rcEstado').innerHTML = `<strong style="color:var(--green);">✓ Listo.</strong> ${manifiesto.totalFilas.toLocaleString('es-MX')} filas de ${Object.keys(manifiesto.tablas).length} tablas${manifiesto.archivos.incluidos ? ` y ${manifiesto.archivos.incluidos} archivos` : ''}.${avisos ? `<div style="color:#9a6a00;margin-top:6px;">⚠ ${avisos} aviso(s):<br>${[...manifiesto.errores, ...manifiesto.avisos].slice(0, 8).map(revEsc).join('<br>')}<br>El detalle completo está en manifiesto.json dentro del ZIP.</div>` : ' Todas las tablas coinciden con su conteo real.'}`;
       $('rcCerrar').textContent = 'Cerrar'; const c = document.getElementById('cfgRespaldo'); if (c) { const p = c.querySelector('p'); if (p) p.innerHTML = respaldoEstadoHtml(); }
     } catch (e) { if (control.cancelado || (e && e.message === 'cancelado')) return; $('rcEstado').innerHTML = `<span style="color:var(--red);">No se pudo completar: ${revEsc((e && e.message) || e)}</span>`; $('rcIniciar').disabled = false; $('rcArchivos').disabled = false; corriendo = false; }
+  });
+}
+
+// ============================================================================================================
+// RESTAURAR ARCHIVOS (adjuntos y XML de CFDI) desde un respaldo completo. Complementa a restaurar.html, que restaura las TABLAS.
+// Sube a los almacenes «adjuntos» y «cfdi» lo que trae la carpeta archivos/ del ZIP, en la MISMA ruta. NUNCA sobrescribe: lo que ya existe se omite.
+// Solo administradores. Usa la sesión actual: en un proyecto nuevo, primero se apunta config.js al proyecto nuevo y se entra.
+// ============================================================================================================
+const RESTAURAR_ARCH_TIPOS = { pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', xml: 'application/xml', txt: 'text/plain', csv: 'text/csv', zip: 'application/zip' };
+function restaurarArchTipo(ruta) { return RESTAURAR_ARCH_TIPOS[(String(ruta).split('.').pop() || '').toLowerCase()] || 'application/octet-stream'; }
+// Solo se restaura lo que está dentro de una carpeta de negocio (la primera carpeta es el identificador del negocio, como suben la app y el importador de CFDI): nada suelto en la raíz del almacén.
+function restaurarArchRutaValida(bucket, ruta) { return RESPALDO_BUCKETS.includes(bucket) && !!ruta && ruta.length < 900 && !ruta.startsWith('/') && !ruta.split('/').some(x => x === '' || x === '.' || x === '..') && ruta.includes('/') && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ruta.split('/')[0]); }
+async function restaurarArchAnalizar(buffer) {
+  const zip = await JSZip.loadAsync(buffer), avisos = [], ignorados = [], lista = []; let man = null;
+  const fm = zip.file('manifiesto.json');
+  if (fm) { try { man = JSON.parse(await fm.async('string')); } catch (_) { avisos.push('El manifiesto.json no se pudo leer.'); } } else avisos.push('Este ZIP no trae manifiesto.json.');
+  if (man && man.tipo !== 'Respaldo completo de Finanzas') avisos.push('Este archivo no parece un respaldo completo de Finanzas.');
+  for (const nombre of Object.keys(zip.files)) {
+    const f = zip.files[nombre]; if (f.dir || !nombre.startsWith('archivos/')) continue;
+    const resto = nombre.slice(9), i = resto.indexOf('/'), bucket = i > 0 ? resto.slice(0, i) : '', ruta = i > 0 ? resto.slice(i + 1) : '';
+    if (!restaurarArchRutaValida(bucket, ruta)) { ignorados.push(nombre); continue; } lista.push({ bucket, ruta, entrada: nombre });
+  }
+  const porBucket = {}; RESPALDO_BUCKETS.forEach(b => { porBucket[b] = lista.filter(x => x.bucket === b).length; });
+  if (ignorados.length) avisos.push(`${ignorados.length} entrada(s) del ZIP se ignoraron: no son de «adjuntos» o «cfdi», o su ruta no es válida.`);
+  if (man && man.archivos) {
+    if (man.archivos.incluidos !== lista.length) avisos.push(`El manifiesto dice ${man.archivos.incluidos} archivos y el ZIP trae ${lista.length}: puede estar dañado o incompleto.`);
+    if ((man.archivos.omitidos || []).length) avisos.push(`${man.archivos.omitidos.length} archivo(s) no se incluyeron cuando se hizo el respaldo (ver manifiesto.json).`);
+  }
+  if (!lista.length) avisos.push('Este respaldo no trae archivos (se hizo sin la opción de incluirlos).');
+  return { zip, lista, porBucket, ignorados, avisos, manifiesto: man };
+}
+async function restaurarArchSubir(A, { alProgreso, control, concurrencia = 3 }) {
+  const lista = A.lista, res = { subidos: 0, existian: 0, fallidos: [], total: lista.length, cancelado: false }; let sig = 0;
+  const hechos = () => res.subidos + res.existian + res.fallidos.length;
+  const obrero = async () => {
+    for (;;) {
+      if (control && control.cancelado) { res.cancelado = true; return; }
+      const k = sig++; if (k >= lista.length) return; const it = lista[k];
+      try {
+        const datos = await A.zip.file(it.entrada).async('uint8array');
+        const { error } = await sb.storage.from(it.bucket).upload(it.ruta, datos, { upsert: false, contentType: restaurarArchTipo(it.ruta) });
+        if (!error) res.subidos++;
+        else if (/already exists|duplicate/i.test(error.message || '') || String(error.statusCode || error.status || '') === '409') res.existian++;
+        else res.fallidos.push(`${it.bucket}/${it.ruta}: ${error.message || error}`);
+      } catch (e) { res.fallidos.push(`${it.bucket}/${it.ruta}: ${(e && e.message) || e}`); }
+      if (alProgreso) alProgreso({ hechos: hechos(), total: lista.length });
+    }
+  };
+  await Promise.all(Array.from({ length: concurrencia }, obrero)); return res;
+}
+async function restaurarArchVerificar(A) { // ¿están en el almacenamiento los archivos del ZIP? ¿hay registros de adjuntos sin archivo? ¿archivos sin registro?
+  const presentes = {}, errores = [];
+  for (const b of RESPALDO_BUCKETS) { try { presentes[b] = new Set((await respaldoListarArchivos(b)).map(x => x.ruta)); } catch (e) { presentes[b] = null; errores.push(`${b}: no se pudo listar (${(e && e.message) || e})`); } }
+  const faltan = A ? A.lista.filter(it => presentes[it.bucket] && !presentes[it.bucket].has(it.ruta)) : [];
+  let registrosSinArchivo = null, archivosSinRegistro = null;
+  try {
+    const { data, error } = await fetchTodasLasPaginas(() => sb.from('fz_adjuntos').select('id, archivo_path').order('id')); if (error) throw error;
+    const rutas = new Set((data || []).map(r => r.archivo_path).filter(Boolean));
+    if (presentes.adjuntos) { registrosSinArchivo = [...rutas].filter(r => !presentes.adjuntos.has(r)).length; archivosSinRegistro = [...presentes.adjuntos].filter(r => !rutas.has(r)).length; }
+  } catch (e) { errores.push('fz_adjuntos: no se pudo leer (' + ((e && e.message) || e) + ')'); }
+  return { delZipPresentes: A ? A.lista.length - faltan.length : null, faltan, registrosSinArchivo, archivosSinRegistro, errores };
+}
+function abrirRestaurarArchivos() {
+  if (!STATE.esAdministrador) { toast('Solo un administrador puede restaurar archivos.', 'error'); return; }
+  const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalRestaurarArchivos'; const control = { cancelado: false }; let A = null, corriendo = false;
+  const cerrar = () => { control.cancelado = true; bg.remove(); };
+  bg.innerHTML = `<div class="modal" style="width:min(580px,96vw);max-height:92vh;overflow:auto;"><h3>Restaurar archivos desde un respaldo</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 8px;">Vuelve a subir los <strong>adjuntos y XML de CFDI</strong> de un respaldo completo, en su misma ruta. <strong>Nunca sobrescribe</strong>: lo que ya existe se omite. Los registros (tablas) se restauran aparte con <a href="restaurar.html" target="_blank" rel="noopener">restaurar.html</a>.</p>
+    <input type="file" id="raArchivo" accept=".zip,application/zip" style="margin:6px 0;"><div id="raInfo" style="font-size:12.5px;margin:8px 0;"></div>
+    <div style="height:8px;background:#eef1f6;border-radius:6px;overflow:hidden;margin:8px 0;display:none;" id="raBarraWrap"><div id="raBarra" style="height:100%;width:0;background:var(--gold,#b8892b);transition:width .15s;"></div></div><div id="raEstado" style="font-size:12.5px;"></div>
+    <div class="modal-actions" style="position:sticky;bottom:0;background:#fff;border-top:1px solid var(--line);padding:12px 0 2px;margin-top:12px;z-index:2;flex-wrap:wrap;"><button class="btn btn-ghost" id="raCerrar">Cerrar</button><button class="btn btn-ghost" id="raComprobar" disabled>Solo comprobar</button><button class="btn btn-gold" id="raSubir" disabled>Subir los que falten</button></div></div>`;
+  document.body.appendChild(bg); const $ = (id) => bg.querySelector('#' + id); $('raCerrar').addEventListener('click', cerrar);
+  const resumenVerif = (v) => `<div style="margin-top:6px;">${v.delZipPresentes !== null ? `Del respaldo, <strong>${v.delZipPresentes}</strong> de ${A.lista.length} archivos están en el almacenamiento${v.faltan.length ? ` y <strong style="color:var(--red);">faltan ${v.faltan.length}</strong>` : ' ✓'}.` : ''}${v.registrosSinArchivo !== null ? `<br>Registros de adjuntos <strong>sin archivo</strong>: <strong${v.registrosSinArchivo ? ' style="color:var(--red);"' : ''}>${v.registrosSinArchivo}</strong>. Archivos <strong>sin registro</strong>: ${v.archivosSinRegistro} (no es un error: puede ser un archivo suelto).` : ''}${v.errores.length ? `<br><span style="color:#9a6a00;">⚠ ${v.errores.map(revEsc).join('<br>⚠ ')}</span>` : ''}</div>`;
+  $('raArchivo').addEventListener('change', async (ev) => {
+    const f = ev.target.files && ev.target.files[0]; if (!f) return; $('raInfo').textContent = 'Leyendo…'; $('raSubir').disabled = $('raComprobar').disabled = true;
+    try { A = await restaurarArchAnalizar(await f.arrayBuffer()); }
+    catch (e) { A = null; $('raInfo').innerHTML = `<span style="color:var(--red);">No se pudo leer el archivo: ${revEsc((e && e.message) || e)}</span>`; return; }
+    $('raInfo').innerHTML = `<strong>${A.lista.length}</strong> archivo(s) en el respaldo (adjuntos: ${A.porBucket.adjuntos || 0} · cfdi: ${A.porBucket.cfdi || 0})${A.manifiesto && A.manifiesto.fecha ? ' · respaldo del ' + revEsc(new Date(A.manifiesto.fecha).toLocaleString('es-MX')) : ''}${A.avisos.map(x => `<div style="border-left:3px solid #e6c768;background:#fff8e1;padding:5px 8px;margin:5px 0;border-radius:4px;">⚠ ${revEsc(x)}</div>`).join('')}`;
+    $('raSubir').disabled = $('raComprobar').disabled = !A.lista.length;
+  });
+  $('raComprobar').addEventListener('click', async () => { if (!A || corriendo) return; corriendo = true; $('raEstado').textContent = 'Comprobando…'; try { const v = await restaurarArchVerificar(A); if (bg.isConnected) $('raEstado').innerHTML = resumenVerif(v); } finally { corriendo = false; } });
+  $('raSubir').addEventListener('click', async () => {
+    if (!A || corriendo) return; corriendo = true; $('raSubir').disabled = $('raComprobar').disabled = true; $('raArchivo').disabled = true; $('raBarraWrap').style.display = ''; $('raCerrar').textContent = 'Cancelar';
+    const alProgreso = (p) => { if (!bg.isConnected) return; $('raBarra').style.width = Math.round((p.hechos / Math.max(p.total, 1)) * 95) + '%'; $('raEstado').textContent = `Archivo ${p.hechos} de ${p.total}…`; };
+    try {
+      const r = await restaurarArchSubir(A, { alProgreso, control }); if (!bg.isConnected) return;
+      $('raEstado').textContent = 'Comprobando que no falte ninguno…'; const v = await restaurarArchVerificar(A); if (!bg.isConnected) return;
+      const b = biz(); if (b) registrarAuditoria(b.id, 'importar', 'Configuración', `Restauró archivos desde un respaldo: ${r.subidos} subidos, ${r.existian} ya existían, ${r.fallidos.length} con error${r.cancelado ? ' (cancelado)' : ''}`);
+      $('raBarra').style.width = '100%'; $('raCerrar').textContent = 'Cerrar';
+      $('raEstado').innerHTML = `<strong style="color:${r.fallidos.length || r.cancelado ? '#9a6a00' : 'var(--green)'};">${r.cancelado ? 'Cancelado.' : (r.fallidos.length ? 'Terminó con errores.' : '✓ Listo.')}</strong> Subidos: <strong>${r.subidos}</strong> · ya existían (no se tocaron): ${r.existian} · con error: ${r.fallidos.length}.${r.fallidos.length ? `<div style="color:var(--red);margin-top:4px;">${r.fallidos.slice(0, 6).map(revEsc).join('<br>')}${r.fallidos.length > 6 ? `<br>… y ${r.fallidos.length - 6} más` : ''}<br>Puedes volver a pulsar «Subir los que falten»: solo reintenta lo que falte.</div>` : ''}${resumenVerif(v)}`;
+      $('raSubir').disabled = $('raComprobar').disabled = false; $('raArchivo').disabled = false;
+    } catch (e) { if (bg.isConnected) { $('raEstado').innerHTML = `<span style="color:var(--red);">No se pudo completar: ${revEsc((e && e.message) || e)}</span>`; $('raSubir').disabled = $('raComprobar').disabled = false; $('raArchivo').disabled = false; $('raCerrar').textContent = 'Cerrar'; } }
+    finally { corriendo = false; }
   });
 }
 

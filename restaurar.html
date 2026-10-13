@@ -28,7 +28,7 @@ code{background:rgba(127,127,127,.15);padding:1px 5px;border-radius:4px}
  <label class="opt"><input type="radio" name="modo" value="completar"> <b>Completar lo que falte</b> (base en uso). No borra ni cambia nada de lo que ya existe: solo agrega los renglones del respaldo que ya no estén. Sirve para recuperar algo borrado por error. Las tablas se pueden elegir arriba.</label>
  <p class="muted">Tamaño máximo por archivo SQL: <select id="maxMB"><option value="1">1 MB</option><option value="2" selected>2 MB</option><option value="4">4 MB</option><option value="8">8 MB</option></select> (un archivo se parte solo entre tablas; una tabla muy grande puede pasar de ese tamaño)</p>
  <button class="gold" id="generar">Generar archivos SQL</button> <span id="estadoGen" class="muted"></span><div id="resultado"></div></div>
-<p class="muted">Qué NO restaura: los <b>usuarios y contraseñas</b> de Supabase Auth (las personas deberán iniciar sesión de nuevo; su lista de autorizados sí se restaura) ni los <b>archivos</b> adjuntos y XML de CFDI (vienen dentro del ZIP, en <code>archivos/</code>; se vuelven a subir aparte). Tampoco cambia las tablas de otras aplicaciones.</p>
+<p class="muted">Qué NO restaura: los <b>usuarios y contraseñas</b> de Supabase Auth (las personas deberán iniciar sesión de nuevo; su lista de autorizados sí se restaura) ni los <b>archivos</b> adjuntos y XML de CFDI (vienen dentro del ZIP, en <code>archivos/</code>). Esos se suben desde la app, ya con tu sesión abierta: <b>Configuración, Restaurar archivos</b>, con el mismo ZIP. Tampoco cambia las tablas de otras aplicaciones.</p>
 </main>
 <script>/*!
 
@@ -129,7 +129,7 @@ function generar(op) {
   const leeme = ['RESTAURACIÓN DE FINANZAS', 'Generado: ' + new Date().toISOString(), 'Respaldo original: ' + (E.analisis.fecha || 'sin fecha'), 'Modo: ' + (modo === 'nueva' ? 'BASE NUEVA O VACÍA (vacía las tablas de Finanzas y las carga)' : 'COMPLETAR LO QUE FALTE (no borra ni cambia lo existente)'), '',
     'CÓMO USARLO', '1) En Supabase: SQL Editor → New query.', '2) Abre el archivo 01 con el Bloc de notas, copia TODO y pégalo. Pulsa Run. Debe decir «Success».', '3) Repite con 02, 03… EN ORDEN (' + total + ' archivos de carga). Cada uno corre completo o no hace nada.', '4) Al final corre 99_verificar.sql: todas las filas deben decir «ok».', '',
     'SI ALGO FALLA', '- Un archivo que falla no deja nada a medias. Corrige la causa y vuelve a correr ESE archivo (y los siguientes). Es seguro repetir: no duplica nada.', '- «Esta base YA TIENE DATOS…»: el seguro funcionó. Ese modo es solo para una base nueva. Usa «completar lo que falte» si quieres recuperar algo en una base en uso.', '- Error de llave foránea con «businesses»: faltan tus negocios (mismos identificadores) en esa tabla.', '',
-    'LO QUE FALTA DESPUÉS', '- Las personas deben iniciar sesión de nuevo (los usuarios de Supabase Auth no vienen en el respaldo; su lista de autorizados sí).', '- Los archivos (adjuntos y XML) están en la carpeta archivos/ del ZIP original y se suben aparte.', '- Si es un proyecto nuevo, antes corre schema.sql para crear la estructura.'].join('\n');
+    'LO QUE FALTA DESPUÉS', '- Las personas deben iniciar sesión de nuevo (los usuarios de Supabase Auth no vienen en el respaldo; su lista de autorizados sí).', '- Los archivos (adjuntos y XML): con la app ya funcionando y tu sesión abierta, entra a Configuración, Restaurar archivos y elige este mismo ZIP. No sobrescribe nada y comprueba que no falte ninguno.', '- Si es un proyecto nuevo, antes corre schema.sql para crear la estructura.'].join('\n');
   out.unshift({ nombre: 'LEEME.txt', sql: leeme, tablas: [] });
   return { archivos: out, modo, resumen: { tablas: lista.length, filas: lista.reduce((a, t) => a + E.datos[t].length, 0), archivosSql: total } };
 }
@@ -138,7 +138,7 @@ window.RESTAURAR = { analizar, generar, META, _E: E };
 // ---- interfaz ----
 const pinta = a => {
   q('#avisos').innerHTML = a.errores.map(x => '<div class="aviso error">⛔ ' + x + '</div>').join('') + a.avisos.map(x => '<div class="aviso">⚠ ' + x + '</div>').join('');
-  q('#resumen').textContent = fmt(a.totalFilas) + ' filas en ' + a.filas.filter(f => f.filas !== null).length + ' tablas' + (a.fecha ? ' · respaldo del ' + new Date(a.fecha).toLocaleString('es-MX') : '') + ' · ' + fmt(a.archivos) + ' archivos adjuntos en el ZIP (no se restauran con SQL)';
+  q('#resumen').textContent = fmt(a.totalFilas) + ' filas en ' + a.filas.filter(f => f.filas !== null).length + ' tablas' + (a.fecha ? ' · respaldo del ' + new Date(a.fecha).toLocaleString('es-MX') : '') + ' · ' + fmt(a.archivos) + ' archivos adjuntos en el ZIP (no se restauran con SQL: se suben desde la app, Configuración, Restaurar archivos)';
   q('#tabla tbody').innerHTML = a.filas.map(f => '<tr><td><input type="checkbox" class="sel" data-t="' + f.tabla + '"' + (f.filas ? ' checked' : ' disabled') + '></td><td>' + f.tabla + '</td><td>' + (f.filas === null ? '—' : fmt(f.filas)) + '</td><td>' + (f.esperado === null ? '—' : fmt(f.esperado)) + '</td><td class="' + (f.estado === 'ok' ? 'ok' : (f.estado === 'con aviso' || f.estado === 'no viene' ? 'warn' : 'bad')) + '">' + f.estado + '</td></tr>').join('');
   q('#paso2').style.display = q('#paso3').style.display = '';
 };
