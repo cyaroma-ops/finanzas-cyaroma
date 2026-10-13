@@ -13882,6 +13882,10 @@ async function confirmarYEliminarMovimiento(table, row, onDone) {
     if (!ok) return;
     await revertirCobroPorOrigen(table, row.id, row.business_id);
   }
+  if (row.tipo_salida === 'cliente') { // devolución de dinero a un cliente: al eliminarla, las notas de crédito vuelven a quedar pendientes
+    const { data: apsDev } = await sb.from('fz_cobros_aplicados').select('id').eq('origen_tabla', table).eq('origen_id', row.id).limit(1);
+    if ((apsDev || []).length) { const ok = confirm('Este movimiento es una devolución de dinero a un cliente aplicada a notas de crédito. Al eliminarlo, se revertirá (las notas volverán a quedar pendientes o parciales). ¿Continuar?'); if (!ok) return; await revertirDevolucionClientePorOrigen(table, row.id, row.business_id); }
+  }
   const { data: aplicacionesFiscales } = await sb.from('fz_aplicaciones_pago_fiscal').select('id').eq('origen_tabla', table).eq('origen_id', row.id);
   if (aplicacionesFiscales && aplicacionesFiscales.length) {
     const ok = confirm(`Este movimiento es un pago de impuestos aplicado a ${aplicacionesFiscales.length} obligación(es) fiscal(es). Al eliminarlo, se revertirá ese pago (regresarán a Pendiente/Parcial). ¿Continuar?`);
@@ -15352,6 +15356,7 @@ function salidaCellsHtml(r, subcuentas, mayores, facturasPend, prefix, traspasoC
     <option value="otro" ${tipo==='otro'?'selected':''}>Sin clasificar</option>
     <option value="gasto" ${tipo==='gasto'?'selected':''}>Gasto</option>
     <option value="proveedor" ${tipo==='proveedor'?'selected':''}>Pago a proveedor</option>
+    <option value="cliente" ${tipo==='cliente'?'selected':''}>Devolución a cliente</option>
     <option value="traspaso_banco" ${tipo==='traspaso_banco'?'selected':''}>Traspaso a banco</option>
     <option value="traspaso_efectivo" ${tipo==='traspaso_efectivo'?'selected':''}>Traspaso a caja de efectivo</option>
   </select>`;
@@ -15363,6 +15368,9 @@ function salidaCellsHtml(r, subcuentas, mayores, facturasPend, prefix, traspasoC
   } else if (tipo === 'proveedor') {
     const idsVinculados = facturaIdsDe(r);
     detalle = `<button class="btn btn-ghost btn-sm salida-abrir-facturas" data-id="${r.id}">${idsVinculados.length ? '' + idsVinculados.length + ' factura(s)' : 'Elegir facturas'}</button>`;
+  } else if (tipo === 'cliente') {
+    const idsNotas = facturaIdsClienteDe(r);
+    detalle = `<button class="btn btn-ghost btn-sm salida-abrir-notas" data-id="${r.id}">${idsNotas.length ? '' + idsNotas.length + ' nota(s) de crédito' : 'Elegir notas de crédito'}</button>`;
   } else if (tipo === 'traspaso_banco' && traspasoCtx) {
     const opciones = (traspasoCtx.cuentasBanco || []).filter(c => !(traspasoCtx.origenTipo === 'banco' && c.id === traspasoCtx.origenId));
     detalle = `<select class="cell salida-traspaso-destino" data-id="${r.id}" data-tipo="banco">
@@ -15398,6 +15406,12 @@ function facturaIdsDe(r) {
 async function prepararCambioTipoSalidaPago(tabla, movId, nuevoTipo) {
   const { data: fila } = await sb.from(tabla).select('business_id,fecha,tipo_salida,proveedor_factura_id,proveedor_factura_ids').eq('id', movId).single();
   if (fila && await bloqueadoPorCierre(fila.business_id, fila.fecha)) return false; // periodo cerrado: no se cambia el tipo
+  if (fila && fila.tipo_salida === 'cliente' && nuevoTipo !== 'cliente') { // devolución a cliente: si tiene notas aplicadas, cambiar el tipo las deshace
+    const { data: appsD } = await sb.from('fz_cobros_aplicados').select('id').eq('origen_tabla', tabla).eq('origen_id', movId).limit(1);
+    if ((appsD || []).length) { if (!confirm('Esta devolución a cliente tiene notas de crédito aplicadas. Si cambias el tipo de salida, esas aplicaciones se deshacen y las notas vuelven a quedar pendientes (o parciales).\n\n¿Continuar?')) return false; await revertirDevolucionClientePorOrigen(tabla, movId, fila.business_id); }
+    await sb.from(tabla).update({ cliente_factura_ids: [], cliente_factura_id: null }).eq('id', movId);
+    return true;
+  }
   if (!fila || fila.tipo_salida !== 'proveedor' || nuevoTipo === 'proveedor') return true;
   const { data: apps } = await sb.from('fz_pagos_aplicados').select('id').eq('origen_tabla', tabla).eq('origen_id', movId).limit(1);
   const tieneApps = (apps || []).length > 0;
@@ -15487,6 +15501,7 @@ function wireSalidaCellHandlers(container, table, onChange, traspasoCtx, factura
   container.querySelectorAll('.salida-abrir-facturas').forEach(btn => btn.addEventListener('click', () => {
     openFacturasPagoModal(btn.dataset.id, table, facturasPend, traspasoCtx, onChange);
   }));
+  container.querySelectorAll('.salida-abrir-notas').forEach(btn => btn.addEventListener('click', () => openNotasDevolucionModal(btn.dataset.id, table, onChange)));
   container.querySelectorAll('.salida-traspaso-destino').forEach(sel => sel.addEventListener('change', async () => {
     if (!sel.value) return;
     const { data: origenRow } = await sb.from(table).select('*').eq('id', sel.dataset.id).single();
@@ -17006,8 +17021,9 @@ async function getTransaccionesCliente(businessId, facturas, nombreCliente) {
     const fecha = (mov && mov.fecha) || g.propias[0].fecha;
     const tipo = g.tabla === 'fz_bancos_mov' ? 'Cobro — Banco' : g.tabla === 'fz_efectivo_mov' ? 'Cobro — Efectivo' : 'Cobro — Manual';
     const origen = !mov ? null : (g.tabla === 'fz_bancos_mov' ? { tipo: 'bancos', id: mov.id, cuentaId: mov.cuenta_id, fecha: mov.fecha } : { tipo: 'efectivo', id: mov.id, monedaId: mov.moneda_id, fecha: mov.fecha });
-    transacciones.push({ fecha, tipo, numero: componerReferencia(mov ? (mov.concepto || mov.descripcion) : g.propias[0].notas), monto: -redondearMoneda(montoDoc), moneda: mon,
-      tc: mon !== 'MXN' ? (montoDoc > 0 ? equivalente / montoDoc : tcHist) : null, montoMxn: -redondearMoneda(equivalente), origen });
+    const esDev = Number(f0 && f0.total) < 0; // aplicación sobre una nota de crédito = devolución de dinero al cliente: el saldo SUBE
+    transacciones.push({ fecha, tipo: esDev ? tipo.replace(/^Cobro/, 'Devolución') : tipo, numero: esDev ? ['Devolución al cliente', nombreCliente, mov ? (mov.referencia || mov.descripcion) : g.propias[0].notas].filter(Boolean).join(' · ') : componerReferencia(mov ? (mov.concepto || mov.descripcion) : g.propias[0].notas), monto: esDev ? redondearMoneda(montoDoc) : -redondearMoneda(montoDoc), moneda: mon,
+      tc: mon !== 'MXN' ? (montoDoc > 0 ? equivalente / montoDoc : tcHist) : null, montoMxn: esDev ? redondearMoneda(equivalente) : -redondearMoneda(equivalente), origen });
     // sobrante del cobro que quedó como crédito a favor del cliente (solo si el cobro fue únicamente de este cliente)
     if (g.credito > 0.004 && !g.ajenas) {
       transacciones.push({ fecha, tipo: 'Crédito a favor del cliente', numero: componerReferencia('sobrante del cobro'), monto: -redondearMoneda(g.credito), moneda: mon,
@@ -17033,7 +17049,9 @@ async function getTransaccionesCliente(businessId, facturas, nombreCliente) {
   // para que el saldo acumulado coincida con el saldo de la factura (y quede a la vista que hay que revisarlo).
   facturas.forEach(f => {
     const cubierto = apsPropias.filter(a => a.factura_id === f.id).reduce((t, a) => t + (Number(a.monto) || 0), 0) + (porPoliza[f.id] || 0);
-    const faltante = redondearMoneda((Number(f.importe_pagado) || 0) - cubierto);
+    // lo que una NOTA DE CRÉDITO ya aplicó contra esta factura (sin mover dinero) ya está en el estado de cuenta como el renglón de la nota: no es un «cobro sin movimiento»
+    const compensado = facturas.filter(n => n.tipo_documento === 'nota_credito' && n.factura_origen_id === f.id).reduce((t, n) => t + Math.max(0, Math.abs(Number(n.importe_pagado) || 0) - apsPropias.filter(a => a.factura_id === n.id).reduce((u, a) => u + (Number(a.monto) || 0), 0)), 0);
+    const faltante = redondearMoneda((Number(f.importe_pagado) || 0) - cubierto - compensado);
     if (faltante > 0.004) { const mon = monedaDe(f), tc = tcDe(f); transacciones.push({ fecha: f.fecha, tipo: 'Cobro sin movimiento ligado', numero: `#${f.folio} — revisa: figura cobrado pero ningún movimiento lo respalda`, monto: -faltante, moneda: mon, tc: mon !== 'MXN' ? tc : null, montoMxn: -(mon !== 'MXN' ? redondearMoneda(faltante * tc) : faltante), origen: null }); }
   });
 
@@ -17073,7 +17091,7 @@ async function renderClienteDetalle(el, b) {
     <div class="card">
       <div class="card-head"><h3>${nombreCliente}</h3>${cliente.razon_social ? `<span class="hint">${cliente.nombre_comercial}</span>` : ''}<span class="hint">Facturas y cobros, más reciente primero</span>
         <div style="position:relative;margin-left:auto;"><button class="btn btn-gold btn-sm" id="cdtBtn">+ Nueva transacción</button><div id="cdtDropdown" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:190px;overflow:hidden;">
-          <button class="cdt-factura" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Factura</button><button class="cdt-orden" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Orden de venta</button><button class="cdt-pago" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Registrar cobro</button><button class="cdt-nc" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Nota de crédito</button></div></div></div>
+          <button class="cdt-factura" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Factura</button><button class="cdt-orden" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Orden de venta</button><button class="cdt-pago" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Registrar cobro</button><button class="cdt-nc" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Nota de crédito</button><button class="cdt-dev" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Devolución a cliente</button></div></div></div>
       <div class="table-wrap scroll-sticky">
         <table class="tabla-estado-cuenta">
           <thead><tr>
@@ -17115,6 +17133,7 @@ async function renderClienteDetalle(el, b) {
   el.querySelector('.cdt-orden').addEventListener('click', async () => { await openModalOrden(null, b.id); elegirClienteEn('ordenCliente'); });
   el.querySelector('.cdt-pago').addEventListener('click', () => abrirElegirFacturaCobro(b.id, nombreCliente));
   el.querySelector('.cdt-nc').addEventListener('click', () => abrirNotaCreditoCliente(b, null, () => renderClientes(), { clienteId: cliente.id }));
+  el.querySelector('.cdt-dev').addEventListener('click', () => abrirDevolucionCliente(b, { clienteId: cliente.id }, () => renderClientes()));
   wireFacturaMenu(el, b.id, () => renderClienteDetalle(el, b));
   el.querySelectorAll('.abrir-origen-btn').forEach(btn => btn.addEventListener('click', () => {
     const origen = JSON.parse(btn.dataset.origen.replace(/&apos;/g, "'"));
@@ -17177,6 +17196,7 @@ async function renderDirectorioClientes(el, b) {
               <button class="nt-orden" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Orden de venta</button>
               <button class="nt-pago" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Registrar cobro</button>
               <button class="nt-nc" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Nota de crédito</button>
+              <button class="nt-dev" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Devolución a cliente</button>
             </div>
           </div>
           <button class="btn btn-ghost btn-sm" id="openProductosBtn">${iconoConfigurar()}Productos y Servicios</button>
@@ -17232,6 +17252,7 @@ async function renderDirectorioClientes(el, b) {
   el.querySelector('.nt-orden').addEventListener('click', () => openModalOrden(null, b.id));
   el.querySelector('.nt-pago').addEventListener('click', () => abrirElegirFacturaCobro(b.id));
   el.querySelector('.nt-nc').addEventListener('click', () => abrirNotaCreditoCliente(b, null, () => renderClientes()));
+  el.querySelector('.nt-dev').addEventListener('click', () => abrirDevolucionCliente(b, {}, () => renderClientes()));
   el.querySelectorAll('.cliente-fila').forEach(tr => tr.addEventListener('click', (e) => {
     if (e.target.closest('.cliente-menu-btn') || e.target.closest('.cliente-menu-dropdown')) return;
     STATE_clienteDetalleId = tr.dataset.id;
@@ -17926,10 +17947,10 @@ document.getElementById('closeElegirFacturaPago2').addEventListener('click', () 
 
 /* ---------- Facturas de clientes ---------- */
 function facturaMenuHtml(facturaId, f) {
-  const esNota = !!f && f.tipo_documento === 'nota_credito', aplicada = esNota && (f.estatus === 'Pagado' || Math.abs(Number(f.importe_pagado) || 0) > 0.004), estilo = 'display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;';
+  const esNota = !!f && f.tipo_documento === 'nota_credito', aplicada = esNota && (f.estatus === 'Pagado' || Math.abs(Number(f.importe_pagado) || 0) > 0.004), devolver = esNota && (!f.moneda || f.moneda === 'MXN') && f.estatus !== 'Pagado' && Math.abs(Number(f.total) || 0) - Math.abs(Number(f.importe_pagado) || 0) > 0.004, estilo = 'display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;';
   if (esNota) return `<td data-rol="acciones" style="position:relative;">
     <button class="btn btn-ghost btn-sm factura-menu-btn" data-id="${facturaId}" style="padding:5px 12px;">⋮</button>
-    <div class="factura-menu-dropdown" data-menu="${facturaId}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:170px;overflow:hidden;">${aplicada ? `<button class="factura-nc-deshacer" data-id="${facturaId}" style="${estilo}">Deshacer aplicación</button>` : ''}<button class="factura-eliminar" data-id="${facturaId}" style="${estilo}color:var(--red);${aplicada ? 'border-top:1px solid var(--line);' : ''}">Eliminar</button></div></td>`;
+    <div class="factura-menu-dropdown" data-menu="${facturaId}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:170px;overflow:hidden;">${devolver ? `<button class="factura-nc-devolver" data-id="${facturaId}" style="${estilo}">Devolver dinero al cliente</button>` : ''}${aplicada ? `<button class="factura-nc-deshacer" data-id="${facturaId}" style="${estilo}">Deshacer aplicación</button>` : ''}<button class="factura-eliminar" data-id="${facturaId}" style="${estilo}color:var(--red);${aplicada ? 'border-top:1px solid var(--line);' : ''}">Eliminar</button></div></td>`;
   return `<td data-rol="acciones" style="position:relative;">
     <button class="btn btn-ghost btn-sm factura-menu-btn" data-id="${facturaId}" style="padding:5px 12px;">⋯</button>
     <div class="factura-menu-dropdown" data-menu="${facturaId}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:160px;overflow:hidden;">
@@ -17964,6 +17985,7 @@ function wireFacturaMenu(el, businessId, onDone) {
   }));
   el.querySelectorAll('.factura-nc').forEach(btn => btn.addEventListener('click', () => abrirNotaCreditoCliente(biz(), btn.dataset.id, onDone)));
   el.querySelectorAll('.factura-nc-deshacer').forEach(btn => btn.addEventListener('click', () => ncDeshacerAplicacion(biz(), 'cliente', btn.dataset.id, onDone)));
+  el.querySelectorAll('.factura-nc-devolver').forEach(btn => btn.addEventListener('click', () => abrirDevolucionCliente(biz(), { notaId: btn.dataset.id }, onDone)));
   el.querySelectorAll('.factura-pdf').forEach(btn => btn.addEventListener('click', async () => {
     await descargarFacturaPDF(btn.dataset.id, businessId);
   }));
@@ -22629,7 +22651,7 @@ async function abrirProveedoresFaltantes(b, alCambiar) {
 // ---- clasificación: pantalla ----
 const cfdiNorm = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
 // por ahora se clasifican los CFDI RECIBIDOS de tipo INGRESO (gastos); emitidos, egresos, pagos y nómina son las siguientes partes
-const cfdiEsClasificable = (c) => c.tipo_comprobante === 'I' && (c.direccion === 'recibido' || c.direccion === 'emitido') && c.estado === 'por_clasificar' && c.estatus_sat !== 'cancelado';
+const cfdiEsClasificable = (c) => (c.tipo_comprobante === 'I' || c.tipo_comprobante === 'E') && (c.direccion === 'recibido' || c.direccion === 'emitido') && c.estado === 'por_clasificar' && c.estatus_sat !== 'cancelado';
 async function cfdiPreflightClasificar() {
   const rs = await Promise.all([sb.from('fz_proveedores').select('cfdi_uuid').limit(1), sb.from('fz_cfdi').select('clasificado_id').limit(1), sb.from('fz_proveedores_catalogo').select('rfc').limit(1)]);
   return { ok: !rs.some(r => r.error) };
@@ -22654,7 +22676,11 @@ async function abrirCfdiClasificar(id) {
   if (error || !c || c.business_id !== b.id) { toast('No se encontró el CFDI en este negocio.', 'error'); return; }
   if (c.estatus_sat === 'cancelado') { toast('Este CFDI está marcado como cancelado: no se puede clasificar.', 'error'); return; }
   if (c.estado !== 'por_clasificar') { toast('Este CFDI ya está clasificado.', 'error'); return; }
-  if (c.tipo_comprobante !== 'I') { toast('Por ahora se clasifican los CFDI de tipo ingreso (recibidos = gastos, emitidos = ventas). Los egresos, pagos, nómina y traslados son una siguiente parte: mientras tanto puedes ignorarlos desde su detalle.', 'error'); return; }
+  if (c.tipo_comprobante === 'E') { // egreso = nota de crédito: tiene su propia ventana
+    if (await periodoEstaCerrado(b.id, c.fecha)) { toast(`El periodo ${c.fecha.slice(0, 7)} ya está cerrado: pide a un Administrador, Propietario, Socio o Gerencia que lo reabra en Configuración → Cierre de periodo.`, 'error'); return; }
+    return abrirCfdiClasificarEgreso(c);
+  }
+  if (c.tipo_comprobante !== 'I') { toast('Por ahora se clasifican los CFDI de ingreso (recibidos = gastos, emitidos = ventas) y de egreso (notas de crédito). Los pagos, la nómina y los traslados son una siguiente parte: mientras tanto puedes ignorarlos desde su detalle.', 'error'); return; }
   if (await periodoEstaCerrado(b.id, c.fecha)) { toast(`El periodo ${c.fecha.slice(0, 7)} ya está cerrado: pide a un Administrador, Propietario, Socio o Gerencia que lo reabra en Configuración → Cierre de periodo.`, 'error'); return; }
   if (c.direccion === 'emitido') return abrirCfdiClasificarEmitido(c); // las ventas se clasifican en su propia pantalla
   const modoFiscal = b.modo === 'fiscal_contable';
@@ -23409,6 +23435,8 @@ async function abrirNotaCreditoProveedor(b, facturaId, alCambiar, opciones = {})
   const mayoresGasto = mayores.filter(m => ['gasto', 'costo'].includes(m.tipo)), subsGasto = subcuentas.filter(s => mayoresGasto.some(m => m.id === s.cuenta_mayor_id));
   const nombreSub = (id) => (subcuentas.find(x => x.id === id) || {}).nombre || '(cuenta eliminada)';
   const E = { provId: orig0 ? orig0.proveedor_id : (opciones.proveedorId && catalogo.some(p => p.id === opciones.proveedorId) ? opciones.proveedorId : ''), facturaId: orig0 ? orig0.id : '', total: '', fecha: todayStr(), numero: '', motivo: NC_MOTIVOS[0], nota: '', pct: 16, subcuentaId: '', compensar: true, facturas: [], ncPrevias: [] };
+  const cfdi = opciones.cfdi || null; // modo «desde CFDI»: total y fecha son los del CFDI y se marca el CFDI como clasificado antes de aplicar nada
+  if (cfdi) { E.fecha = cfdi.fecha; E.numero = cfdi.numero || ''; E.cfdiAcepta = false; }
   const cargarFacturas = async () => {
     if (!E.provId) { E.facturas = []; E.ncPrevias = []; return; }
     const { data } = await fetchTodasLasPaginas(() => sb.from('fz_proveedores').select('*').eq('business_id', b.id).eq('proveedor_id', E.provId).order('fecha', { ascending: false }).order('id'));
@@ -23418,14 +23446,14 @@ async function abrirNotaCreditoProveedor(b, facturaId, alCambiar, opciones = {})
   const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalNotaCredito'; const cerrar = () => bg.remove();
   bg.innerHTML = `<div class="modal" style="width:min(820px,96vw);max-height:92vh;overflow:auto;"><h3>Nota de crédito de proveedor</h3>
     <p style="font-size:12.5px;color:var(--muted);margin:0 0 8px;">Úsala cuando el proveedor te <strong>acredita</strong> una devolución, un descuento o una corrección. Baja el gasto, ${modoFiscal ? 'revierte el IVA acreditable ' : ''}y baja lo que le debes. Si eliges la factura que corrige, la nota copia su ${modoFiscal ? 'IVA, retenciones y ' : ''}desglose en proporción.</p>
-    <div class="grid-2"><div class="field"><label>Proveedor</label><select id="ncProv" class="cell" ${orig0 ? 'disabled' : ''}><option value="">Elige un proveedor…</option>${catalogo.map(p => `<option value="${p.id}" ${E.provId === p.id ? 'selected' : ''}>${revEsc(provNombreVisible(p))}</option>`).join('')}</select></div>
+    <div id="ncCfdiRef"></div><div class="grid-2"><div class="field"><label>Proveedor</label><select id="ncProv" class="cell" ${orig0 ? 'disabled' : ''}><option value="">Elige un proveedor…</option>${catalogo.map(p => `<option value="${p.id}" ${E.provId === p.id ? 'selected' : ''}>${revEsc(provNombreVisible(p))}</option>`).join('')}</select></div>
       <div class="field"><label>Factura que corrige</label><select id="ncFactura" class="cell" ${orig0 ? 'disabled' : ''}></select></div></div>
     <div class="grid-3"><div class="field"><label>Fecha de la nota</label><input type="date" id="ncFecha" value="${E.fecha}"></div><div class="field"><label>Número de la nota</label><input type="text" id="ncNumero" placeholder="Ej. NC-123" maxlength="40"></div>
       <div class="field"><label>Total de la nota (con IVA)</label><div style="display:flex;gap:6px;"><input type="text" id="ncTotal" inputmode="decimal" placeholder="0.00" style="flex:1;"><button class="btn btn-ghost btn-sm" id="ncTodo" title="Acreditar todo lo que queda por acreditar de la factura">Todo</button></div></div></div>
     <div class="grid-2"><div class="field"><label>Motivo</label><select id="ncMotivo" class="cell">${NC_MOTIVOS.map(m => `<option>${m}</option>`).join('')}</select></div><div class="field"><label>Nota (opcional)</label><input type="text" id="ncNota" maxlength="200" placeholder="Ej. 3 cajas dañadas"></div></div>
     <div id="ncSinFactura" style="display:none;"><div class="grid-2"><div class="field"><label>Subcuenta que baja la nota</label><select id="ncSub" class="cell"><option value="">Elige…</option>${opcionesSubcuentaHtml(subsGasto, mayoresGasto, null)}</select></div>${modoFiscal ? '<div class="field"><label>IVA de la nota</label><select id="ncPct" class="cell"><option value="16">16 %</option><option value="8">8 %</option><option value="0">Sin IVA</option></select></div>' : '<div></div>'}</div></div>
     <div id="ncCompWrap" style="margin:6px 0;"></div><div id="ncPreview"></div>
-    <div class="modal-actions"><button class="btn btn-ghost" id="ncCancelar">Cancelar</button><button class="btn btn-gold" id="ncConfirmar">Crear la nota de crédito</button></div></div>`;
+    <div class="modal-actions" style="position:sticky;bottom:0;background:#fff;border-top:1px solid var(--line);padding:12px 0 2px;margin-top:12px;z-index:2;"><button class="btn btn-ghost" id="ncCancelar">Cancelar</button><button class="btn btn-gold" id="ncConfirmar">Crear la nota de crédito</button></div></div>`;
   document.body.appendChild(bg); bg.querySelector('#ncCancelar').addEventListener('click', cerrar);
   const $ = (id) => bg.querySelector('#' + id), orig = () => E.facturas.find(f => f.id === E.facturaId) || null;
   const acreditado = (fid) => cfdiR2(E.ncPrevias.filter(n => n.factura_origen_id === fid).reduce((s, n) => s + Math.abs(Number(n.importe) || 0), 0));
@@ -23438,6 +23466,7 @@ async function abrirNotaCreditoProveedor(b, facturaId, alCambiar, opciones = {})
     const f = orig(), total = leerMonto($('ncTotal').value) || 0;
     const plan = ncPlanProveedor({ factura: f, total, modoFiscal, fecha: E.fecha, numero: E.numero, motivo: E.motivo + (E.nota ? ' — ' + E.nota : ''), pctIva: E.pct, subcuentaId: E.subcuentaId });
     const maxA = maxAcreditable(); if (plan.ok && f && total > maxA + 0.005) return { ok: false, errores: [maxA > 0.005 ? `Ya hay notas por ${fmt(acreditado(f.id))} contra esa factura: solo puedes acreditar ${fmt(maxA)} más.` : 'Esa factura ya está acreditada por completo.'], avisos: [] };
+    if (cfdi && plan.ok && cfdi.moneda !== plan.payload.moneda) return { ok: false, errores: [`La moneda del CFDI (${cfdi.moneda}) no coincide con la de la factura que corrige (${plan.payload.moneda}).`], avisos: [] };
     return plan;
   };
   const pintarPreview = () => {
@@ -23451,7 +23480,10 @@ async function abrirNotaCreditoProveedor(b, facturaId, alCambiar, opciones = {})
       <div style="margin-top:4px;">• Baja el gasto en <strong>${fmtMon(r.base, plan.payload.moneda)}</strong>${plan.lineas.length ? ': ' + plan.lineas.map(l => `${revEsc(nombreSub(l.subcuenta_id))} ${fmt(Math.abs(l.monto))}`).join(' · ') : ''}</div>
       ${modoFiscal && r.iva ? `<div>• Baja el IVA acreditable en <strong>${fmtMon(r.iva, plan.payload.moneda)}</strong></div>` : ''}${r.retenciones ? `<div>• Regresa retenciones por <strong>${fmtMon(r.retenciones, plan.payload.moneda)}</strong></div>` : ''}
       <div>• Reduce lo que le debes al proveedor en <strong>${fmtMon(r.total, plan.payload.moneda)}</strong></div>${plan.avisos.map(a => `<div style="color:#9a6a00;margin-top:4px;">⚠ ${revEsc(a)}</div>`).join('')}</div>`; }
-    const bc = $('ncConfirmar'); bc.disabled = !plan.ok;
+    const difIva = cfdi && plan.ok && modoFiscal ? cfdiR2(plan.resumen.iva - cfdi.iva) : 0, descuadra = Math.abs(difIva) > 0.05;
+    $('ncCfdiRef').innerHTML = cfdi ? `<div style="margin:0 0 10px;padding:9px 12px;border:1px solid #cfe3ff;background:#f3f8ff;border-radius:8px;font-size:12.5px;"><strong>CFDI de egreso ${revEsc(cfdi.numero)}</strong> · subtotal ${fmt(cfdi.subtotal)} · IVA ${fmt(cfdi.iva)} · total <strong>${fmt(cfdi.total)}</strong>${cfdi.relacion ? `<div style="color:var(--muted);">${revEsc(cfdi.relacion)}</div>` : ''}${cfdi.retenciones > 0.004 ? `<div style="color:#9a6a00;">El CFDI trae retenciones por ${fmt(cfdi.retenciones)}: la nota copia las de la factura de origen.</div>` : ''}${descuadra ? `<div style="color:#9a6a00;margin-top:6px;">⚠ El IVA del CFDI es ${fmt(cfdi.iva)}, pero con la proporción de la factura que corrige la nota quedaría con ${fmt(plan.resumen.iva)}. <label style="display:flex;gap:6px;align-items:flex-start;margin-top:4px;"><input type="checkbox" id="ncCfdiAcepta" ${E.cfdiAcepta ? 'checked' : ''} style="margin-top:2px;"><span>Capturarla con la proporción de la factura (el CFDI es el comprobante; revisa el IVA con tu contador).</span></label></div>` : ''}</div>` : '';
+    const ck2 = $('ncCfdiAcepta'); if (ck2) ck2.addEventListener('change', () => { E.cfdiAcepta = ck2.checked; pintarPreview(); });
+    const bc = $('ncConfirmar'); bc.disabled = !plan.ok || (descuadra && !E.cfdiAcepta);
   };
   const refrescar = () => { pintarFacturas(); pintarPreview(); };
   $('ncProv').addEventListener('change', async () => { E.provId = $('ncProv').value; E.facturaId = ''; await cargarFacturas(); refrescar(); });
@@ -23460,6 +23492,7 @@ async function abrirNotaCreditoProveedor(b, facturaId, alCambiar, opciones = {})
   $('ncTotal').addEventListener('input', () => pintarPreview()); $('ncMotivo').addEventListener('change', () => { E.motivo = $('ncMotivo').value; pintarPreview(); }); $('ncNota').addEventListener('input', () => { E.nota = $('ncNota').value; pintarPreview(); });
   $('ncSub').addEventListener('change', () => { E.subcuentaId = $('ncSub').value; pintarPreview(); }); if ($('ncPct')) $('ncPct').addEventListener('change', () => { E.pct = Number($('ncPct').value); pintarPreview(); });
   $('ncTodo').addEventListener('click', (ev) => { ev.preventDefault(); const m = maxAcreditable(); if (m === null) { toast('Primero elige la factura que corrige.', 'error'); return; } $('ncTotal').value = fmtInputVal(m); pintarPreview(); });
+  if (cfdi) { $('ncNumero').value = E.numero; $('ncTotal').value = fmtInputVal(cfdi.total); $('ncTotal').readOnly = true; $('ncFecha').disabled = true; $('ncTodo').style.display = 'none'; }
   refrescar();
   $('ncConfirmar').addEventListener('click', async () => {
     const btn = $('ncConfirmar'); if (btn.disabled) return; btn.disabled = true;
@@ -23468,8 +23501,9 @@ async function abrirNotaCreditoProveedor(b, facturaId, alCambiar, opciones = {})
     if (await bloqueadoPorCierre(b.id, E.fecha)) { pintarPreview(); return; }
     const f = orig(), total = leerMonto($('ncTotal').value) || 0, compensar = !!f && !!$('ncComp') && $('ncComp').checked;
     const folio = await siguienteFolio(b.id, 'factura_proveedor');
-    const { data: nueva, error } = await sb.from('fz_proveedores').insert({ business_id: b.id, proveedor_id: prov.id, proveedor: provNombreVisible(prov), folio, ...plan.payload }).select().single();
+    const { data: nueva, error } = await sb.from('fz_proveedores').insert({ business_id: b.id, proveedor_id: prov.id, proveedor: provNombreVisible(prov), folio, ...plan.payload, ...(cfdi ? { cfdi_uuid: cfdi.uuid } : {}) }).select().single();
     if (error || !nueva) { toast('No se pudo crear la nota: ' + ((error && error.message) || ''), 'error'); pintarPreview(); return; }
+    if (cfdi && opciones.antesDeAplicar) { const errH = await opciones.antesDeAplicar(nueva); if (errH) { await sb.from('fz_proveedores').delete().eq('id', nueva.id); toast(errH, 'error'); pintarPreview(); return; } } // el CFDI se marca ANTES de aplicar: si falla, la nota se deshace
     let nota = '', falloComp = '';
     if (compensar) {
       try {
@@ -23518,7 +23552,7 @@ async function ncDeshacerAplicacion(b, tipo, ncId, alCambiar) {
   if (!nc || nc.tipo_documento !== 'nota_credito') { toast('Ese documento no es una nota de crédito.', 'error'); return false; }
   if (nc.estatus !== 'Pagado' && Math.abs(Number(nc.importe_pagado) || 0) < 0.004) { toast('Esa nota no está aplicada.', 'error'); return false; }
   const { data: usos } = await sb.from(tablaAp).select('id').eq('factura_id', nc.id).limit(1);
-  if ((usos || []).length) { toast(`Esta nota se usó dentro de un ${prov ? 'pago' : 'cobro'}: edita o elimina ese movimiento para liberarla.`, 'error'); return false; }
+  if ((usos || []).length) { toast(`Esta nota se usó dentro de un ${prov ? 'pago' : 'cobro o una devolución de dinero'}: edita o elimina ese movimiento para liberarla.`, 'error'); return false; }
   if (!nc.factura_origen_id) { toast('Esta nota no está ligada a una factura: no sé contra cuál se aplicó.', 'error'); return false; }
   const { data: f } = await sb.from(tabla).select('*').eq('id', nc.factura_origen_id).maybeSingle(); if (!f) { toast('La factura contra la que se aplicó ya no existe.', 'error'); return false; }
   if (await bloqueadoPorCierre(b.id, nc.fecha)) return false;
@@ -23543,6 +23577,8 @@ async function abrirNotaCreditoCliente(b, facturaId, alCambiar, opciones = {}) {
   }
   const mayoresIng = mayores.filter(m => m.tipo === 'ingreso'), subsIng = subcuentas.filter(s => mayoresIng.some(m => m.id === s.cuenta_mayor_id)), nombreSub = (id) => (subcuentas.find(x => x.id === id) || {}).nombre || '(cuenta eliminada)';
   const E = { clienteId: orig0 ? orig0.cliente_id : (opciones.clienteId && clientes.some(c => c.id === opciones.clienteId) ? opciones.clienteId : ''), facturaId: orig0 ? orig0.id : '', fecha: todayStr(), numero: '', motivo: NC_MOTIVOS[0], nota: '', pct: 16, subcuentaId: '', ef: 'pendiente', uuid: '', compensar: true, facturas: [], ncPrevias: [], lineas: [] };
+  const cfdi = opciones.cfdi || null; // modo «desde CFDI»: total, fecha y UUID son los del CFDI (queda «facturada») y se marca el CFDI antes de aplicar nada
+  if (cfdi) { E.fecha = cfdi.fecha; E.numero = cfdi.numero || ''; E.ef = 'facturada'; E.uuid = cfdi.uuid; E.cfdiAcepta = false; }
   const cargar = async () => {
     if (!E.clienteId) { E.facturas = []; E.ncPrevias = []; return; }
     const { data } = await fetchTodasLasPaginas(() => sb.from('fz_facturas_clientes').select('*').eq('business_id', b.id).eq('cliente_id', E.clienteId).order('fecha', { ascending: false }).order('id'));
@@ -23553,7 +23589,7 @@ async function abrirNotaCreditoCliente(b, facturaId, alCambiar, opciones = {}) {
   const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalNotaCreditoCli'; const cerrar = () => bg.remove();
   bg.innerHTML = `<div class="modal" style="width:min(820px,96vw);max-height:92vh;overflow:auto;"><h3>Nota de crédito a cliente</h3>
     <p style="font-size:12.5px;color:var(--muted);margin:0 0 8px;">Úsala cuando <strong>tú le acreditas</strong> a tu cliente una devolución, un descuento o una corrección. Baja lo que te debe, tus ingresos y el IVA trasladado. Si eliges la factura que corrige, la nota copia su IVA y sus líneas en proporción.</p>
-    <div class="grid-2"><div class="field"><label>Cliente</label><select id="nccCliente" class="cell" ${orig0 ? 'disabled' : ''}><option value="">Elige un cliente…</option>${clientes.map(c => `<option value="${c.id}" ${E.clienteId === c.id ? 'selected' : ''}>${revEsc(nombreCli(c))}</option>`).join('')}</select></div>
+    <div id="nccCfdiRef"></div><div class="grid-2"><div class="field"><label>Cliente</label><select id="nccCliente" class="cell" ${orig0 ? 'disabled' : ''}><option value="">Elige un cliente…</option>${clientes.map(c => `<option value="${c.id}" ${E.clienteId === c.id ? 'selected' : ''}>${revEsc(nombreCli(c))}</option>`).join('')}</select></div>
       <div class="field"><label>Factura que corrige</label><select id="nccFactura" class="cell" ${orig0 ? 'disabled' : ''}></select></div></div>
     <div class="grid-3"><div class="field"><label>Fecha de la nota</label><input type="date" id="nccFecha" value="${E.fecha}"></div><div class="field"><label>Número de la nota</label><input type="text" id="nccNumero" placeholder="Ej. NC-123" maxlength="40"></div>
       <div class="field"><label>Total de la nota (con IVA)</label><div style="display:flex;gap:6px;"><input type="text" id="nccTotal" inputmode="decimal" placeholder="0.00" style="flex:1;"><button class="btn btn-ghost btn-sm" id="nccTodo" title="Acreditar todo lo que queda por acreditar de la factura">Todo</button></div></div></div>
@@ -23561,7 +23597,7 @@ async function abrirNotaCreditoCliente(b, facturaId, alCambiar, opciones = {}) {
     <div id="nccSinFactura" style="display:none;"><div class="grid-2"><div class="field"><label>Subcuenta de ingreso que baja la nota</label><select id="nccSub" class="cell"><option value="">Elige…</option>${opcionesSubcuentaHtml(subsIng, mayoresIng, null)}</select></div><div class="field"><label>IVA de la nota</label><select id="nccPct" class="cell"><option value="16">16 %</option><option value="8">8 %</option><option value="0">Sin IVA</option></select></div></div></div>
     <div class="grid-2"><div class="field"><label>Comprobante fiscal (CFDI de egreso)</label><select id="nccEf" class="cell"><option value="pendiente">Pendiente: avisar al contador</option><option value="facturada">Ya emitido</option><option value="no_aplica">No aplica</option></select></div><div class="field" id="nccUuidWrap" style="display:none;"><label>UUID del CFDI de egreso (opcional)</label><input type="text" id="nccUuid" maxlength="40" placeholder="Si ya lo tienes"></div></div>
     <div id="nccCompWrap" style="margin:6px 0;"></div><div id="nccPreview"></div>
-    <div class="modal-actions"><button class="btn btn-ghost" id="nccCancelar">Cancelar</button><button class="btn btn-gold" id="nccConfirmar">Crear la nota de crédito</button></div></div>`;
+    <div class="modal-actions" style="position:sticky;bottom:0;background:#fff;border-top:1px solid var(--line);padding:12px 0 2px;margin-top:12px;z-index:2;"><button class="btn btn-ghost" id="nccCancelar">Cancelar</button><button class="btn btn-gold" id="nccConfirmar">Crear la nota de crédito</button></div></div>`;
   document.body.appendChild(bg); bg.querySelector('#nccCancelar').addEventListener('click', cerrar);
   const $ = (id) => bg.querySelector('#' + id), orig = () => E.facturas.find(f => f.id === E.facturaId) || null;
   const acreditado = (fid) => cfdiR2(E.ncPrevias.filter(n => n.factura_origen_id === fid).reduce((s, n) => s + Math.abs(Number(n.total) || 0), 0));
@@ -23574,6 +23610,10 @@ async function abrirNotaCreditoCliente(b, facturaId, alCambiar, opciones = {}) {
     const f = orig(), total = leerMonto($('nccTotal').value) || 0;
     const plan = ncPlanCliente({ factura: f, lineasOrig: E.lineas, total, fecha: E.fecha, numero: E.numero, motivo: E.motivo + (E.nota ? ' — ' + E.nota : ''), pctIva: E.pct, subcuentaId: E.subcuentaId, estatusFiscal: E.ef, folioFiscal: E.uuid });
     const maxA = maxAcreditable(); if (plan.ok && f && total > maxA + 0.005) return { ok: false, errores: [maxA > 0.005 ? `Ya hay notas por ${fmt(acreditado(f.id))} contra esa factura: solo puedes acreditar ${fmt(maxA)} más.` : 'Esa factura ya está acreditada por completo.'], avisos: [] };
+    if (cfdi && plan.ok) {
+      if (cfdi.moneda !== plan.payload.moneda) return { ok: false, errores: [`La moneda del CFDI (${cfdi.moneda}) no coincide con la de la factura que corrige (${plan.payload.moneda}).`], avisos: [] };
+      if (cfdi.retenciones > 0.004 || cfdi.ieps > 0.004) return { ok: false, errores: ['El CFDI trae retenciones o IEPS y una factura de cliente no los maneja: usa «Ligar a una nota de crédito que ya capturé» o «No registrar nada».'], avisos: [] };
+    }
     return plan;
   };
   const pintarPreview = () => {
@@ -23585,7 +23625,10 @@ async function abrirNotaCreditoCliente(b, facturaId, alCambiar, opciones = {}) {
     else { const r = plan.resumen; $('nccPreview').innerHTML = `<div style="margin-top:6px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;font-size:12.5px;"><strong>Así quedará</strong>
       <div style="margin-top:4px;">• Baja tus ingresos en <strong>${fmtMon(r.base, plan.payload.moneda)}</strong>: ${plan.lineas.map(l => `${revEsc(nombreSub(l.subcuenta_id))} ${fmt(Math.abs(l.importe))}`).join(' · ')}</div>
       ${r.iva ? `<div>• Baja el IVA trasladado en <strong>${fmtMon(r.iva, plan.payload.moneda)}</strong></div>` : ''}<div>• Reduce lo que el cliente te debe en <strong>${fmtMon(r.total, plan.payload.moneda)}</strong></div></div>`; }
-    $('nccConfirmar').disabled = !plan.ok;
+    const difIva = cfdi && plan.ok ? cfdiR2(plan.resumen.iva - cfdi.iva) : 0, descuadra = Math.abs(difIva) > 0.05;
+    $('nccCfdiRef').innerHTML = cfdi ? `<div style="margin:0 0 10px;padding:9px 12px;border:1px solid #cfe3ff;background:#f3f8ff;border-radius:8px;font-size:12.5px;"><strong>CFDI de egreso ${revEsc(cfdi.numero)}</strong> · subtotal ${fmt(cfdi.subtotal)} · IVA ${fmt(cfdi.iva)} · total <strong>${fmt(cfdi.total)}</strong>${cfdi.relacion ? `<div style="color:var(--muted);">${revEsc(cfdi.relacion)}</div>` : ''}${descuadra ? `<div style="color:#9a6a00;margin-top:6px;">⚠ El IVA del CFDI es ${fmt(cfdi.iva)}, pero con la proporción de la factura que corrige la nota quedaría con ${fmt(plan.resumen.iva)}. <label style="display:flex;gap:6px;align-items:flex-start;margin-top:4px;"><input type="checkbox" id="nccCfdiAcepta" ${E.cfdiAcepta ? 'checked' : ''} style="margin-top:2px;"><span>Capturarla con la proporción de la factura (el CFDI es el comprobante; revisa el IVA con tu contador).</span></label></div>` : ''}</div>` : '';
+    const ck2 = $('nccCfdiAcepta'); if (ck2) ck2.addEventListener('change', () => { E.cfdiAcepta = ck2.checked; pintarPreview(); });
+    $('nccConfirmar').disabled = !plan.ok || (descuadra && !E.cfdiAcepta);
   };
   const refrescar = () => { pintarFacturas(); pintarPreview(); };
   $('nccCliente').addEventListener('change', async () => { E.clienteId = $('nccCliente').value; E.facturaId = ''; E.lineas = []; await cargar(); refrescar(); });
@@ -23595,6 +23638,7 @@ async function abrirNotaCreditoCliente(b, facturaId, alCambiar, opciones = {}) {
   $('nccSub').addEventListener('change', () => { E.subcuentaId = $('nccSub').value; pintarPreview(); }); $('nccPct').addEventListener('change', () => { E.pct = Number($('nccPct').value); pintarPreview(); });
   $('nccEf').addEventListener('change', () => { E.ef = $('nccEf').value; $('nccUuidWrap').style.display = E.ef === 'facturada' ? '' : 'none'; pintarPreview(); }); $('nccUuid').addEventListener('input', () => { E.uuid = $('nccUuid').value; });
   $('nccTodo').addEventListener('click', (ev) => { ev.preventDefault(); const m = maxAcreditable(); if (m === null) { toast('Primero elige la factura que corrige.', 'error'); return; } $('nccTotal').value = fmtInputVal(m); pintarPreview(); });
+  if (cfdi) { $('nccNumero').value = E.numero; $('nccTotal').value = fmtInputVal(cfdi.total); $('nccTotal').readOnly = true; $('nccFecha').disabled = true; $('nccTodo').style.display = 'none'; $('nccEf').value = 'facturada'; $('nccEf').disabled = true; $('nccUuidWrap').style.display = 'none'; }
   refrescar();
   $('nccConfirmar').addEventListener('click', async () => {
     const btn = $('nccConfirmar'); if (btn.disabled) return; btn.disabled = true;
@@ -23606,6 +23650,7 @@ async function abrirNotaCreditoCliente(b, facturaId, alCambiar, opciones = {}) {
     if (error || !nueva) { toast('No se pudo crear la nota: ' + ((error && error.message) || ''), 'error'); pintarPreview(); return; }
     const { error: eL } = await sb.from('fz_facturas_clientes_lineas').insert(plan.lineas.map(l => ({ ...l, factura_id: nueva.id, business_id: b.id })));
     if (eL) { await sb.from('fz_facturas_clientes').delete().eq('id', nueva.id); toast('No se pudieron guardar las líneas de la nota: ' + eL.message, 'error'); pintarPreview(); return; }
+    if (cfdi && opciones.antesDeAplicar) { const errH = await opciones.antesDeAplicar(nueva); if (errH) { await sb.from('fz_facturas_clientes_lineas').delete().eq('factura_id', nueva.id); await sb.from('fz_facturas_clientes').delete().eq('id', nueva.id); toast(errH, 'error'); pintarPreview(); return; } } // el CFDI se marca ANTES de aplicar: si falla, la nota se deshace
     let nota = '', falloComp = '';
     if (compensar) { // aplicación directa (el cobro "manual" no deja filas de cobros aplicados): la factura sube lo cobrado y la nota queda saldada
       const nuevoPagado = cfdiR2(Number(f.importe_pagado || 0) + total), est = nuevoPagado >= Number(f.total) - 0.01 ? 'Pagado' : 'Parcial';
@@ -23615,6 +23660,233 @@ async function abrirNotaCreditoCliente(b, facturaId, alCambiar, opciones = {}) {
     registrarAuditoria(b.id, 'crear', 'Facturas de clientes', `Nota de crédito ${plan.payload.numero_factura} por ${fmtMon(total, plan.payload.moneda)} a ${nombreCli(cli)}${f ? ' (corrige #' + f.folio + ')' : ''}${nota ? ' — aplicada' : ''}`);
     cerrar(); toast(`Nota de crédito ${plan.payload.numero_factura} creada${nota}.${falloComp ? ' No se pudo aplicar contra la factura (' + falloComp + '): queda como crédito del cliente.' : ''}`, falloComp ? 'error' : undefined); if (alCambiar) alCambiar();
   });
+}
+
+// ============================================================================================================
+// CFDI DE EGRESO = NOTA DE CRÉDITO. Recibido: el proveedor te acredita (baja lo que le debes). Emitido: tú acreditas a un cliente (baja lo que te debe). Se liga por el UUID RELACIONADO a la factura que corrige.
+// Tres salidas y NINGUNA automática: (1) CREAR la nota desde el CFDI (usa las mismas ventanas de nota ya probadas, con el total y la fecha del CFDI bloqueados; si algo falla se deshace todo),
+// (2) LIGAR a una nota que ya capturaste (solo le agrega el UUID; no toca importes), (3) NO REGISTRAR (queda el motivo en la bitácora).
+// ============================================================================================================
+const CFDI_TIPOS_RELACION = { '01': 'Nota de crédito de los documentos relacionados', '02': 'Nota de débito de los documentos relacionados', '03': 'Devolución de mercancía sobre facturas o traslados previos', '04': 'Sustitución de los CFDI previos', '05': 'Traslados de mercancías facturados previamente', '06': 'Factura generada por los traslados previos', '07': 'CFDI por aplicación de anticipo', '08': 'Factura generada por pagos en parcialidades', '09': 'Factura generada por pagos diferidos' };
+function cfdiUuidsRelacionados(c) { return [...new Set((c.relacionados || []).flatMap(r => (r.uuids || []).map(u => String(u).toUpperCase().trim())).filter(Boolean))]; }
+function cfdiTiposRelacionTexto(c) { const t = [...new Set((c.relacionados || []).map(r => String(r.tipo_relacion || '').trim()).filter(Boolean))]; return t.map(x => `${x} · ${CFDI_TIPOS_RELACION[x] || 'Relación ' + x}`).join(' · '); }
+// facturas (positivas, no notas) que el CFDI dice corregir: la de proveedor guarda el UUID en cfdi_uuid; la de cliente, en folio_fiscal
+async function cfdiOrigenesDeEgreso(b, c) {
+  const uuids = cfdiUuidsRelacionados(c); if (!uuids.length) return [];
+  const prov = c.direccion === 'recibido', tabla = prov ? 'fz_proveedores' : 'fz_facturas_clientes', col = prov ? 'cfdi_uuid' : 'folio_fiscal';
+  const { data } = await sb.from(tabla).select('*').eq('business_id', b.id).in(col, [...uuids, ...uuids.map(u => u.toLowerCase())]);
+  return (data || []).filter(f => f.tipo_documento !== 'nota_credito' && Number(prov ? f.importe : f.total) > 0);
+}
+// el proveedor emisor del CFDI de egreso en tu catálogo: por RFC o por nombre; solo si es UNO (nunca se adivina entre varios)
+function cfdiProveedorDeEgreso(catalogo, c) {
+  const rfc = provRfc(c.rfc_emisor), act = (catalogo || []).filter(p => p.activo !== false);
+  if (rfc) { const x = act.filter(p => provRfc(p.rfc) === rfc); if (x.length === 1) return { p: x[0], motivo: 'por su RFC' }; }
+  const k = provNormNombre(c.nombre_emisor);
+  if (k.length >= 3) { const x = act.filter(p => [p.razon_social, p.nombre_comercial, p.nombre].some(n => provNormNombre(n) === k)).filter(p => !(rfc && provRfc(p.rfc) && provRfc(p.rfc) !== rfc)); if (x.length === 1) return { p: x[0], motivo: 'por su nombre' }; }
+  return null;
+}
+// notas de crédito ya capturadas que podrían ser este CFDI: mismo importe y moneda, todavía sin UUID, y de la misma contraparte cuando se conoce
+async function cfdiCandidatasNotaCredito(b, c, contraId) {
+  const prov = c.direccion === 'recibido', t = cfdiR2(c.total), tabla = prov ? 'fz_proveedores' : 'fz_facturas_clientes', colImp = prov ? 'importe' : 'total', colUuid = prov ? 'cfdi_uuid' : 'folio_fiscal', colContra = prov ? 'proveedor_id' : 'cliente_id';
+  const { data } = await sb.from(tabla).select('*').eq('business_id', b.id).eq('tipo_documento', 'nota_credito').gte(colImp, -t - 0.011).lte(colImp, -t + 0.011);
+  return (data || []).filter(n => !n[colUuid] && (n.moneda || 'MXN') === (c.moneda || 'MXN') && (!contraId || n[colContra] === contraId)).sort((a, z) => String(z.fecha).localeCompare(String(a.fecha)));
+}
+async function abrirCfdiClasificarEgreso(c) {
+  const b = biz(); if (!b) return;
+  const prov = c.direccion === 'recibido';
+  const pre = await (prov ? ncPreflight() : nccPreflight());
+  if (!pre.ok) { toast(`Falta correr ${prov ? 'migracion_notas_credito.sql' : 'migracion_notas_credito_clientes.sql'} en Supabase para poder crear o ligar notas de crédito.`, 'error'); return; }
+  const [origenes, contraR] = await Promise.all([cfdiOrigenesDeEgreso(b, c), prov ? sb.from('fz_proveedores_catalogo').select('id,nombre,nombre_comercial,razon_social,rfc,activo').eq('business_id', b.id) : sb.from('fz_clientes').select('id,razon_social,nombre_comercial,rfc,activo').eq('business_id', b.id)]);
+  const contras = (contraR.data || []).filter(x => x.activo !== false), match = prov ? cfdiProveedorDeEgreso(contras, c) : cfdiBuscarCliente(contras, c);
+  const origenUnico = origenes.length === 1 ? origenes[0] : null, contraId = origenUnico ? (prov ? origenUnico.proveedor_id : origenUnico.cliente_id) : (prov ? (match && match.p && match.p.id) : (match && match.cliente && match.cliente.id)) || null;
+  const nomContra = (x) => prov ? provNombreVisible(x) : (x.razon_social && x.razon_social !== x.nombre_comercial ? `${x.razon_social} — ${x.nombre_comercial}` : (x.nombre_comercial || x.razon_social || ''));
+  const contraSel = contras.find(x => x.id === contraId) || null, candidatas = await cfdiCandidatasNotaCredito(b, c, contraId);
+  const ref = [c.serie, c.folio].filter(Boolean).join('-') || String(c.uuid).slice(0, 8), uuids = cfdiUuidsRelacionados(c);
+  const impOrig = (f) => prov ? f.importe : f.total, refOrig = (f) => prov ? (f.factura || (f.folio ? '#' + f.folio : 's/f')) : (f.numero_factura || (f.folio ? '#' + f.folio : 's/f'));
+  const E = { op: 'crear', origen: origenUnico ? origenUnico.id : '', cand: candidatas[0] ? candidatas[0].id : '' };
+  const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalCfdiEgreso'; const cerrar = () => bg.remove();
+  const lineaOrigen = uuids.length ? (origenes.length ? origenes.map(f => `<div>• Factura <strong>${revEsc(refOrig(f))}</strong> (${fechaCorta(f.fecha)} · ${fmtMon(impOrig(f), f.moneda)})</div>`).join('') : `<div style="color:#9a6a00;">• No encontré en el sistema la factura relacionada (UUID ${revEsc(uuids[0].slice(0, 8))}…). Puedes elegirla al crear la nota, o crear la nota sin factura de origen.</div>`) : '<div style="color:#9a6a00;">• Este CFDI no trae CFDI relacionados: la nota quedará como crédito general (sin factura de origen).</div>';
+  bg.innerHTML = `<div class="modal" style="width:min(680px,96vw);max-height:92vh;overflow:auto;"><h3>Clasificar CFDI de egreso</h3>
+    <div style="font-size:12.5px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin:0 0 10px;line-height:1.5;"><strong>${prov ? 'Nota de crédito recibida de ' : 'Nota de crédito emitida a '}${revEsc((prov ? c.nombre_emisor : c.nombre_receptor) || (prov ? c.rfc_emisor : c.rfc_receptor))}</strong> · ${revEsc(ref)} · ${fechaCorta(c.fecha)} · total <strong>${fmtMon(c.total, c.moneda)}</strong> <span style="color:var(--muted);">(subtotal ${fmt(c.subtotal)} · IVA ${fmt(c.iva_trasladado)})</span>
+      ${cfdiTiposRelacionTexto(c) ? `<div style="color:var(--muted);">Relación: ${revEsc(cfdiTiposRelacionTexto(c))}</div>` : ''}
+      <div style="margin-top:4px;"><span style="color:var(--muted);">Corrige:</span>${lineaOrigen}</div>
+      <div style="margin-top:4px;color:var(--muted);">${prov ? 'Proveedor' : 'Cliente'} en tu catálogo: ${contraSel ? `<strong style="color:var(--ink);">${revEsc(nomContra(contraSel))}</strong>${origenUnico ? ' (el de la factura que corrige)' : (match && match.motivo ? ' (' + match.motivo + ')' : '')}` : 'no lo encontré: lo eliges al crear la nota'}</div></div>
+    <label style="display:flex;gap:8px;align-items:flex-start;margin:0 0 6px;font-size:13px;"><input type="radio" name="ceeAccion" value="crear" checked style="margin-top:3px;"><span><strong>Crear la nota de crédito desde este CFDI</strong><br><span style="font-size:12px;color:var(--muted);">${prov ? 'Baja el gasto, el IVA acreditable y lo que le debes al proveedor.' : 'Baja tus ingresos, el IVA trasladado y lo que te debe el cliente.'} Se abre la ventana de nota con el total y la fecha del CFDI ya puestos; lo ves todo antes de guardar.</span></span></label>
+    ${origenes.length > 1 ? `<div id="ceeOrigenWrap" style="margin:0 0 8px 22px;"><label style="font-size:12px;color:var(--muted);">El CFDI relaciona varias facturas; esta nota corrige:</label><select id="ceeOrigen" class="cell" style="width:100%;">${origenes.map(f => `<option value="${f.id}">${revEsc(refOrig(f))} · ${fechaCorta(f.fecha)} · ${fmtMon(impOrig(f), f.moneda)}</option>`).join('')}<option value="">Ninguna (crédito general)</option></select></div>` : ''}
+    <label style="display:flex;gap:8px;align-items:flex-start;margin:0 0 6px;font-size:13px;${candidatas.length ? '' : 'opacity:.55;'}"><input type="radio" name="ceeAccion" value="ligar" ${candidatas.length ? '' : 'disabled'} style="margin-top:3px;"><span><strong>Ligar a una nota de crédito que ya capturé</strong><br><span style="font-size:12px;color:var(--muted);">${candidatas.length ? 'Solo le agrega el UUID (y la marca facturada); no toca importes, líneas ni pagos.' : `No hay notas de crédito ${contraId ? 'de esa ' + (prov ? 'proveedor' : 'cliente') + ' ' : ''}por ${fmtMon(c.total, c.moneda)} sin UUID.`}</span></span></label>
+    ${candidatas.length ? `<div id="ceeCandWrap" style="margin:0 0 8px 22px;display:none;"><select id="ceeCand" class="cell" style="width:100%;">${candidatas.map(n => `<option value="${n.id}">${revEsc(prov ? (n.factura || '#' + n.folio) : (n.numero_factura || '#' + n.folio))} · ${fechaCorta(n.fecha)} · ${fmtMon(prov ? n.importe : n.total, n.moneda)}${n.factura_origen_id ? ' · corrige otra factura' : ''}</option>`).join('')}</select></div>` : ''}
+    <label style="display:flex;gap:8px;align-items:flex-start;margin:0 0 6px;font-size:13px;"><input type="radio" name="ceeAccion" value="sin" style="margin-top:3px;"><span><strong>No registrar nada</strong><br><span style="font-size:12px;color:var(--muted);">Queda clasificado "sin registro": úsalo si esta nota ya está reflejada de otra forma. El motivo queda en la bitácora.</span></span></label>
+    <div id="ceeSinWrap" style="margin:0 0 8px 22px;display:none;"><input type="text" id="ceeMotivo" maxlength="200" placeholder="Motivo (mínimo 5 caracteres)" style="width:100%;"></div>
+    <div class="modal-actions" style="position:sticky;bottom:0;background:#fff;border-top:1px solid var(--line);padding:12px 0 2px;margin-top:12px;z-index:2;"><button class="btn btn-ghost" id="ceeCancelar">Cancelar</button><button class="btn btn-gold" id="ceeContinuar">Continuar</button></div></div>`;
+  document.body.appendChild(bg); const $ = (id) => bg.querySelector('#' + id); $('ceeCancelar').addEventListener('click', cerrar);
+  const pintar = () => { E.op = (bg.querySelector('input[name="ceeAccion"]:checked') || {}).value || 'crear'; if ($('ceeCandWrap')) $('ceeCandWrap').style.display = E.op === 'ligar' ? '' : 'none'; $('ceeSinWrap').style.display = E.op === 'sin' ? '' : 'none'; $('ceeContinuar').textContent = E.op === 'crear' ? 'Continuar a la nota de crédito' : (E.op === 'ligar' ? 'Ligar a la nota' : 'Clasificar sin registro'); };
+  bg.querySelectorAll('input[name="ceeAccion"]').forEach(r => r.addEventListener('change', pintar)); pintar();
+  const sigueSiendoClasificable = async () => { const { data } = await sb.from('fz_cfdi').select('estado,estatus_sat').eq('id', c.id).maybeSingle(); return !!data && data.estado === 'por_clasificar' && data.estatus_sat !== 'cancelado'; };
+  $('ceeContinuar').addEventListener('click', async () => {
+    const btn = $('ceeContinuar'); if (btn.disabled) return; btn.disabled = true; const falla = (m) => { toast(m, 'error'); btn.disabled = false; };
+    if (!(await sigueSiendoClasificable())) return falla('Este CFDI ya no está por clasificar (alguien lo clasificó, lo ignoró o lo marcó cancelado). Actualiza la bandeja.');
+    if (await periodoEstaCerrado(b.id, c.fecha)) return falla(`El periodo ${String(c.fecha).slice(0, 7)} ya está cerrado: pide a un Administrador, Propietario, Socio o Gerencia que lo reabra en Configuración → Cierre de periodo.`);
+    const usuarioNota = (m) => registrarAuditoria(b.id, 'editar', prov ? 'Proveedores' : 'Facturas de clientes', m);
+    if (E.op === 'crear') {
+      const facturaId = origenes.length > 1 ? ($('ceeOrigen').value || null) : (origenUnico ? origenUnico.id : null);
+      const info = { uuid: c.uuid, fecha: String(c.fecha).slice(0, 10), numero: ref, total: cfdiR2(c.total), subtotal: cfdiR2(c.subtotal), iva: cfdiR2(c.iva_trasladado), retenciones: cfdiR2((Number(c.iva_retenido) || 0) + (Number(c.isr_retenido) || 0)), ieps: cfdiR2(c.ieps_trasladado), moneda: c.moneda || 'MXN', relacion: cfdiTiposRelacionTexto(c) };
+      const marcar = async (nueva) => { if (!(await sigueSiendoClasificable())) return 'Este CFDI ya no está por clasificar: no se creó la nota.'; const e = await cfdiMarcarClasificado(b, c, prov ? 'fz_proveedores' : 'fz_facturas_clientes', nueva.id, 'Nota de crédito creada desde el CFDI de egreso'); return e ? 'No se pudo registrar la clasificación: ' + (e.message || e) : null; };
+      cerrar();
+      if (prov) await abrirNotaCreditoProveedor(b, facturaId, () => renderCfdi(), { proveedorId: contraId, cfdi: info, antesDeAplicar: marcar });
+      else await abrirNotaCreditoCliente(b, facturaId, () => renderCfdi(), { clienteId: contraId, cfdi: info, antesDeAplicar: marcar });
+      return;
+    }
+    if (E.op === 'ligar') {
+      const tabla = prov ? 'fz_proveedores' : 'fz_facturas_clientes', colImp = prov ? 'importe' : 'total', colUuid = prov ? 'cfdi_uuid' : 'folio_fiscal', id = $('ceeCand').value;
+      const { data: n } = await sb.from(tabla).select('*').eq('id', id).eq('business_id', b.id).maybeSingle();
+      if (!n || n.tipo_documento !== 'nota_credito' || n[colUuid] || Math.abs(Math.abs(Number(n[colImp])) - cfdiR2(c.total)) > 0.011) return falla('Esa nota ya cambió (ya tiene UUID, o su importe ya no coincide). Vuelve a abrir la clasificación.');
+      const nuevo = prov ? { cfdi_uuid: c.uuid } : { folio_fiscal: c.uuid, estatus_fiscal: 'facturada' }, previo = prov ? { cfdi_uuid: null } : { folio_fiscal: n.folio_fiscal || null, estatus_fiscal: n.estatus_fiscal || 'pendiente' };
+      const { error: eU } = await sb.from(tabla).update(nuevo).eq('id', n.id); if (eU) return falla(/cfdi_uuid|duplicate|duplicad|unique/i.test(eU.message || '') ? 'Ese CFDI ya está ligado a otro documento.' : 'No se pudo ligar: ' + eU.message);
+      const eM = await cfdiMarcarClasificado(b, c, tabla, n.id, 'Ligado a la nota de crédito ya capturada');
+      if (eM) { await sb.from(tabla).update(previo).eq('id', n.id); return falla('No se pudo registrar la clasificación: ' + (eM.message || eM)); }
+      usuarioNota(`Nota de crédito ${prov ? (n.factura || '#' + n.folio) : (n.numero_factura || '#' + n.folio)} ligada al CFDI ${c.uuid}`); cerrar(); toast('CFDI clasificado: quedó ligado a la nota de crédito.'); renderCfdi(); return;
+    }
+    const motivo = String($('ceeMotivo').value || '').trim(); if (motivo.length < 5) return falla('Escribe el motivo (mínimo 5 caracteres).');
+    const eM = await cfdiMarcarClasificado(b, c, 'sin_registro', null, `Sin registro: ${motivo}`); if (eM) return falla('No se pudo registrar la clasificación: ' + (eM.message || eM));
+    cerrar(); toast('CFDI clasificado sin registro.'); renderCfdi();
+  });
+}
+
+// ============================================================================================================
+// DEVOLUCIÓN DE DINERO A UN CLIENTE. Una nota de crédito que quedó como CRÉDITO (la factura ya estaba cobrada) es dinero que le debes al cliente: se salda con una SALIDA de Banco o Efectivo.
+// El motor contable ya sabe contabilizar una salida de tipo 'cliente' (cargo a Clientes, abono a la cuenta de donde salió): aquí solo se crea ese movimiento y se APLICA a la(s) nota(s) (una fila de
+// fz_cobros_aplicados por nota, con monto positivo, igual que las notas de proveedor). Revertir RECALCULA lo devuelto con lo que queda aplicado (no recorta a cero como el cobro normal, que sí
+// rompería una devolución parcial de una nota negativa). Solo pesos mexicanos.
+// ============================================================================================================
+const notaCreditoRestante = (n) => cfdiR2(Math.abs(Number(n.total) || 0) - Math.abs(Number(n.importe_pagado) || 0));
+// notas de crédito de clientes con algo por devolver (opcionalmente de un solo cliente)
+async function devolucionNotasPendientes(b, clienteId) {
+  const { data } = await fetchTodasLasPaginas(() => { let q = sb.from('fz_facturas_clientes').select('*').eq('business_id', b.id).eq('tipo_documento', 'nota_credito'); if (clienteId) q = q.eq('cliente_id', clienteId); return q.order('fecha').order('id'); });
+  return (data || []).filter(n => Number(n.total) < 0 && (!n.moneda || n.moneda === 'MXN') && n.estatus !== 'Pagado' && notaCreditoRestante(n) > 0.004).map(n => ({ ...n, restante: notaCreditoRestante(n) }));
+}
+async function aplicarDevolucionCliente(idsNotas, monto, fecha, businessId, origen) {
+  const { data: notas } = await sb.from('fz_facturas_clientes').select('*').in('id', idsNotas).eq('business_id', businessId);
+  const lista = (notas || []).filter(n => n.tipo_documento === 'nota_credito' && Number(n.total) < 0).sort((a, z) => String(a.fecha).localeCompare(String(z.fecha)) || (Number(a.folio) || 0) - (Number(z.folio) || 0));
+  const fechaCorte = await obtenerFechaCorteRealizacion(businessId); let disponible = cfdiR2(monto); const aplicadas = [];
+  for (const n of lista) {
+    if (disponible < 0.01) break; const rest = notaCreditoRestante(n); if (rest < 0.01) continue;
+    const x = cfdiR2(Math.min(disponible, rest)), abs = cfdiR2(Math.abs(Number(n.importe_pagado) || 0) + x), llena = abs >= Math.abs(Number(n.total)) - 0.01;
+    const { error: eN } = await sb.from('fz_facturas_clientes').update({ importe_pagado: -abs, estatus: llena ? 'Pagado' : 'Parcial', fecha_pago: fecha }).eq('id', n.id); if (eN) throw eN;
+    const { error: eA } = await sb.from('fz_cobros_aplicados').insert({ business_id: businessId, factura_id: n.id, monto: x, origen_tabla: origen.origen_tabla, origen_id: origen.origen_id, fecha, tipo_cambio: null, notas: 'Devolución al cliente' }); if (eA) throw eA;
+    await sincronizarRealizacionFactura(n.id, 'cliente', businessId, fecha, fechaCorte);
+    aplicadas.push({ id: n.id, monto: x }); disponible = cfdiR2(disponible - x);
+  }
+  return { aplicadas, sobrante: disponible };
+}
+async function revertirDevolucionClientePorOrigen(tabla, movId, businessId) {
+  const { data: apps } = await sb.from('fz_cobros_aplicados').select('*').eq('origen_tabla', tabla).eq('origen_id', movId);
+  const ids = [...new Set((apps || []).map(a => a.factura_id).filter(Boolean))];
+  await sb.from('fz_cobros_aplicados').delete().eq('origen_tabla', tabla).eq('origen_id', movId);
+  for (const id of ids) { // lo devuelto de cada nota = lo que QUEDA aplicado por otras devoluciones
+    const { data: n } = await sb.from('fz_facturas_clientes').select('id,total').eq('id', id).maybeSingle(); if (!n) continue;
+    const { data: resto } = await sb.from('fz_cobros_aplicados').select('monto').eq('factura_id', id), abs = cfdiR2((resto || []).reduce((s, a) => s + (Number(a.monto) || 0), 0));
+    await sb.from('fz_facturas_clientes').update(abs <= 0.004 ? { importe_pagado: 0, estatus: 'Pendiente', fecha_pago: null } : { importe_pagado: -abs, estatus: abs >= Math.abs(Number(n.total)) - 0.01 ? 'Pagado' : 'Parcial' }).eq('id', id);
+  }
+  const fechaCorte = await obtenerFechaCorteRealizacion(businessId);
+  for (const a of (apps || [])) if (a.factura_id) await sincronizarRealizacionFactura(a.factura_id, 'cliente', businessId, a.fecha, fechaCorte);
+}
+// Crea la SALIDA de dinero y la aplica a las notas elegidas (desde la nota, el cliente o el Directorio)
+async function abrirDevolucionCliente(b, opciones = {}, alCambiar) {
+  if (!b) return;
+  if (!(await nccPreflight()).ok) { toast('Falta correr migracion_notas_credito_clientes.sql en Supabase para poder devolver dinero de una nota de crédito.', 'error'); return; }
+  const [clientes, notas, cuentasQ, monedasQ] = await Promise.all([loadClientes(b.id), devolucionNotasPendientes(b), sb.from('fz_bancos_cuentas').select('*').eq('business_id', b.id).eq('activo', true), sb.from('fz_efectivo_monedas').select('*').eq('business_id', b.id).eq('activo', true)]);
+  const nombreCli = (c) => c.razon_social && c.razon_social !== c.nombre_comercial ? `${c.razon_social} — ${c.nombre_comercial}` : (c.nombre_comercial || c.razon_social || '');
+  const conNotas = clientes.filter(c => notas.some(n => n.cliente_id === c.id));
+  if (!conNotas.length) { toast('Ningún cliente tiene notas de crédito pendientes de devolver (solo en pesos).', 'error'); return; }
+  const delCli = (cid) => notas.filter(n => n.cliente_id === cid);
+  const nota0 = opciones.notaId ? notas.find(n => n.id === opciones.notaId) : null;
+  if (opciones.notaId && !nota0) { toast('Esa nota ya no tiene nada pendiente de devolver.', 'error'); return; }
+  if (opciones.clienteId && !delCli(opciones.clienteId).length) { toast('Ese cliente no tiene notas de crédito pendientes de devolver.', 'error'); return; }
+  const cuentas = [...(cuentasQ.data || []).filter(c => (c.moneda || 'MXN') === 'MXN').map(c => ({ value: 'banco:' + c.id, label: 'Banco — ' + c.nombre })), ...(monedasQ.data || []).filter(m => codigoMonedaDeCaja(m.nombre, m.tc_reporte) === 'MXN').map(m => ({ value: 'efectivo:' + m.id, label: 'Efectivo — ' + m.nombre }))];
+  if (!cuentas.length) { toast('No hay una cuenta de Banco o Efectivo en pesos de donde pueda salir la devolución.', 'error'); return; }
+  const E = { clienteId: nota0 ? nota0.cliente_id : (opciones.clienteId || (conNotas.length === 1 ? conNotas[0].id : '')), sel: new Set(nota0 ? [nota0.id] : []), fecha: todayStr(), destino: cuentas[0].value, montoTocado: false };
+  if (E.clienteId && !nota0) delCli(E.clienteId).forEach(n => E.sel.add(n.id));
+  const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalDevolucionCliente'; const cerrar = () => bg.remove();
+  bg.innerHTML = `<div class="modal" style="width:min(720px,96vw);max-height:92vh;overflow:auto;"><h3>Devolución de dinero a un cliente</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 8px;">Úsala cuando una nota de crédito quedó como <strong>crédito a favor del cliente</strong> y le <strong>devuelves el dinero</strong>. Registra la salida de Banco o Efectivo y salda la(s) nota(s): Clientes vuelve a cero.</p>
+    <div class="field"><label>Cliente</label><select id="devCliente" class="cell" ${nota0 ? 'disabled' : ''}><option value="">Elige un cliente…</option>${conNotas.map(c => `<option value="${c.id}" ${E.clienteId === c.id ? 'selected' : ''}>${revEsc(nombreCli(c))}</option>`).join('')}</select></div>
+    <div class="field"><label>Notas de crédito que se devuelven</label><div id="devNotas" style="border:1px solid var(--line);border-radius:8px;max-height:200px;overflow:auto;"></div></div>
+    <div class="grid-3"><div class="field"><label>Fecha de la devolución</label><input type="date" id="devFecha" value="${E.fecha}"></div><div class="field"><label>Importe que sale</label><input type="text" id="devMonto" inputmode="decimal" placeholder="0.00"></div><div class="field"><label>Sale de</label><select id="devDestino" class="cell">${cuentas.map(c => `<option value="${c.value}">${revEsc(c.label)}</option>`).join('')}</select></div></div>
+    <div id="devPreview"></div><div class="modal-actions" style="position:sticky;bottom:0;background:#fff;border-top:1px solid var(--line);padding:12px 0 2px;margin-top:12px;z-index:2;"><button class="btn btn-ghost" id="devCancelar">Cancelar</button><button class="btn btn-gold" id="devConfirmar">Registrar la devolución</button></div></div>`;
+  document.body.appendChild(bg); const $ = (id) => bg.querySelector('#' + id); $('devCancelar').addEventListener('click', cerrar);
+  const elegidas = () => delCli(E.clienteId).filter(n => E.sel.has(n.id)), sumaRest = () => cfdiR2(elegidas().reduce((s, n) => s + n.restante, 0)), montoVal = () => cfdiR2(leerMonto($('devMonto').value) || 0);
+  const validar = () => { const m = montoVal(), s = sumaRest(); if (!E.clienteId) return 'Elige el cliente.'; if (!elegidas().length) return 'Marca al menos una nota de crédito.'; if (!(m > 0)) return 'Escribe el importe que sale.'; if (m > s + 0.005) return `El importe (${fmt(m)}) es mayor que lo que quedan por devolver las notas elegidas (${fmt(s)}).`; return null; };
+  const pintarNotas = () => { $('devNotas').innerHTML = E.clienteId ? delCli(E.clienteId).map(n => `<label style="display:flex;gap:8px;align-items:center;padding:7px 10px;border-bottom:1px solid var(--line);font-size:13px;"><input type="checkbox" class="dev-nota" value="${n.id}" ${E.sel.has(n.id) ? 'checked' : ''}><span style="flex:1;">${revEsc(n.numero_factura || '#' + n.folio)} · ${fechaCorta(n.fecha)}${n.factura_origen_id ? '' : ' · crédito general'}</span><span class="num"><strong>${fmt(n.restante)}</strong>${n.estatus === 'Parcial' ? ' <span style="color:var(--muted);font-weight:400;">(resta de ' + fmt(Math.abs(Number(n.total))) + ')</span>' : ''}</span></label>`).join('') : '<div class="empty" style="padding:10px;">Elige primero el cliente.</div>'; bg.querySelectorAll('.dev-nota').forEach(ck => ck.addEventListener('change', () => { ck.checked ? E.sel.add(ck.value) : E.sel.delete(ck.value); if (!E.montoTocado) $('devMonto').value = sumaRest() > 0 ? fmtInputVal(sumaRest()) : ''; pintar(); })); };
+  const pintar = () => { const err = validar(), m = montoVal(), s = sumaRest(); $('devPreview').innerHTML = err && (m > 0 || elegidas().length) ? `<div style="padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:12px;color:var(--red);">${revEsc(err)}</div>` : (!err ? `<div style="margin-top:6px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;font-size:12.5px;"><strong>Así quedará</strong><div style="margin-top:4px;">• Sale <strong>${fmt(m)}</strong> de la cuenta elegida y baja lo que le debes al cliente en la misma cantidad (Clientes vuelve a cero).</div><div>• ${m >= s - 0.005 ? 'Salda por completo' : 'Salda en parte'} ${elegidas().length} nota(s) de crédito${m < s - 0.005 ? `; quedan ${fmt(cfdiR2(s - m))} por devolver` : ''}.</div></div>` : ''); $('devConfirmar').disabled = !!err; };
+  $('devCliente').addEventListener('change', () => { E.clienteId = $('devCliente').value; E.sel = new Set(delCli(E.clienteId).map(n => n.id)); E.montoTocado = false; $('devMonto').value = sumaRest() > 0 ? fmtInputVal(sumaRest()) : ''; pintarNotas(); pintar(); });
+  $('devFecha').addEventListener('input', () => { E.fecha = $('devFecha').value; }); $('devMonto').addEventListener('input', () => { E.montoTocado = true; pintar(); }); $('devDestino').addEventListener('change', () => { E.destino = $('devDestino').value; });
+  if (E.clienteId) $('devMonto').value = fmtInputVal(sumaRest()); pintarNotas(); pintar();
+  $('devConfirmar').addEventListener('click', async () => {
+    const btn = $('devConfirmar'); if (btn.disabled) return; const err = validar(); if (err) { toast(err, 'error'); pintar(); return; } btn.disabled = true;
+    const falla = (m) => { toast(m, 'error'); pintar(); };
+    if (!E.fecha) return falla('Falta la fecha de la devolución.'); if (await bloqueadoPorCierre(b.id, E.fecha)) { pintar(); return; }
+    const cli = clientes.find(c => c.id === E.clienteId), monto = montoVal(), ids = elegidas().map(n => n.id), [tipo, refId] = E.destino.split(':'), tabla = tipo === 'banco' ? 'fz_bancos_mov' : 'fz_efectivo_mov';
+    const { data: cuentaRow } = tipo === 'banco' ? await sb.from('fz_bancos_cuentas').select('moneda,nombre').eq('id', refId).maybeSingle() : await sb.from('fz_efectivo_monedas').select('nombre,tc_reporte').eq('id', refId).maybeSingle();
+    const monedaCuenta = tipo === 'banco' ? ((cuentaRow && cuentaRow.moneda) || 'MXN') : codigoMonedaDeCaja(cuentaRow && cuentaRow.nombre, cuentaRow && cuentaRow.tc_reporte), res = resolverMovimientoMultimoneda(monedaCuenta, 'MXN', monto, 1, null);
+    if (!res) return falla('La cuenta elegida no está en pesos: elige una cuenta en MXN.');
+    const refTexto = `Devolución ${elegidas().map(n => n.numero_factura || '#' + n.folio).join(', ')}`.slice(0, 120);
+    const payload = tipo === 'banco' ? { business_id: b.id, cuenta_id: refId, fecha: E.fecha, concepto: 'Devolución a cliente', proveedor: nombreCli(cli), referencia: refTexto, descripcion: '', cargos: res.montoCuenta, depositos: 0, tipo_salida: 'cliente', tipo_cambio_historico: res.tcHistorico, equivalente_mxn_historico: res.equivalenteMxn }
+      : { business_id: b.id, moneda_id: refId, fecha: E.fecha, proveedor: nombreCli(cli), descripcion: refTexto, cargos: res.montoCuenta, depositos: 0, tipo_salida: 'cliente', tipo_cambio_historico: res.tcHistorico, equivalente_mxn_historico: res.equivalenteMxn };
+    const { data: mov, error: eM } = await sb.from(tabla).insert(payload).select().single(); if (eM || !mov) return falla('No se pudo crear el movimiento: ' + ((eM && eM.message) || ''));
+    let r; try { r = await aplicarDevolucionCliente(ids, monto, E.fecha, b.id, { origen_tabla: tabla, origen_id: mov.id }); if (r.sobrante > 0.009) throw new Error('las notas elegidas ya no alcanzan para ese importe'); }
+    catch (e) { await revertirDevolucionClientePorOrigen(tabla, mov.id, b.id); await sb.from(tabla).delete().eq('id', mov.id); return falla('No se pudo aplicar la devolución: ' + ((e && e.message) || e) + '. No quedó nada registrado.'); }
+    await sb.from(tabla).update({ cliente_factura_ids: r.aplicadas.map(a => a.id), cliente_factura_id: r.aplicadas[0] ? r.aplicadas[0].id : null }).eq('id', mov.id);
+    registrarAuditoria(b.id, 'crear', 'Facturas de clientes', `Devolución de ${fmt(monto)} a ${nombreCli(cli)} aplicada a ${r.aplicadas.length} nota(s) de crédito`);
+    cerrar(); toast(`Devolución de ${fmt(monto)} registrada: ${r.aplicadas.length} nota(s) de crédito saldada(s) o abonadas.`); if (alCambiar) alCambiar();
+  });
+}
+// Clasifica una salida que YA está en Banco o Efectivo como devolución a un cliente: elige a qué notas de crédito corresponde (deben cubrir el importe del movimiento)
+async function openNotasDevolucionModal(rowId, table, onDone) {
+  const { data: row } = await sb.from(table).select('*').eq('id', rowId).maybeSingle(); if (!row) return;
+  if (await bloqueadoPorCierre(row.business_id, row.fecha)) return;
+  const monto = cfdiR2(Number(row.cargos) || 0); if (!(monto > 0)) { toast('Una devolución necesita un movimiento de salida con importe.', 'error'); return; }
+  if (!(await nccPreflight()).ok) { toast('Falta correr migracion_notas_credito_clientes.sql en Supabase.', 'error'); return; }
+  const b = biz(); const [clientes, pend, appsQ] = await Promise.all([loadClientes(b.id), devolucionNotasPendientes(b), sb.from('fz_cobros_aplicados').select('factura_id,monto').eq('origen_tabla', table).eq('origen_id', rowId)]);
+  const yaAp = {}; (appsQ.data || []).forEach(a => { if (a.factura_id) yaAp[a.factura_id] = cfdiR2((yaAp[a.factura_id] || 0) + (Number(a.monto) || 0)); });
+  const mapa = new Map(pend.map(n => [n.id, { ...n, disp: n.restante }]));
+  const idsYa = Object.keys(yaAp); if (idsYa.length) { const { data: ya } = await sb.from('fz_facturas_clientes').select('*').in('id', idsYa); (ya || []).forEach(n => { const r = notaCreditoRestante(n); mapa.set(n.id, { ...n, disp: cfdiR2(r + yaAp[n.id]) }); }); } // lo que este mismo movimiento ya tomó vuelve a estar disponible
+  const lista = [...mapa.values()].filter(n => n.disp > 0.004).sort((a, z) => String(a.fecha).localeCompare(String(z.fecha)));
+  if (!lista.length) { toast('No hay notas de crédito con algo pendiente de devolver (solo en pesos).', 'error'); return; }
+  const nombreCli = (id) => { const c = clientes.find(x => x.id === id); return c ? (c.razon_social && c.razon_social !== c.nombre_comercial ? `${c.razon_social} — ${c.nombre_comercial}` : (c.nombre_comercial || c.razon_social)) : '(cliente eliminado)'; };
+  const sel = new Set(idsYa), bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalNotasDevolucion'; const cerrar = () => bg.remove();
+  const grupos = {}; lista.forEach(n => { (grupos[n.cliente_id] = grupos[n.cliente_id] || []).push(n); });
+  bg.innerHTML = `<div class="modal" style="width:min(680px,96vw);max-height:92vh;overflow:auto;"><h3>Devolución a cliente · ${fmt(monto)}</h3><p style="font-size:12.5px;color:var(--muted);margin:0 0 8px;">Elige la(s) nota(s) de crédito que este movimiento devuelve. Deben cubrir el importe de la salida.</p>
+    <div style="border:1px solid var(--line);border-radius:8px;max-height:300px;overflow:auto;">${Object.keys(grupos).map(cid => `<div style="padding:6px 10px;background:#f7f9fc;font-size:12px;font-weight:700;">${revEsc(nombreCli(cid))}</div>${grupos[cid].map(n => `<label style="display:flex;gap:8px;align-items:center;padding:7px 10px;border-bottom:1px solid var(--line);font-size:13px;"><input type="checkbox" class="dnm-nota" value="${n.id}" ${sel.has(n.id) ? 'checked' : ''}><span style="flex:1;">${revEsc(n.numero_factura || '#' + n.folio)} · ${fechaCorta(n.fecha)}</span><strong class="num">${fmt(n.disp)}</strong></label>`).join('')}`).join('')}</div>
+    <div id="dnmResumen" style="margin:8px 0;font-size:12.5px;"></div><div class="modal-actions" style="position:sticky;bottom:0;background:#fff;border-top:1px solid var(--line);padding:12px 0 2px;margin-top:12px;z-index:2;"><button class="btn btn-ghost" id="dnmCancelar">Cancelar</button><button class="btn btn-gold" id="dnmAceptar">Aplicar la devolución</button></div></div>`;
+  document.body.appendChild(bg); const $ = (id) => bg.querySelector('#' + id); $('dnmCancelar').addEventListener('click', cerrar);
+  const suma = () => cfdiR2([...sel].reduce((s, id) => s + ((mapa.get(id) || {}).disp || 0), 0));
+  const pintar = () => { const s = suma(), ok = s >= monto - 0.005; $('dnmResumen').innerHTML = `Elegidas: <strong>${fmt(s)}</strong> de ${fmt(monto)} que salió ${ok ? '<span style="color:var(--green);">✓ alcanza</span>' : `<span style="color:var(--red);">faltan ${fmt(cfdiR2(monto - s))}</span>`}`; $('dnmAceptar').disabled = !ok; };
+  bg.querySelectorAll('.dnm-nota').forEach(ck => ck.addEventListener('change', () => { ck.checked ? sel.add(ck.value) : sel.delete(ck.value); pintar(); })); pintar();
+  $('dnmAceptar').addEventListener('click', async () => {
+    const btn = $('dnmAceptar'); if (btn.disabled) return; btn.disabled = true; const ids = [...sel];
+    try {
+      await revertirDevolucionClientePorOrigen(table, rowId, row.business_id);
+      const r = await aplicarDevolucionCliente(ids, monto, row.fecha, row.business_id, { origen_tabla: table, origen_id: rowId });
+      if (r.sobrante > 0.009) throw new Error('las notas elegidas ya no alcanzan');
+      const { error } = await sb.from(table).update({ tipo_salida: 'cliente', cliente_factura_ids: r.aplicadas.map(a => a.id), cliente_factura_id: r.aplicadas[0] ? r.aplicadas[0].id : null, subcuenta_id: null, proveedor_factura_id: null, proveedor_factura_ids: [] }).eq('id', rowId); if (error) throw error;
+      registrarAuditoria(row.business_id, 'editar', table === 'fz_bancos_mov' ? 'Bancos' : 'Efectivo', `Salida de ${fmt(monto)} (${row.fecha}) clasificada como devolución a cliente, aplicada a ${r.aplicadas.length} nota(s) de crédito`);
+      cerrar(); toast(`Devolución aplicada a ${r.aplicadas.length} nota(s) de crédito.`); if (onDone) onDone();
+    } catch (e) { await revertirDevolucionClientePorOrigen(table, rowId, row.business_id); toast('No se pudo aplicar la devolución: ' + ((e && e.message) || e), 'error'); btn.disabled = false; if (onDone) onDone(); }
+  });
+}
+// Revisión: una salida clasificada como devolución a cliente debe tener aplicado a notas de crédito exactamente lo que salió
+function revDevolucionesCliente(ctx) {
+  const { bancosMov, efectivoMov, cobrosAplicados, facturasClientes } = ctx;
+  const base = { id: 'devoluciones_cliente', titulo: 'Devoluciones de dinero a clientes sin su nota de crédito (o por otro importe)', ayuda: 'Una salida de Banco o Efectivo clasificada como "Devolución a cliente" baja la cuenta Clientes por todo lo que salió; lo que salió debe estar aplicado a notas de crédito del cliente. (1) "Sin notas": la salida no tiene ninguna nota aplicada: el cliente no se descontó de ninguna. (2) "Importe distinto": se aplicó más o menos de lo que salió (por ejemplo, se editó el importe del movimiento después). Corrígelo abriendo el movimiento: elige las notas (o cambia su tipo para deshacer la aplicación).' };
+  const facturaPorId = Object.fromEntries((facturasClientes || []).map(f => [f.id, f])), items = [];
+  [...bancosMov.map(m => ['fz_bancos_mov', m]), ...efectivoMov.map(m => ['fz_efectivo_mov', m])].filter(([, m]) => m.tipo_salida === 'cliente').forEach(([t, m]) => {
+    const monto = cfdiR2(Number(m.cargos) || 0), apps = (cobrosAplicados || []).filter(a => a.origen_tabla === t && a.origen_id === m.id && a.factura_id), suma = cfdiR2(apps.reduce((s, a) => s + (Number(a.monto) || 0), 0)), rotas = apps.filter(a => !facturaPorId[a.factura_id]).length;
+    const etiqueta = `${fechaCorta(m.fecha)} · ${m.descripcion || m.referencia || m.proveedor || 'Devolución a cliente'}`;
+    if (!apps.length) items.push({ fecha: m.fecha, monto, texto: `${etiqueta}: salió ${fmt(monto)} como devolución a cliente pero no tiene ninguna nota de crédito aplicada` });
+    else if (Math.abs(suma - monto) > 0.01 || rotas) items.push({ fecha: m.fecha, monto: cfdiR2(Math.abs(monto - suma)), texto: `${etiqueta}: salió ${fmt(monto)} pero tiene aplicado ${fmt(suma)} a notas de crédito${rotas ? ` (${rotas} apunta a una nota que ya no existe)` : ''}` });
+  });
+  items.sort((a, z) => String(a.fecha).localeCompare(String(z.fecha)));
+  return { ...base, items: items.slice(0, 120), ...(items.length > 120 ? { nota: `Se muestran 120 de ${items.length}.` } : {}) };
 }
 
 // ---- pantalla: bandeja ----
@@ -23653,7 +23925,7 @@ function cfdiEstadoHtml(c) {
   }
   if (c.estado === 'ignorado') return caja(mut, 'Ignorado');
   if (c.estatus_sat === 'cancelado') return caja(rojo, 'No clasificable (cancelado)');
-  return caja(mut, cfdiEsClasificable(c) ? 'Por clasificar' : 'Por clasificar<br><span title="Por ahora se clasifican los CFDI de tipo ingreso (recibidos = gastos, emitidos = ventas)">(este tipo aún no se registra: puedes ignorarlo desde su detalle)</span>');
+  return caja(mut, cfdiEsClasificable(c) ? 'Por clasificar' : 'Por clasificar<br><span title="Por ahora se clasifican los CFDI de ingreso (recibidos = gastos, emitidos = ventas) y de egreso (notas de crédito)">(este tipo aún no se registra: puedes ignorarlo desde su detalle)</span>');
 }
 function pintarCfdi(el, b) {
   const todos = STATE_cfdi.datos, f = STATE_cfdi, q = f.q.trim().toLowerCase();
@@ -23789,8 +24061,8 @@ async function abrirCfdiDetalle(id) {
   const parte = (nombre, rfc) => `${revEsc(nombre || '')}<div style="font-size:11.5px;color:var(--muted);">${revEsc(rfc)}</div>`;
   const conceptos = (c.conceptos || []);
   let factLigada = null; if (c.estado === 'clasificado' && c.clasificado_id) {
-    if (c.clasificado_tabla === 'fz_facturas_clientes') { const { data: fl } = await sb.from('fz_facturas_clientes').select('id,folio,numero_factura,total,moneda,cliente_id').eq('id', c.clasificado_id).maybeSingle(); if (fl) { const { data: cl } = await sb.from('fz_clientes').select('nombre_comercial,razon_social').eq('id', fl.cliente_id).maybeSingle(); factLigada = { id: fl.id, factura: fl.numero_factura || '#' + fl.folio, proveedor: cl ? (cl.razon_social || cl.nombre_comercial) : '', importe: fl.total, moneda: fl.moneda, esCliente: true }; } }
-    else { const { data: fl } = await sb.from('fz_proveedores').select('id,factura,proveedor,importe,moneda').eq('id', c.clasificado_id).maybeSingle(); factLigada = fl || null; } }
+    if (c.clasificado_tabla === 'fz_facturas_clientes') { const { data: fl } = await sb.from('fz_facturas_clientes').select('*').eq('id', c.clasificado_id).maybeSingle(); if (fl) { const { data: cl } = await sb.from('fz_clientes').select('nombre_comercial,razon_social').eq('id', fl.cliente_id).maybeSingle(); factLigada = { id: fl.id, factura: fl.numero_factura || '#' + fl.folio, proveedor: cl ? (cl.razon_social || cl.nombre_comercial) : '', importe: fl.total, moneda: fl.moneda, esCliente: true }; } }
+    else { const { data: fl } = await sb.from('fz_proveedores').select('*').eq('id', c.clasificado_id).maybeSingle(); factLigada = fl || null; } }
   const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalCfdiDetalle';
   bg.innerHTML = `<div class="modal" style="width:min(960px,96vw);max-height:92vh;overflow:auto;">
     <h3>${CFDI_TIPOS[c.tipo_comprobante]} ${c.direccion === 'emitido' ? 'emitido' : 'recibido'} · ${revEsc([c.serie, c.folio].filter(Boolean).join('-') || c.uuid.slice(0, 8))}</h3>
@@ -23804,7 +24076,7 @@ async function abrirCfdiDetalle(id) {
     <div style="font-size:12.5px;">${cfdiBadgeSat(c.estatus_sat)}${c.estatus_sat_fecha ? ` · ${fechaCorta(c.estatus_sat_fecha)}` : ''}${c.estatus_sat_motivo ? ` · motivo ${revEsc(CFDI_MOTIVOS_CANCELACION[c.estatus_sat_motivo] || c.estatus_sat_motivo)}` : ''}${c.estatus_sat_nota ? ` · ${revEsc(c.estatus_sat_nota)}` : ''}${c.uuid_sustitucion ? ` · lo sustituye ${revEsc(c.uuid_sustitucion)}` : ''}${c.estatus_sat_fuente ? ` <span style="color:var(--muted);">(fuente: ${revEsc(c.estatus_sat_fuente)})</span>` : ''}
       ${c.estatus_sat === 'no_verificado' ? '<div style="color:var(--muted);margin-top:4px;">El XML no indica si el SAT lo canceló después de emitirlo. Márcalo cuando lo verifiques.</div>' : ''}</div>
     <h4 style="font-size:13px;margin:14px 0 6px;">Clasificación</h4>
-    <div style="font-size:12.5px;">${c.estado === 'clasificado' ? (c.clasificado_tabla === 'sin_registro' ? 'Clasificado: sin registro adicional (factura global o ventas ya registradas).' : factLigada ? `Clasificado → factura ${factLigada.esCliente ? 'de cliente ' : ''}<strong>${revEsc(factLigada.factura || 's/f')}</strong> de ${revEsc(factLigada.proveedor)} por ${fmtMon(factLigada.importe, factLigada.moneda)}${c.clasificado_por ? ` <span style="color:var(--muted);">(por ${revEsc(c.clasificado_por)})</span>` : ''}` : '<span style="color:var(--red);">⚠ La factura ligada ya no existe.</span>') : c.estado === 'ignorado' ? 'Ignorado' : (c.estatus_sat === 'cancelado' ? '<span style="color:var(--red);">No clasificable: el CFDI está cancelado.</span>' : (cfdiEsClasificable(c) ? 'Por clasificar.' : 'Por clasificar (este tipo aún no se registra: puedes ignorarlo).'))}</div>
+    <div style="font-size:12.5px;">${c.estado === 'clasificado' ? (c.clasificado_tabla === 'sin_registro' ? 'Clasificado: sin registro adicional (factura global o ventas ya registradas).' : factLigada ? `Clasificado → ${factLigada.tipo_documento === 'nota_credito' ? 'nota de crédito' : 'factura'} ${factLigada.esCliente ? 'de cliente ' : ''}<strong>${revEsc(factLigada.factura || 's/f')}</strong> de ${revEsc(factLigada.proveedor)} por ${fmtMon(factLigada.importe, factLigada.moneda)}${c.clasificado_por ? ` <span style="color:var(--muted);">(por ${revEsc(c.clasificado_por)})</span>` : ''}` : '<span style="color:var(--red);">⚠ La factura ligada ya no existe.</span>') : c.estado === 'ignorado' ? 'Ignorado' : (c.estatus_sat === 'cancelado' ? '<span style="color:var(--red);">No clasificable: el CFDI está cancelado.</span>' : (cfdiEsClasificable(c) ? 'Por clasificar.' : 'Por clasificar (este tipo aún no se registra: puedes ignorarlo).'))}</div>
     <h4 style="font-size:13px;margin:14px 0 6px;">Conceptos (${conceptos.length})</h4>
     <div style="max-height:160px;overflow:auto;"><table class="tabla-operativa"><thead><tr><th>Clave</th><th>Descripción</th><th class="num">Cant.</th><th class="num">Importe</th></tr></thead><tbody>${conceptos.length ? conceptos.map(x => `<tr><td>${revEsc(x.clave)}</td><td>${revEsc(x.descripcion)}</td><td class="num">${x.cantidad}</td><td class="num">${fmtMon(x.importe, c.moneda)}</td></tr>`).join('') : '<tr><td colspan="4" class="empty">Sin conceptos.</td></tr>'}</tbody></table></div>
     ${(c.relacionados || []).length ? `<h4 style="font-size:13px;margin:14px 0 6px;">CFDI relacionados</h4><div style="font-size:12px;">${c.relacionados.map(r => `Relación ${revEsc(r.tipo_relacion)}: ${r.uuids.map(revEsc).join(', ')}`).join('<br>')}</div>` : ''}
@@ -26168,7 +26440,12 @@ function revFacturasPagoIncoherente(ctx) {
     if (pagado - respaldo > 0.005 && !ligadas.has(f.id)) items.push({ tipo: 'sin_pago', f, pagado, apl, pol, fecha: f.fecha, monto: revRedondeo(pagado - respaldo), texto: `${etiqueta}: pagada sin ningún pago. Figura pagada ${fmt(pagado)} (${f.estatus}) y no tiene ningún pago ligado; aplicado ${fmt(apl)}${pol > 0.004 ? ` y en pólizas ${fmt(pol)}` : ''}` });
     else if (respaldo - pagado > 0.005) items.push({ fecha: f.fecha, monto: revRedondeo(respaldo - pagado), texto: `${etiqueta}: aplicado de más. Las aplicaciones${pol > 0.004 ? ' y las pólizas' : ''} suman ${fmt(respaldo)} y la factura figura pagada por ${fmt(pagado)} (${f.estatus})` });
     const estatusMal = (f.estatus === 'Pagado' && pagado < imp - 0.005) || (f.estatus === 'Pendiente' && pagado > 0.005) || (f.estatus === 'Parcial' && (pagado <= 0.005 || pagado >= imp - 0.005));
-    if (estatusMal) items.push({ fecha: f.fecha, monto: revRedondeo(imp - pagado), texto: `${etiqueta}: estatus incoherente. Es ${f.estatus} con importe ${fmt(imp)} y pagado ${fmt(pagado)}` });
+    if (estatusMal) {
+      const it = { fecha: f.fecha, monto: revRedondeo(imp - pagado), texto: `${etiqueta}: estatus incoherente. Es ${f.estatus} con importe ${fmt(imp)} y pagado ${fmt(pagado)}` };
+      // "Pagado" sin un solo peso pagado, sin pagos ligados ni aplicados ni pólizas: es la única combinación que se puede regresar a Pendiente sin adivinar (las demás pueden ser Parcial o Pagado: se corrigen a mano)
+      if (f.estatus === 'Pagado' && pagado <= 0.005 && respaldo <= 0.005 && !ligadas.has(f.id)) { it.tipo = 'estatus_sin_pago'; it.f = f; }
+      items.push(it);
+    }
   });
   items.sort((a, z) => a.fecha.localeCompare(z.fecha));
   const r = { ...base, items: items.slice(0, 120), ...(items.length > 120 ? { nota: `Se muestran 120 de ${items.length}.` } : {}) };
@@ -26205,6 +26482,36 @@ function revFacturasPagoIncoherente(ctx) {
         return `${hechas} factura(s) dejada(s) pendiente(s) por ${fmt(monto)}${cerradas ? ` · ${cerradas} en meses cerrados no se tocaron` : ''}${omitidas ? ` · ${omitidas} ya no estaban como se esperaba y se dejaron` : ''}.`;
       },
     };
+  }
+  // Acción extra: facturas "Pagado" con $0 pagado (el estatus no dice la verdad) → "Pendiente", igual que el selector de estatus de Cuentas por pagar
+  const estatusSinPago = items.filter(i => i.tipo === 'estatus_sin_pago');
+  if (estatusSinPago.length) {
+    const b = ctx.b, totalEst = revRedondeo(estatusSinPago.reduce((acc, i) => acc + i.monto, 0)), n = estatusSinPago.length;
+    r.accionesExtra = [{
+      etiqueta: `Regresar a Pendiente ${n} factura${n === 1 ? '' : 's'} «Pagado» sin pago (${fmt(totalEst)})`,
+      confirmar: `Se regresará a Pendiente ${n} factura(s) que figuran "Pagado" con $0.00 pagado y no tienen ningún pago ligado ni aplicado: quedarán por pagar por ${fmt(totalEst)}. El Balance NO cambia (ya cuenta ese pasivo completo); solo se corrige el módulo de Proveedores. Úsalo SOLO si ese dinero de verdad no se ha pagado, o si vas a ligar después el pago que sí se hizo (el selector de facturas al clasificar una salida no muestra las que están "Pagado"). Se revisa de nuevo cada factura antes de tocarla y los meses cerrados no se tocan. ¿Continuar?`,
+      ejecutar: async () => {
+        const leer = (tabla) => fetchTodasLasPaginas(() => sb.from(tabla).select('id,proveedor_factura_ids,proveedor_factura_id').eq('business_id', b.id).eq('tipo_salida', 'proveedor').order('id'));
+        const [bm, em] = await Promise.all([leer('fz_bancos_mov'), leer('fz_efectivo_mov')]);
+        const ligadasAhora = new Set();
+        [...(bm.data || []), ...(em.data || [])].forEach(m => { const ids = Array.isArray(m.proveedor_factura_ids) && m.proveedor_factura_ids.length ? m.proveedor_factura_ids : (m.proveedor_factura_id ? [m.proveedor_factura_id] : []); ids.forEach(id => ligadasAhora.add(id)); });
+        let hechas = 0, cerradas = 0, omitidas = 0, monto = 0;
+        for (const it of estatusSinPago) {
+          if (await bloqueadoPorCierre(b.id, it.f.fecha)) { cerradas++; continue; }
+          const { data: fr } = await sb.from('fz_proveedores').select('id,importe,importe_pagado,estatus').eq('id', it.f.id).maybeSingle();
+          const { data: aps } = await sb.from('fz_pagos_aplicados').select('monto').eq('factura_id', it.f.id);
+          const { data: lps } = await sb.from('fz_polizas_lineas').select('cargo').eq('business_id', b.id).eq('cuenta_tipo', 'proveedor').eq('proveedor_factura_id', it.f.id);
+          const respaldoAhora = (aps || []).reduce((acc, a) => acc + (Number(a.monto) || 0), 0) + (lps || []).reduce((acc, l) => acc + (Number(l.cargo) || 0), 0);
+          // se vuelve a comprobar: sigue "Pagado" con $0 pagado y ningún pago, aplicación o póliza le llegó mientras tanto
+          if (!fr || fr.estatus !== 'Pagado' || (Number(fr.importe_pagado) || 0) > 0.005 || respaldoAhora > 0.005 || ligadasAhora.has(it.f.id)) { omitidas++; continue; }
+          const { error } = await sb.from('fz_proveedores').update({ importe_pagado: 0, estatus: 'Pendiente', fecha_pago: null, pagado_desde: null, pagado_desde_tipo: null, pagado_desde_cuenta_id: null }).eq('id', it.f.id);
+          if (error) throw error;
+          registrarAuditoria(b.id, 'editar', 'Proveedores', `Factura ${it.f.factura || 's/f'} (${it.f.proveedor || 'Proveedor'}): figuraba "Pagado" con $0.00 pagado y sin ningún pago; se regresó a Pendiente por ${fmt(Number(fr.importe) || 0)} (Revisión de consistencia)`);
+          hechas++; monto = revRedondeo(monto + (Number(fr.importe) || 0));
+        }
+        return `${hechas} factura(s) regresada(s) a Pendiente por ${fmt(monto)}${cerradas ? ` · ${cerradas} en meses cerrados no se tocaron` : ''}${omitidas ? ` · ${omitidas} ya no estaban como se esperaba y se dejaron` : ''}.`;
+      },
+    }];
   }
   return r;
 }
@@ -26472,6 +26779,7 @@ function revVinculosCobroFactura(ctx) {
       rotas.push({ fecha: m.fecha, texto: `${fechaCorta(m.fecha)} · ${m.descripcion || m.proveedor || 'Cobro de cliente'}: ${idsRotos.length === idsApp.length ? 'su aplicación apunta' : 'parte de su aplicación apunta'} a una factura que ya no existe (se borró o se volvió a crear)`, monto: total });
       return;
     }
+    if (m && m.tipo_salida === 'cliente' && m.tipo_entrada !== 'cliente') return; // devolución de dinero a un cliente: la revisa «Devoluciones de dinero a clientes»
     if (!m || m.tipo_entrada !== 'cliente') {
       huerfanas.push({ fecha: m?.fecha || apps[0].fecha, texto: `${fechaCorta(m?.fecha || apps[0].fecha)} · factura ${nombresFact}: tiene una aplicación de cobro pero ${m ? 'su movimiento ya no es un cobro de cliente' : 'su movimiento ya no existe'}`, monto: total });
       return;
@@ -26617,7 +26925,7 @@ function revTcCierre(ctx) {
 
 async function ejecutarRevisionConsistencia(b) {
   const ctx = await cargarContextoRevision(b);
-  const checks = [revVentasCategorias, revPropinas, revPropinasSinMarca, revPropinasDuplicadas, revDepositosVentas, revPagosProveedor, revPagosReubicables, revGruposConFaltante, revCreditosDuplicados, revFacturasPagoIncoherente, revDescuadreLibro, revVinculosPagoFactura, revCreditosClientes, revVinculosCobroFactura, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar, revTcCierre, revCfdiClasificados];
+  const checks = [revVentasCategorias, revPropinas, revPropinasSinMarca, revPropinasDuplicadas, revDepositosVentas, revPagosProveedor, revPagosReubicables, revGruposConFaltante, revCreditosDuplicados, revFacturasPagoIncoherente, revDescuadreLibro, revVinculosPagoFactura, revCreditosClientes, revVinculosCobroFactura, revDevolucionesCliente, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar, revTcCierre, revCfdiClasificados];
   const out = [];
   for (const fn of checks) {
     try { const r = fn(ctx); if (r) out.push(r); }
@@ -26659,7 +26967,7 @@ async function renderRevisionConsistencia() {
             <div style="padding:6px 14px 12px;font-size:13px;">
               ${r.error ? `<div style="color:var(--red);">No se pudo revisar: ${revEsc(r.error)}</div>` : ''}
               <div style="color:var(--muted);margin-bottom:8px;">${revEsc(r.ayuda)}</div>
-              ${r.accion ? `<div style="margin:0 0 10px;"><button class="btn btn-gold btn-sm rev-accion" data-rev="${revEsc(r.id)}">${revEsc(r.accion.etiqueta)}</button></div>` : ''}
+              ${r.accion ? `<div style="margin:0 0 10px;"><button class="btn btn-gold btn-sm rev-accion" data-rev="${revEsc(r.id)}">${revEsc(r.accion.etiqueta)}</button></div>` : ''}${(r.accionesExtra || []).map((a, i) => `<div style="margin:0 0 10px;"><button class="btn btn-gold btn-sm rev-accion" data-rev="${revEsc(r.id)}" data-extra="${i}">${revEsc(a.etiqueta)}</button></div>`).join('')}
               <div style="overflow-x:auto;"><table class="tabla-operativa" style="width:100%;table-layout:auto;"><thead><tr><th>Detalle</th><th class="num">Importe</th><th></th></tr></thead><tbody>${filas}${mas}</tbody></table></div>
               ${r.nota ? `<div style="color:var(--muted);margin-top:8px;">${revEsc(r.nota)}</div>` : ''}
             </div>
@@ -26680,10 +26988,11 @@ async function renderRevisionConsistencia() {
     }));
     cuerpo.querySelectorAll('.rev-accion').forEach(btn => btn.addEventListener('click', async () => {
       const r = revs.find(x => x.id === btn.dataset.rev);
-      if (!r || !r.accion) return;
-      if (!confirm(r.accion.confirmar || '¿Ejecutar esta corrección?')) return;
+      const acc = r ? (btn.dataset.extra !== undefined ? (r.accionesExtra || [])[Number(btn.dataset.extra)] : r.accion) : null;
+      if (!r || !acc) return;
+      if (!confirm(acc.confirmar || '¿Ejecutar esta corrección?')) return;
       btn.disabled = true; btn.textContent = 'Procesando…';
-      try { const msg = await r.accion.ejecutar(); toast(msg || 'Listo.'); }
+      try { const msg = await acc.ejecutar(); toast(msg || 'Listo.'); }
       catch (err) { toast('No se pudo completar: ' + (err.message || err), 'error'); }
       await pintar();
     }));
