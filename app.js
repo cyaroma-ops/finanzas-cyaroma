@@ -16087,14 +16087,17 @@ async function renderProveedores() {
   const conteoAdjuntosProv = await contarAdjuntosPorRegistro('fz_proveedores', rows.map(p => p.id));
 
   const pendientesTodas = all.filter(p => p.estatus === 'Pendiente' || p.estatus === 'Parcial');
-  const porProveedorMap = {};
+  // El adeudo se agrupa por PROVEEDOR (el ligado al catálogo), igual que el Directorio — no por el texto que cada factura trae escrito: dos facturas del mismo proveedor con el nombre escrito distinto ("CAPA" vs "COMISION… — CAPA") ya no salen en renglones separados. El nombre mostrado sale del catálogo.
+  const catalogoResumen = await cargarCatalogoProveedoresNombres(b.id);
+  const porProveedorMap = {}, nombrePorClave = {};
   pendientesTodas.forEach(p => {
-    const key = p.proveedor || '(sin proveedor)';
+    const key = claveProveedor(p);
     (porProveedorMap[key] = porProveedorMap[key] || []).push(p);
+    if (!nombrePorClave[key]) nombrePorClave[key] = nombreProveedorMostrado(p, catalogoResumen);
   });
-  const resumenProveedores = Object.keys(porProveedorMap).map(nombre => ({
-    nombre, facturas: porProveedorMap[nombre].sort((a,c)=>a.fecha.localeCompare(c.fecha)),
-    total: porProveedorMap[nombre].reduce((s,f)=>s+saldoPend(f),0),
+  const resumenProveedores = Object.keys(porProveedorMap).map(clave => ({
+    clave, nombre: nombrePorClave[clave], facturas: porProveedorMap[clave].sort((a,c)=>a.fecha.localeCompare(c.fecha)),
+    total: porProveedorMap[clave].reduce((s,f)=>s+saldoPend(f),0),
   })).sort((a,b) => b.total - a.total);
 
   el.innerHTML = `
@@ -16111,12 +16114,12 @@ async function renderProveedores() {
           <thead><tr><th>Proveedor</th><th>Facturas pendientes</th><th>Total adeudado</th></tr></thead>
           <tbody>
             ${resumenProveedores.length ? resumenProveedores.map(p => `
-              <tr class="prov-resumen-row" data-prov="${p.nombre}" style="cursor:pointer;">
-                <td>${STATE_provExpandido===p.nombre?'▾':'▸'} ${p.nombre}</td>
+              <tr class="prov-resumen-row" data-prov="${revEsc(p.clave)}" style="cursor:pointer;">
+                <td>${STATE_provExpandido===p.clave?'▾':'▸'} ${p.nombre}</td>
                 <td>${p.facturas.length}</td>
                 <td class="num" style="font-weight:700;color:${p.total<0?'var(--green)':'var(--red)'};">${fmt(p.total)}</td>
               </tr>
-              ${STATE_provExpandido===p.nombre ? `<tr><td colspan="3" style="padding:0 0 10px 0;background:#f7f9fc;">
+              ${STATE_provExpandido===p.clave ? `<tr><td colspan="3" style="padding:0 0 10px 0;background:#f7f9fc;">
                 <table style="width:100%;">
                   <thead><tr><th style="padding-left:24px;">Fecha</th><th>Factura</th><th>Saldo</th></tr></thead>
                   <tbody>${p.facturas.map(f => `<tr><td style="padding-left:24px;">${f.fecha}</td><td>${f.factura||'s/f'}${f.estatus==='Parcial'?' (parcial)':''}</td><td class="num" style="color:${saldoPend(f)<0?'var(--green)':'inherit'};">${fmt(saldoPend(f))}</td></tr>`).join('')}</tbody>
