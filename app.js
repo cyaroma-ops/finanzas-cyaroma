@@ -16694,8 +16694,17 @@ async function renderProveedorDetalle(el, b) {
   const kpiDivisa = (valor) => `${fmtPorMoneda(sumarPorMoneda(facturas, valor))}<div style="font-size:11px;font-weight:400;color:var(--muted);margin-top:2px;">≈ ${fmt(facturas.reduce((s, f) => s + eqMxn(f, valor(f)), 0))} MXN al tipo de cambio de cada factura</div>`;
   const fxReal = transacciones.fxRealizada || 0;
 
+  // Si este proveedor NO está en el catálogo visible (sin vínculo, vínculo huérfano o registro oculto/desactivado) se ofrece ligarlo a uno del catálogo ahí mismo
+  const fantasma = !catMatch || !provVisibleEnCatalogo(catMatch);
+  const activosCat = (catalogo || []).filter(provVisibleEnCatalogo).sort((a, z) => provNombreVisible(a).localeCompare(provNombreVisible(z)));
+  let sugeridoLigar = '';
+  if (fantasma && puedeReabrirPeriodo()) { const rk = cfdiRankearProveedores(activosCat, provConteosDe(all || []), { rfc_emisor: '', nombre_emisor: (catMatch && (catMatch.razon_social || catMatch.nombre)) || (primeraFactura && primeraFactura.proveedor) || '' }, {}).filter(x => x.score >= 80 && x.p.id !== (catMatch && catMatch.id)); sugeridoLigar = rk.length ? rk[0].p.id : ''; }
+  const bannerLigar = fantasma && puedeReabrirPeriodo() ? `<div id="provLigarBanner" style="padding:10px 12px;margin-bottom:14px;border:1px solid #e6c768;background:#fff8e1;border-radius:10px;font-size:12.5px;">
+      <strong>Este proveedor no aparece en tu catálogo</strong>${catMatch ? ' (su registro está desactivado u oculto)' : (primeraFactura && primeraFactura.proveedor_id ? ' (su registro ya no existe en este negocio)' : ' (sus facturas solo tienen el nombre escrito)')}. Ligar sus ${facturas.length} factura(s) a un proveedor del catálogo evita que se vea duplicado. No cambia ningún importe ni pago.
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center;"><select id="provLigarSel" class="cell" style="min-width:240px;flex:1;max-width:420px;"><option value="">Elige un proveedor del catálogo…</option>${activosCat.map(c => `<option value="${c.id}" ${sugeridoLigar === c.id ? 'selected' : ''}>${revEsc(provNombreVisible(c))}${c.rfc ? ' · ' + revEsc(c.rfc) : ''}</option>`).join('')}</select><button class="btn btn-gold btn-sm" id="provLigarBtn">Ligar al catálogo</button></div></div>` : '';
   el.innerHTML = `
     <button class="btn btn-ghost btn-sm" id="provDetalleVolver" style="margin-bottom:14px;">← Volver al directorio</button>
+    ${bannerLigar}
     <div class="kpi-grid kpi-grid-mobile-compact" style="margin-bottom:14px;">
       <div class="kpi"><div class="label">Total facturado</div><div class="value num">${hayDivisas ? kpiDivisa(f => f.importe) : fmt(totalFacturado)}</div></div>
       <div class="kpi"><div class="label">Total pagado</div><div class="value num green">${hayDivisas ? kpiDivisa(f => f.importe_pagado) : fmt(totalPagado)}</div></div>
@@ -16738,6 +16747,15 @@ async function renderProveedorDetalle(el, b) {
     await openModalFacturaProveedor(null, b.id, catalogo, opcionesPagoDesde, primeraFactura?.proveedor_id || null);
   });
   document.getElementById('provDetalleRegistrarPago').addEventListener('click', () => abrirElegirFacturaPago(b.id, primeraFactura?.proveedor || null));
+  const lg = document.getElementById('provLigarBtn');
+  if (lg) lg.addEventListener('click', async () => {
+    const dest = document.getElementById('provLigarSel').value; if (!dest) { toast('Elige el proveedor del catálogo al que quieres ligar estas facturas.', 'error'); return; }
+    const objetivo = (catalogo || []).find(c => c.id === dest); if (!confirm(`Se ligarán ${facturas.length} factura(s) a «${provNombreVisible(objetivo)}». No cambia ningún importe ni pago. ¿Continuar?`)) return;
+    lg.disabled = true; const variantes = [...new Set(facturas.map(f => f.proveedor).filter(Boolean))];
+    const r = await proveedoresAplicarFaltantes(b, [{ tipo: 'ligar', ids: facturas.map(f => f.id), variantes, textosOriginales: variantes, proveedorId: dest, texto: nombre }]);
+    if (r.falla.length) { toast('No se pudo ligar: ' + r.falla.join(' · '), 'error'); lg.disabled = false; return; }
+    toast(`${facturas.length} factura(s) ligadas a «${provNombreVisible(objetivo)}».`); STATE_provDetalleKey = 'id:' + dest; renderProveedores();
+  });
   document.getElementById('provDetalleNotaCredito').addEventListener('click', () => abrirNotaCreditoProveedor(b, null, () => renderProveedores(), { proveedorId: primeraFactura?.proveedor_id || null }));
   el.querySelectorAll('.abrir-origen-btn').forEach(btn => btn.addEventListener('click', () => {
     const origen = JSON.parse(btn.dataset.origen.replace(/&apos;/g, "'"));
@@ -22498,8 +22516,10 @@ async function abrirUnificarProveedores(b) {
 // ---- proveedores que tienen movimiento pero NO están en el catálogo ----
 // Tres orígenes: (1) facturas importadas/capturadas sin vínculo con el catálogo (proveedor_id vacío: el directorio las agrupa por el TEXTO), (2) proveedores desactivados (la antigua ✕) que aún tienen
 // facturas, y (3) emisores de los CFDI recibidos que todavía no son proveedor. Pura: recibe los datos ya cargados y devuelve qué falta y qué se propone.
+// ¿el registro se ve en la lista del catálogo? (la lista solo muestra activo = verdadero; un campo vacío cuenta como oculto. Si el campo no existe en el dato —fixtures— se considera visible)
+function provVisibleEnCatalogo(p) { return !!p && p.activo !== false && p.activo !== null; }
 function proveedoresFaltantes({ facturas, catalogo, cfdis }) {
-  const fs = facturas || [], cat = catalogo || [], activos = cat.filter(p => p.activo !== false), porId = {}; cat.forEach(p => { porId[p.id] = p; });
+  const fs = facturas || [], cat = catalogo || [], activos = cat.filter(provVisibleEnCatalogo), porId = {}; cat.forEach(p => { porId[p.id] = p; });
   const conteos = provConteosDe(fs);
   const mejorActivo = (texto) => { const rk = cfdiRankearProveedores(activos, conteos, { rfc_emisor: '', nombre_emisor: texto }, {}).filter(x => x.score >= 80); return rk.length ? rk[0].p : null; };
   const emisores = {}; (cfdis || []).forEach(c => { const r = provRfc(c.rfc_emisor); if (!r) return; const e = emisores[r] = emisores[r] || { rfc: r, n: 0, nombres: {} }; e.n++; const nm = String(c.nombre_emisor || '').trim(); if (nm) e.nombres[nm] = (e.nombres[nm] || 0) + 1; });
@@ -22507,11 +22527,12 @@ function proveedoresFaltantes({ facturas, catalogo, cfdis }) {
   const rfcsDe = (texto) => emisorLista.filter(e => e.nombre && provNormNombre(e.nombre) === provNormNombre(texto)).sort((a, z) => z.n - a.n).map(e => ({ rfc: e.rfc, n: e.n }));
   // (1) sin vínculo: se agrupan por nombre normalizado (las variantes de mayúsculas, espacios o «S.A. de C.V.» son el mismo proveedor)
   const g1 = {}; let sinNombre = 0;
-  fs.filter(f => !f.proveedor_id).forEach(f => { const k = provNormNombre(f.proveedor); if (k.length < 2) { sinNombre++; return; } const g = g1[k] = g1[k] || { clave: k, textos: {}, raws: new Set(), ids: [], n: 0, total: 0 }; const t = String(f.proveedor).trim(); g.textos[t] = (g.textos[t] || 0) + 1; g.raws.add(String(f.proveedor)); g.ids.push(f.id); g.n++; g.total = redondearMoneda(g.total + (Number(f.importe) || 0)); });
+  // sin vínculo, o con un vínculo HUÉRFANO (apunta a un proveedor que no existe en el catálogo de este negocio)
+  fs.filter(f => !f.proveedor_id || !porId[f.proveedor_id]).forEach(f => { const k = provNormNombre(f.proveedor); if (k.length < 2) { sinNombre++; return; } const g = g1[k] = g1[k] || { clave: k, textos: {}, raws: new Set(), ids: [], n: 0, total: 0 }; const t = String(f.proveedor).trim(); g.textos[t] = (g.textos[t] || 0) + 1; g.raws.add(String(f.proveedor)); g.ids.push(f.id); g.n++; g.total = redondearMoneda(g.total + (Number(f.importe) || 0)); });
   const sinVinculo = Object.values(g1).map(g => { const ts = Object.entries(g.textos).sort((a, z) => z[1] - a[1]).map(x => x[0]); const texto = ts[0]; const sug = mejorActivo(texto);
     return { tipo: 'sinVinculo', clave: g.clave, texto, variantes: ts, textosOriginales: [...g.raws], ids: g.ids, n: g.n, total: g.total, sugerido: sug ? sug.id : null, rfcOpciones: rfcsDe(texto) }; }).sort((a, z) => z.n - a.n);
   // (2) ligadas a un registro desactivado del catálogo
-  const g2 = {}; fs.filter(f => f.proveedor_id && porId[f.proveedor_id] && porId[f.proveedor_id].activo === false).forEach(f => { const g = g2[f.proveedor_id] = g2[f.proveedor_id] || { p: porId[f.proveedor_id], ids: [], textos: new Set(), n: 0, total: 0 }; g.ids.push(f.id); if (f.proveedor) g.textos.add(String(f.proveedor)); g.n++; g.total = redondearMoneda(g.total + (Number(f.importe) || 0)); });
+  const g2 = {}; fs.filter(f => f.proveedor_id && porId[f.proveedor_id] && !provVisibleEnCatalogo(porId[f.proveedor_id])).forEach(f => { const g = g2[f.proveedor_id] = g2[f.proveedor_id] || { p: porId[f.proveedor_id], ids: [], textos: new Set(), n: 0, total: 0 }; g.ids.push(f.id); if (f.proveedor) g.textos.add(String(f.proveedor)); g.n++; g.total = redondearMoneda(g.total + (Number(f.importe) || 0)); });
   const inactivos = Object.values(g2).map(g => { const sug = mejorActivo(provNombreVisible(g.p) || g.p.nombre); return { tipo: 'inactivo', p: g.p, texto: provNombreVisible(g.p), variantes: [...g.textos], ids: g.ids, n: g.n, total: g.total, sugerido: sug && sug.id !== g.p.id ? sug.id : null, rfcOpciones: rfcsDe(g.p.razon_social || g.p.nombre) }; }).sort((a, z) => z.n - a.n);
   // (3) emisores de CFDI sin proveedor: ni el RFC ni el nombre existen en el catálogo, y no son ya uno de los grupos anteriores (esos reciben el RFC a través de su grupo)
   const nombresGrupos = new Set([...sinVinculo.map(g => g.clave), ...inactivos.map(g => provNormNombre(g.texto))]);
@@ -22562,7 +22583,7 @@ async function abrirProveedoresFaltantes(b, alCambiar) {
   const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalProvFaltantes';
   const cerrar = () => { bg.remove(); if (huboCambios && alCambiar) alCambiar(); };
   const pintar = () => {
-    const F = D.F, activos = D.catalogo.filter(p => p.activo !== false).sort((a, z) => provNombreVisible(a).localeCompare(provNombreVisible(z)));
+    const F = D.F, activos = D.catalogo.filter(provVisibleEnCatalogo).sort((a, z) => provNombreVisible(a).localeCompare(provNombreVisible(z)));
     const optsLigar = (sel) => `<optgroup label="Ligar a un proveedor del catálogo">${activos.map(p => `<option value="lig:${p.id}" ${sel === p.id ? 'selected' : ''}>${revEsc(provNombreVisible(p))}${p.rfc ? ' · ' + revEsc(p.rfc) : ''}</option>`).join('')}</optgroup>`;
     const selRfc = (ops) => ops.length ? `<select class="cell falt-rfc" style="width:170px;"><option value="">sin RFC</option>${ops.map(o => `<option value="${o.rfc}" ${ops.length === 1 ? 'selected' : ''}>${o.rfc} · ${o.n} XML</option>`).join('')}</select>` : '<span style="color:var(--muted);font-size:11.5px;">sin XML con ese nombre</span>';
     const fila = (cls, i, nombre, sub, cuenta, controles) => `<div class="falt-fila" data-cls="${cls}" data-i="${i}" style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);font-size:12.5px;">
