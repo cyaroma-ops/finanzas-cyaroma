@@ -24075,7 +24075,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-10-14.5';
+const APP_VERSION = '2026-10-14.6';
 const RESPALDO_TABLAS = [['businesses', ['id']], ['fz_cuentas_mayor', ['id']], ['fz_subcuentas', ['id']], ['fz_polizas', ['id']], ['fz_polizas_lineas', ['id']], ['fz_proveedores_catalogo', ['id']], ['fz_proveedores', ['id']], ['fz_ventas', ['id']], ['fz_conceptos_venta', ['id']], ['fz_conceptos_sistema', ['id']], ['fz_conceptos', ['id']], ['fz_efectivo_monedas', ['id']], ['fz_efectivo_mov', ['id']], ['fz_bancos_cuentas', ['id']], ['fz_bancos_mov', ['id']], ['fz_pl_gastos', ['id']], ['fz_usuarios_autorizados', ['id']], ['fz_usuario_negocios', ['id']], ['fz_auditoria', ['id']], ['fz_adjuntos', ['id']], ['fz_pagos_aplicados', ['id']], ['fz_clientes', ['id']], ['fz_productos_servicios', ['id']], ['fz_folios_contador', ['business_id', 'tipo']], ['fz_facturas_clientes', ['id']], ['fz_facturas_clientes_lineas', ['id']], ['fz_cobros_aplicados', ['id']], ['fz_ordenes_venta', ['id']], ['fz_ordenes_venta_lineas', ['id']], ['fz_conciliaciones_bancarias', ['id']], ['fz_cierres_periodo', ['id']], ['fz_tc_cierre', ['id']], ['fz_tipos_cambio_cierre', ['id']], ['fz_cfdi', ['id']], ['fz_cfdi_bitacora', ['id']], ['fz_activos_fijos', ['id']], ['fz_depreciaciones_generadas', ['id']], ['fz_inpc_valores', ['id']], ['fz_recargos_tasas', ['id']], ['fz_pagos_impuestos', ['id']], ['fz_isr_datos_anuales', ['id']], ['fz_isr_conceptos', ['id']], ['fz_provisiones_fiscales', ['id']], ['fz_iva_realizaciones', ['id']], ['fz_aplicaciones_pago_fiscal', ['id']], ['fz_regimenes_fiscales_negocio', ['id']], ['fz_dias_inhabiles_fiscales', ['id']], ['fz_declaraciones_fiscales', ['id']], ['fz_reglas_vencimiento_impuesto', []], ['fz_calendario_fiscal_validacion', []], ['fz_catalogo_regimenes_fiscales', []], ['fz_papeles_trabajo', ['id']], ['fz_papel_conceptos', ['id']], ['fz_papel_concepto_fuentes', ['id']], ['fz_papel_concepto_accesorios', ['id']], ['fz_papel_historial', ['id']], ['fz_papel_soportes', ['id']], ['fz_mapeo_cuenta_concepto_fiscal', ['id']], ['fz_perdidas_fiscales', ['id']], ['fz_perdidas_fiscales_actualizaciones', ['id']], ['fz_perdidas_fiscales_aplicaciones', ['id']], ['fz_perdidas_fiscales_cierres', ['id']], ['fz_perdidas_fiscales_historial', ['id']], ['fz_perdidas_fiscales_soportes', ['id']], ['fz_ptu_eventos', ['id']], ['fz_ptu_historial', ['id']], ['fz_pagos_por_clasificar', ['id']], ['fz_iva_saldos_favor', ['id']], ['fz_iva_saldos_favor_movimientos', ['id']], ['fz_iva_saldos_favor_devoluciones', ['id']], ['fz_iva_saldo_favor_periodo_activo', ['id']]];
 const RESPALDO_BUCKETS = ['adjuntos', 'cfdi'], RESPALDO_MAX_ARCHIVOS_BYTES = 400 * 1024 * 1024, RESPALDO_AVISO_DIAS = 7;
 function respaldoEstado() { try { return JSON.parse(localStorage.getItem('finanzas_ultimo_respaldo') || 'null'); } catch (_) { return null; } }
@@ -24365,21 +24365,30 @@ function pdfDePantalla(seccion, { titulo, subtitulo, orientacion }) {
   const n = doc.getNumberOfPages(); for (let i = 1; i <= n; i++) { doc.setPage(i); doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(150, 150, 150); doc.text(`Página ${i} de ${n}`, W / 2, H - 14, { align: 'center' }); }
   return doc;
 }
+// En iPhone/iPad window.print() no hace nada (ni en Safari de pantalla de inicio ni en Chrome): se ofrece en su lugar la HOJA DE COMPARTIR del sistema con el PDF, que trae «Imprimir», «Guardar en Archivos», WhatsApp, etc.
+const esIOS = () => { try { return /iPad|iPhone|iPod/.test(navigator.userAgent || '') || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); } catch (_) { return false; } };
+function puedeCompartirPdf() { try { if (!navigator.share || !navigator.canShare) return false; return !!navigator.canShare({ files: [new File([new Blob(['%PDF'], { type: 'application/pdf' })], 'a.pdf', { type: 'application/pdf' })] }); } catch (_) { return false; } }
 function abrirImpresionMovil(op) {
   if (document.getElementById('modalImpresionMovil')) return;
+  const ios = esIOS(), compartir = ios && puedeCompartirPdf();
   const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalImpresionMovil';
+  const segunda = !ios ? `<button class="btn btn-ghost" id="impMovPrint" type="button" style="min-height:44px;">Abrir la impresión del navegador</button><div style="font-size:11.5px;color:var(--muted);">Si esa opción no hace nada, tu navegador no permite imprimir desde el celular: usa el PDF.</div>`
+    : (compartir ? `<button class="btn btn-ghost" id="impMovCompartir" type="button" style="min-height:44px;">Compartir o imprimir…</button><div style="font-size:11.5px;color:var(--muted);">Abre la hoja de compartir del iPhone: ahí eliges <strong>Imprimir</strong>, Guardar en Archivos o enviarlo por WhatsApp.</div>`
+      : `<div style="font-size:11.5px;color:var(--muted);">Para imprimir desde el iPhone: descarga el PDF, ábrelo y toca <strong>Compartir</strong> y luego <strong>Imprimir</strong>.</div>`);
   bg.innerHTML = `<div class="modal" style="width:min(420px,94vw);"><h3>Sacar esta pantalla</h3><p style="font-size:13px;color:var(--muted);margin:0 0 12px;">En el celular lo más seguro es <strong>Descargar PDF</strong>: se genera aquí mismo y lo puedes compartir o imprimir desde tu teléfono.</p>
-    <div style="display:flex;flex-direction:column;gap:10px;"><button class="btn btn-gold" id="impMovPdf" type="button">Descargar PDF</button><button class="btn btn-ghost" id="impMovPrint" type="button">Abrir la impresión del navegador</button>
-    <div style="font-size:11.5px;color:var(--muted);">Si la segunda opción no hace nada, tu navegador no permite imprimir desde el celular: usa el PDF.</div><button class="btn btn-ghost" id="impMovCerrar" type="button">Cancelar</button></div></div>`;
+    <div style="display:flex;flex-direction:column;gap:10px;"><button class="btn btn-gold" id="impMovPdf" type="button" style="min-height:44px;">Descargar PDF</button>${segunda}<button class="btn btn-ghost" id="impMovCerrar" type="button" style="min-height:44px;">Cancelar</button></div></div>`;
   document.body.appendChild(bg);
+  const generar = () => { const doc = pdfDePantalla(document.getElementById('sec-' + STATE.currentSection), op); return { doc, nombre: (pdfLimpiaTexto(op.titulo).replace(/[^\w .\-áéíóúñÁÉÍÓÚÑ]/g, '').replace(/\s+/g, ' ').trim() || 'Finanzas') + ' - ' + todayStr() + '.pdf' }; };
   bg.querySelector('#impMovCerrar').addEventListener('click', () => bg.remove());
-  bg.querySelector('#impMovPrint').addEventListener('click', () => { bg.remove(); window.print(); });   // síncrono: algunos navegadores solo permiten imprimir dentro del toque del usuario
+  const pr = bg.querySelector('#impMovPrint'); if (pr) pr.addEventListener('click', () => { bg.remove(); window.print(); });   // síncrono: algunos navegadores solo permiten imprimir dentro del toque del usuario
   bg.querySelector('#impMovPdf').addEventListener('click', () => {
-    try {
-      const doc = pdfDePantalla(document.getElementById('sec-' + STATE.currentSection), op);
-      const nombre = (pdfLimpiaTexto(op.titulo).replace(/[^\w .\-áéíóúñÁÉÍÓÚÑ]/g, '').trim() || 'Finanzas') + ' - ' + todayStr() + '.pdf';
-      doc.save(nombre); bg.remove(); toast('PDF listo: ' + nombre);
-    } catch (e) { toast('No se pudo generar el PDF: ' + ((e && e.message) || e), 'error'); }
+    try { const g = generar(); g.doc.save(g.nombre); bg.remove(); toast('PDF listo: ' + g.nombre); }
+    catch (e) { toast('No se pudo generar el PDF: ' + ((e && e.message) || e), 'error'); }
+  });
+  const co = bg.querySelector('#impMovCompartir'); if (co) co.addEventListener('click', async () => {
+    let g; try { g = generar(); } catch (e) { toast('No se pudo generar el PDF: ' + ((e && e.message) || e), 'error'); return; }
+    try { const file = new File([new Blob([g.doc.output('arraybuffer')], { type: 'application/pdf' })], g.nombre, { type: 'application/pdf' }); await navigator.share({ files: [file], title: g.nombre }); bg.remove(); }
+    catch (e) { if (e && e.name === 'AbortError') return; toast('No se pudo abrir la hoja de compartir. Usa «Descargar PDF».', 'error'); }   // cerrar la hoja sin elegir nada no es un error
   });
 }
 
