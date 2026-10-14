@@ -24292,6 +24292,8 @@ async function respaldoAvisoAlEntrar() {
 // En computadora el botón sigue imprimiendo exactamente igual que siempre.
 // ============================================================================================================
 const esDispositivoMovil = () => { try { return !!(window.matchMedia && (window.matchMedia('(pointer: coarse)').matches || window.matchMedia('(max-width: 900px)').matches)); } catch (_) { return false; } };
+// Celdas que solo existen para la vista de celular (el CSS las oculta en escritorio y al imprimir): si se copian al PDF desfasan todas las columnas.
+const PDF_SOLO_MOVIL = '.ledger-movimiento-resumen, .ledger-saldo-movil, .ledger-conciliado-movil';
 const PDF_OMITIR = '.btn, button, input, select, textarea, datalist, .tag-row, .row-del, .pl-controles-rango, .modal-bg, canvas, svg, script, style, [data-no-pdf]';
 const PDF_EN_LINEA = new Set(['SPAN', 'STRONG', 'B', 'I', 'EM', 'A', 'SMALL', 'LABEL', 'U', 'CODE', 'SUB', 'SUP', 'BR', 'FONT']);
 function pdfLimpiaTexto(t) { // las fuentes estándar del PDF solo traen Latin-1: se quitan emojis y símbolos que saldrían como basura
@@ -24327,8 +24329,17 @@ function pdfDePantalla(seccion, { titulo, subtitulo, orientacion }) {
     const c = t.cloneNode(true), orig = [...t.rows], quitar = [...c.rows].filter((r, i) => orig[i] && oculto(orig[i]));   // filas ocultas en pantalla (p. ej. cuentas contraídas) no salen
     const cOrig = [...t.querySelectorAll('select, input')], cClon = [...c.querySelectorAll('select, input')];            // menús y campos de la tabla (Estatus, fechas...): salen como el TEXTO que muestran
     cClon.forEach((el, i) => { const o = cOrig[i]; if (!o || ['hidden', 'checkbox', 'radio', 'button', 'submit', 'file'].includes(o.type)) return; el.replaceWith(document.createTextNode(o.tagName === 'SELECT' ? ((o.options[o.selectedIndex] || {}).text || '') : (o.value || ''))); });
-    quitar.forEach(r => r.remove()); c.querySelectorAll(PDF_OMITIR).forEach(x => x.remove()); c.querySelectorAll('th,td').forEach(td => { td.textContent = pdfLimpiaTexto(td.textContent); });
+    quitar.forEach(r => r.remove()); c.querySelectorAll(PDF_SOLO_MOVIL).forEach(x => x.remove()); c.querySelectorAll(PDF_OMITIR).forEach(x => x.remove()); c.querySelectorAll('th,td').forEach(td => { td.textContent = pdfLimpiaTexto(td.textContent); });
     if (!c.rows.length) return;
+    // una fila no puede ser más ancha que el encabezado (p. ej. el renglón de totales traía una celda combinada de más y creaba una columna SIN NOMBRE al final)
+    const ancho = (r) => [...r.cells].reduce((a, x) => a + (x.colSpan || 1), 0), cols = c.tHead && c.tHead.rows.length ? Math.max(...[...c.tHead.rows].map(ancho)) : 0;
+    if (cols) [...c.rows].forEach(r => { let exceso = ancho(r) - cols; for (let k = r.cells.length - 1; exceso > 0 && k >= 0; k--) { const x = r.cells[k], red = (x.colSpan || 1) - 1; if (red > 0) { const d = Math.min(red, exceso); x.colSpan = (x.colSpan || 1) - d; exceso -= d; } else if (!x.textContent.trim()) { x.remove(); exceso -= 1; } } });
+    // columnas SIN título y SIN contenido (la marca de conciliado, el botón de acciones) no aportan nada al PDF y solo le quitan espacio a las demás
+    if (cols > 1) {
+      const filas = [...c.rows], mapa = filas.map(r => { const m = []; [...r.cells].forEach(x => { for (let k = 0; k < (x.colSpan || 1); k++) m.push(x); }); return m; });
+      const vacias = []; for (let j = 0; j < cols; j++) if (mapa.every(m => !m[j] || !m[j].textContent.trim())) vacias.push(j);
+      if (vacias.length && vacias.length < cols) filas.forEach((r, ri) => { [...r.cells].forEach(x => { const idx = mapa[ri].indexOf(x), span = x.colSpan || 1, quitar = vacias.filter(j => j >= idx && j < idx + span).length; if (!quitar) return; if (span - quitar <= 0) x.remove(); else x.colSpan = span - quitar; }); });
+    }
     doc.autoTable({ html: c, startY: y, margin: { left: margin, right: margin, bottom: pie }, theme: 'grid', styles: { fontSize: orient === 'portrait' ? 7 : 7.5, cellPadding: 2.5, overflow: 'linebreak', lineColor: [223, 227, 238], lineWidth: 0.4, textColor: [30, 41, 59] },
       headStyles: { fillColor: [10, 31, 61], textColor: 255, fontStyle: 'bold' }, didParseCell: (d) => { const el = d.cell.raw; if (el && el.classList && el.classList.contains('num')) d.cell.styles.halign = 'right'; } });
     y = doc.lastAutoTable.finalY + 10;
