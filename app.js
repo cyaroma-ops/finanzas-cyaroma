@@ -818,6 +818,7 @@ async function boot() {
   });
 
   renderCurrentSection();
+  setTimeout(() => respaldoAvisoAlEntrar(), 1500);   // aviso de respaldo atrasado (solo administradores)
 }
 
 /* ---------- USUARIOS AUTORIZADOS ---------- */
@@ -1304,6 +1305,7 @@ function updateTopbar() {
       const razonSocialLinea = (b?.razon_social && b.razon_social !== b?.name) ? `${b.razon_social} · ` : '';
       document.getElementById('printSub').textContent = `${razonSocialLinea}${STATE.nombreUsuario ? STATE.nombreUsuario + ' · ' : ''}${meta.showMonth ? mesLegible + ' · ' : ''}Impreso el ${new Date().toLocaleDateString('es-MX', { year:'numeric', month:'long', day:'numeric' })}`;
       document.getElementById('printOrientationStyle').textContent = `@media print { @page { size: ${printOrientacion.value}; margin: 12mm 12mm 20mm 12mm; @bottom-center { content: "Página " counter(page) " de " counter(pages); font-size: 9px; color: #999; } } }`;
+      if (esDispositivoMovil()) { abrirImpresionMovil({ titulo: tituloImpresion, subtitulo: document.getElementById('printSub').textContent, orientacion: printOrientacion.value }); return; }   // celular: PDF o impresión del navegador
       window.print();
     };
   } else {
@@ -24126,6 +24128,7 @@ async function respaldoConstruir({ incluirArchivos, alProgreso, control }) {
 }
 function abrirRespaldoCompleto() {
   if (!STATE.esAdministrador) { toast('Solo un administrador puede descargar el respaldo completo.', 'error'); return; }
+  const avisoAnterior = document.getElementById('avisoRespaldo'); if (avisoAnterior) avisoAnterior.remove();
   const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalRespaldoCompleto'; const control = { cancelado: false }; let corriendo = false; const cerrar = () => { control.cancelado = true; bg.remove(); };
   bg.innerHTML = `<div class="modal" style="width:min(560px,96vw);max-height:92vh;overflow:auto;"><h3>Respaldo completo</h3>
     <p style="font-size:12.5px;color:var(--muted);margin:0 0 8px;">Descarga un ZIP con <strong>las ${RESPALDO_TABLAS.length - 1} tablas de Finanzas y tus negocios</strong> (todos los negocios que puedes ver). Solo lee: no cambia nada. Cada tabla se comprueba contra su conteo real.</p>
@@ -24240,6 +24243,128 @@ function abrirRestaurarArchivos() {
       $('raSubir').disabled = $('raComprobar').disabled = false; $('raArchivo').disabled = false;
     } catch (e) { if (bg.isConnected) { $('raEstado').innerHTML = `<span style="color:var(--red);">No se pudo completar: ${revEsc((e && e.message) || e)}</span>`; $('raSubir').disabled = $('raComprobar').disabled = false; $('raArchivo').disabled = false; $('raCerrar').textContent = 'Cerrar'; } }
     finally { corriendo = false; }
+  });
+}
+
+// ============================================================================================================
+// AVISO AL ENTRAR: respaldo atrasado (solo administradores). La fecha del último respaldo sale de la BITÁCORA (servidor) y de este navegador; vale la más reciente,
+// así que no depende de qué computadora o navegador se usó. Se muestra una vez por sesión y se puede posponer 24 h. Solo LEE: no escribe nada. Un fallo aquí nunca debe estorbar la entrada.
+// ============================================================================================================
+const RESPALDO_AVISO_CLAVE = 'finanzas_respaldo_aviso_hasta'; let RESPALDO_AVISO_VISTO = false;
+async function respaldoUltimoConocido() {
+  const loc = respaldoEstado(); let mejor = loc && loc.fecha ? loc : null;
+  try {
+    const { data, error } = await sb.from('fz_auditoria').select('created_at, descripcion').eq('accion', 'exportar').eq('modulo', 'Configuración').ilike('descripcion', 'Descargó el respaldo completo%').order('created_at', { ascending: false }).limit(1);
+    if (!error && data && data[0] && data[0].created_at) {
+      const m = /\((\d+) filas, (\d+) archivos, (\d+) aviso/.exec(data[0].descripcion || ''), srv = { fecha: new Date(data[0].created_at).toISOString(), filas: m ? +m[1] : 0, archivos: m ? +m[2] : 0, avisos: m ? +m[3] : 0 };
+      if (!mejor || new Date(srv.fecha) > new Date(mejor.fecha)) { mejor = srv; try { localStorage.setItem('finanzas_ultimo_respaldo', JSON.stringify(srv)); } catch (_) { /* sin almacenamiento */ } }
+    }
+  } catch (_) { /* si la bitácora no responde, vale lo que sepa este navegador */ }
+  return mejor;
+}
+function respaldoAvisoPospuesto() { try { const h = localStorage.getItem(RESPALDO_AVISO_CLAVE); return !!h && Date.now() < new Date(h).getTime(); } catch (_) { return false; } }
+function respaldoAvisoMostrar(e) {
+  if (document.getElementById('avisoRespaldo')) return;
+  const dias = e ? respaldoDiasDesde(e.fecha) : null;
+  const txt = e ? `Llevas <strong>${dias} días</strong> sin descargar un respaldo completo (el último fue el ${fechaCorta(e.fecha.slice(0, 10))}).` : 'Aún no has descargado un <strong>respaldo completo</strong> desde aquí.';
+  const bar = document.createElement('div'); bar.id = 'avisoRespaldo'; bar.setAttribute('role', 'status');
+  bar.style.cssText = 'position:fixed;top:12px;left:50%;transform:translateX(-50%);width:min(560px,calc(100vw - 24px));z-index:250;background:#fff8e1;border:1px solid #e6c768;border-left:5px solid #c98a00;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.22);padding:12px 14px;font-size:13.5px;color:#3d2f00;';
+  bar.innerHTML = `<div style="font-weight:700;margin-bottom:3px;">Es hora de un respaldo</div><div>${txt} Es lo que protege tus datos si algo se borra. Toma unos minutos.</div><div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;flex-wrap:wrap;"><button class="btn btn-ghost" id="avisoRespaldoLuego" type="button">Más tarde</button><button class="btn btn-gold" id="avisoRespaldoYa" type="button">Descargar respaldo</button></div>`;
+  document.body.appendChild(bar);
+  bar.querySelector('#avisoRespaldoLuego').addEventListener('click', () => { try { localStorage.setItem(RESPALDO_AVISO_CLAVE, new Date(Date.now() + 24 * 3600 * 1000).toISOString()); } catch (_) { /* sin almacenamiento */ } bar.remove(); });
+  bar.querySelector('#avisoRespaldoYa').addEventListener('click', () => { bar.remove(); abrirRespaldoCompleto(); });
+}
+async function respaldoAvisoAlEntrar() {
+  try {
+    if (RESPALDO_AVISO_VISTO || !STATE.esAdministrador) return; RESPALDO_AVISO_VISTO = true;
+    if (respaldoAvisoPospuesto()) return;
+    const e = await respaldoUltimoConocido();
+    if (e && respaldoDiasDesde(e.fecha) < RESPALDO_AVISO_DIAS) return;
+    if (document.getElementById('modalRespaldoCompleto')) return;
+    respaldoAvisoMostrar(e);
+  } catch (_) { /* un aviso nunca debe estorbar la entrada */ }
+}
+
+// ============================================================================================================
+// IMPRIMIR EN CELULAR. window.print() NO lanza error cuando el navegador no lo soporta (navegadores integrados en otras apps, Chrome de iPhone, varios de Android): el botón «se aprieta» y no pasa nada.
+// En pantallas táctiles o angostas el botón Imprimir ofrece «Descargar PDF» (se genera aquí mismo, como los demás PDF) y, aparte, la impresión del navegador por si ese teléfono sí la permite.
+// El PDF sale del TEXTO que ya está en pantalla (indicadores, títulos, tablas): no recalcula nada, respeta lo que está oculto, deja fuera botones y controles y NO modifica la pantalla.
+// En computadora el botón sigue imprimiendo exactamente igual que siempre.
+// ============================================================================================================
+const esDispositivoMovil = () => { try { return !!(window.matchMedia && (window.matchMedia('(pointer: coarse)').matches || window.matchMedia('(max-width: 900px)').matches)); } catch (_) { return false; } };
+const PDF_OMITIR = '.btn, button, input, select, textarea, datalist, .tag-row, .row-del, .pl-controles-rango, .modal-bg, canvas, svg, script, style, [data-no-pdf]';
+const PDF_EN_LINEA = new Set(['SPAN', 'STRONG', 'B', 'I', 'EM', 'A', 'SMALL', 'LABEL', 'U', 'CODE', 'SUB', 'SUP', 'BR', 'FONT']);
+function pdfLimpiaTexto(t) { // las fuentes estándar del PDF solo traen Latin-1: se quitan emojis y símbolos que saldrían como basura
+  return String(t == null ? '' : t).replace(/[\u2713\u2714\u2705]/g, '').replace(/[\u2715\u2716\u2717\u2718]/g, 'x').replace(/\u2192/g, '->').replace(/\u2264/g, '<=').replace(/\u2265/g, '>=')
+    .replace(/[^\x20-\x7e\u00a0-\u00ff\u2013\u2014\u2018\u2019\u201c\u201d\u2022\u2026\u20ac]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function pdfDePantalla(seccion, { titulo, subtitulo, orientacion }) {
+  const jsPDFlib = window.jspdf && window.jspdf.jsPDF; if (!jsPDFlib) throw new Error('Falta la librería de PDF.'); if (!seccion) throw new Error('No hay una pantalla que convertir.');
+  const orient = orientacion === 'portrait' ? 'portrait' : 'landscape', esPL = seccion.id === 'sec-pl';
+  const { doc, margin, y: y0 } = iniciarPdfConEncabezado(biz(), pdfLimpiaTexto(subtitulo), { orientation: orient });
+  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), ancho = W - 2 * margin, pie = 30; let y = y0;
+  const oculto = (el) => { try { const cs = window.getComputedStyle(el); return cs.display === 'none' || cs.visibility === 'hidden'; } catch (_) { return false; } };
+  const salto = (alto) => { if (y + alto > H - pie) { doc.addPage(); y = margin + 6; } };
+  const texto = (t, { tam = 9, negrita = false, color = [30, 41, 59], sep = 3 } = {}) => {
+    t = pdfLimpiaTexto(t); if (!t) return; doc.setFont('helvetica', negrita ? 'bold' : 'normal'); doc.setFontSize(tam); doc.setTextColor(color[0], color[1], color[2]);
+    const lineas = doc.splitTextToSize(t, ancho), alto = lineas.length * tam * 1.25; salto(alto); doc.text(lineas, margin, y + tam); y += alto + sep;
+  };
+  const sinOmitidos = (el) => { const c = el.cloneNode(true); c.querySelectorAll(PDF_OMITIR).forEach(x => x.remove()); return c.textContent; };
+  const kpis = (grid) => {
+    const items = [...grid.querySelectorAll('.kpi')].filter(k => !oculto(k)).map(k => { const v = k.querySelector('.value'); return { etq: pdfLimpiaTexto((k.querySelector('.label') || {}).textContent), val: pdfLimpiaTexto(v && v.textContent), color: v && v.classList.contains('red') ? [185, 28, 28] : (v && v.classList.contains('green') ? [21, 128, 61] : [10, 31, 61]) }; }).filter(i => i.etq || i.val);
+    if (!items.length) return;
+    const porFila = Math.max(2, Math.min(items.length, Math.floor(ancho / 120))), cw = ancho / porFila, alto = 34;
+    for (let i = 0; i < items.length; i += porFila) {
+      salto(alto + 6);
+      items.slice(i, i + porFila).forEach((it, k) => { const x = margin + k * cw; doc.setDrawColor(223, 227, 238); doc.setFillColor(247, 248, 252); doc.roundedRect(x, y, cw - 6, alto, 3, 3, 'FD');
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(102, 112, 133); doc.text(doc.splitTextToSize(it.etq, cw - 16)[0] || '', x + 6, y + 12);
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(it.color[0], it.color[1], it.color[2]); doc.text(doc.splitTextToSize(it.val, cw - 16)[0] || '', x + 6, y + 27); });
+      y += alto + 6;
+    }
+    y += 4;
+  };
+  const tabla = (t) => {
+    const c = t.cloneNode(true), orig = [...t.rows], quitar = [...c.rows].filter((r, i) => orig[i] && oculto(orig[i]));   // filas ocultas en pantalla (p. ej. cuentas contraídas) no salen
+    const cOrig = [...t.querySelectorAll('select, input')], cClon = [...c.querySelectorAll('select, input')];            // menús y campos de la tabla (Estatus, fechas...): salen como el TEXTO que muestran
+    cClon.forEach((el, i) => { const o = cOrig[i]; if (!o || ['hidden', 'checkbox', 'radio', 'button', 'submit', 'file'].includes(o.type)) return; el.replaceWith(document.createTextNode(o.tagName === 'SELECT' ? ((o.options[o.selectedIndex] || {}).text || '') : (o.value || ''))); });
+    quitar.forEach(r => r.remove()); c.querySelectorAll(PDF_OMITIR).forEach(x => x.remove()); c.querySelectorAll('th,td').forEach(td => { td.textContent = pdfLimpiaTexto(td.textContent); });
+    if (!c.rows.length) return;
+    doc.autoTable({ html: c, startY: y, margin: { left: margin, right: margin, bottom: pie }, theme: 'grid', styles: { fontSize: orient === 'portrait' ? 7 : 7.5, cellPadding: 2.5, overflow: 'linebreak', lineColor: [223, 227, 238], lineWidth: 0.4, textColor: [30, 41, 59] },
+      headStyles: { fillColor: [10, 31, 61], textColor: 255, fontStyle: 'bold' }, didParseCell: (d) => { const el = d.cell.raw; if (el && el.classList && el.classList.contains('num')) d.cell.styles.halign = 'right'; } });
+    y = doc.lastAutoTable.finalY + 10;
+  };
+  let tituloYaImpreso = false;
+  const recorrer = (el) => {
+    for (const c of [...el.children]) {
+      if (c.matches(PDF_OMITIR) || oculto(c)) continue;
+      if (c.matches('.kpi-grid')) { if (!esPL) kpis(c); continue; }           // en el Estado de Resultados la impresión normal tampoco lleva los indicadores
+      if (c.tagName === 'TABLE') { tabla(c); continue; }
+      if (c.querySelector('table')) { recorrer(c); continue; }
+      if (/^H[1-6]$/.test(c.tagName)) { if (!tituloYaImpreso && pdfLimpiaTexto(c.textContent) === pdfLimpiaTexto(titulo)) { tituloYaImpreso = true; continue; } texto(c.textContent, { tam: 11, negrita: true, color: [10, 31, 61], sep: 4 }); continue; }
+      if (c.querySelector('input,select,textarea')) continue;                  // renglones de controles (filtros, fechas): no son contenido del reporte
+      if (![...c.children].some(x => !PDF_EN_LINEA.has(x.tagName) && !x.matches(PDF_OMITIR))) { texto(sinOmitidos(c), { tam: c.matches('.hint, small, .label') ? 8 : 9, color: c.matches('.hint, small, .label') ? [102, 112, 133] : [30, 41, 59] }); continue; }
+      recorrer(c);
+    }
+  };
+  texto(titulo, { tam: 12, negrita: true, color: [10, 31, 61], sep: 6 }); recorrer(seccion);
+  const n = doc.getNumberOfPages(); for (let i = 1; i <= n; i++) { doc.setPage(i); doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(150, 150, 150); doc.text(`Página ${i} de ${n}`, W / 2, H - 14, { align: 'center' }); }
+  return doc;
+}
+function abrirImpresionMovil(op) {
+  if (document.getElementById('modalImpresionMovil')) return;
+  const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalImpresionMovil';
+  bg.innerHTML = `<div class="modal" style="width:min(420px,94vw);"><h3>Sacar esta pantalla</h3><p style="font-size:13px;color:var(--muted);margin:0 0 12px;">En el celular lo más seguro es <strong>Descargar PDF</strong>: se genera aquí mismo y lo puedes compartir o imprimir desde tu teléfono.</p>
+    <div style="display:flex;flex-direction:column;gap:10px;"><button class="btn btn-gold" id="impMovPdf" type="button">Descargar PDF</button><button class="btn btn-ghost" id="impMovPrint" type="button">Abrir la impresión del navegador</button>
+    <div style="font-size:11.5px;color:var(--muted);">Si la segunda opción no hace nada, tu navegador no permite imprimir desde el celular: usa el PDF.</div><button class="btn btn-ghost" id="impMovCerrar" type="button">Cancelar</button></div></div>`;
+  document.body.appendChild(bg);
+  bg.querySelector('#impMovCerrar').addEventListener('click', () => bg.remove());
+  bg.querySelector('#impMovPrint').addEventListener('click', () => { bg.remove(); window.print(); });   // síncrono: algunos navegadores solo permiten imprimir dentro del toque del usuario
+  bg.querySelector('#impMovPdf').addEventListener('click', () => {
+    try {
+      const doc = pdfDePantalla(document.getElementById('sec-' + STATE.currentSection), op);
+      const nombre = (pdfLimpiaTexto(op.titulo).replace(/[^\w .\-áéíóúñÁÉÍÓÚÑ]/g, '').trim() || 'Finanzas') + ' - ' + todayStr() + '.pdf';
+      doc.save(nombre); bg.remove(); toast('PDF listo: ' + nombre);
+    } catch (e) { toast('No se pudo generar el PDF: ' + ((e && e.message) || e), 'error'); }
   });
 }
 
