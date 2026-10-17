@@ -14631,9 +14631,12 @@ function actualizarPanelDocumentoEmbebido(ids, pendientes) {
   if (!oculto) {
     const ext = (file.name.split('.').pop() || '').toLowerCase();
     const esImagen = ['jpg','jpeg','png'].includes(ext);
-    if (panel._urlVista) { try { URL.revokeObjectURL(panel._urlVista); } catch (_) { /* nada */ } }
-    const url = panel._urlVista = URL.createObjectURL(file);
-    document.getElementById(ids.embed).innerHTML = esImagen ? `<img src="${url}">` : `<iframe src="${url}"></iframe>`;
+    const embed = document.getElementById(ids.embed);
+    if (panel._archivoMostrado !== file || !embed.firstElementChild) {   // solo si cambió el archivo: recrear el visor recarga el PDF (parpadeo de varios segundos)
+      if (panel._urlVista) { try { URL.revokeObjectURL(panel._urlVista); } catch (_) { /* nada */ } }
+      const url = panel._urlVista = URL.createObjectURL(file); panel._archivoMostrado = file;
+      embed.innerHTML = esImagen ? `<img src="${url}">` : `<iframe src="${url}"></iframe>`;
+    }
     document.getElementById(ids.nombre).textContent = file.name;
   }
   // el archivo que se está viendo se marca en la lista
@@ -24091,7 +24094,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-10-14.7';
+const APP_VERSION = '2026-10-14.8';
 const RESPALDO_TABLAS = [['businesses', ['id']], ['fz_cuentas_mayor', ['id']], ['fz_subcuentas', ['id']], ['fz_polizas', ['id']], ['fz_polizas_lineas', ['id']], ['fz_proveedores_catalogo', ['id']], ['fz_proveedores', ['id']], ['fz_ventas', ['id']], ['fz_conceptos_venta', ['id']], ['fz_conceptos_sistema', ['id']], ['fz_conceptos', ['id']], ['fz_efectivo_monedas', ['id']], ['fz_efectivo_mov', ['id']], ['fz_bancos_cuentas', ['id']], ['fz_bancos_mov', ['id']], ['fz_pl_gastos', ['id']], ['fz_usuarios_autorizados', ['id']], ['fz_usuario_negocios', ['id']], ['fz_auditoria', ['id']], ['fz_adjuntos', ['id']], ['fz_pagos_aplicados', ['id']], ['fz_clientes', ['id']], ['fz_productos_servicios', ['id']], ['fz_folios_contador', ['business_id', 'tipo']], ['fz_facturas_clientes', ['id']], ['fz_facturas_clientes_lineas', ['id']], ['fz_cobros_aplicados', ['id']], ['fz_ordenes_venta', ['id']], ['fz_ordenes_venta_lineas', ['id']], ['fz_conciliaciones_bancarias', ['id']], ['fz_cierres_periodo', ['id']], ['fz_tc_cierre', ['id']], ['fz_tipos_cambio_cierre', ['id']], ['fz_cfdi', ['id']], ['fz_cfdi_bitacora', ['id']], ['fz_activos_fijos', ['id']], ['fz_depreciaciones_generadas', ['id']], ['fz_inpc_valores', ['id']], ['fz_recargos_tasas', ['id']], ['fz_pagos_impuestos', ['id']], ['fz_isr_datos_anuales', ['id']], ['fz_isr_conceptos', ['id']], ['fz_provisiones_fiscales', ['id']], ['fz_iva_realizaciones', ['id']], ['fz_aplicaciones_pago_fiscal', ['id']], ['fz_regimenes_fiscales_negocio', ['id']], ['fz_dias_inhabiles_fiscales', ['id']], ['fz_declaraciones_fiscales', ['id']], ['fz_reglas_vencimiento_impuesto', []], ['fz_calendario_fiscal_validacion', []], ['fz_catalogo_regimenes_fiscales', []], ['fz_papeles_trabajo', ['id']], ['fz_papel_conceptos', ['id']], ['fz_papel_concepto_fuentes', ['id']], ['fz_papel_concepto_accesorios', ['id']], ['fz_papel_historial', ['id']], ['fz_papel_soportes', ['id']], ['fz_mapeo_cuenta_concepto_fiscal', ['id']], ['fz_perdidas_fiscales', ['id']], ['fz_perdidas_fiscales_actualizaciones', ['id']], ['fz_perdidas_fiscales_aplicaciones', ['id']], ['fz_perdidas_fiscales_cierres', ['id']], ['fz_perdidas_fiscales_historial', ['id']], ['fz_perdidas_fiscales_soportes', ['id']], ['fz_ptu_eventos', ['id']], ['fz_ptu_historial', ['id']], ['fz_pagos_por_clasificar', ['id']], ['fz_iva_saldos_favor', ['id']], ['fz_iva_saldos_favor_movimientos', ['id']], ['fz_iva_saldos_favor_devoluciones', ['id']], ['fz_iva_saldo_favor_periodo_activo', ['id']]];
 const RESPALDO_BUCKETS = ['adjuntos', 'cfdi'], RESPALDO_MAX_ARCHIVOS_BYTES = 400 * 1024 * 1024, RESPALDO_AVISO_DIAS = 7;
 function respaldoEstado() { try { return JSON.parse(localStorage.getItem('finanzas_ultimo_respaldo') || 'null'); } catch (_) { return null; } }
@@ -25718,6 +25721,36 @@ function polizaBorradorEsSucio() {
   return JSON.stringify({ poliza: STATE_polizaBorrador.poliza, lineas: STATE_polizaBorrador.lineas }) !== STATE_polizaBorrador.original;
 }
 
+// ============================================================================================================
+// EDITOR DE PÓLIZA: capturar sin que nada se reconstruya. Antes cada cambio de celda redibujaba TODO el editor: el navegador (que ya había quitado el cursor de la celda) perdía la celda a la que iba a pasar con Tab o «Siguiente»,
+// el visor del PDF se recreaba (parpadeo de varios segundos) y un clic en «Guardar» justo después de editar se perdía porque el botón se reemplazaba entre que se presionaba y se soltaba. Ahora un cambio de celda se guarda y solo se
+// actualiza EN EL SITIO lo que depende de él (totales y etiqueta de cuadre); y los redibujados que sí hacen falta (agregar/quitar línea o archivo) conservan los campos de la cabecera, los botones y el visor.
+// ============================================================================================================
+function totalesPolizaBorrador(lineas) { const totalCargo = lineas.reduce((a, l) => a + (Number(l.cargo) || 0), 0), totalAbono = lineas.reduce((a, l) => a + (Number(l.abono) || 0), 0), diff = totalCargo - totalAbono; return { totalCargo, totalAbono, diff, cuadrada: Math.abs(diff) < 0.01 }; }
+function labelDeLineaPoliza(catalogoItems, l) {
+  const match = catalogoItems.find(it =>
+    (l.cuenta_tipo === 'banco' && it.tipo === 'banco' && it.id === l.cuenta_ref_id) ||
+    (l.cuenta_tipo === 'efectivo' && it.tipo === 'efectivo' && it.id === l.cuenta_ref_id) ||
+    (l.cuenta_tipo === 'proveedor' && it.tipo === 'proveedor' && it.id === l.proveedor_factura_id) ||
+    (l.cuenta_tipo === 'cliente' && it.tipo === 'cliente' && it.id === l.cliente_factura_id) ||
+    (l.cuenta_tipo === 'proveedor_provision' && it.tipo === 'proveedor_provision' && it.id === l.proveedor_catalogo_id) ||
+    ((!l.cuenta_tipo || l.cuenta_tipo === 'subcuenta') && it.tipo === 'sub' && it.id === l.subcuenta_id)
+  );
+  return match ? match.label : '';
+}
+function actualizarTotalesPolizaEnSitio(wrap) {
+  const { totalCargo, totalAbono, diff, cuadrada } = totalesPolizaBorrador(STATE_polizaBorrador.lineas);
+  const badge = wrap.querySelector('.card-head .badge'); if (badge) { badge.className = 'badge ' + (cuadrada ? 'pag' : 'pend'); badge.textContent = cuadrada ? 'Cuadrada' : 'Diferencia ' + fmt(diff); }
+  const celdas = wrap.querySelectorAll('.total-row td.num'); if (celdas[0]) celdas[0].textContent = fmt(totalCargo); if (celdas[1]) celdas[1].textContent = fmt(totalAbono);
+}
+function refrescarFilaPolizaEnSitio(wrap, lineaId) {
+  const l = STATE_polizaBorrador.lineas.find(x => x.id === lineaId); if (!l) return;
+  const label = labelDeLineaPoliza(catalogoCuentasUnificado(STATE_polizaBorrador.catalogos), l);
+  wrap.querySelectorAll('[data-id]').forEach(el => { if (el.dataset.id !== lineaId) return; const f = el.dataset.field;
+    if (f === 'cuenta') { el.value = label; el.title = label; } else if (f === 'cargo' || f === 'abono') el.value = fmtInputVal(l[f]); });
+}
+const ligarUnaVez = (el, tipo, fn) => { const k = 'lig_' + tipo; if (!el || el.dataset[k]) return; el.dataset[k] = '1'; el.addEventListener(tipo, fn); };   // lo que se conserva entre redibujados no debe enlazarse dos veces
+
 function renderizarBorradorPoliza() {
   const wrap = document.getElementById('modalPolizaBody');
   if (!wrap || !STATE_polizaBorrador) return;
@@ -25733,7 +25766,15 @@ function renderizarBorradorPoliza() {
     };
   }
 
-  wrap.innerHTML = polizaCardHtmlBorrador(STATE_polizaBorrador);
+  // Redibujado por PARCHE: se reemplaza solo la zona de captura (líneas, adjuntos); la cabecera (fecha, concepto, Guardar...) y el visor del PDF se CONSERVAN, así no se pierden el cursor ni un clic ni se recarga el PDF.
+  const tok = STATE_polizaBorrador._tok || (STATE_polizaBorrador._tok = 't' + Date.now() + Math.random().toString(36).slice(2, 6));
+  const tmp = document.createElement('div'); tmp.innerHTML = polizaCardHtmlBorrador(STATE_polizaBorrador);
+  const capV = wrap.querySelector('.doc-workspace-panel-captura'), capN = tmp.querySelector('.doc-workspace-panel-captura'), encV = wrap.querySelector('.card-head'), encN = tmp.querySelector('.card-head');
+  if (wrap.dataset.polizaTok === tok && capV && capN && encV && encN && !!wrap.querySelector('.poliza-del') === !!tmp.querySelector('.poliza-del')) {
+    capV.replaceWith(capN);
+    const bV = encV.querySelector('.badge'), bN = encN.querySelector('.badge'); if (bV && bN) { bV.className = bN.className; bV.textContent = bN.textContent; }
+    const dlV = wrap.querySelector('#listaCuentasPoliza'), dlN = tmp.querySelector('#listaCuentasPoliza'); if (dlV && dlN && dlV.innerHTML !== dlN.innerHTML) dlV.innerHTML = dlN.innerHTML;
+  } else { wrap.innerHTML = tmp.innerHTML; wrap.dataset.polizaTok = tok; }
   wireBorradorPolizaHandlers(wrap);
 
   if (foco && foco.id) {
@@ -25750,22 +25791,9 @@ function renderizarBorradorPoliza() {
 
 function polizaCardHtmlBorrador(borrador) {
   const { poliza: p, lineas: lineasPoliza, catalogos } = borrador;
-  const totalCargo = lineasPoliza.reduce((s, l) => s + (Number(l.cargo) || 0), 0);
-  const totalAbono = lineasPoliza.reduce((s, l) => s + (Number(l.abono) || 0), 0);
-  const diff = totalCargo - totalAbono;
-  const cuadrada = Math.abs(diff) < 0.01;
+  const { totalCargo, totalAbono, diff, cuadrada } = totalesPolizaBorrador(lineasPoliza);
   const catalogoItems = catalogoCuentasUnificado(catalogos);
-  const labelDeLinea = (l) => {
-    const match = catalogoItems.find(it =>
-      (l.cuenta_tipo === 'banco' && it.tipo === 'banco' && it.id === l.cuenta_ref_id) ||
-      (l.cuenta_tipo === 'efectivo' && it.tipo === 'efectivo' && it.id === l.cuenta_ref_id) ||
-      (l.cuenta_tipo === 'proveedor' && it.tipo === 'proveedor' && it.id === l.proveedor_factura_id) ||
-      (l.cuenta_tipo === 'cliente' && it.tipo === 'cliente' && it.id === l.cliente_factura_id) ||
-      (l.cuenta_tipo === 'proveedor_provision' && it.tipo === 'proveedor_provision' && it.id === l.proveedor_catalogo_id) ||
-      ((!l.cuenta_tipo || l.cuenta_tipo === 'subcuenta') && it.tipo === 'sub' && it.id === l.subcuenta_id)
-    );
-    return match ? match.label : '';
-  };
+  const labelDeLinea = (l) => labelDeLineaPoliza(catalogoItems, l);
 
   let adjuntoHtml, hayPendientesNueva = false;
   if (borrador.esNueva) {
@@ -25786,7 +25814,7 @@ function polizaCardHtmlBorrador(borrador) {
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
           <strong style="color:var(--navy-1);">${borrador.esNueva ? 'Nueva póliza' : 'Póliza #' + (p.numero ?? '—')}</strong>
           <input class="cell poliza-cell" type="date" value="${p.fecha}" data-field="fecha" style="width:auto;">
-          <input class="cell poliza-cell" type="text" placeholder="Concepto de la póliza" value="${p.concepto || ''}" data-field="concepto" style="min-width:220px;">
+          <input class="cell poliza-cell" type="text" placeholder="Concepto de la póliza" value="${p.concepto || ''}" data-field="concepto" enterkeyhint="next" style="min-width:220px;">
         </div>
         <div style="display:flex;align-items:center;gap:10px;">
           <span class="badge ${cuadrada ? 'pag' : 'pend'}">${cuadrada ? 'Cuadrada' : 'Diferencia ' + fmt(diff)}</span>
@@ -25802,13 +25830,13 @@ function polizaCardHtmlBorrador(borrador) {
           <thead><tr><th>Cuenta</th><th>Proveedor</th><th>Referencia/Factura</th><th>Descripción</th><th>Cargo</th><th>Abono</th><th></th></tr></thead>
           <tbody>
             ${lineasPoliza.map(l => `<tr>
-              <td><input class="cell linea-cuenta-buscar" list="listaCuentasPoliza" placeholder="Escribe para buscar…" value="${labelDeLinea(l).replace(/"/g,'&quot;')}" title="${labelDeLinea(l).replace(/"/g,'&quot;')}" data-id="${l.id}" data-field="cuenta"></td>
-              <td><input class="cell linea-cell" type="text" value="${l.proveedor || ''}" placeholder="Nombre (opcional)" data-id="${l.id}" data-field="proveedor"></td>
-              <td><input class="cell linea-cell" type="text" value="${l.referencia || ''}" data-id="${l.id}" data-field="referencia"></td>
-              <td><input class="cell linea-cell" type="text" value="${l.descripcion || ''}" data-id="${l.id}" data-field="descripcion"></td>
-              <td><input class="cell linea-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(l.cargo)}" data-id="${l.id}" data-field="cargo"></td>
-              <td><input class="cell linea-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(l.abono)}" data-id="${l.id}" data-field="abono"></td>
-              <td><button class="row-del linea-del" data-id="${l.id}">✕</button></td>
+              <td><input class="cell linea-cuenta-buscar" list="listaCuentasPoliza" placeholder="Escribe para buscar…" value="${labelDeLinea(l).replace(/"/g,'&quot;')}" title="${labelDeLinea(l).replace(/"/g,'&quot;')}" data-id="${l.id}" data-field="cuenta" enterkeyhint="next"></td>
+              <td><input class="cell linea-cell" type="text" value="${l.proveedor || ''}" placeholder="Nombre (opcional)" data-id="${l.id}" data-field="proveedor" enterkeyhint="next"></td>
+              <td><input class="cell linea-cell" type="text" value="${l.referencia || ''}" data-id="${l.id}" data-field="referencia" enterkeyhint="next"></td>
+              <td><input class="cell linea-cell" type="text" value="${l.descripcion || ''}" data-id="${l.id}" data-field="descripcion" enterkeyhint="next"></td>
+              <td><input class="cell linea-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(l.cargo)}" data-id="${l.id}" data-field="cargo" enterkeyhint="next"></td>
+              <td><input class="cell linea-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(l.abono)}" data-id="${l.id}" data-field="abono" enterkeyhint="next"></td>
+              <td><button class="row-del linea-del" tabindex="-1" data-id="${l.id}">✕</button></td>
             </tr>`).join('')}
             <tr class="total-row">
               <td colspan="4">Totales</td>
@@ -25860,17 +25888,33 @@ function catalogoCuentasUnificado(catalogos) {
 }
 
 function wireBorradorPolizaHandlers(wrap) {
+  const b = STATE_polizaBorrador;   // cada manejador se ignora si el borrador ya no es este: un campo viejo que se reemplaza con el cursor dentro dispara un «cambió» tardío y, sin esta guarda, escribía su valor en el borrador NUEVO
   // La fecha y el concepto no cambian nada más del editor: se guardan SIN redibujar. Antes se redibujaba todo el editor en cada cambio, y como el campo de fecha da por válido el valor al teclear el día,
   // se reemplazaba el campo y se perdía el cursor (había que volver a hacer clic para seguir con el mes y el año).
-  wrap.querySelectorAll('.poliza-cell').forEach(inp => { const guardar = () => { STATE_polizaBorrador.poliza[inp.dataset.field] = inp.value; }; inp.addEventListener('input', guardar); inp.addEventListener('change', guardar); });
-  wrap.querySelectorAll('.linea-cuenta-buscar').forEach(inp => inp.addEventListener('change', () => {
+  wrap.querySelectorAll('.poliza-cell').forEach(inp => { const guardar = () => { if (STATE_polizaBorrador !== b) return; STATE_polizaBorrador.poliza[inp.dataset.field] = inp.value; }; ligarUnaVez(inp, 'input', guardar); ligarUnaVez(inp, 'change', guardar); });
+  // Teclado del editor (se enlaza una sola vez: el contenedor se conserva). Entre las celdas de la TABLA ya avanza el Enter global de la app (hoja de cálculo; ver arriba, «Enter avanza a la siguiente celda»):
+  // lo que lo rompía era el redibujado, que destruía la celda destino. Aquí solo se cubre la CABECERA (fecha → concepto → primera cuenta), que está fuera de la tabla, y se recuerda la última tecla para saber cómo se salió de la cuenta.
+  if (!wrap.dataset.tecladoPoliza) {
+    wrap.dataset.tecladoPoliza = '1';
+    wrap.addEventListener('mousedown', () => { wrap._ultimaTecla = null; });
+    wrap.addEventListener('keydown', (e) => {
+      wrap._ultimaTecla = e.key; const t = e.target;
+      if (e.key !== 'Enter' || e.isComposing || e.ctrlKey || e.altKey || e.metaKey || e.shiftKey || !t || t.tagName !== 'INPUT' || !t.matches('.poliza-cell')) return;
+      const celdas = [...wrap.querySelectorAll('.poliza-cell, .linea-cuenta-buscar')], dest = celdas[celdas.indexOf(t) + 1];
+      if (dest) { e.preventDefault(); dest.focus(); if (dest.select) { try { dest.select(); } catch (_) { /* tipo sin selección */ } } }
+    });
+  }
+  wrap.querySelectorAll('.linea-cuenta-buscar').forEach(inp => { inp.addEventListener('input', (e) => { inp._porLista = !e.inputType || e.inputType === 'insertReplacementText'; }); inp.addEventListener('change', () => {
+    if (STATE_polizaBorrador !== b) return;
     const linea = STATE_polizaBorrador.lineas.find(l => l.id === inp.dataset.id);
     if (!linea) return;
+    // se actualiza SOLO esta fila y los totales; si la cuenta se eligió de la lista o con Enter, el cursor pasa a «Proveedor» (con Tab o clic lo mueve el navegador)
+    const terminar = (avanzar) => { refrescarFilaPolizaEnSitio(wrap, inp.dataset.id); actualizarTotalesPolizaEnSitio(wrap); if (avanzar && (inp._porLista || wrap._ultimaTecla === 'Enter')) { const sig = wrap.querySelector(`.linea-cell[data-id="${inp.dataset.id}"][data-field="proveedor"]`); if (sig) { sig.focus(); if (sig.select) sig.select(); } } inp._porLista = false; };
     const catalogoItems = catalogoCuentasUnificado(STATE_polizaBorrador.catalogos);
     const texto = inp.value.trim();
-    if (!texto) { linea.cuenta_tipo = 'subcuenta'; linea.subcuenta_id = null; linea.cuenta_ref_id = null; linea.proveedor_factura_id = null; linea.cliente_factura_id = null; renderizarBorradorPoliza(); return; }
+    if (!texto) { linea.cuenta_tipo = 'subcuenta'; linea.subcuenta_id = null; linea.cuenta_ref_id = null; linea.proveedor_factura_id = null; linea.cliente_factura_id = null; terminar(false); return; }
     const match = catalogoItems.find(it => it.label === texto);
-    if (!match) { toast('No se encontró esa cuenta. Elige una de la lista que aparece al escribir.', 'error'); renderizarBorradorPoliza(); return; }
+    if (!match) { toast('No se encontró esa cuenta. Elige una de la lista que aparece al escribir.', 'error'); terminar(false); return; }
     if (match.tipo === 'banco') { linea.cuenta_tipo = 'banco'; linea.cuenta_ref_id = match.id; linea.subcuenta_id = null; linea.proveedor_factura_id = null; linea.cliente_factura_id = null; }
     else if (match.tipo === 'efectivo') { linea.cuenta_tipo = 'efectivo'; linea.cuenta_ref_id = match.id; linea.subcuenta_id = null; linea.proveedor_factura_id = null; linea.cliente_factura_id = null; }
     else if (match.tipo === 'proveedor') {
@@ -25887,16 +25931,15 @@ function wireBorradorPolizaHandlers(wrap) {
       linea.cuenta_tipo = 'proveedor_provision'; linea.proveedor_catalogo_id = match.id; linea.subcuenta_id = null; linea.cuenta_ref_id = null; linea.proveedor_factura_id = null; linea.cliente_factura_id = null;
     }
     else { linea.cuenta_tipo = 'subcuenta'; linea.subcuenta_id = match.id; linea.cuenta_ref_id = null; linea.proveedor_factura_id = null; linea.cliente_factura_id = null; }
-    renderizarBorradorPoliza();
-    const siguienteInput = wrap.querySelector(`.linea-cell[data-id="${inp.dataset.id}"][data-field="proveedor"]`);
-    if (siguienteInput) { siguienteInput.focus(); if (siguienteInput.select) siguienteInput.select(); }
-  }));
+    terminar(true);
+  }); });
   wrap.querySelectorAll('.linea-cell').forEach(inp => inp.addEventListener('change', () => {
+    if (STATE_polizaBorrador !== b) return;
     const linea = STATE_polizaBorrador.lineas.find(l => l.id === inp.dataset.id);
     if (!linea) return;
     const field = inp.dataset.field;
     linea[field] = (field === 'descripcion' || field === 'referencia' || field === 'proveedor') ? (inp.value || '') : leerMonto(inp.value);
-    renderizarBorradorPoliza();
+    if (field === 'cargo' || field === 'abono') { inp.value = fmtInputVal(linea[field]); actualizarTotalesPolizaEnSitio(wrap); }   // solo los importes cambian los totales; el resto se guarda sin redibujar
   }));
   wrap.querySelectorAll('.linea-del').forEach(btn => btn.addEventListener('click', () => {
     STATE_polizaBorrador.lineas = STATE_polizaBorrador.lineas.filter(l => l.id !== btn.dataset.id);
@@ -25909,11 +25952,11 @@ function wireBorradorPolizaHandlers(wrap) {
     renderizarBorradorPoliza();
   });
   const guardarBtn = wrap.querySelector('.poliza-guardar');
-  if (guardarBtn) guardarBtn.addEventListener('click', guardarBorradorPoliza);
+  ligarUnaVez(guardarBtn, 'click', guardarBorradorPoliza);
   const cerrarXBtn = wrap.querySelector('.poliza-cerrar-x');
-  if (cerrarXBtn) cerrarXBtn.addEventListener('click', cerrarModalPolizaConfirmando);
+  ligarUnaVez(cerrarXBtn, 'click', cerrarModalPolizaConfirmando);
   const delBtn = wrap.querySelector('.poliza-del');
-  if (delBtn) delBtn.addEventListener('click', async () => {
+  if (delBtn) ligarUnaVez(delBtn, 'click', async () => {
     if (!confirm('¿Estás seguro que deseas eliminar esta póliza? Esta acción no se puede deshacer.')) return;
     const businessId = STATE_polizaBorrador.businessId;
     const p = STATE_polizaBorrador.poliza;
