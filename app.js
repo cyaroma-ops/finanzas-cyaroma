@@ -367,11 +367,19 @@ function documentoSoporteBloqueHtml(pendientes, inputClass) {
 // Conecta ver/quitar de los archivos pendientes ya renderizados por documentoSoporteBloqueHtml.
 // El input de "agregar" y el drag&drop los sigue conectando cada módulo (mismo patrón de push()
 // al arreglo que ya usaba) para no alterar su validación/estado existente.
-function wireDocumentoSoporteVerQuitar(container, pendientes, onChange) {
-  container.querySelectorAll('.doc-adjunto-ver').forEach(btn => btn.addEventListener('click', (e) => {
-    e.preventDefault();
-    verArchivoPendiente(pendientes[Number(btn.dataset.idx)]);
-  }));
+// Qué archivo se ve en el panel de al lado: el que el usuario eligió; si se acaba de agregar uno, ese; si el elegido se quitó, el último.
+function documentoSoporteSeleccion(pendientes) {
+  if (pendientes.length > (pendientes._largoVisto || 0)) pendientes._vista = pendientes[pendientes.length - 1];
+  pendientes._largoVisto = pendientes.length;
+  if (!pendientes.includes(pendientes._vista)) pendientes._vista = pendientes[pendientes.length - 1];
+  return pendientes._vista;
+}
+const panelDocumentoActivo = (ids) => { const p = ids && document.getElementById(ids.panel); return !!p && p.dataset.oculto !== '1' && p.style.display !== 'none' && window.innerWidth > 880; };
+function wireDocumentoSoporteVerQuitar(container, pendientes, onChange, ids) {
+  // Con el panel de al lado visible, «Ver» (o tocar el archivo) CAMBIA lo que muestra el panel; sin panel (pantalla angosta u oculto) abre el visor aparte, como antes.
+  const elegir = (i) => { const file = pendientes[i]; if (!file) return; if (panelDocumentoActivo(ids)) { pendientes._vista = file; actualizarPanelDocumentoEmbebido(ids, pendientes); } else verArchivoPendiente(file); };
+  container.querySelectorAll('.doc-adjunto-ver').forEach(btn => btn.addEventListener('click', (e) => { e.preventDefault(); elegir(Number(btn.dataset.idx)); }));
+  container.querySelectorAll('.doc-adjunto-chip').forEach(chip => { const v = chip.querySelector('.doc-adjunto-ver'); if (v) chip.addEventListener('click', (e) => { if (!e.target.closest('button')) elegir(Number(v.dataset.idx)); }); });
   container.querySelectorAll('.doc-adjunto-quitar').forEach(btn => btn.addEventListener('click', (e) => {
     e.preventDefault();
     pendientes.splice(Number(btn.dataset.idx), 1);
@@ -14615,25 +14623,33 @@ function actualizarPanelDocumentoEmbebido(ids, pendientes) {
   const workspace = document.getElementById(ids.workspace);
   if (!panel || !workspace) return;
   if (!pendientes.length) { panel.style.display = 'none'; workspace.classList.remove('doc-workspace-split'); return; }
+  panel._pendientesActual = pendientes;   // los botones se enlazan una sola vez: siempre deben leer la lista VIGENTE, no la de la primera vez que se abrió la ventana
   const oculto = panel.dataset.oculto === '1';
   workspace.classList.toggle('doc-workspace-split', !oculto);
   panel.style.display = oculto ? 'none' : 'flex';
+  const file = documentoSoporteSeleccion(pendientes);
   if (!oculto) {
-    const file = pendientes[pendientes.length - 1];
     const ext = (file.name.split('.').pop() || '').toLowerCase();
     const esImagen = ['jpg','jpeg','png'].includes(ext);
-    const url = URL.createObjectURL(file);
+    if (panel._urlVista) { try { URL.revokeObjectURL(panel._urlVista); } catch (_) { /* nada */ } }
+    const url = panel._urlVista = URL.createObjectURL(file);
     document.getElementById(ids.embed).innerHTML = esImagen ? `<img src="${url}">` : `<iframe src="${url}"></iframe>`;
     document.getElementById(ids.nombre).textContent = file.name;
   }
+  // el archivo que se está viendo se marca en la lista
+  workspace.querySelectorAll('.doc-adjunto-chip').forEach(chip => { const v = chip.querySelector('.doc-adjunto-ver'); chip.classList.toggle('doc-adjunto-sel', !oculto && !!v && pendientes[Number(v.dataset.idx)] === file); });
   const btn = document.getElementById(ids.toggleBtn);
   if (btn && !btn.dataset.wired) {
     btn.dataset.wired = '1';
     btn.addEventListener('click', () => {
       panel.dataset.oculto = panel.dataset.oculto === '1' ? '0' : '1';
       btn.textContent = panel.dataset.oculto === '1' ? 'Mostrar' : 'Ocultar';
-      actualizarPanelDocumentoEmbebido(ids, pendientes);
+      actualizarPanelDocumentoEmbebido(ids, panel._pendientesActual || []);
     });
+    // «Ampliar»: abre el visor grande con el archivo que se está viendo (antes el único camino al visor era «Ver», que ahora cambia el panel)
+    const amp = document.createElement('button'); amp.type = 'button'; amp.className = 'doc-panel-ampliar'; amp.textContent = 'Ampliar'; amp.title = 'Abrir el archivo en grande';
+    amp.addEventListener('click', () => { const l = panel._pendientesActual || [], f = l.includes(l._vista) ? l._vista : l[l.length - 1]; if (f) verArchivoPendiente(f); });
+    btn.parentNode.insertBefore(amp, btn);
   }
 }
 const IDS_PANEL_DOC_MOV = { workspace: 'movWorkspace', panel: 'movPanelDoc', nombre: 'movPanelDocNombre', embed: 'movPanelDocEmbed', toggleBtn: 'movTogglePanelDoc' };
@@ -14654,7 +14670,7 @@ function renderMovAdjuntoPendiente() {
   };
   const input = box.querySelector('.mov-adjunto-pendiente-input');
   if (input) input.addEventListener('change', () => agregarArchivos(Array.from(input.files)));
-  wireDocumentoSoporteVerQuitar(box, pendientes, renderMovAdjuntoPendiente);
+  wireDocumentoSoporteVerQuitar(box, pendientes, renderMovAdjuntoPendiente, IDS_PANEL_DOC_MOV);
   habilitarDragDropAdjunto(box.querySelector('.doc-adjunto-bloque'), agregarArchivos);
   if (window.innerWidth > 880) actualizarPanelDocumentoEmbebido(IDS_PANEL_DOC_MOV, pendientes);
 }
@@ -19059,7 +19075,7 @@ function renderFpAdjuntoPendiente() {
   };
   const input = box.querySelector('.fp-adjunto-pendiente-input');
   if (input) input.addEventListener('change', () => agregarArchivos(Array.from(input.files)));
-  wireDocumentoSoporteVerQuitar(box, pendientes, renderFpAdjuntoPendiente);
+  wireDocumentoSoporteVerQuitar(box, pendientes, renderFpAdjuntoPendiente, IDS_PANEL_DOC_FP);
   habilitarDragDropAdjunto(box.querySelector('.doc-adjunto-bloque'), agregarArchivos);
   if (window.innerWidth > 880) actualizarPanelDocumentoEmbebido(IDS_PANEL_DOC_FP, pendientes);
 }
@@ -24075,7 +24091,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-10-14.6';
+const APP_VERSION = '2026-10-14.7';
 const RESPALDO_TABLAS = [['businesses', ['id']], ['fz_cuentas_mayor', ['id']], ['fz_subcuentas', ['id']], ['fz_polizas', ['id']], ['fz_polizas_lineas', ['id']], ['fz_proveedores_catalogo', ['id']], ['fz_proveedores', ['id']], ['fz_ventas', ['id']], ['fz_conceptos_venta', ['id']], ['fz_conceptos_sistema', ['id']], ['fz_conceptos', ['id']], ['fz_efectivo_monedas', ['id']], ['fz_efectivo_mov', ['id']], ['fz_bancos_cuentas', ['id']], ['fz_bancos_mov', ['id']], ['fz_pl_gastos', ['id']], ['fz_usuarios_autorizados', ['id']], ['fz_usuario_negocios', ['id']], ['fz_auditoria', ['id']], ['fz_adjuntos', ['id']], ['fz_pagos_aplicados', ['id']], ['fz_clientes', ['id']], ['fz_productos_servicios', ['id']], ['fz_folios_contador', ['business_id', 'tipo']], ['fz_facturas_clientes', ['id']], ['fz_facturas_clientes_lineas', ['id']], ['fz_cobros_aplicados', ['id']], ['fz_ordenes_venta', ['id']], ['fz_ordenes_venta_lineas', ['id']], ['fz_conciliaciones_bancarias', ['id']], ['fz_cierres_periodo', ['id']], ['fz_tc_cierre', ['id']], ['fz_tipos_cambio_cierre', ['id']], ['fz_cfdi', ['id']], ['fz_cfdi_bitacora', ['id']], ['fz_activos_fijos', ['id']], ['fz_depreciaciones_generadas', ['id']], ['fz_inpc_valores', ['id']], ['fz_recargos_tasas', ['id']], ['fz_pagos_impuestos', ['id']], ['fz_isr_datos_anuales', ['id']], ['fz_isr_conceptos', ['id']], ['fz_provisiones_fiscales', ['id']], ['fz_iva_realizaciones', ['id']], ['fz_aplicaciones_pago_fiscal', ['id']], ['fz_regimenes_fiscales_negocio', ['id']], ['fz_dias_inhabiles_fiscales', ['id']], ['fz_declaraciones_fiscales', ['id']], ['fz_reglas_vencimiento_impuesto', []], ['fz_calendario_fiscal_validacion', []], ['fz_catalogo_regimenes_fiscales', []], ['fz_papeles_trabajo', ['id']], ['fz_papel_conceptos', ['id']], ['fz_papel_concepto_fuentes', ['id']], ['fz_papel_concepto_accesorios', ['id']], ['fz_papel_historial', ['id']], ['fz_papel_soportes', ['id']], ['fz_mapeo_cuenta_concepto_fiscal', ['id']], ['fz_perdidas_fiscales', ['id']], ['fz_perdidas_fiscales_actualizaciones', ['id']], ['fz_perdidas_fiscales_aplicaciones', ['id']], ['fz_perdidas_fiscales_cierres', ['id']], ['fz_perdidas_fiscales_historial', ['id']], ['fz_perdidas_fiscales_soportes', ['id']], ['fz_ptu_eventos', ['id']], ['fz_ptu_historial', ['id']], ['fz_pagos_por_clasificar', ['id']], ['fz_iva_saldos_favor', ['id']], ['fz_iva_saldos_favor_movimientos', ['id']], ['fz_iva_saldos_favor_devoluciones', ['id']], ['fz_iva_saldo_favor_periodo_activo', ['id']]];
 const RESPALDO_BUCKETS = ['adjuntos', 'cfdi'], RESPALDO_MAX_ARCHIVOS_BYTES = 400 * 1024 * 1024, RESPALDO_AVISO_DIAS = 7;
 function respaldoEstado() { try { return JSON.parse(localStorage.getItem('finanzas_ultimo_respaldo') || 'null'); } catch (_) { return null; } }
@@ -24391,6 +24407,22 @@ function abrirImpresionMovil(op) {
     catch (e) { if (e && e.name === 'AbortError') return; toast('No se pudo abrir la hoja de compartir. Usa «Descargar PDF».', 'error'); }   // cerrar la hoja sin elegir nada no es un error
   });
 }
+
+// ============================================================================================================
+// FECHAS: aplicar el cambio cuando el usuario TERMINA de escribir. Un campo de fecha avisa «cambió» ya al teclear el día (el mes y el año ya estaban puestos) y esas pantallas se redibujaban en cada aviso:
+// el campo se reemplazaba y el cursor se perdía a media escritura. Ahora el aviso se retiene hasta que el usuario hace una pausa (0.9 s), sale del campo (0.3 s) o pulsa Enter, y entonces se entrega UNA vez con la fecha final.
+// Solo en las pantallas con filtros de fecha donde se midió el problema (Libro diario, Diarios, Auxiliares, Estado de Resultados y Pólizas).
+// ============================================================================================================
+const FECHA_PANTALLAS = '#sec-librodiario, #sec-diariospolizas, #sec-auxiliares, #sec-pl, #sec-polizas', FECHA_REPOSO_MS = 900, FECHA_SALIDA_MS = 300;
+(function instalarFechaTerminada() {
+  const esFecha = (el) => !!el && el.tagName === 'INPUT' && el.type === 'date' && !!el.closest(FECHA_PANTALLAS), tm = new WeakMap();
+  const entregar = (el) => { tm.delete(el); if (!el.isConnected) return; el.dataset.fechaLista = '1'; try { el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); } finally { delete el.dataset.fechaLista; } };
+  const retener = (e) => { const el = e.target; if (!esFecha(el) || el.dataset.fechaLista === '1') return; e.stopImmediatePropagation(); clearTimeout(tm.get(el)); tm.set(el, setTimeout(() => entregar(el), FECHA_REPOSO_MS)); };
+  document.addEventListener('input', retener, true); document.addEventListener('change', retener, true);
+  document.addEventListener('keydown', (e) => { const el = e.target; if (e.key === 'Enter' && esFecha(el) && tm.has(el)) { clearTimeout(tm.get(el)); entregar(el); } }, true);
+  const salio = (e) => { const el = e.target; if (esFecha(el) && tm.has(el)) { clearTimeout(tm.get(el)); tm.set(el, setTimeout(() => entregar(el), FECHA_SALIDA_MS)); } };   // sale del campo: se aplica enseguida, pero después del clic que lo sacó
+  document.addEventListener('focusout', salio, true); document.addEventListener('blur', salio, true);
+})();
 
 // ---- pantalla: bandeja ----
 const cfdiBadgeSat = (e) => {
@@ -25828,10 +25860,9 @@ function catalogoCuentasUnificado(catalogos) {
 }
 
 function wireBorradorPolizaHandlers(wrap) {
-  wrap.querySelectorAll('.poliza-cell').forEach(inp => inp.addEventListener('change', () => {
-    STATE_polizaBorrador.poliza[inp.dataset.field] = inp.value;
-    renderizarBorradorPoliza();
-  }));
+  // La fecha y el concepto no cambian nada más del editor: se guardan SIN redibujar. Antes se redibujaba todo el editor en cada cambio, y como el campo de fecha da por válido el valor al teclear el día,
+  // se reemplazaba el campo y se perdía el cursor (había que volver a hacer clic para seguir con el mes y el año).
+  wrap.querySelectorAll('.poliza-cell').forEach(inp => { const guardar = () => { STATE_polizaBorrador.poliza[inp.dataset.field] = inp.value; }; inp.addEventListener('input', guardar); inp.addEventListener('change', guardar); });
   wrap.querySelectorAll('.linea-cuenta-buscar').forEach(inp => inp.addEventListener('change', () => {
     const linea = STATE_polizaBorrador.lineas.find(l => l.id === inp.dataset.id);
     if (!linea) return;
@@ -25926,7 +25957,7 @@ function wireBorradorPolizaHandlers(wrap) {
     };
     const pendienteInput = wrap.querySelector('.adjunto-pendiente-input');
     if (pendienteInput) pendienteInput.addEventListener('change', () => agregarArchivosPoliza(Array.from(pendienteInput.files)));
-    wireDocumentoSoporteVerQuitar(wrap, pendientes, renderizarBorradorPoliza);
+    wireDocumentoSoporteVerQuitar(wrap, pendientes, renderizarBorradorPoliza, IDS_PANEL_DOC_POL);
     const bloqueDoc = wrap.querySelector('.doc-adjunto-bloque');
     if (bloqueDoc) habilitarDragDropAdjunto(bloqueDoc, agregarArchivosPoliza);
     if (window.innerWidth > 880) actualizarPanelDocumentoEmbebido(IDS_PANEL_DOC_POL, pendientes);
