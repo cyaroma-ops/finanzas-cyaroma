@@ -529,6 +529,20 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 .doc-adjunto-chip{cursor:pointer;}
 .doc-adjunto-chip.doc-adjunto-sel{border-color:var(--gold,#b8892b);box-shadow:0 0 0 2px rgba(184,137,43,.22);background:#fffaf0;}
 .doc-panel-ampliar{font:inherit;font-size:12px;border:1px solid var(--line);background:#fff;border-radius:6px;padding:3px 9px;margin-right:6px;cursor:pointer;}
+/* Efectivo y Divisas en CELULAR: la tabla «Resumen de liquidez» necesitaba 401 px (campo de tipo de cambio de 75 px fijos + importes en negrita) y el navegador ensanchaba TODA la pantalla (426 px en un teléfono de 390 o 360).
+   Ahora se ajusta al ancho de su tarjeta. Solo celular (≤640 px): en computadora no cambia nada. */
+@media (max-width:640px){
+#sec-efectivo > .card:first-child > table{width:100%;table-layout:fixed;}
+#sec-efectivo > .card:first-child > table td{padding:8px 5px;font-size:12.5px;overflow-wrap:anywhere;}
+#sec-efectivo > .card:first-child > table td:nth-child(2){width:27%;}
+#sec-efectivo > .card:first-child > table td:nth-child(3){width:66px;}
+#sec-efectivo > .card:first-child > table td:nth-child(4){width:31%;}
+#sec-efectivo > .card:first-child > table input.tc-reporte-cell{width:100% !important;min-width:0;box-sizing:border-box;text-align:right;}
+}
+/* Diarios y Pólizas en celular y tableta: la barra de pestañas sale hacia los bordes con márgenes de -32 px (pensados para escritorio, donde el contenido tiene 32 px de margen). Con el margen menor de celular (16 px hasta 900 px de
+   ancho y 12 px hasta 480) sobresalía 32 px por cada lado y ensanchaba TODA la pantalla. Ahora sigue los mismos dos puntos de corte que .content. En escritorio (>900 px) no cambia nada. */
+@media (max-width:900px){ #diariosPolizasTabBar{padding:10px 16px;margin:-10px -16px 14px;} }
+@media (max-width:480px){ #diariosPolizasTabBar{padding:10px 12px;margin:-10px -12px 14px;} }
 .doc-adjunto-icono{font-size:15px;flex-shrink:0;}
 .doc-adjunto-nombre{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--navy-1);}
 .doc-adjunto-tam{color:var(--muted);font-size:11px;flex-shrink:0;}
@@ -3149,6 +3163,6 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 </div>
 
 <script src="config.js"></script>
-<script src="app.js?v=2026-10-14.8"></script>
+<script src="app.js?v=2026-10-14.9"></script>
 </body>
 </html>
