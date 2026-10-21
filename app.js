@@ -256,6 +256,11 @@ function toast(msg, kind) {
 }
 
 /* ---------- Auditoría: registrar quién crea/edita/elimina qué ---------- */
+/* ---------- Seguridad: codificación de salida por contexto (Fase 2A, H-01) ----------
+   escHtml: TEXTO que se inserta dentro de un elemento HTML. escAttr: valor entre comillas de un ATRIBUTO. No hay contextos de URL ni de JavaScript con datos
+   (la aplicación no tiene manejadores en línea ni href dinámicos). Los datos de usuarios, archivos, XML, Excel y estados de cuenta jamás deben interpretarse como HTML. */
+function escHtml(t) { return String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+function escAttr(t) { return String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 async function registrarAuditoria(businessId, accion, modulo, descripcion) {
   try { REVAL_CACHE.clear(); } catch (_) {} // toda escritura invalida la memoria breve de la revaluación de divisas
   try {
@@ -292,8 +297,8 @@ async function verAdjunto(path, nombre) {
   const esImagen = ['jpg','jpeg','png'].includes(ext);
   const body = document.getElementById('adjuntoPreviewBody');
   body.innerHTML = esImagen
-    ? `<div style="display:flex;align-items:center;justify-content:center;min-height:100%;padding:20px;"><img src="${data.signedUrl}" style="max-width:100%;max-height:70vh;box-shadow:0 4px 20px rgba(0,0,0,.15);border-radius:6px;"></div>`
-    : `<iframe src="${data.signedUrl}" style="width:100%;height:100%;border:none;min-height:70vh;"></iframe>`;
+    ? `<div style="display:flex;align-items:center;justify-content:center;min-height:100%;padding:20px;"><img src="${escAttr(data.signedUrl)}" style="max-width:100%;max-height:70vh;box-shadow:0 4px 20px rgba(0,0,0,.15);border-radius:6px;"></div>`
+    : `<iframe src="${escAttr(data.signedUrl)}" style="width:100%;height:100%;border:none;min-height:70vh;"></iframe>`;
   document.getElementById('adjuntoPreviewNombre').textContent = nombre || 'Adjunto';
   document.getElementById('adjuntoPreviewDescargar').href = data.signedUrl;
   document.getElementById('adjuntoPreviewOverlay').style.display = 'block';
@@ -334,8 +339,8 @@ function verArchivoPendiente(file) {
   const url = URL.createObjectURL(file);
   const body = document.getElementById('adjuntoPreviewBody');
   body.innerHTML = esImagen
-    ? `<div style="display:flex;align-items:center;justify-content:center;min-height:100%;padding:20px;"><img src="${url}" style="max-width:100%;max-height:70vh;box-shadow:0 4px 20px rgba(0,0,0,.15);border-radius:6px;"></div>`
-    : `<iframe src="${url}" style="width:100%;height:100%;border:none;min-height:70vh;"></iframe>`;
+    ? `<div style="display:flex;align-items:center;justify-content:center;min-height:100%;padding:20px;"><img src="${escAttr(url)}" style="max-width:100%;max-height:70vh;box-shadow:0 4px 20px rgba(0,0,0,.15);border-radius:6px;"></div>`
+    : `<iframe src="${escAttr(url)}" style="width:100%;height:100%;border:none;min-height:70vh;"></iframe>`;
   document.getElementById('adjuntoPreviewNombre').textContent = file.name + ' (aún no guardado)';
   document.getElementById('adjuntoPreviewDescargar').href = url;
   document.getElementById('adjuntoPreviewOverlay').style.display = 'block';
@@ -351,7 +356,7 @@ function documentoSoporteBloqueHtml(pendientes, inputClass) {
     ${pendientes.length ? `<div class="doc-adjunto-lista">
       ${pendientes.map((f, i) => `<div class="doc-adjunto-chip">
         <span class="doc-adjunto-icono">${iconoTipoArchivo(f.name)}</span>
-        <span class="doc-adjunto-nombre" title="${f.name}">${f.name}</span>
+        <span class="doc-adjunto-nombre" title="${escAttr(f.name)}">${escHtml(f.name)}</span>
         <span class="doc-adjunto-tam">${fmtTamanoArchivo(f.size)}</span>
         <button type="button" class="doc-adjunto-ver" data-idx="${i}" title="Ver">Ver</button>
         <button type="button" class="doc-adjunto-quitar" data-idx="${i}" title="Quitar">✕</button>
@@ -435,7 +440,7 @@ function printControlHtml(opts) {
          de abajo (print-control-ejecutar) solo hace click() sobre este — nunca genera el PDF
          por sí mismo. Sin este elemento, document.getElementById(buttonId) siempre era null. -->
     <button type="button" id="${opts.buttonId}" style="display:none;"></button>
-    <button type="button" class="btn btn-ghost btn-sm print-control-abrir">${iconoImprimir()}${label}</button>
+    <button type="button" class="btn btn-ghost btn-sm print-control-abrir">${iconoImprimir()}${escHtml(label)}</button>
     <div class="print-control-popover" style="display:none;">
       ${(permitirV && permitirH) ? `<div class="print-control-label">Orientación</div>
       <div class="print-control-segmented">
@@ -515,8 +520,8 @@ async function renderModalAdjuntosList() {
   const adjuntos = await cargarAdjuntos(tabla, registroId);
   box.innerHTML = adjuntos.length ? adjuntos.map(a => `
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 4px;border-bottom:1px solid var(--line);font-size:13px;">
-      <a href="#" class="adjuntos-ver-item" data-path="${a.archivo_path}" title="${a.archivo_nombre}" style="color:var(--navy-1);text-decoration:underline;max-width:270px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${a.archivo_nombre}</a>
-      <button class="row-del adjuntos-del-item" data-id="${a.id}" data-path="${a.archivo_path}" style="font-size:14px;flex-shrink:0;">✕</button>
+      <a href="#" class="adjuntos-ver-item" data-path="${escAttr(a.archivo_path)}" title="${escAttr(a.archivo_nombre)}" style="color:var(--navy-1);text-decoration:underline;max-width:270px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(a.archivo_nombre)}</a>
+      <button class="row-del adjuntos-del-item" data-id="${a.id}" data-path="${escAttr(a.archivo_path)}" style="font-size:14px;flex-shrink:0;">✕</button>
     </div>`).join('') : `<p class="empty" style="padding:6px 0 14px;">Aún no hay archivos adjuntos.</p>`;
   box.querySelectorAll('.adjuntos-ver-item').forEach(a => a.addEventListener('click', (e) => {
     e.preventDefault();
@@ -877,8 +882,8 @@ async function renderUsuariosList() {
     <div style="padding:14px 6px;border-bottom:1px solid var(--line);">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
         <div style="min-width:0;">
-          <strong style="font-size:14.5px;">${u.nombre || u.email}</strong>${u.email.toLowerCase()===STATE.user.email.toLowerCase()?' <span style="color:var(--muted);font-size:11px;">(tú)</span>':''}
-          ${u.nombre ? `<div style="color:var(--muted);font-size:12px;margin-top:2px;">${u.email}</div>` : ''}
+          <strong style="font-size:14.5px;">${escHtml(u.nombre || u.email)}</strong>${u.email.toLowerCase()===STATE.user.email.toLowerCase()?' <span style="color:var(--muted);font-size:11px;">(tú)</span>':''}
+          ${u.nombre ? `<div style="color:var(--muted);font-size:12px;margin-top:2px;">${escHtml(u.email)}</div>` : ''}
           <div style="margin-top:5px;display:flex;gap:6px;flex-wrap:wrap;">
             <span class="badge ${u.es_administrador?'pag':''}" ${!u.es_administrador?'style="background:#eef1f6;color:var(--muted);"':''}>${etiquetaRol(u.es_administrador, u.rol)}</span>
             <span class="badge ${u.activo!==false?'pag':'pend'}">${u.activo!==false?'Activo':'Inactivo'}</span>
@@ -912,7 +917,7 @@ async function renderUsuariosList() {
             <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px 16px;margin-bottom:12px;">
               ${todosNegocios.map(n => `
                 <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer;">
-                  <input type="checkbox" class="usuario-negocio" data-email="${u.email}" data-negocio="${n.id}" ${negociosDe.includes(n.id)?'checked':''}> ${n.name}
+                  <input type="checkbox" class="usuario-negocio" data-email="${escAttr(u.email)}" data-negocio="${n.id}" ${negociosDe.includes(n.id)?'checked':''}> ${escHtml(n.name)}
                 </label>`).join('') || '<span style="font-size:12px;color:var(--muted);">Aún no hay negocios creados.</span>'}
             </div>` : ''}
           <button class="btn btn-ghost btn-sm usuario-del" data-id="${u.id}" style="color:var(--red);">Quitar acceso a este usuario</button>
@@ -982,7 +987,7 @@ function renderBizSelect() {
   const sel = document.getElementById('bizSelect');
   sel.innerHTML = STATE.businesses
     .filter(b => b.active !== false)
-    .map(b => `<option value="${b.id}" ${b.id === STATE.currentBusinessId ? 'selected' : ''}>${b.name}</option>`)
+    .map(b => `<option value="${b.id}" ${b.id === STATE.currentBusinessId ? 'selected' : ''}>${escHtml(b.name)}</option>`)
     .join('');
 }
 
@@ -1086,7 +1091,7 @@ async function abrirEditarNegocio(negocio) {
 
   const { data: catalogoRegimenes } = await sb.from('fz_catalogo_regimenes_fiscales').select('*').eq('activo', true).order('clave', { ascending: true });
   document.getElementById('editBizRegimenNuevo').innerHTML = '<option value="">— selecciona un régimen —</option>' +
-    (catalogoRegimenes||[]).map(r => `<option value="${r.clave}">${r.clave} — ${r.descripcion}</option>`).join('');
+    (catalogoRegimenes||[]).map(r => `<option value="${r.clave}">${r.clave} — ${escHtml(r.descripcion)}</option>`).join('');
 
   const { data: regimenes } = await sb.from('fz_regimenes_fiscales_negocio').select('*').eq('business_id', negocio.id).is('vigente_hasta', null).order('vigente_desde', { ascending: false });
   const vigente = regimenes && regimenes.length ? regimenes[0] : null;
@@ -1110,7 +1115,7 @@ async function renderModalMfa() {
   const body = document.getElementById('mfaModalBody');
   body.innerHTML = `<p class="empty">Cargando…</p>`;
   const { data, error } = await sb.auth.mfa.listFactors();
-  if (error) { body.innerHTML = `<p style="color:var(--red);">Error: ${error.message}</p>`; return; }
+  if (error) { body.innerHTML = `<p style="color:var(--red);">Error: ${escHtml(error.message)}</p>`; return; }
 
   const verificado = (data.totp || []).find(f => f.status === 'verified');
   if (verificado) {
@@ -1133,9 +1138,9 @@ async function renderModalMfa() {
   for (const f of sinVerificar) { await sb.auth.mfa.unenroll({ factorId: f.id }); }
 
   const { data: enrollData, error: enrollError } = await sb.auth.mfa.enroll({ factorType: 'totp', friendlyName: 'Finanzas CYA Roma ' + Date.now() });
-  if (enrollError) { body.innerHTML = `<p style="color:var(--red);">Error: ${enrollError.message}</p>`; return; }
+  if (enrollError) { body.innerHTML = `<p style="color:var(--red);">Error: ${escHtml(enrollError.message)}</p>`; return; }
   const qr = enrollData.totp.qr_code;
-  const qrHtml = qr.startsWith('data:') ? `<img src="${qr}" style="width:180px;height:180px;">`
+  const qrHtml = qr.startsWith('data:') ? `<img src="${escAttr(qr)}" style="width:180px;height:180px;">`
     : qr.trim().startsWith('<svg') ? qr
     : `<img src="data:image/svg+xml;utf8,${encodeURIComponent(qr)}" style="width:180px;height:180px;">`;
 
@@ -1629,7 +1634,7 @@ async function renderDashboard() {
           <tbody>
             ${rows.map(r => `
               <tr>
-                <td><strong>${r.biz.name}</strong></td>
+                <td><strong>${escHtml(r.biz.name)}</strong></td>
                 <td class="num">${fmt(r.ventasMes)}</td>
                 <td class="num">${fmt(r.efectivoTotal)}</td>
                 <td class="num">${fmt(r.bancosTotal)}</td>
@@ -1755,7 +1760,7 @@ async function renderVentas() {
     loadConceptos(b.id),
     loadConceptosSistema(b.id),
   ]);
-  if (ventasQ.error) { el.innerHTML = `<div class="empty">Error: ${ventasQ.error.message}</div>`; return; }
+  if (ventasQ.error) { el.innerHTML = `<div class="empty">Error: ${escHtml(ventasQ.error.message)}</div>`; return; }
   const rows = ventasQ.data || [];
 
   const porCat = { efectivo: conceptos.filter(c=>c.categoria==='efectivo'), tarjetas: conceptos.filter(c=>c.categoria==='tarjetas'), bancos: conceptos.filter(c=>c.categoria==='bancos'), cxc: conceptos.filter(c=>c.categoria==='cxc'), propinas: conceptos.filter(c=>c.categoria==='propinas') };
@@ -1847,15 +1852,15 @@ async function renderVentas() {
               <th rowspan="2">Fecha</th>
               <th colspan="${conceptosVenta.length}" style="text-align:center;">Lo vendido</th>
               <th rowspan="2">Total venta</th>
-              ${conceptosSistema.length ? conceptosSistema.map(c=>`<th rowspan="2">${c.nombre} (sistema)</th>`).join('') : SISTEMA_COLS.map(([k,l])=>`<th rowspan="2">${l}</th>`).join('')}
+              ${conceptosSistema.length ? conceptosSistema.map(c=>`<th rowspan="2">${escHtml(c.nombre)} (sistema)</th>`).join('') : SISTEMA_COLS.map(([k,l])=>`<th rowspan="2">${l}</th>`).join('')}
               ${recibidoCats.map(cat => `<th colspan="${porCat[cat].length}" style="text-align:center;">${CAT_LABEL[cat]} recibido</th>`).join('')}
               <th rowspan="2">Total Efvo.</th><th rowspan="2">Total Tarj.</th><th rowspan="2">Total Bancos</th><th rowspan="2">Total CxC</th><th rowspan="2">Total Prop.</th>
               <th rowspan="2">Dif. Efvo.</th><th rowspan="2">Dif. Tarj.</th><th rowspan="2">Dif. Total</th>
               <th rowspan="2"></th>
             </tr>
             <tr>
-              ${conceptosVenta.map(c => `<th>${c.nombre}${c.tipo==='resta'?' (−)':''}</th>`).join('')}
-              ${recibidoCats.flatMap(cat => porCat[cat].map(c => `<th>${c.nombre}${c.es_moneda?' (+TC)':''}${c.categoria==='propinas'?(c.medio==='tarjetas'?' (Tarj)':' (Efvo)'):''}</th>`)).join('')}
+              ${conceptosVenta.map(c => `<th>${escHtml(c.nombre)}${c.tipo==='resta'?' (−)':''}</th>`).join('')}
+              ${recibidoCats.flatMap(cat => porCat[cat].map(c => `<th>${escHtml(c.nombre)}${c.es_moneda?' (+TC)':''}${c.categoria==='propinas'?(c.medio==='tarjetas'?' (Tarj)':' (Efvo)'):''}</th>`)).join('')}
             </tr>
           </thead>
           <tfoot>
@@ -2114,9 +2119,9 @@ async function openConceptosModal(businessId) {
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).order('nombre'),
   ]);
   document.getElementById('newConceptoMonedaId').innerHTML = `<option value="">— no vincular —</option>` +
-    (monedas || []).map(m => `<option value="${m.id}">${m.nombre}</option>`).join('');
+    (monedas || []).map(m => `<option value="${m.id}">${escHtml(m.nombre)}</option>`).join('');
   document.getElementById('newConceptoBancoId').innerHTML = `<option value="">— no vincular —</option>` +
-    (cuentasBanco || []).map(c => `<option value="${c.id}">${c.nombre}</option>`).join('');
+    (cuentasBanco || []).map(c => `<option value="${c.id}">${escHtml(c.nombre)}</option>`).join('');
   document.getElementById('modalConceptos').classList.add('show');
   document.getElementById('newConceptoCategoria').onchange = updateConceptoFieldsVisibility;
   updateConceptoFieldsVisibility();
@@ -2163,15 +2168,15 @@ async function renderConceptosList(businessId) {
   box.innerHTML = conceptos.map(c => `
     <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 4px;border-bottom:1px solid var(--line);gap:10px;">
       <div style="min-width:0;">
-        <strong>${c.nombre}</strong> <span style="color:var(--muted);font-size:12px;">— ${CAT_LABEL[c.categoria]}${c.es_moneda ? ' · con TC' : ''}${c.categoria==='propinas' ? ' · '+(c.medio==='tarjetas'?'Tarjetas':'Efectivo') : ''}</span>
+        <strong>${escHtml(c.nombre)}</strong> <span style="color:var(--muted);font-size:12px;">— ${escHtml(CAT_LABEL[c.categoria])}${c.es_moneda ? ' · con TC' : ''}${c.categoria==='propinas' ? ' · '+(c.medio==='tarjetas'?'Tarjetas':'Efectivo') : ''}</span>
       </div>
       ${(permiteVinculo && c.categoria === 'efectivo') ? `<select class="cell concepto-moneda-vinculo" data-id="${c.id}" style="max-width:170px;flex-shrink:0;">
         <option value="">— no vincular —</option>
-        ${monedas.map(m => `<option value="${m.id}" ${c.moneda_id===m.id?'selected':''}>${m.nombre}</option>`).join('')}
+        ${monedas.map(m => `<option value="${m.id}" ${c.moneda_id===m.id?'selected':''}>${escHtml(m.nombre)}</option>`).join('')}
       </select>` : ''}
       ${(permiteVinculo && (c.categoria === 'tarjetas' || c.categoria === 'bancos')) ? `<select class="cell concepto-banco-vinculo" data-id="${c.id}" style="max-width:170px;flex-shrink:0;">
         <option value="">— no vincular —</option>
-        ${cuentasBanco.map(cb => `<option value="${cb.id}" ${c.banco_cuenta_id===cb.id?'selected':''}>${cb.nombre}</option>`).join('')}
+        ${cuentasBanco.map(cb => `<option value="${cb.id}" ${c.banco_cuenta_id===cb.id?'selected':''}>${escHtml(cb.nombre)}</option>`).join('')}
       </select>` : ''}
       <button class="row-del concepto-del" data-id="${c.id}" style="font-size:16px;flex-shrink:0;">✕</button>
     </div>`).join('');
@@ -2234,11 +2239,11 @@ function opcionesSubcuentasIngreso(subcuentas, mayores, selectedId) {
   const partes = mayoresIngreso.map(m => {
     const construirNivel = (padreId, nivel) => subcuentas.filter(s => s.cuenta_mayor_id === m.id && (s.subcuenta_padre_id || null) === padreId)
       .flatMap(s => [
-        `<option value="${s.id}" ${selectedId===s.id?'selected':''}>${'—'.repeat(nivel)} ${s.nombre}</option>`,
+        `<option value="${s.id}" ${selectedId===s.id?'selected':''}>${'—'.repeat(nivel)} ${escHtml(s.nombre)}</option>`,
         ...construirNivel(s.id, nivel + 1),
       ]);
     const opts = construirNivel(null, 0);
-    return opts.length ? `<optgroup label="${m.nombre}">${opts.join('')}</optgroup>` : '';
+    return opts.length ? `<optgroup label="${escAttr(m.nombre)}">${opts.join('')}</optgroup>` : '';
   }).join('');
   return partes;
 }
@@ -2250,7 +2255,7 @@ async function renderVentaConceptosList(businessId) {
   box.innerHTML = conceptos.map((c, idx) => `
     <div style="padding:8px 4px;border-bottom:1px solid var(--line);">
       <div style="display:flex;align-items:center;justify-content:space-between;">
-        <div style="display:flex;align-items:center;">${botonesOrdenHtml(idx, conceptos.length, 'cv-orden')}<div><strong>${c.nombre}</strong> <span style="color:var(--muted);font-size:12px;">— ${c.tipo === 'resta' ? 'Resta (ej. descuentos)' : 'Suma'}</span></div></div>
+        <div style="display:flex;align-items:center;">${botonesOrdenHtml(idx, conceptos.length, 'cv-orden')}<div><strong>${escHtml(c.nombre)}</strong> <span style="color:var(--muted);font-size:12px;">— ${c.tipo === 'resta' ? 'Resta (ej. descuentos)' : 'Suma'}</span></div></div>
         <button class="row-del conceptoventa-del" data-id="${c.id}" style="font-size:16px;">✕</button>
       </div>
       ${hayCatalogoIngreso ? `<div style="margin:6px 0 0 26px;">
@@ -2304,7 +2309,7 @@ async function renderSistemaConceptosList(businessId) {
   } else {
     box.innerHTML = conceptos.map(c => `
       <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 4px;border-bottom:1px solid var(--line);">
-        <div><strong>${c.nombre}</strong> <span style="color:var(--muted);font-size:12px;">— se compara contra "${SISTEMA_CAT_LABEL[c.categoria]} recibido"</span></div>
+        <div><strong>${escHtml(c.nombre)}</strong> <span style="color:var(--muted);font-size:12px;">— se compara contra "${escHtml(SISTEMA_CAT_LABEL[c.categoria])} recibido"</span></div>
         <button class="row-del conceptosistema-del" data-id="${c.id}" style="font-size:16px;">✕</button>
       </div>`).join('');
   }
@@ -2360,7 +2365,7 @@ function opcionesMoverSubcuenta(s, subcuentas) {
   const candidatos = subcuentas.filter(x => x.cuenta_mayor_id === s.cuenta_mayor_id && !excluidos.has(x.id));
   const construirNivel = (padreId, nivel) => candidatos.filter(x => (x.subcuenta_padre_id || null) === padreId)
     .flatMap(x => [
-      `<option value="${x.id}" ${s.subcuenta_padre_id===x.id?'selected':''}>${'—'.repeat(nivel)} ${x.nombre}</option>`,
+      `<option value="${x.id}" ${s.subcuenta_padre_id===x.id?'selected':''}>${'—'.repeat(nivel)} ${escHtml(x.nombre)}</option>`,
       ...construirNivel(x.id, nivel + 1),
     ]);
   return `<option value="">— nivel superior (dentro de su cuenta mayor) —</option>` + construirNivel(null, 0).join('');
@@ -2384,12 +2389,12 @@ function opcionesSubcuentaHtml(subcuentas, mayores, selectedId) {
     const construirNivel = (padreId, nivel) => {
       return subcuentas.filter(s => s.cuenta_mayor_id === m.id && (s.subcuenta_padre_id || null) === padreId)
         .flatMap(s => [
-          `<option value="${s.id}" ${selectedId===s.id?'selected':''}>${'—'.repeat(nivel)} ${s.nombre}</option>`,
+          `<option value="${s.id}" ${selectedId===s.id?'selected':''}>${'—'.repeat(nivel)} ${escHtml(s.nombre)}</option>`,
           ...construirNivel(s.id, nivel + 1),
         ]);
     };
     const opts = construirNivel(null, 0);
-    return opts.length ? `<optgroup label="${m.nombre}">${opts.join('')}</optgroup>` : '';
+    return opts.length ? `<optgroup label="${escAttr(m.nombre)}">${opts.join('')}</optgroup>` : '';
   }).join('');
   return porMayor;
 }
@@ -2477,7 +2482,7 @@ function agregarBotonVolverConfig(el) {
 }
 function tarjetaConfigHtml(id, titulo, descripcion) {
   return `<div class="config-card" id="${id}" style="cursor:pointer;border:1.5px solid var(--line);border-radius:10px;padding:18px;">
-    <strong style="color:var(--navy-1);font-size:14.5px;">${titulo}</strong>
+    <strong style="color:var(--navy-1);font-size:14.5px;">${escHtml(titulo)}</strong>
     <p style="font-size:12.5px;color:var(--muted);margin-top:6px;">${descripcion}</p>
   </div>`;
 }
@@ -2568,10 +2573,10 @@ async function renderControlSaldosFavorIVA() {
           <tbody>
             ${saldosConDatos.length ? saldosConDatos.map(s => `
               <tr>
-                <td>${s.periodo_origen}</td>
+                <td>${escHtml(s.periodo_origen)}</td>
                 <td class="num">${fmt(s.monto_determinado)}</td>
                 <td class="num">${fmt(s.monto_declarado)}</td>
-                <td class="num" style="${Number(s.diferencia)!==0?'color:var(--gold);':''}">${fmt(s.diferencia)}${s.motivo_diferencia?` <span title="${s.motivo_diferencia}">ⓘ</span>`:''}</td>
+                <td class="num" style="${Number(s.diferencia)!==0?'color:var(--gold);':''}">${fmt(s.diferencia)}${s.motivo_diferencia?` <span title="${escAttr(s.motivo_diferencia)}">ⓘ</span>`:''}</td>
                 <td class="num" style="font-weight:700;">${fmt(s.remanente)}</td>
                 <td>${s.estado==='cancelado'?'Cancelado':(s.remanente<=0.004?'Agotado':(s.devolucionActiva?'Devolución en trámite':'Disponible'))}</td>
                 <td style="display:flex;gap:6px;flex-wrap:wrap;">
@@ -2584,7 +2589,7 @@ async function renderControlSaldosFavorIVA() {
                 <strong style="font-size:11.5px;">Movimientos:</strong>
                 ${s.movimientos.length ? `<ul style="margin:6px 0 10px;padding-left:18px;font-size:11.5px;">${s.movimientos.map(m=>`<li>${m.cancelado?'<s>':''}${fechaCorta(m.fecha)} · ${m.tipo==='acreditamiento'?'Acreditamiento a '+m.periodo_aplicacion:'Devolución'} · ${fmt(m.monto)} · ${m.registrado_por}${m.cancelado?'</s> (cancelado: '+m.motivo_cancelacion+')':` <a href="#" class="sf-cancelar-mov" data-id="${m.id}">cancelar</a>`}</li>`).join('')}</ul>` : `<p style="font-size:11px;color:var(--muted);">Sin movimientos todavía.</p>`}
                 <strong style="font-size:11.5px;">Solicitudes de devolución:</strong>
-                ${s.devoluciones.length ? `<ul style="margin:6px 0;padding-left:18px;font-size:11.5px;">${s.devoluciones.map(d=>`<li>${fechaCorta(d.fecha_solicitud)} · ${fmt(d.monto_solicitado)} · ${d.estado}${d.estado==='solicitada'?` — <a href="#" class="sf-autorizar-dev" data-id="${d.id}" data-monto="${d.monto_solicitado}">autorizar</a> / <a href="#" class="sf-rechazar-dev" data-id="${d.id}">rechazar</a> / <a href="#" class="sf-cancelar-dev" data-id="${d.id}">cancelar</a>`:''}${d.motivo_rechazo?' — '+d.motivo_rechazo:''}</li>`).join('')}</ul>` : `<p style="font-size:11px;color:var(--muted);">Sin solicitudes.</p>`}
+                ${s.devoluciones.length ? `<ul style="margin:6px 0;padding-left:18px;font-size:11.5px;">${s.devoluciones.map(d=>`<li>${fechaCorta(d.fecha_solicitud)} · ${fmt(d.monto_solicitado)} · ${d.estado}${d.estado==='solicitada'?` — <a href="#" class="sf-autorizar-dev" data-id="${d.id}" data-monto="${d.monto_solicitado}">autorizar</a> / <a href="#" class="sf-rechazar-dev" data-id="${d.id}">rechazar</a> / <a href="#" class="sf-cancelar-dev" data-id="${d.id}">cancelar</a>`:''}${d.motivo_rechazo?' — '+escHtml(d.motivo_rechazo):''}</li>`).join('')}</ul>` : `<p style="font-size:11px;color:var(--muted);">Sin solicitudes.</p>`}
               </td></tr>
             `).join('') : `<tr><td colspan="7" class="empty">No hay saldos confirmados todavía. Se confirman desde el papel de trabajo mensual de IVA, cuando el periodo determina saldo a favor.</td></tr>`}
           </tbody>
@@ -2717,7 +2722,7 @@ async function renderPagosPorClasificar() {
               return `<tr>
                 <td>${fechaCorta(p.fecha)}</td>
                 <td class="num">${fmt(p.monto)} ${p.moneda!=='MXN'?p.moneda:''}</td>
-                <td>${p.proveedor_tentativo || '<span style="color:var(--muted);">—</span>'}</td>
+                <td>${p.proveedor_tentativo ? escHtml(p.proveedor_tentativo) : '<span style="color:var(--muted);">—</span>'}</td>
                 <td>${aplicadas.length ? `${aplicadas.length} factura(s) aplicada(s)` : '<span style="color:var(--gold);">Sin asignar todavía</span>'}</td>
                 <td style="display:flex;gap:6px;">
                   ${!aplicadas.length ? `<button class="btn btn-ghost btn-sm ppc-asignar" data-id="${p.id}" style="font-size:11px;">Asignar proveedor/factura</button>` : ''}
@@ -2796,11 +2801,11 @@ async function abrirModalClasificarPago(businessId, pago, onDone) {
     buscador.value = '';
     if (tipo === 'banco') {
       document.getElementById('cpDestinoCuentaLabel').textContent = 'Cuenta bancaria';
-      selCuenta.innerHTML = `<option value="">— elegir —</option>` + (cuentasBancoQ.data||[]).map(c => `<option value="${c.id}">${c.nombre} · ${c.moneda||'MXN'}</option>`).join('');
+      selCuenta.innerHTML = `<option value="">— elegir —</option>` + (cuentasBancoQ.data||[]).map(c => `<option value="${c.id}">${escHtml(c.nombre)} · ${escHtml(c.moneda||'MXN')}</option>`).join('');
       if (!(cuentasBancoQ.data||[]).length) selCuenta.innerHTML = `<option value="">— no hay cuentas bancarias activas —</option>`;
     } else if (tipo === 'efectivo') {
       document.getElementById('cpDestinoCuentaLabel').textContent = 'Caja de efectivo';
-      selCuenta.innerHTML = `<option value="">— elegir —</option>` + (monedasQ.data||[]).map(m => `<option value="${m.id}">${m.nombre}</option>`).join('');
+      selCuenta.innerHTML = `<option value="">— elegir —</option>` + (monedasQ.data||[]).map(m => `<option value="${m.id}">${escHtml(m.nombre)}</option>`).join('');
       if (!(monedasQ.data||[]).length) selCuenta.innerHTML = `<option value="">— no hay cajas de efectivo activas —</option>`;
     } else {
       document.getElementById('cpDestinoCuentaLabel').textContent = 'Cuenta contable';
@@ -2820,7 +2825,7 @@ async function abrirModalClasificarPago(businessId, pago, onDone) {
     const coincidencias = subcuentasConRuta.filter(s => s.ruta.toLowerCase().includes(texto)).slice(0, 15);
     resultados.style.display = '';
     resultados.innerHTML = coincidencias.length
-      ? coincidencias.map(s => `<div class="cp-resultado-sub" data-id="${s.id}" data-ruta="${s.ruta.replace(/"/g,'&quot;')}" style="padding:9px 12px;cursor:pointer;border-bottom:1px solid var(--line);font-size:13px;">${s.ruta}</div>`).join('')
+      ? coincidencias.map(s => `<div class="cp-resultado-sub" data-id="${s.id}" data-ruta="${escAttr(s.ruta)}" style="padding:9px 12px;cursor:pointer;border-bottom:1px solid var(--line);font-size:13px;">${s.ruta}</div>`).join('')
       : `<div style="padding:9px 12px;color:var(--muted);font-size:13px;">Sin coincidencias.</div>`;
     resultados.querySelectorAll('.cp-resultado-sub').forEach(div => div.addEventListener('click', () => {
       destinoElegido = div.dataset.id; labelElegido = `Cuenta — ${div.dataset.ruta}`;
@@ -2909,12 +2914,12 @@ async function renderActivosFijos() {
               const abierto = STATE_afDetalleAbierto === a.id;
               const tieneHueco = !!huecosPorActivo[a.id];
               return `<tr class="af-fila-activo" data-id="${a.id}" style="cursor:pointer;${tieneHueco?'background:#fdf3e3;':''}">
-                <td>${abierto?'▾':'▸'} ${a.nombre}${tieneHueco?' <span title="Tiene meses pendientes de póliza" style="color:var(--gold);">⚠</span>':''}</td>
+                <td>${abierto?'▾':'▸'} ${escHtml(a.nombre)}${tieneHueco?' <span title="Tiene meses pendientes de póliza" style="color:var(--gold);">⚠</span>':''}</td>
                 <td>${fechaCorta(a.fecha_adquisicion)}</td>
                 <td>${fechaCorta(a.fecha_disponible_uso || a.fecha_adquisicion)}</td>
                 <td class="num">${fmt(a.costo_adquisicion)}</td>
                 <td class="num">${fmt(a.valor_rescate||0)}</td>
-                <td>${vidaUtilLabel}</td>
+                <td>${escHtml(vidaUtilLabel)}</td>
                 <td style="font-size:11.5px;color:var(--muted);">${a.metodo_depreciacion==='linea_recta'||!a.metodo_depreciacion?'Línea recta':a.metodo_depreciacion}</td>
                 <td class="num">${fmt(a.depreciacionDelPeriodo)}</td>
                 <td class="num">${fmt(a.depreciacionDelEjercicio)}</td>
@@ -3047,7 +3052,7 @@ async function openModalActivoFijo(activo, businessId) {
   document.getElementById('modalActivoFijoTitulo').textContent = activo ? 'Editar activo fijo' : 'Nuevo activo fijo';
   document.getElementById('afNombre').value = activo?.nombre || '';
   const selCat = document.getElementById('afCategoria');
-  selCat.innerHTML = `<option value="">— sin categoría —</option>` + CATEGORIAS_ACTIVO_LISR.map(c => `<option value="${c.nombre}" data-pct="${c.pct ?? ''}" ${activo?.categoria===c.nombre?'selected':''}>${c.nombre}${c.pct!==null?' — '+c.pct+'% anual':''}</option>`).join('');
+  selCat.innerHTML = `<option value="">— sin categoría —</option>` + CATEGORIAS_ACTIVO_LISR.map(c => `<option value="${escAttr(c.nombre)}" data-pct="${c.pct ?? ''}" ${activo?.categoria===c.nombre?'selected':''}>${escHtml(c.nombre)}${c.pct!==null?' — '+c.pct+'% anual':''}</option>`).join('');
   document.getElementById('afFechaAdquisicion').value = activo?.fecha_adquisicion || todayStr();
   document.getElementById('afFechaDisponible').value = activo?.fecha_disponible_uso || '';
   document.getElementById('afCosto').value = fmtInputVal(activo?.costo_adquisicion || 0);
@@ -6889,7 +6894,7 @@ async function renderCedulaAnual(b, elId, tipoPapel, titulo, conceptosDefault, t
     filasDesgloseAcreditableHtml = CATEGORIAS_ACREDITABLE.map(cat => {
       const porMesCat = {}; mesesCols.forEach(mm => { porMesCat[mm] = clasifIvaPorMes[mm][cat.clave]; });
       const destacar = cat.clave === 'sin_clasificar';
-      return `<tr${destacar?' style="color:var(--gold);"':''}><td style="position:sticky;left:0;background:#fff;">${cat.nombre}</td>${mesesCols.map(mm=>`<td class="num">${fmt(porMesCat[mm])}</td>`).join('')}<td class="num">${fmt(sumaTotal(porMesCat))}</td></tr>`;
+      return `<tr${destacar?' style="color:var(--gold);"':''}><td style="position:sticky;left:0;background:#fff;">${escHtml(cat.nombre)}</td>${mesesCols.map(mm=>`<td class="num">${fmt(porMesCat[mm])}</td>`).join('')}<td class="num">${fmt(sumaTotal(porMesCat))}</td></tr>`;
     }).join('');
     filaTotalTrasladadoHtml = `<tr style="font-weight:700;background:#f7f9fc;border-top:1px solid var(--navy-3);"><td style="position:sticky;left:0;background:#f7f9fc;">TOTAL IVA TRASLADADO</td>${mesesCols.map(mm=>`<td class="num">${fmt(trasladadoPorMes[mm])}</td>`).join('')}<td class="num">${fmt(sumaTotal(trasladadoPorMes))}</td></tr>`;
     filaTotalAcreditableHtml = `<tr style="font-weight:700;background:#f7f9fc;border-top:1px solid var(--navy-3);"><td style="position:sticky;left:0;background:#f7f9fc;">TOTAL IVA ACREDITABLE</td>${mesesCols.map(mm=>`<td class="num">${fmt(acreditablePorMes[mm])}</td>`).join('')}<td class="num">${fmt(sumaTotal(acreditablePorMes))}</td></tr>`;
@@ -6904,8 +6909,8 @@ async function renderCedulaAnual(b, elId, tipoPapel, titulo, conceptosDefault, t
     <div class="pt-card">
       <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;align-items:flex-start;">
         <div>
-          <div class="pt-titulo-cedula">${titulo} — Cédula Fiscal ${ejercicio}</div>
-          <p class="pt-subtitulo">${b.name}${b.rfc?' · RFC '+b.rfc:''} · Régimen ${regimenTexto}</p>
+          <div class="pt-titulo-cedula">${escHtml(titulo)} — Cédula Fiscal ${ejercicio}</div>
+          <p class="pt-subtitulo">${escHtml(b.name)}${b.rfc?' · RFC '+escHtml(b.rfc):''} · Régimen ${escHtml(regimenTexto)}</p>
         </div>
         <select class="ca-anio-sel" style="padding:5px 8px;border:1px solid var(--line);border-radius:6px;height:fit-content;">
           ${anios.map(a=>`<option value="${a}" ${String(a)===ejercicio?'selected':''}>${a}</option>`).join('')}
@@ -6931,14 +6936,14 @@ async function renderCedulaAnual(b, elId, tipoPapel, titulo, conceptosDefault, t
           <tbody>
             ${(() => {
               const filaRowHtml = (fila) => `<tr${fila.clave==='resultado_determinado'?' class="pt-fila-cierre"':''}>
-              <td style="position:sticky;left:0;background:${fila.clave==='resultado_determinado'?'#eef2f8':'#fff'};">${fila.nombre}</td>
+              <td style="position:sticky;left:0;background:${fila.clave==='resultado_determinado'?'#eef2f8':'#fff'};">${escHtml(fila.nombre)}</td>
               ${mesesCols.map(mm => {
                 const celda = fila.porMes[mm];
                 return `<td class="num ca-celda" data-mes="${mm}" style="cursor:pointer;${celda.valor===null?'color:var(--muted);':''}">${celda.valor!==null?formatearValorConcepto(celda.valor, fila.formato):'—'}</td>`;
               }).join('')}
               <td class="num">${fila.total!==null?formatearValorConcepto(fila.total, fila.formato):(fila.clave==='ptu_aplicable'?'—':(fila.agregacion==='no_aplica'?'N/A':'—'))}</td>
             </tr>${opciones.accesorios ? `<tr class="ca-fila-accesorios" data-clave="${fila.clave||fila.nombre}" style="display:none;background:#f7f7f7;"><td colspan="${mesesCols.length+2}" style="padding:8px 12px;font-size:11px;">
-              <strong>Accesorios — ${fila.nombre}:</strong> ${mesesCols.map(mm=>{ const a=fila.porMes[mm].accesorios; return a?`${MESES_LARGO[Number(mm)-1].slice(0,3)}: Princ.${fmt(fila.porMes[mm].valor||0)}+Act.${fmt(a.importe_actualizacion_aplicado)}+Rec.${fmt(a.importe_recargos_aplicado)}+Red.${fmt(a.monto_redondeo)}=${fmt(a.importe_final)}`:'';}).filter(Boolean).join(' · ') || 'Sin accesorios calculados todavía en ningún mes.'}
+              <strong>Accesorios — ${escHtml(fila.nombre)}:</strong> ${mesesCols.map(mm=>{ const a=fila.porMes[mm].accesorios; return a?`${MESES_LARGO[Number(mm)-1].slice(0,3)}: Princ.${fmt(fila.porMes[mm].valor||0)}+Act.${fmt(a.importe_actualizacion_aplicado)}+Rec.${fmt(a.importe_recargos_aplicado)}+Red.${fmt(a.monto_redondeo)}=${fmt(a.importe_final)}`:'';}).filter(Boolean).join(' · ') || 'Sin accesorios calculados todavía en ningún mes.'}
             </td></tr>${opciones.accesorios?`<tr><td colspan="${mesesCols.length+2}" style="padding:0 0 6px 0;"><a href="#" class="pt-editar-link ca-toggle-accesorios" data-clave="${fila.clave||fila.nombre}" style="margin-left:4px;">Ver accesorios</a></td></tr>`:''}` : ''}`;
 
               if (tipoPapel !== 'iva') return filas.map(filaRowHtml).join('');
@@ -6985,7 +6990,7 @@ async function renderPapelesTrabajo() {
     { id: 'retisr', label: 'Retenciones ISR' },
     { id: 'retiva', label: 'Retenciones IVA' },
   ];
-  tabBarEl.innerHTML = tabs.map(t => `<div class="tag ${STATE_papelesTab===t.id?'active':''}" data-tab="${t.id}">${t.label}</div>`).join('');
+  tabBarEl.innerHTML = tabs.map(t => `<div class="tag ${STATE_papelesTab===t.id?'active':''}" data-tab="${t.id}">${escHtml(t.label)}</div>`).join('');
   tabBarEl.querySelectorAll('.tag').forEach(tag => tag.addEventListener('click', () => { STATE_papelesTab = tag.dataset.tab; renderPapelesTrabajo(); }));
 
   const mapaVistas = { resumen: 'sec-resumenfederal', isrpm: 'sec-papelisrpm', iva: 'sec-papeliva', retisr: 'sec-papelretisr', retiva: 'sec-papelretiva' };
@@ -7040,7 +7045,7 @@ async function renderCedulasMaestras() {
     { id: 'perdidas', label: 'Pérdidas Fiscales' },
     { id: 'ptu', label: 'PTU' },
   ];
-  tabBarEl.innerHTML = tabs.map(t => `<div class="tag ${STATE_cedulasMaestrasTab===t.id?'active':''}" data-tab="${t.id}">${t.label}</div>`).join('');
+  tabBarEl.innerHTML = tabs.map(t => `<div class="tag ${STATE_cedulasMaestrasTab===t.id?'active':''}" data-tab="${t.id}">${escHtml(t.label)}</div>`).join('');
   tabBarEl.querySelectorAll('.tag').forEach(tag => tag.addEventListener('click', () => { STATE_cedulasMaestrasTab = tag.dataset.tab; renderCedulasMaestras(); }));
 
   const mapaVistas = { perdidas: 'sec-perdidasfiscales', ptu: 'sec-ptu' };
@@ -7087,7 +7092,7 @@ async function renderCedulaPTU(b) {
     <div class="card-head" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
       <div>
         <h3>PTU</h3>
-        <p style="font-size:12px;color:var(--muted);">Cédula de control — ${b.name} · ${b.rfc||''}</p>
+        <p style="font-size:12px;color:var(--muted);">Cédula de control — ${escHtml(b.name)} · ${escHtml(b.rfc||'')}</p>
       </div>
       <button class="btn btn-gold btn-sm" id="ptuRegistrarBtn">+ Registrar evento PTU</button>
     </div>
@@ -7112,7 +7117,7 @@ async function renderCedulaPTU(b) {
             Esta PTU se pagó fuera de mayo (${fechaCorta(evento.fecha_pago)}) — conforme al criterio de la autoridad ya validado, <strong>no es disminuible en pagos provisionales bajo esta mecánica</strong>. No aplica ventana ni importe por provisional para este evento.
           </div>
         `}
-        ${evento.observaciones ? `<div style="margin-top:8px;font-size:12px;color:var(--muted);">Obs.: ${evento.observaciones}</div>` : ''}
+        ${evento.observaciones ? `<div style="margin-top:8px;font-size:12px;color:var(--muted);">Obs.: ${escHtml(evento.observaciones)}</div>` : ''}
         <p style="font-size:10.5px;color:var(--muted);margin-top:10px;">La disponible acumulada aquí es solo informativa — lo que ISR PM efectivamente aplica cada mes se limita además a la utilidad fiscal de ese pago provisional, y se calcula en cada papel de ISR PM.</p>
       ` : `<div class="empty">Sin evento PTU registrado todavía.</div>`}
     </div>
@@ -7122,7 +7127,7 @@ async function renderCedulaPTU(b) {
       <table class="report-table">
         <thead><tr><th>Fecha</th><th>Usuario</th><th>Detalle</th></tr></thead>
         <tbody>
-          ${historial.length ? historial.map(h => `<tr><td>${fechaCorta(h.created_at.slice(0,10))}</td><td>${h.usuario||'—'}</td><td>${h.valor_nuevo||''}${h.motivo?` — ${h.motivo}`:''}</td></tr>`).join('') : '<tr><td colspan="3" style="text-align:center;color:var(--muted);">Sin historial todavía.</td></tr>'}
+          ${historial.length ? historial.map(h => `<tr><td>${fechaCorta(h.created_at.slice(0,10))}</td><td>${escHtml(h.usuario||'—')}</td><td>${h.valor_nuevo||''}${h.motivo?` — ${escHtml(h.motivo)}`:''}</td></tr>`).join('') : '<tr><td colspan="3" style="text-align:center;color:var(--muted);">Sin historial todavía.</td></tr>'}
         </tbody>
       </table>
     </div>
@@ -7246,7 +7251,7 @@ async function renderParametrosFiscales() {
     <p style="font-size:11px;color:var(--muted);margin-top:16px;">Pendientes de implementar en este mismo lugar: UMA, UDI y tarifas de ISR. Por ahora solo INPC/recargos y el calendario fiscal viven aquí.</p>
   `;
   const tabBarEl = document.getElementById('parametrosFiscalesTabBar');
-  tabBarEl.innerHTML = tabs.map(t => `<div class="tag ${STATE_parametrosFiscalesTab===t.id?'active':''}" data-tab="${t.id}">${t.label}</div>`).join('');
+  tabBarEl.innerHTML = tabs.map(t => `<div class="tag ${STATE_parametrosFiscalesTab===t.id?'active':''}" data-tab="${t.id}">${escHtml(t.label)}</div>`).join('');
   tabBarEl.querySelectorAll('.tag').forEach(tag => tag.addEventListener('click', () => { STATE_parametrosFiscalesTab = tag.dataset.tab; renderParametrosFiscales(); }));
 
   const contenido = document.getElementById('pf-contenido');
@@ -7289,7 +7294,7 @@ async function pintarTiposCambioCierre(contenido) {
       <span style="color:var(--muted);font-size:11.5px;">Se anota en los tipos de cambio que captures o cambies sin fuente propia.</span>
       <span style="margin-left:auto;display:flex;gap:6px;align-items:center;"><input id="tcNuevaMoneda" class="cell" type="text" maxlength="3" placeholder="GBP" style="width:64px;text-transform:uppercase;"><button class="btn btn-ghost btn-sm" id="tcAgregarMoneda">Agregar moneda</button></span>
     </div>` : ''}
-    <div style="max-height:56vh;overflow:auto;"><table class="tabla-operativa"><thead><tr><th>Cierre de</th>${monedas.map(m => `<th>${m} (pesos por 1 ${m})</th>`).join('')}</tr></thead><tbody>${filas.join('')}</tbody></table></div>
+    <div style="max-height:56vh;overflow:auto;"><table class="tabla-operativa"><thead><tr><th>Cierre de</th>${monedas.map(m => `<th>${escHtml(m)} (pesos por 1 ${escHtml(m)})</th>`).join('')}</tr></thead><tbody>${filas.join('')}</tbody></table></div>
     ${puedeEditar ? '<div class="modal-actions" style="margin-top:12px;"><button class="btn btn-gold" id="tcCierreGuardar">Guardar</button></div>' : ''}
   </div>`;
   const agregar = contenido.querySelector('#tcAgregarMoneda');
@@ -7365,7 +7370,7 @@ async function renderPerdidasFiscales(b) {
       <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;align-items:flex-start;">
         <div>
           <div class="pt-titulo-cedula">Pérdidas Fiscales</div>
-          <p class="pt-subtitulo">Cédula de control y aplicación — ${b.name}${b.rfc?' · RFC '+b.rfc:''} · Régimen ${regimenTexto}</p>
+          <p class="pt-subtitulo">Cédula de control y aplicación — ${escHtml(b.name)}${b.rfc?' · RFC '+escHtml(b.rfc):''} · Régimen ${escHtml(regimenTexto)}</p>
         </div>
         <select class="pf-anio-sel" style="padding:5px 8px;border:1px solid var(--line);border-radius:6px;height:fit-content;">
           ${anios.map(a=>`<option value="${a}" ${String(a)===ejercicio?'selected':''}>${a}</option>`).join('')}
@@ -7398,7 +7403,7 @@ async function renderPerdidasFiscales(b) {
               const saldoProv = ultimaConAplicacion ? p.control.porMes[ultimaConAplicacion].saldoControl : (p.saldoDisponible !== null ? p.saldoDisponible : null);
               const estado = p.control && p.control.mesAgotamiento ? `Agotada en ${MESES_LARGO[Number(p.control.mesAgotamiento)-1]}` : (p.saldoDisponible!==null ? 'Con saldo' : 'Sin saldo determinado');
               return `<tr>
-                <td>${p.ejercicio_origen}</td>
+                <td>${escHtml(p.ejercicio_origen)}</td>
                 <td class="num">${fmt(p.monto_original)}</td>
                 <td class="num">${p.saldoDisponible!==null?fmt(p.saldoDisponible):'—'}</td>
                 <td class="num">${aplicado!==null?fmt(aplicado):'—'}</td>
@@ -7428,7 +7433,7 @@ async function renderPerdidasFiscales(b) {
     e.preventDefault();
     const diag = await diagnosticarAplicacionesPerdidaSospechosas(a.dataset.id);
     const sospechosos = diag.filter(d => d.esSospechoso);
-    const filasHtml = diag.map(d => `<tr style="${d.esSospechoso?'background:#fff3cd;':''}"><td>${d.periodo}</td><td class="num">${fmt(d.valorActual)}</td><td>${d.ultimoMotivo||'—'}</td><td>${d.ultimoValorAnterior!==null?fmt(Number(d.ultimoValorAnterior)):'—'}</td><td>${d.esSospechoso?'⚠️ Sospechoso — reconciliación con valor 0':'—'}</td></tr>`).join('');
+    const filasHtml = diag.map(d => `<tr style="${d.esSospechoso?'background:#fff3cd;':''}"><td>${d.periodo}</td><td class="num">${fmt(d.valorActual)}</td><td>${escHtml(d.ultimoMotivo||'—')}</td><td>${d.ultimoValorAnterior!==null?fmt(Number(d.ultimoValorAnterior)):'—'}</td><td>${d.esSospechoso?'⚠️ Sospechoso — reconciliación con valor 0':'—'}</td></tr>`).join('');
     const html = `<div class="modal-bg show" id="modalDiagPerdidas"><div class="modal" style="width:min(680px,94vw);">
       <h3>Diagnóstico de aplicaciones en $0 — solo lectura</h3>
       <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">${sospechosos.length} de ${diag.length} periodo(s) muestran el patrón exacto de la reconciliación defectuosa (último evento = reconciliación, resultado = $0). Nada se modificó al ver este reporte.</p>
@@ -7572,7 +7577,7 @@ async function renderResumenFederal(b) {
           const ultima = Object.keys(p.control.porMes).reverse().find(mm=>p.control.porMes[mm].aplicadoAcumulado!==null);
           const saldo = ultima ? p.control.porMes[ultima].saldoControl : p.saldoDisponible;
           const estado = p.control.mesAgotamiento ? `Agotada en ${MESES_LARGO[Number(p.control.mesAgotamiento)-1]}` : 'Con saldo';
-          return `<div><span class="pt-label">Pérdida ${p.ejercicio_origen}</span><span class="pt-value">${fmt(saldo)} <span style="font-size:10px;color:var(--muted);font-weight:400;">(${estado})</span></span></div>`;
+          return `<div><span class="pt-label">Pérdida ${escHtml(p.ejercicio_origen)}</span><span class="pt-value">${fmt(saldo)} <span style="font-size:10px;color:var(--muted);font-weight:400;">(${estado})</span></span></div>`;
         }).join('')}
       </div>
       <a href="#" class="pt-editar-link" id="rfVerPerdidasBtn" style="display:inline-block;margin-top:8px;opacity:1;">Ver Pérdidas Fiscales →</a>
@@ -7867,7 +7872,7 @@ document.getElementById('pfCierreCancelarBtn').addEventListener('click', () => d
 async function abrirModalPerdidaHistorial(p) {
   const { data: historial } = await sb.from('fz_perdidas_fiscales_historial').select('*').eq('perdida_id', p.id).order('created_at', { ascending: false }).limit(50);
   document.getElementById('pfHistorialLista').innerHTML = (historial||[]).length
-    ? historial.map(h=>`<div style="font-size:11.5px;padding:5px 0;border-top:1px solid var(--line);">${fechaCorta(h.created_at.slice(0,10))} · ${h.usuario||'—'} · <strong>${h.campo}</strong>${h.valor_anterior?': '+h.valor_anterior+' → '+h.valor_nuevo:(h.valor_nuevo?': '+h.valor_nuevo:'')}${h.motivo?' — '+h.motivo:''}</div>`).join('')
+    ? historial.map(h=>`<div style="font-size:11.5px;padding:5px 0;border-top:1px solid var(--line);">${fechaCorta(h.created_at.slice(0,10))} · ${escHtml(h.usuario||'—')} · <strong>${h.campo}</strong>${h.valor_anterior?': '+h.valor_anterior+' → '+h.valor_nuevo:(h.valor_nuevo?': '+h.valor_nuevo:'')}${h.motivo?' — '+escHtml(h.motivo):''}</div>`).join('')
     : `<p style="font-size:12px;color:var(--muted);">Sin historial todavía.</p>`;
   document.getElementById('modalPerdidaHistorial').classList.add('show');
 }
@@ -7900,7 +7905,7 @@ function wireDetallePerdida(b, p, ejercicio) {
         <input type="file" class="pf-soporte-input-${p.id}" accept=".pdf,.xlsx,.xls,.png,.jpg,.jpeg" style="display:none;">
         <button class="btn btn-ghost btn-sm pf-soporte-guardar-${p.id}" style="padding:4px 10px;">Guardar referencia</button>
       </div>
-      ${(soportes||[]).length ? soportes.map(s=>`<div class="pt-soporte-item"><span>${s.nombre_archivo}</span><span style="color:var(--muted);">${fechaCorta(s.created_at.slice(0,10))} · ${s.usuario||''}</span></div>`).join('') : '<p style="font-size:11px;color:var(--muted);margin-top:6px;">Sin soportes todavía.</p>'}
+      ${(soportes||[]).length ? soportes.map(s=>`<div class="pt-soporte-item"><span>${escHtml(s.nombre_archivo)}</span><span style="color:var(--muted);">${fechaCorta(s.created_at.slice(0,10))} · ${escHtml(s.usuario||'')}</span></div>`).join('') : '<p style="font-size:11px;color:var(--muted);margin-top:6px;">Sin soportes todavía.</p>'}
     `;
     zonaSoportes.style.display = 'block';
     zonaSoportes.querySelector(`.pf-soporte-label-${p.id}`).addEventListener('click', () => zonaSoportes.querySelector(`.pf-soporte-input-${p.id}`).click());
@@ -7967,7 +7972,7 @@ function abrirModalPerdidasAplicadasISRPM(b, concepto, ejercicio, periodo, utili
     const lista = document.getElementById('pisrPerdDistribucionLista');
     if (refInicial.perdidasConSaldo.length > 1 && importe > 0.004) {
       const { distribucion } = distribuirAplicacionEntrePerdidas(refInicial.perdidasConSaldo, importe);
-      lista.innerHTML = distribucion.map(d => `<div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0;"><span>Pérdida ${d.ejercicioOrigen}</span><strong>${fmt(d.monto)}</strong></div>`).join('') || '<p style="font-size:11px;color:var(--muted);">Sin saldo suficiente para distribuir ese importe.</p>';
+      lista.innerHTML = distribucion.map(d => `<div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0;"><span>Pérdida ${escHtml(d.ejercicioOrigen)}</span><strong>${fmt(d.monto)}</strong></div>`).join('') || '<p style="font-size:11px;color:var(--muted);">Sin saldo suficiente para distribuir ese importe.</p>';
       zona.style.display = 'block';
     } else { zona.style.display = 'none'; }
   };
@@ -8118,11 +8123,11 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
     const ajustes = valorDe('iva_ajustes'), saldoAnterior = saldoAnteriorNuevoControl !== null ? saldoAnteriorNuevoControl : valorDe('iva_saldo_favor_anterior'), compensaciones = valorDe('iva_compensaciones');
     const hayAlgunInsumo = antesAjustes!==null || ajustes!==null || saldoAnterior!==null || compensaciones!==null;
     resultado = hayAlgunInsumo ? (antesAjustes??0) + (ajustes??0) - (saldoAnterior??0) - (compensaciones??0) : null;
-    const filaGrupo = (clave) => { const c = conceptos.find(x=>x.clave_concepto===clave); return c ? `<tr><td style="padding-left:16px;">${c.concepto}</td><td class="num">${fmtN(valorDe(clave))}</td></tr>` : ''; };
-    const filaAcreditable = (cat) => `<tr><td style="padding-left:16px;">${cat.nombre}</td><td class="num">${clasifIvaMes ? fmt(clasifIvaMes[cat.clave]||0) : '—'}</td></tr>`;
+    const filaGrupo = (clave) => { const c = conceptos.find(x=>x.clave_concepto===clave); return c ? `<tr><td style="padding-left:16px;">${escHtml(c.concepto)}</td><td class="num">${fmtN(valorDe(clave))}</td></tr>` : ''; };
+    const filaAcreditable = (cat) => `<tr><td style="padding-left:16px;">${escHtml(cat.nombre)}</td><td class="num">${clasifIvaMes ? fmt(clasifIvaMes[cat.clave]||0) : '—'}</td></tr>`;
     const clavesConocidas = new Set([...gruposTrasladado, 'iva_ajustes','iva_saldo_favor_anterior','iva_compensaciones','iva_resultado_periodo']);
     const conceptosExtra = conceptos.filter(c => !clavesConocidas.has(c.clave_concepto));
-    const filaExtra = (c) => `<tr><td style="padding-left:16px;">${c.concepto}</td><td class="num">${fmt(c.valor_aplicado)}</td></tr>`;
+    const filaExtra = (c) => `<tr><td style="padding-left:16px;">${escHtml(c.concepto)}</td><td class="num">${fmt(c.valor_aplicado)}</td></tr>`;
     determinacionHtml = `
     <div class="pt-card">
       <h3>1. IVA trasladado</h3>
@@ -8213,8 +8218,8 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
     <div class="pt-card">
       <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;align-items:flex-start;">
         <div>
-          <div class="pt-titulo-cedula">${titulo}</div>
-          <p class="pt-subtitulo">${b.name}${b.rfc?' · RFC '+b.rfc:''} · Régimen ${regimenTexto}</p>
+          <div class="pt-titulo-cedula">${escHtml(titulo)}</div>
+          <p class="pt-subtitulo">${escHtml(b.name)}${b.rfc?' · RFC '+escHtml(b.rfc):''} · Régimen ${escHtml(regimenTexto)}</p>
         </div>
         <select class="cg-anio-sel" style="padding:5px 8px;border:1px solid var(--line);border-radius:6px;height:fit-content;">
           ${anios.map(a=>`<option value="${a}" ${String(a)===ejercicio?'selected':''}>${a}</option>`).join('')}
@@ -8238,8 +8243,8 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
               const acc = c.id ? accesoriosPorConcepto[c.id] : null;
               const fmto = formatoDe(c.clave_concepto);
               return `<tr>
-                <td>${c.concepto}</td>
-                <td><span class="pt-origen ${c.origen}">${etiquetaOrigen(c.origen)}</span>${c.valor_original!==null&&c.valor_original!==undefined?' '+formatearValorConcepto(c.valor_original,fmto):''}</td>
+                <td>${escHtml(c.concepto)}</td>
+                <td><span class="pt-origen ${escAttr(c.origen)}">${etiquetaOrigen(c.origen)}</span>${c.valor_original!==null&&c.valor_original!==undefined?' '+formatearValorConcepto(c.valor_original,fmto):''}</td>
                 <td class="num" style="font-weight:600;">${formatearValorConcepto(c.valor_aplicado,fmto)}</td>
                 <td class="num" style="color:${diferencia&&Math.abs(diferencia)>0.004?'var(--gold)':'var(--muted)'};">${diferencia!==null?formatearValorConcepto(diferencia,fmto):''}</td>
                 ${opciones.accesorios ? `<td style="font-size:11px;">${acc ? `${fmt(c.valor_aplicado)}+${fmt(acc.importe_actualizacion_aplicado)}+${fmt(acc.importe_recargos_aplicado)}+${fmt(acc.monto_redondeo)}=<strong>${fmt(acc.importe_final)}</strong>${acc.ajuste_manual?' <span style="color:var(--gold);">(aj.)</span>':''}` : '<span style="color:var(--muted);">Sin calcular</span>'}</td>` : ''}
@@ -8249,7 +8254,7 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
                 </td>
               </tr>`;
             }).join('')}
-            ${totalPeriodoConcepto ? `<tr class="pt-fila-cierre"><td>${totalPeriodoConcepto.concepto}</td><td></td><td class="num">${fmt(totalPeriodoConcepto.valor_aplicado)}</td><td colspan="${opciones.accesorios?3:2}"></td></tr>` : ''}
+            ${totalPeriodoConcepto ? `<tr class="pt-fila-cierre"><td>${escHtml(totalPeriodoConcepto.concepto)}</td><td></td><td class="num">${fmt(totalPeriodoConcepto.valor_aplicado)}</td><td colspan="${opciones.accesorios?3:2}"></td></tr>` : ''}
           </tbody>
         </table>
       </div>
@@ -8260,14 +8265,14 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
 
     <div class="pt-card">
       <h3 style="color:var(--muted);font-size:13px;">Notas y soporte</h3>
-      <textarea class="cg-notas" rows="2" placeholder="Observaciones (opcional)" style="width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:8px;font-family:inherit;font-size:12.5px;margin-bottom:6px;">${papelVirtual.notas||''}</textarea>
+      <textarea class="cg-notas" rows="2" placeholder="Observaciones (opcional)" style="width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:8px;font-family:inherit;font-size:12.5px;margin-bottom:6px;">${escHtml(papelVirtual.notas||'')}</textarea>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
         <label class="pt-file-btn cg-soporte-label">＋ Adjuntar soporte</label>
         <input type="file" class="cg-soporte-input" accept=".pdf,.xlsx,.xls,.png,.jpg,.jpeg" style="display:none;">
         <span class="pt-file-hint">PDF · Excel · Imagen — se guarda la referencia; almacenamiento real en fase posterior</span>
         <button class="btn btn-ghost btn-sm cg-adjuntar" style="padding:4px 10px;">Guardar referencia</button>
       </div>
-      ${soportes && soportes.length ? soportes.map(s=>`<div class="pt-soporte-item"><span>${s.nombre_archivo}</span><span style="color:var(--muted);">${fechaCorta(s.created_at.slice(0,10))} · ${s.usuario||''}</span></div>`).join('') : ''}
+      ${soportes && soportes.length ? soportes.map(s=>`<div class="pt-soporte-item"><span>${escHtml(s.nombre_archivo)}</span><span style="color:var(--muted);">${fechaCorta(s.created_at.slice(0,10))} · ${escHtml(s.usuario||'')}</span></div>`).join('') : ''}
     </div>
 
     <div class="pt-card">
@@ -8280,7 +8285,7 @@ async function renderCedulaGenerica(b, elId, tipoPapel, titulo, conceptosDefault
       <button class="btn btn-gold btn-sm cg-guardar">Guardar</button>
       <a href="#" class="pt-editar-link cg-historial-btn" style="margin-left:12px;opacity:1;">Historial</a>
       <div class="cg-historial-zona" style="display:none;margin-top:10px;max-height:220px;overflow-y:auto;">
-        ${(historial||[]).length ? historial.map(h=>`<div style="font-size:11px;padding:4px 0;border-top:1px solid var(--line);">${fechaCorta(h.created_at.slice(0,10))} · ${h.usuario||'—'} · ${h.campo}: ${h.valor_anterior||'—'} → ${h.valor_nuevo||'—'}${h.motivo?' — '+h.motivo:''}</div>`).join('') : '<p style="font-size:11.5px;color:var(--muted);">Sin historial todavía.</p>'}
+        ${(historial||[]).length ? historial.map(h=>`<div style="font-size:11px;padding:4px 0;border-top:1px solid var(--line);">${fechaCorta(h.created_at.slice(0,10))} · ${escHtml(h.usuario||'—')} · ${h.campo}: ${h.valor_anterior||'—'} → ${h.valor_nuevo||'—'}${h.motivo?' — '+escHtml(h.motivo):''}</div>`).join('') : '<p style="font-size:11.5px;color:var(--muted);">Sin historial todavía.</p>'}
       </div>
     </div>
   `;
@@ -8591,7 +8596,7 @@ async function renderPapelISRPM(b) {
       <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;align-items:flex-start;">
         <div>
           <div class="pt-titulo-cedula">ISR Personas Morales — Papel de trabajo</div>
-          <p class="pt-subtitulo">${b.name}${b.rfc?' · RFC '+b.rfc:''} · ${regimenTexto}</p>
+          <p class="pt-subtitulo">${escHtml(b.name)}${b.rfc?' · RFC '+escHtml(b.rfc):''} · ${escHtml(regimenTexto)}</p>
         </div>
         <select id="pIsrAnioSel" style="padding:5px 8px;border:1px solid var(--line);border-radius:6px;height:fit-content;">
           ${anios.map(a=>`<option value="${a}" ${String(a)===ejercicio?'selected':''}>${a}</option>`).join('')}
@@ -8617,10 +8622,10 @@ async function renderPapelISRPM(b) {
               const esBase = c.clave_concepto==='base';
               const esCalculado = CONCEPTOS_CALCULADOS_ISR_PM.includes(c.clave_concepto);
               return `<tr${esCierre?' class="pt-fila-cierre"':''}>
-                <td>${c.concepto}${!esCalculado && c.valor_original!==null&&c.valor_original!==undefined?` <span class="pt-origen ${c.origen}">${etiquetaOrigen(c.origen)}: ${formatearValorConcepto(c.valor_original,fmto)}${Math.abs(Number(c.valor_aplicado)-Number(c.valor_original))>0.004?' → '+formatearValorConcepto(c.valor_aplicado,fmto)+' (dif. '+formatearValorConcepto(Number(c.valor_aplicado)-Number(c.valor_original),fmto)+')':''}</span>`:''}</td>
+                <td>${escHtml(c.concepto)}${!esCalculado && c.valor_original!==null&&c.valor_original!==undefined?` <span class="pt-origen ${escAttr(c.origen)}">${etiquetaOrigen(c.origen)}: ${formatearValorConcepto(c.valor_original,fmto)}${Math.abs(Number(c.valor_aplicado)-Number(c.valor_original))>0.004?' → '+formatearValorConcepto(c.valor_aplicado,fmto)+' (dif. '+formatearValorConcepto(Number(c.valor_aplicado)-Number(c.valor_original),fmto)+')':''}</span>`:''}</td>
                 <td class="num" style="font-weight:600;">${formatearValorConcepto(c.valor_aplicado,fmto)}</td>
                 <td class="num">${acumuladoPar!==null?formatearValorConcepto(acumuladoPar,fmto):''}</td>
-                <td>${esCalculado ? '<span class="pt-origen sistema">Calculado</span>' : (!c.valor_original && !esCierre ? `<span class="pt-origen ${c.origen}">${etiquetaOrigen(c.origen)}</span>` : '')}</td>
+                <td>${esCalculado ? '<span class="pt-origen sistema">Calculado</span>' : (!c.valor_original && !esCierre ? `<span class="pt-origen ${escAttr(c.origen)}">${etiquetaOrigen(c.origen)}</span>` : '')}</td>
                 <td>${esCalculado ? `<a href="#" class="pisr-ver-calculo-concepto pt-editar-link" data-idx="${idx}">Ver cálculo</a>` : `<a href="#" class="${esPerdidas?'pisr-editar-perdidas':'pisr-editar'} pt-editar-link" data-idx="${idx}">Editar</a>`}</td>
               </tr>${esBase ? `<tr><td>Tasa ISR aplicable</td><td class="num" style="font-weight:600;">${(TASA_ISR_PERSONAS_MORALES*100).toFixed(2)}%</td><td></td><td><span class="pt-origen sistema">Calculado</span></td><td></td></tr>` : ''}${esPerdidas ? `<tr><td colspan="5" style="padding:10px 0 12px;background:#f7f9fc;">
                 <div class="pt-grid" style="padding:0 12px;">
@@ -8629,9 +8634,9 @@ async function renderPapelISRPM(b) {
                   <div><span class="pt-label">Máximo aplicable</span><span class="pt-value" style="color:var(--gold);">${refPerdidas.tope.ok?fmt(refPerdidas.tope.maximo):'—'}</span></div>
                   <div><span class="pt-label">Pérdida aplicada acumulada</span><span class="pt-value">${refPerdidas.aplicadoActual!==null?fmt(refPerdidas.aplicadoActual):'—'}</span></div>
                   <div><span class="pt-label">Base después de pérdidas</span><span class="pt-value">${cadena.base!==null?fmt(cadena.base):'—'}</span></div>
-                  <div><span class="pt-label">Estado</span><span class="pt-value" style="font-weight:500;">${perdidasConSaldo.length?perdidasConSaldo.map(p=>p.control&&p.control.mesAgotamiento?`${p.ejercicio_origen}: agotada ${MESES_LARGO[Number(p.control.mesAgotamiento)-1]}`:`${p.ejercicio_origen}: disponible`).join(' · '):(refPerdidas.perdidas.length?'Sin saldo disponible':'Sin pérdidas registradas')}</span></div>
+                  <div><span class="pt-label">Estado</span><span class="pt-value" style="font-weight:500;">${perdidasConSaldo.length?perdidasConSaldo.map(p=>p.control&&p.control.mesAgotamiento?`${escHtml(p.ejercicio_origen)}: agotada ${MESES_LARGO[Number(p.control.mesAgotamiento)-1]}`:`${escHtml(p.ejercicio_origen)}: disponible`).join(' · '):(refPerdidas.perdidas.length?'Sin saldo disponible':'Sin pérdidas registradas')}</span></div>
                 </div>
-                ${!refPerdidas.tope.ok ? `<p style="font-size:11px;color:var(--red);padding:6px 12px 0;">${refPerdidas.tope.razon}</p>` : ''}
+                ${!refPerdidas.tope.ok ? `<p style="font-size:11px;color:var(--red);padding:6px 12px 0;">${escHtml(refPerdidas.tope.razon)}</p>` : ''}
                 ${inconsistenciaPerdidas ? `<p style="font-size:11px;color:var(--red);padding:6px 12px 0;font-weight:600;">⚠ Inconsistencia: ${inconsistenciaPerdidas}</p>` : ''}
                 <a href="#" class="pt-editar-link pisr-ver-cedula-perdidas" style="display:inline-block;margin:6px 12px 0;opacity:1;">Ver Cédula de Pérdidas Fiscales →</a>
               </td></tr>` : ''}`;
@@ -8673,20 +8678,20 @@ async function renderPapelISRPM(b) {
         ${snapshot ? `Factor de actualización: ${snapshot.factor_actualizacion||1} · Meses/fracción: ${snapshot.meses_fraccion??0}<br>
         INPC usados: ${(snapshot.inpc_periodos_usados||[]).map(x=>`${x.periodo}: ${x.valor}`).join(', ')||'—'}<br>
         Tasas de recargos usadas: ${(snapshot.tasas_recargos_usadas||[]).map(x=>`${x.periodo}: ${x.tasa}%`).join(', ')||'—'}
-        ${snapshot.ajuste_manual?`<br><span style="color:var(--gold);">Ajustado manualmente — ${snapshot.motivo_ajuste} (${snapshot.ajuste_usuario}, ${fechaCorta(snapshot.ajuste_fecha.slice(0,10))})</span>`:''}` : 'Sin snapshot todavía.'}
+        ${snapshot.ajuste_manual?`<br><span style="color:var(--gold);">Ajustado manualmente — ${escHtml(snapshot.motivo_ajuste)} (${escHtml(snapshot.ajuste_usuario)}, ${fechaCorta(snapshot.ajuste_fecha.slice(0,10))})</span>`:''}` : 'Sin snapshot todavía.'}
       </div>
     </div>` : `<div class="pt-card"><p style="font-size:12px;color:var(--muted);">Agrega y captura el concepto "Resultado determinado" para calcular vencimiento y accesorios.</p></div>`}
 
     <div class="pt-card">
       <h3 style="color:var(--muted);font-size:13px;">Notas y soporte</h3>
-      <textarea id="pIsrNotas" rows="2" placeholder="Observaciones (opcional)" style="width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:8px;font-family:inherit;font-size:12.5px;margin-bottom:6px;">${papelVirtual.notas||''}</textarea>
+      <textarea id="pIsrNotas" rows="2" placeholder="Observaciones (opcional)" style="width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:8px;font-family:inherit;font-size:12.5px;margin-bottom:6px;">${escHtml(papelVirtual.notas||'')}</textarea>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
         <label class="pt-file-btn" for="pIsrSoporteInput">＋ Adjuntar soporte</label>
         <input type="file" id="pIsrSoporteInput" accept=".pdf,.xlsx,.xls,.png,.jpg,.jpeg" style="display:none;">
         <span class="pt-file-hint">PDF · Excel · Imagen — se guarda la referencia; el almacenamiento real se conecta en fase posterior</span>
         <button class="btn btn-ghost btn-sm" id="pIsrAdjuntarBtn" style="padding:4px 10px;">Guardar referencia</button>
       </div>
-      ${soportes && soportes.length ? soportes.map(s=>`<div class="pt-soporte-item"><span>${s.nombre_archivo}</span><span style="color:var(--muted);">${fechaCorta(s.created_at.slice(0,10))} · ${s.usuario||''}</span></div>`).join('') : ''}
+      ${soportes && soportes.length ? soportes.map(s=>`<div class="pt-soporte-item"><span>${escHtml(s.nombre_archivo)}</span><span style="color:var(--muted);">${fechaCorta(s.created_at.slice(0,10))} · ${escHtml(s.usuario||'')}</span></div>`).join('') : ''}
     </div>
 
     <div class="pt-card">
@@ -8701,7 +8706,7 @@ async function renderPapelISRPM(b) {
       <button class="btn btn-gold btn-sm" id="pIsrGuardarBtn">Guardar</button>
       <a href="#" class="pt-editar-link" id="pIsrHistorialBtn" style="margin-left:12px;opacity:1;">Historial</a>
       <div id="pIsrHistorialZona" style="display:none;margin-top:10px;max-height:220px;overflow-y:auto;">
-        ${(historial||[]).length ? historial.map(h=>`<div style="font-size:11px;padding:4px 0;border-top:1px solid var(--line);">${fechaCorta(h.created_at.slice(0,10))} · ${h.usuario||'—'} · ${h.campo}: ${h.valor_anterior||'—'} → ${h.valor_nuevo||'—'}${h.motivo?' — '+h.motivo:''}</div>`).join('') : '<p style="font-size:11.5px;color:var(--muted);">Sin historial todavía.</p>'}
+        ${(historial||[]).length ? historial.map(h=>`<div style="font-size:11px;padding:4px 0;border-top:1px solid var(--line);">${fechaCorta(h.created_at.slice(0,10))} · ${escHtml(h.usuario||'—')} · ${h.campo}: ${h.valor_anterior||'—'} → ${h.valor_nuevo||'—'}${h.motivo?' — '+escHtml(h.motivo):''}</div>`).join('') : '<p style="font-size:11.5px;color:var(--muted);">Sin historial todavía.</p>'}
       </div>
     </div>
   `;
@@ -8841,7 +8846,7 @@ async function renderImpuestos() {
     { id: 'retenciones', label: 'Retenciones' },
     { id: 'pagos', label: 'Pagos' },
   ];
-  tabBarEl.innerHTML = tabs.map(t => `<div class="tag ${STATE_impuestosTab===t.id?'active':''}" data-tab="${t.id}">${t.label}</div>`).join('');
+  tabBarEl.innerHTML = tabs.map(t => `<div class="tag ${STATE_impuestosTab===t.id?'active':''}" data-tab="${t.id}">${escHtml(t.label)}</div>`).join('');
   tabBarEl.querySelectorAll('.tag').forEach(tag => tag.addEventListener('click', () => {
     STATE_impuestosTab = tag.dataset.tab;
     renderImpuestos();
@@ -8895,9 +8900,9 @@ async function renderImpuestosResumen(b) {
     return `<tr>
       <td>${nombre}</td>
       <td class="num" style="font-weight:600;">${fmt(fila.monto)}</td>
-      <td style="color:${est.determinacion.color};font-size:12px;">${est.determinacion.texto}</td>
-      <td style="color:${est.declaracion.color};font-size:12px;">${est.declaracion.texto}</td>
-      <td style="color:${est.pago.color};font-size:12px;font-weight:600;">${est.pago.texto}</td>
+      <td style="color:${est.determinacion.color};font-size:12px;">${escHtml(est.determinacion.texto)}</td>
+      <td style="color:${est.declaracion.color};font-size:12px;">${escHtml(est.declaracion.texto)}</td>
+      <td style="color:${est.pago.color};font-size:12px;font-weight:600;">${escHtml(est.pago.texto)}</td>
     </tr>`;
   };
 
@@ -9038,7 +9043,7 @@ async function renderIvaFiscal() {
           <thead><tr><th>Fecha</th><th>Concepto</th><th>Subtotal</th><th>IVA</th></tr></thead>
           <tbody>
             ${movsIvaDirectos.length ? movsIvaDirectos.map(m => `<tr>
-                <td>${fechaCorta(m.fecha)}</td><td>${m.proveedor || m.descripcion || ''}</td>
+                <td>${fechaCorta(m.fecha)}</td><td>${escHtml(m.proveedor || m.descripcion || '')}</td>
                 <td class="num">${fmt(m.subtotal)}</td><td class="num">${fmt(m.iva_monto)}</td>
               </tr>`).join('') : `<tr><td colspan="4" class="empty">No hay movimientos directos con IVA este mes.</td></tr>`}
           </tbody>
@@ -9052,7 +9057,7 @@ async function renderIvaFiscal() {
           <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Subtotal</th><th>IVA</th></tr></thead>
           <tbody>
             ${(facturasProv||[]).length ? facturasProv.map(f => `<tr>
-                <td>${fechaCorta(f.fecha)}</td><td>${f.proveedor||''}</td><td>${f.factura||'s/f'}</td>
+                <td>${fechaCorta(f.fecha)}</td><td>${escHtml(f.proveedor||'')}</td><td>${escHtml(f.factura||'s/f')}</td>
                 <td class="num">${fmt(f.subtotal)}</td><td class="num">${fmt(f.iva_monto)}</td>
               </tr>`).join('') : `<tr><td colspan="5" class="empty">No hay facturas de proveedor con IVA este mes.</td></tr>`}
           </tbody>
@@ -9066,7 +9071,7 @@ async function renderIvaFiscal() {
           <thead><tr><th>Fecha</th><th>Cliente</th><th>Folio</th><th>IVA</th></tr></thead>
           <tbody>
             ${(facturasCli||[]).length ? facturasCli.map(f => `<tr>
-                <td>${fechaCorta(f.fecha)}</td><td>${clientesMap[f.cliente_id]||''}</td><td>#${f.folio}</td>
+                <td>${fechaCorta(f.fecha)}</td><td>${escHtml(clientesMap[f.cliente_id]||'')}</td><td>#${escHtml(f.folio)}</td>
                 <td class="num">${fmt(f.iva_monto)}</td>
               </tr>`).join('') : `<tr><td colspan="4" class="empty">No hay facturas de cliente con IVA este mes.</td></tr>`}
           </tbody>
@@ -9085,7 +9090,7 @@ async function renderIvaFiscal() {
       const resultadoBox = document.getElementById('ivaRecargoResultado');
       if (!mesPago) { toast('Elige el mes en que se pagará.', 'error'); return; }
       const r = await calcularRecargosActualizacion(ivaCargoFavorMes, mesVencimientoIva, mesPago);
-      if (r.error) { resultadoBox.innerHTML = `<p style="color:var(--red);font-size:12.5px;margin-top:8px;">${r.error}</p>`; ultimoCalculoRecargoIva = null; return; }
+      if (r.error) { resultadoBox.innerHTML = `<p style="color:var(--red);font-size:12.5px;margin-top:8px;">${escHtml(r.error)}</p>`; ultimoCalculoRecargoIva = null; return; }
       ultimoCalculoRecargoIva = { ...r, mesPago };
       resultadoBox.innerHTML = `
         <div class="table-wrap" style="margin-top:10px;">
@@ -9321,7 +9326,7 @@ async function renderPreviewCierreAnual(businessId, ejercicio) {
   if (!/^\d{4}$/.test(ejercicio)) { box.innerHTML = ''; return; }
   box.innerHTML = `<p style="font-size:12px;color:var(--muted);padding:10px 0;">Calculando vista previa…</p>`;
   const prep = await prepararCierreEjercicio(businessId, ejercicio);
-  const filasTabla = prep.lineasPoliza.map(l => `<tr><td>${l.nombre}</td><td class="num">${l.cargo>0.004?fmt(l.cargo):'$0.00'}</td><td class="num">${l.abono>0.004?fmt(l.abono):'$0.00'}</td></tr>`).join('');
+  const filasTabla = prep.lineasPoliza.map(l => `<tr><td>${escHtml(l.nombre)}</td><td class="num">${l.cargo>0.004?fmt(l.cargo):'$0.00'}</td><td class="num">${l.abono>0.004?fmt(l.abono):'$0.00'}</td></tr>`).join('');
   box.innerHTML = `
     <div class="card" style="margin:10px 0;padding:14px;">
       <p style="font-size:12px;color:var(--muted);margin-bottom:4px;">EJERCICIO A CERRAR</p>
@@ -9346,7 +9351,7 @@ async function renderPreviewCierreAnual(businessId, ejercicio) {
         <p style="font-weight:700;color:${(Math.abs(prep.fueraDelLibro || 0) > 0.004 ? prep.resultadoTotal >= 0 : prep.tipoResultado==='utilidad')?'var(--green)':'var(--red)'};margin-bottom:12px;">${(Math.abs(prep.fueraDelLibro || 0) > 0.004 ? prep.resultadoTotal >= 0 : prep.tipoResultado==='utilidad')?'UTILIDAD DEL EJERCICIO':'PÉRDIDA DEL EJERCICIO'}</p>
 
         <p style="font-size:12px;color:var(--muted);margin-bottom:4px;">${Math.abs(prep.fueraDelLibro || 0) > 0.004 ? 'DESTINO DEL RESULTADO DE LA PÓLIZA' : 'DESTINO DEL RESULTADO'}</p>
-        <p style="font-size:13px;margin-bottom:12px;">${prep.destinoTexto}</p>
+        <p style="font-size:13px;margin-bottom:12px;">${escHtml(prep.destinoTexto)}</p>
 
         <p style="font-size:12px;color:var(--muted);margin-bottom:4px;">VISTA PREVIA DE LA PÓLIZA</p>
         <div class="table-wrap"><table class="report-table" style="font-size:12.5px;">
@@ -9427,7 +9432,7 @@ async function renderPreviewCierreMensual(businessId, periodo) {
   const nombreMes = MESES_LARGO ? MESES_LARGO[Number(mes)-1] : mes;
   box.innerHTML = `
     <div class="card" style="margin:10px 0;padding:14px;">
-      <p style="font-size:13px;"><strong>Periodo:</strong> ${nombreMes} ${anio}</p>
+      <p style="font-size:13px;"><strong>Periodo:</strong> ${escHtml(nombreMes)} ${anio}</p>
       <p style="font-size:13px;margin-bottom:10px;"><strong>Estado:</strong> ${yaCerrado?'<span style="color:var(--red);">Ya cerrado</span>':'<span style="color:var(--green);">Abierto</span>'}</p>
       <p style="font-size:12px;color:var(--muted);margin-bottom:4px;">VALIDACIONES</p>
       <p style="margin-bottom:10px;color:${cuadrado?'var(--green)':'var(--red)'};">${cuadrado?'✓ Total cargos = Total abonos — ✓ Balanza cuadrada':'✕ Balanza descuadrada por '+fmt(Math.abs(diferencia))}</p>
@@ -9543,7 +9548,7 @@ async function pintarIsrMes(contenido, b) {
     <div class="field" style="margin:12px 0 0;"><label>${titulo} <span class="badge-opc" style="display:inline-block;font-size:10px;font-weight:700;color:var(--muted);background:#eef1f5;padding:2px 7px;border-radius:5px;margin-left:6px;">OPCIONAL</span></label></div>
     <div style="background:#f7f9fc;border:1px solid var(--line);border-radius:9px;padding:10px 12px;margin:6px 0 4px;">
       ${listaDe(tipo).map(c => `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12.5px;">
-        <span>${c.concepto||'(sin descripción)'}</span>
+        <span>${escHtml(c.concepto||'(sin descripción)')}</span>
         <span style="font-weight:600;">${fmt(c.monto)} <button class="isr-del-concepto" data-id="${c.id}" style="border:none;background:none;color:var(--red);cursor:pointer;font-size:12px;margin-left:8px;">✕</button></span>
       </div>`).join('') || ''}
       <div style="display:flex;gap:6px;margin-top:${listaDe(tipo).length?'8px':'0'};">
@@ -9796,7 +9801,7 @@ async function pintarIsrMes(contenido, b) {
       const resultadoBox = document.getElementById('isrRecargoResultado');
       if (!mesPago) { toast('Elige el mes en que se pagará.', 'error'); return; }
       const r = await calcularRecargosActualizacion(calc.impuestoACargo, mesVencimientoIsr, mesPago);
-      if (r.error) { resultadoBox.innerHTML = `<p style="color:var(--red);font-size:12.5px;margin-top:8px;">${r.error}</p>`; return; }
+      if (r.error) { resultadoBox.innerHTML = `<p style="color:var(--red);font-size:12.5px;margin-top:8px;">${escHtml(r.error)}</p>`; return; }
       resultadoBox.innerHTML = `
         <div class="table-wrap" style="margin-top:10px;">
           <table class="report-table">
@@ -9926,12 +9931,12 @@ async function renderImpuestosRetenciones(b) {
 
   const filasRetencionesTablaHtml = (retenciones||[]).length ? (await Promise.all(retenciones.map(async p => {
     const est = await estadosDeImpuesto(p);
-    return `<tr class="ret-filtro-cat" data-cat="${p.concepto||'Sin categoría'}" style="cursor:pointer;${filtroCat===(p.concepto||'Sin categoría')?'background:#eef2f8;':''}">
-                <td>${p.periodo}</td><td>${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]}</td><td>${p.concepto||'Sin categoría'}</td>
+    return `<tr class="ret-filtro-cat" data-cat="${escAttr(p.concepto||'Sin categoría')}" style="cursor:pointer;${filtroCat===(p.concepto||'Sin categoría')?'background:#eef2f8;':''}">
+                <td>${p.periodo}</td><td>${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]}</td><td>${escHtml(p.concepto||'Sin categoría')}</td>
                 <td class="num">${fmt(p.monto)}</td>
-                <td style="color:${est.determinacion.color};font-size:12px;">${est.determinacion.texto}</td>
-                <td style="color:${est.declaracion.color};font-size:12px;">${est.declaracion.texto}</td>
-                <td style="color:${est.pago.color};font-size:12px;font-weight:600;">${est.pago.texto}</td>
+                <td style="color:${est.determinacion.color};font-size:12px;">${escHtml(est.determinacion.texto)}</td>
+                <td style="color:${est.declaracion.color};font-size:12px;">${escHtml(est.declaracion.texto)}</td>
+                <td style="color:${est.pago.color};font-size:12px;font-weight:600;">${escHtml(est.pago.texto)}</td>
               </tr>`;
   }))).join('') : `<tr><td colspan="7" class="empty">Sin retenciones determinadas en ${anio}.</td></tr>`;
 
@@ -9963,7 +9968,7 @@ async function renderImpuestosRetenciones(b) {
           <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Categoría</th><th>Base</th><th>ISR retenido</th><th>IVA retenido</th></tr></thead>
           <tbody>
             ${(facturasDetalle||[]).length ? facturasDetalle.map((f,idx) => `<tr>
-                <td>${fechaCorta(f.fecha)}</td><td>${f.proveedor||''}</td><td><span class="ret-ver-factura" data-idx="${idx}" style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted;">${f.factura||'s/f'}</span></td><td>${f.retencion_categoria||'Sin categoría'}</td>
+                <td>${fechaCorta(f.fecha)}</td><td>${escHtml(f.proveedor||'')}</td><td><span class="ret-ver-factura" data-idx="${idx}" style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted;">${escHtml(f.factura||'s/f')}</span></td><td>${escHtml(f.retencion_categoria||'Sin categoría')}</td>
                 <td class="num">${f.subtotal?fmt(f.subtotal):''}</td><td class="num">${fmt(f.retencion_isr_monto)}</td><td class="num">${fmt(f.retencion_iva_monto)}</td>
               </tr>`).join('') : `<tr><td colspan="7" class="empty">Sin facturas con retención en ${anio}.</td></tr>`}
           </tbody>
@@ -10152,12 +10157,12 @@ async function pintarPagosImpuestos(contenido, b, miToken) {
     const deltaActualizacion = p.monto_actualizado ? Math.max(0, p.monto_actualizado - Number(p.monto)) : null;
     const bloqueado = idsNoEliminables.has(p.id);
     return `<tr>
-                <td>${p.periodo}</td><td>${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]||p.tipo_impuesto}</td><td class="wrap-text" style="max-width:220px;">${p.concepto||''}</td>
+                <td>${p.periodo}</td><td>${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]||p.tipo_impuesto}</td><td class="wrap-text" style="max-width:220px;">${escHtml(p.concepto||'')}</td>
                 <td class="num">${fmt(p.monto)}</td><td>${fechaCorta(p.fecha_limite)}</td>
                 <td><input type="date" class="pi-fecha-pago-input" data-id="${p.id}" value="${p.fecha_pago||''}" style="border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12.5px;"></td>
-                <td style="color:${est.determinacion.color};font-size:12px;">${est.determinacion.texto}</td>
-                <td style="color:${est.declaracion.color};font-size:12px;">${est.declaracion.texto}</td>
-                <td style="color:${est.pago.color};font-weight:600;font-size:12px;">${est.pago.texto}</td>
+                <td style="color:${est.determinacion.color};font-size:12px;">${escHtml(est.determinacion.texto)}</td>
+                <td style="color:${est.declaracion.color};font-size:12px;">${escHtml(est.declaracion.texto)}</td>
+                <td style="color:${est.pago.color};font-weight:600;font-size:12px;">${escHtml(est.pago.texto)}</td>
                 <td class="num">${deltaActualizacion!==null?fmt(deltaActualizacion):''}</td>
                 <td class="num">${p.recargos?fmt(p.recargos):''}</td>
                 <td class="num" style="font-weight:600;">${p.total_pagado?fmt(p.total_pagado):''}</td>
@@ -10182,8 +10187,8 @@ async function pintarPagosImpuestos(contenido, b, miToken) {
           <thead><tr><th>Documento</th><th>Tipo</th><th># pólizas encontradas</th><th>En el libro actualmente</th><th>Debería ser</th><th>Diferencia a ajustar</th><th></th></tr></thead>
           <tbody>
             ${duplicadosRealizacion.map((d,idx) => `<tr>
-              <td>${d.referencia}${d.detalle?' — '+d.detalle:''}</td>
-              <td>${d.tipo}${d.categoria?' — '+d.categoria:''}</td>
+              <td>${escHtml(d.referencia)}${d.detalle?' — '+escHtml(d.detalle):''}</td>
+              <td>${d.tipo}${d.categoria?' — '+escHtml(d.categoria):''}</td>
               <td class="num">${d.filas.length}</td>
               <td class="num">${fmt(d.actualEnLibro)}</td>
               <td class="num">${fmt(d.correcto)}</td>
@@ -10225,7 +10230,7 @@ async function pintarPagosImpuestos(contenido, b, miToken) {
           <tbody>
             ${pendientesProvisionIva.map((pp,idx) => `<tr>
               <td>${pp.pago.periodo}</td>
-              <td style="font-size:12px;color:var(--muted);">${pp.cambios.map(c=>`${c.diferencia>=0?'Debe':'Haber'} ${c.cuenta} — ${fmt(Math.abs(c.diferencia))}`).join('<br>')}</td>
+              <td style="font-size:12px;color:var(--muted);">${pp.cambios.map(c=>`${c.diferencia>=0?'Debe':'Haber'} ${escHtml(c.cuenta)} — ${fmt(Math.abs(c.diferencia))}`).join('<br>')}</td>
               <td>${pp.cerrado ? '<span style="color:var(--red);font-size:12px;">Periodo cerrado — reabre para contabilizar</span>' : '<span style="color:var(--gold);font-size:12px;">Periodo abierto</span>'}</td>
               <td>${pp.cerrado ? '' : `<button class="btn btn-gold btn-sm provision-iva-generar-btn" data-idx="${idx}">Generar</button>`}</td>
             </tr>`).join('')}
@@ -10429,8 +10434,8 @@ async function abrirModalAplicarPagoFiscal(b) {
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', b.id).eq('activo', true),
   ]);
   document.getElementById('apfCuenta').innerHTML = `<option value="">— elegir —</option>` +
-    (cuentasBanco||[]).map(c=>`<option value="banco:${c.id}">Banco — ${c.nombre}</option>`).join('') +
-    (monedas||[]).map(m=>`<option value="efectivo:${m.id}">Caja — ${m.nombre}</option>`).join('');
+    (cuentasBanco||[]).map(c=>`<option value="banco:${c.id}">Banco — ${escHtml(c.nombre)}</option>`).join('') +
+    (monedas||[]).map(m=>`<option value="efectivo:${m.id}">Caja — ${escHtml(m.nombre)}</option>`).join('');
 
   const { data: pendientes } = await sb.from('fz_pagos_impuestos').select('*').eq('business_id', b.id).order('periodo', { ascending: false });
   const conSaldo = [];
@@ -10454,26 +10459,26 @@ async function abrirModalAplicarPagoFiscal(b) {
     lista.innerHTML = filasConTotal.length ? filasConTotal.map(({p, sinDeclaracion, declaracion, requiereTratamientoEspecial, sinVencimientoConfiable, yaLiquidada, motivo, saldoPrincipal, actualizacionPendiente, recargosPendientes, totalExigible, montoRedondeado, ajusteSAT, aviso}) => {
       if (sinDeclaracion) {
         return `<div style="padding:5px 2px;border-bottom:1px solid var(--line);">
-          <div style="font-size:12px;">${p.periodo} · ${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]}${p.concepto?' — '+p.concepto:''}</div>
+          <div style="font-size:12px;">${p.periodo} · ${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]}${p.concepto?' — '+escHtml(p.concepto):''}</div>
           <div style="font-size:11px;color:var(--red);padding-left:2px;">Sin declaración registrada — regístrala primero desde "Editar" para poder aplicar el pago.</div>
         </div>`;
       }
       if (requiereTratamientoEspecial || sinVencimientoConfiable) {
         return `<div style="padding:5px 2px;border-bottom:1px solid var(--line);">
-          <div style="font-size:12px;">${p.periodo} · ${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]}${p.concepto?' — '+p.concepto:''}</div>
+          <div style="font-size:12px;">${p.periodo} · ${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]}${p.concepto?' — '+escHtml(p.concepto):''}</div>
           <div style="font-size:11px;color:var(--red);padding-left:2px;">${motivo}</div>
         </div>`;
       }
       if (yaLiquidada) {
         return `<div style="padding:5px 2px;border-bottom:1px solid var(--line);opacity:0.6;">
-          <div style="font-size:12px;">${p.periodo} · ${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]}${p.concepto?' — '+p.concepto:''} — ya liquidada según su declaración vigente.</div>
+          <div style="font-size:12px;">${p.periodo} · ${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]}${p.concepto?' — '+escHtml(p.concepto):''} — ya liquidada según su declaración vigente.</div>
         </div>`;
       }
       return `
       <div style="padding:5px 2px;border-bottom:1px solid var(--line);">
         <label style="display:flex;align-items:center;gap:7px;cursor:pointer;">
           <input type="checkbox" class="apf-check" value="${p.id}" data-monto="${montoRedondeado}">
-          <span style="flex:1;font-size:12px;">${p.periodo} · ${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]}${p.concepto?' — '+p.concepto:''} <span style="color:var(--muted);">(${declaracion.tipo_declaracion==='normal'?'Normal':'Complementaria '+declaracion.numero_complementaria})</span></span>
+          <span style="flex:1;font-size:12px;">${p.periodo} · ${TIPO_IMPUESTO_LABEL[p.tipo_impuesto]}${p.concepto?' — '+escHtml(p.concepto):''} <span style="color:var(--muted);">(${declaracion.tipo_declaracion==='normal'?'Normal':'Complementaria '+declaracion.numero_complementaria})</span></span>
           <span class="apf-monto-mostrado" data-id="${p.id}" style="width:100px;text-align:right;font-size:12px;font-weight:600;display:inline-block;">${fmt(montoRedondeado)}</span>
         </label>
         ${(actualizacionPendiente>0.004||recargosPendientes>0.004) ? `<div style="font-size:11px;color:var(--muted);padding-left:26px;">Principal ${fmt(saldoPrincipal)}${actualizacionPendiente>0.004?' · Actualización '+fmt(actualizacionPendiente):''}${recargosPendientes>0.004?' · Recargos '+fmt(recargosPendientes):''} · Subtotal calculado ${fmt(totalExigible)}</div>` : ''}
@@ -10555,8 +10560,8 @@ async function abrirModalPagoImpuesto(pago, b) {
   ]);
   const selPagadoDesde = document.getElementById('piPagadoDesde');
   selPagadoDesde.innerHTML = `<option value="">— elegir —</option>` +
-    (cuentasBanco||[]).map(c => `<option value="banco:${c.id}">Banco — ${c.nombre}</option>`).join('') +
-    (monedas||[]).map(m => `<option value="efectivo:${m.id}">Caja — ${m.nombre}</option>`).join('');
+    (cuentasBanco||[]).map(c => `<option value="banco:${c.id}">Banco — ${escHtml(c.nombre)}</option>`).join('') +
+    (monedas||[]).map(m => `<option value="efectivo:${m.id}">Caja — ${escHtml(m.nombre)}</option>`).join('');
   if (pago?.pagado_desde_tipo && pago?.pagado_desde_cuenta_id) selPagadoDesde.value = `${pago.pagado_desde_tipo}:${pago.pagado_desde_cuenta_id}`;
   const actualizarVisibilidadPagadoDesde = () => {
     const tipoActual = document.getElementById('piTipo').value;
@@ -10606,7 +10611,7 @@ async function abrirModalPagoImpuesto(pago, b) {
 
     let html = '';
     if (exigibleActual.requiereTratamientoEspecial) {
-      html += `<div style="padding:6px 8px;background:#fff3e0;border-radius:8px;margin-bottom:6px;font-size:11.5px;color:#8a5a00;"><strong>Requiere revisión:</strong> posible saldo a favor/compensación/devolución. ${exigibleActual.motivo}</div>`;
+      html += `<div style="padding:6px 8px;background:#fff3e0;border-radius:8px;margin-bottom:6px;font-size:11.5px;color:#8a5a00;"><strong>Requiere revisión:</strong> posible saldo a favor/compensación/devolución. ${escHtml(exigibleActual.motivo)}</div>`;
     }
     html += (declaraciones||[]).length
       ? declaraciones.map(d => `
@@ -10617,7 +10622,7 @@ async function abrirModalPagoImpuesto(pago, b) {
             ${STATE.esAdministrador && d.estado!=='anulada' ? `<button class="btn btn-ghost btn-sm di-anular-declaracion" data-id="${d.id}" style="font-size:10.5px;padding:2px 8px;color:var(--red);">Anular</button>` : ''}
           </div>
           <div style="color:var(--muted);margin-top:2px;">Importe declarado: ${fmt(d.importe_declarado||0)}${d.linea_captura?' · Línea: '+d.linea_captura:''}${d.fecha_vigencia_linea?' (vigente hasta '+fechaCorta(d.fecha_vigencia_linea)+')':''}</div>
-          ${d.estado==='anulada' ? `<div style="font-size:11px;color:var(--red);margin-top:2px;">Anulada el ${fechaCorta(d.anulado_en.slice(0,10))} por ${d.anulado_por||'—'} — ${d.motivo_anulacion||'sin motivo'}</div>` : ''}
+          ${d.estado==='anulada' ? `<div style="font-size:11px;color:var(--red);margin-top:2px;">Anulada el ${fechaCorta(d.anulado_en.slice(0,10))} por ${d.anulado_por||'—'} — ${escHtml(d.motivo_anulacion||'sin motivo')}</div>` : ''}
           ${(pagosPorDeclaracion[d.id]||[]).length ? `<div style="margin-top:3px;">${pagosPorDeclaracion[d.id].map(filaPago).join('')}</div>` : `<div style="font-size:11px;color:var(--muted);padding-left:10px;">Sin pagos aplicados a esta declaración todavía.</div>`}
         </div>`).join('')
       : `<p style="font-size:11.5px;color:var(--muted);">Sin declaraciones registradas todavía — el pago no podrá aplicarse hasta que exista al menos una.</p>`;
@@ -10706,7 +10711,7 @@ async function abrirModalPagoImpuesto(pago, b) {
       <div style="padding:6px 8px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;font-size:11.5px;${ap.revertido_at?'opacity:0.55;background:#f7f7f7;':''}">
         <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;">
           <span><strong>${fechaCorta(ap.fecha)}</strong> · ${nombreOrigenDe(ap)} · Total ${fmt(ap.monto)}</span>
-          ${ap.revertido_at ? `<span style="color:var(--red);">Revertido ${fechaCorta(ap.revertido_at.slice(0,10))}${ap.revertido_por?' — '+ap.revertido_por:''}${ap.revertido_motivo?' ("'+ap.revertido_motivo+'")':''}</span>` : `<button class="btn btn-ghost btn-sm pi-revertir-aplicacion" data-id="${ap.id}" style="font-size:11px;padding:2px 8px;">Revertir pago</button>`}
+          ${ap.revertido_at ? `<span style="color:var(--red);">Revertido ${fechaCorta(ap.revertido_at.slice(0,10))}${ap.revertido_por?' — '+ap.revertido_por:''}${ap.revertido_motivo?' ("'+escHtml(ap.revertido_motivo)+'")':''}</span>` : `<button class="btn btn-ghost btn-sm pi-revertir-aplicacion" data-id="${ap.id}" style="font-size:11px;padding:2px 8px;">Revertir pago</button>`}
         </div>
         <div style="color:var(--muted);margin-top:2px;">Principal ${fmt(ap.monto_principal||0)} · Actualización ${fmt(ap.monto_actualizacion||0)} · Recargos ${fmt(ap.monto_recargos||0)} · Redondeo ${fmt(ap.monto_redondeo||0)}</div>
       </div>`).join('');
@@ -10923,9 +10928,9 @@ async function renderFuentesFiscales() {
   el.innerHTML = `
     <div class="pt-card">
       <div class="pt-titulo-cedula">Fuentes Fiscales</div>
-      <p class="pt-subtitulo">${b.name} — qué subcuentas contables proponen automáticamente cada concepto de los Papeles de Trabajo.</p>
+      <p class="pt-subtitulo">${escHtml(b.name)} — qué subcuentas contables proponen automáticamente cada concepto de los Papeles de Trabajo.</p>
       <div class="tag-row" style="margin:10px 0 0;">
-        ${tabs.map(t => `<div class="tag ${STATE_fuentesFiscalesTab===t.id?'active':''}" data-tab="${t.id}">${t.label}</div>`).join('')}
+        ${tabs.map(t => `<div class="tag ${STATE_fuentesFiscalesTab===t.id?'active':''}" data-tab="${t.id}">${escHtml(t.label)}</div>`).join('')}
       </div>
     </div>
     <div class="pt-card">
@@ -10935,14 +10940,14 @@ async function renderFuentesFiscales() {
           <tbody>
             ${conceptos.map(c => {
               const especializada = FUENTES_ESPECIALIZADAS[c.clave];
-              if (especializada) return `<tr><td>${c.nombre}</td><td><span class="pt-origen sistema">${especializada}</span></td><td style="font-size:10.5px;color:var(--muted);">No compite con mapeo contable</td></tr>`;
+              if (especializada) return `<tr><td>${escHtml(c.nombre)}</td><td><span class="pt-origen sistema">${especializada}</span></td><td style="font-size:10.5px;color:var(--muted);">No compite con mapeo contable</td></tr>`;
               const mapeo = mapeosPorConcepto[c.clave];
               const idsMapeados = new Set(mapeo.map(m=>m.subcuentaId));
               const detectadas = (especializadasPorConcepto[c.clave]||[]).filter(s=>!idsMapeados.has(s.id));
               return `<tr>
-                <td>${c.nombre}</td>
+                <td>${escHtml(c.nombre)}</td>
                 <td>
-                  ${mapeo.length ? mapeo.map(m=>`<span class="pt-origen contabilidad">${m.nombre}</span>`).join(' ') : `<span class="pt-origen">Sin mapeo — captura manual</span>`}
+                  ${mapeo.length ? mapeo.map(m=>`<span class="pt-origen contabilidad">${escHtml(m.nombre)}</span>`).join(' ') : `<span class="pt-origen">Sin mapeo — captura manual</span>`}
                   ${detectadas.length ? `<div style="margin-top:4px;"><span class="pt-origen sistema">Fuente especializada detectada: ${detectadas.map(s=>s.nombre).join(', ')}</span> <a href="#" class="pt-editar-link ff-usar-especializada" data-clave="${c.clave}" style="opacity:1;">Usar esta fuente</a></div>` : ''}
                 </td>
                 <td><a href="#" class="pt-editar-link ff-configurar" data-clave="${c.clave}">Configurar</a> · <a href="#" class="pt-editar-link ff-diagnosticar" data-clave="${c.clave}">Diagnosticar</a></td>
@@ -10990,8 +10995,8 @@ async function abrirModalFuenteFiscal(b, tipoPapel, concepto, mapeoActual) {
     if (!subs.length) return '';
     const esExtraordinaria = soloSugeridas ? false : (tiposSugeridos && !tiposSugeridos.includes(cm.tipo));
     return `<div style="margin-bottom:8px;">
-      <div style="font-weight:600;color:var(--navy-1);font-size:11.5px;margin-bottom:3px;">${cm.nombre}${esExtraordinaria?' <span class="pt-origen" style="font-weight:400;">cuenta adicional</span>':''}</div>
-      ${subs.map(s=>`<label style="display:flex;align-items:center;gap:6px;padding:2px 0;"><input type="checkbox" class="ff-check" value="${s.id}" ${idsMapeados.has(s.id)?'checked':''}> ${s.nombre}</label>`).join('')}
+      <div style="font-weight:600;color:var(--navy-1);font-size:11.5px;margin-bottom:3px;">${escHtml(cm.nombre)}${esExtraordinaria?' <span class="pt-origen" style="font-weight:400;">cuenta adicional</span>':''}</div>
+      ${subs.map(s=>`<label style="display:flex;align-items:center;gap:6px;padding:2px 0;"><input type="checkbox" class="ff-check" value="${s.id}" ${idsMapeados.has(s.id)?'checked':''}> ${escHtml(s.nombre)}</label>`).join('')}
     </div>`;
   }).join('');
 
@@ -11013,8 +11018,8 @@ async function abrirModalFuenteFiscal(b, tipoPapel, concepto, mapeoActual) {
       const subs = subcuentas.filter(s=>s.cuenta_mayor_id===cm.id && !s.subcuenta_padre_id);
       if (!subs.length) return '';
       return `<div style="margin-bottom:8px;">
-        <div style="font-weight:600;color:var(--navy-1);font-size:11.5px;margin-bottom:3px;">${cm.nombre} <span class="pt-origen" style="font-weight:400;">cuenta adicional</span></div>
-        ${subs.map(s=>`<label style="display:flex;align-items:center;gap:6px;padding:2px 0;"><input type="checkbox" class="ff-check" value="${s.id}" ${idsMapeados.has(s.id)?'checked':''}> ${s.nombre}</label>`).join('')}
+        <div style="font-weight:600;color:var(--navy-1);font-size:11.5px;margin-bottom:3px;">${escHtml(cm.nombre)} <span class="pt-origen" style="font-weight:400;">cuenta adicional</span></div>
+        ${subs.map(s=>`<label style="display:flex;align-items:center;gap:6px;padding:2px 0;"><input type="checkbox" class="ff-check" value="${s.id}" ${idsMapeados.has(s.id)?'checked':''}> ${escHtml(s.nombre)}</label>`).join('')}
       </div>`;
     }).join('');
     zonaOtras.innerHTML = otrasHtml || '<p style="font-size:11px;color:var(--muted);">Sin otras cuentas en el catálogo.</p>';
@@ -11050,25 +11055,25 @@ async function abrirModalDiagnosticoFuente(b, tipoPapel, concepto) {
       <div class="pt-card">
         <h3 style="font-size:13px;">A. Mapeo fiscal</h3>
         ${diag.mapeo.length ? `<table style="width:100%;font-size:11.5px;"><thead><tr><th>Subcuenta</th><th>ID</th></tr></thead><tbody>
-          ${diag.mapeo.map(m=>`<tr><td>${m.nombre}</td><td style="color:var(--muted);">${m.subcuentaId}</td></tr>`).join('')}
+          ${diag.mapeo.map(m=>`<tr><td>${escHtml(m.nombre)}</td><td style="color:var(--muted);">${escHtml(m.subcuentaId)}</td></tr>`).join('')}
         </tbody></table><p style="font-size:10.5px;color:var(--muted);margin-top:4px;">${diag.mapeo.length} subcuenta(s) mapeada(s).</p>` : `<p style="color:var(--red);">Sin mapeo configurado — por eso no hay propuesta.</p>`}
       </div>
       ${diag.mapeo.length ? `
       <div class="pt-card">
         <h3 style="font-size:13px;">B. Fuente Ventas</h3>
         ${diag.ventasEncontradas.length ? `<table style="width:100%;font-size:11px;"><thead><tr><th>Fecha</th><th>Concepto de venta</th><th>Importe</th></tr></thead><tbody>
-          ${diag.ventasEncontradas.map(v=>`<tr><td>${v.fecha}</td><td>${v.conceptoNombre}</td><td class="num">${fmt(v.importe)}</td></tr>`).join('')}
+          ${diag.ventasEncontradas.map(v=>`<tr><td>${v.fecha}</td><td>${escHtml(v.conceptoNombre)}</td><td class="num">${fmt(v.importe)}</td></tr>`).join('')}
         </tbody></table>` : `<p style="color:var(--muted);">Ninguna venta coincide con el mapeo en este periodo.</p>`}
         ${diag.ventasSinVinculo.length ? `<p style="font-size:11px;color:var(--gold);margin-top:8px;font-weight:600;">⚠ ${diag.ventasSinVinculo.length} venta(s) NO pudieron relacionarse:</p>
         <table style="width:100%;font-size:11px;"><tbody>
-          ${diag.ventasSinVinculo.map(v=>`<tr><td>${v.fecha}</td><td>${v.conceptoNombre}</td><td class="num">${fmt(v.importe)}</td><td style="color:var(--muted);font-size:10px;">${v.razon}</td></tr>`).join('')}
+          ${diag.ventasSinVinculo.map(v=>`<tr><td>${v.fecha}</td><td>${escHtml(v.conceptoNombre)}</td><td class="num">${fmt(v.importe)}</td><td style="color:var(--muted);font-size:10px;">${escHtml(v.razon)}</td></tr>`).join('')}
         </tbody></table>` : ''}
         <p style="font-size:10.5px;color:var(--muted);margin-top:6px;">Importe desde Ventas: <strong>${fmt(diag.importeVentas||0)}</strong></p>
       </div>
       <div class="pt-card">
         <h3 style="font-size:13px;">C. Fuente Contable</h3>
         ${diag.movimientosContables.length ? `<table style="width:100%;font-size:11px;"><thead><tr><th>Fecha</th><th>Cargo</th><th>Abono</th><th>Neto</th><th>Origen</th></tr></thead><tbody>
-          ${diag.movimientosContables.map(m=>`<tr><td>${m.fecha}</td><td class="num">${fmt(m.cargo)}</td><td class="num">${fmt(m.abono)}</td><td class="num">${fmt(m.neto)}</td><td style="font-size:10px;color:var(--muted);">${m.origenTabla||'—'}</td></tr>`).join('')}
+          ${diag.movimientosContables.map(m=>`<tr><td>${m.fecha}</td><td class="num">${fmt(m.cargo)}</td><td class="num">${fmt(m.abono)}</td><td class="num">${fmt(m.neto)}</td><td style="font-size:10px;color:var(--muted);">${escHtml(m.origenTabla||'—')}</td></tr>`).join('')}
         </tbody></table>` : `<p style="color:var(--muted);">Sin movimientos en el libro de partida doble para las subcuentas sin fuente especializada de Ventas.</p>`}
         <p style="font-size:10.5px;color:var(--muted);margin-top:6px;">Importe desde Contabilidad: <strong>${fmt(diag.importeContable||0)}</strong>${diag.ajustesDetectados?' · incluye ajuste(s)/cargo(s)':''}</p>
       </div>
@@ -11081,7 +11086,7 @@ async function abrirModalDiagnosticoFuente(b, tipoPapel, concepto) {
           <div><span class="pt-label">Ventas sin vínculo</span><span class="pt-value" style="color:${diag.ventasSinVinculo.length?'var(--gold)':'inherit'};">${diag.ventasSinVinculo.length}</span></div>
         </div>
         <div class="pt-banda-cierre" style="margin-top:10px;"><span>PROPUESTA FINAL</span><span>${diag.propuestaFinal!==null?fmt(diag.propuestaFinal):'—'}</span></div>
-        ${diag.propuestaFinal===null ? `<p style="font-size:11px;color:var(--red);margin-top:6px;">${diag.razonSinPropuesta}</p>` : ''}
+        ${diag.propuestaFinal===null ? `<p style="font-size:11px;color:var(--red);margin-top:6px;">${escHtml(diag.razonSinPropuesta)}</p>` : ''}
       </div>` : ''}
     `;
   };
@@ -11167,8 +11172,8 @@ async function pintarDiasInhabiles(contenido) {
           <tbody>
             ${filtrados.length ? filtrados.map(d => `<tr>
               <td>${fechaCorta(d.fecha)}</td>
-              <td class="wrap-text" style="max-width:260px;">${d.descripcion||''}</td>
-              <td class="wrap-text" style="max-width:200px;">${d.fuente_referencia||''}</td>
+              <td class="wrap-text" style="max-width:260px;">${escHtml(d.descripcion||'')}</td>
+              <td class="wrap-text" style="max-width:200px;">${escHtml(d.fuente_referencia||'')}</td>
               <td>${d.activo===false?'<span style="color:var(--muted);">Inactivo</span>':'<span style="color:var(--green);">Activo</span>'}</td>
               ${STATE.esAdministrador ? `<td style="white-space:nowrap;">
                 <button class="btn btn-ghost btn-sm di-editar" data-id="${d.id}" style="padding:3px 8px;">Editar</button>
@@ -11457,7 +11462,7 @@ async function pintarRecargos(contenido) {
     const resultadoBox = document.getElementById('calcResultado');
     if (!impuesto || !mesVenc || !mesPago) { toast('Completa los 3 campos.', 'error'); return; }
     const r = await calcularRecargosActualizacion(impuesto, mesVenc, mesPago);
-    if (r.error) { resultadoBox.innerHTML = `<p style="color:var(--red);font-size:13px;">${r.error}</p>`; return; }
+    if (r.error) { resultadoBox.innerHTML = `<p style="color:var(--red);font-size:13px;">${escHtml(r.error)}</p>`; return; }
     resultadoBox.innerHTML = `
       <div class="table-wrap">
         <table class="report-table">
@@ -11504,7 +11509,7 @@ async function renderComparativo() {
           <tbody>
             ${resumenes.sort((a,b)=>b.utilidad-a.utilidad).map(r => `
               <tr style="${r.utilidad===mejorUtilidad && negocios.length>1 ?'background:#f2fbf5;':''}">
-                <td style="font-weight:600;">${r.negocio.name}${r.utilidad===mejorUtilidad && negocios.length>1 ?' <span style="color:var(--green);font-size:11px;">★ mejor mes</span>':''}</td>
+                <td style="font-weight:600;">${escHtml(r.negocio.name)}${r.utilidad===mejorUtilidad && negocios.length>1 ?' <span style="color:var(--green);font-size:11px;">★ mejor mes</span>':''}</td>
                 <td class="num">${fmt(r.totalIngresos)}</td>
                 <td class="num" style="color:var(--red);">${fmt(r.totalGastos)}</td>
                 <td class="num" style="font-weight:700;color:${r.utilidad>=0?'var(--green)':'var(--red)'};">${fmt(r.utilidad)}</td>
@@ -11532,7 +11537,7 @@ let STATE_dpFiltros = { origen: 'todos', tipo: 'todas', cuadre: 'todas', buscar:
 async function renderDiariosPolizasWrapper() {
   const tabBarEl = document.getElementById('diariosPolizasTabBar');
   const tabs = [{id:'librodiario',label:'Libro Diario'},{id:'diarios',label:'Diarios y Pólizas'}];
-  tabBarEl.innerHTML = tabs.map(t=>`<div class="tag ${STATE_diariosPolizasTab===t.id?'active':''}" data-tab="${t.id}">${t.label}</div>`).join('');
+  tabBarEl.innerHTML = tabs.map(t=>`<div class="tag ${STATE_diariosPolizasTab===t.id?'active':''}" data-tab="${t.id}">${escHtml(t.label)}</div>`).join('');
   tabBarEl.querySelectorAll('.tag').forEach(tag=>tag.addEventListener('click',()=>{STATE_diariosPolizasTab=tag.dataset.tab; renderDiariosPolizasWrapper();}));
   document.getElementById('sec-librodiario').style.display = STATE_diariosPolizasTab==='librodiario' ? '' : 'none';
   document.getElementById('diariospolizas-vista').style.display = STATE_diariosPolizasTab==='diarios' ? '' : 'none';
@@ -11588,7 +11593,7 @@ async function renderAuxiliares() {
       <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end;">
         <div class="field" style="max-width:340px;margin-bottom:0;">
           <label>Cuenta</label>
-          <select id="auxCuentaSel">${cuentas.map(c=>`<option value="${c.clave}" ${c.clave===STATE_auxiliarClave?'selected':''}>${c.nombre}</option>`).join('')}</select>
+          <select id="auxCuentaSel">${cuentas.map(c=>`<option value="${c.clave}" ${c.clave===STATE_auxiliarClave?'selected':''}>${escHtml(c.nombre)}</option>`).join('')}</select>
         </div>
         <div class="field" style="margin-bottom:0;"><label>Desde</label><input type="date" id="auxDesde" value="${start}"></div>
         <div class="field" style="margin-bottom:0;"><label>Hasta</label><input type="date" id="auxHasta" value="${end}"></div>
@@ -11599,15 +11604,15 @@ async function renderAuxiliares() {
       </div>
     </div>
     <div class="card">
-      <div class="card-head"><h3>${cuenta?.nombre||''}</h3><span class="hint">${etiquetaPeriodo} · Saldo inicial: ${fmt(Math.abs(saldoInicialNeto))} ${saldoInicialNeto>=0?(esDeudora?'Deudor':'Acreedor'):(esDeudora?'Acreedor':'Deudor')}</span></div>
+      <div class="card-head"><h3>${escHtml(cuenta?.nombre||'')}</h3><span class="hint">${escHtml(etiquetaPeriodo)} · Saldo inicial: ${fmt(Math.abs(saldoInicialNeto))} ${saldoInicialNeto>=0?(esDeudora?'Deudor':'Acreedor'):(esDeudora?'Acreedor':'Deudor')}</span></div>
       <div class="table-wrap scroll-sticky tabla-contable-wrap">
         <table class="tabla-contable">
           <thead><tr><th>Fecha</th><th>Documento</th><th>Concepto/Origen</th><th>Debe</th><th>Haber</th><th>Saldo</th></tr></thead>
           <tbody>
             ${filasConSaldo.length ? filasConSaldo.map((f,idx) => `<tr>
               <td>${fechaCorta(f.fecha)}</td>
-              <td>${f.referencia||f.modulo}</td>
-              <td class="wrap-text" style="max-width:220px;">${f.modulo}${f.detalle?' — '+f.detalle:''}</td>
+              <td>${escHtml(f.referencia||f.modulo)}</td>
+              <td class="wrap-text" style="max-width:220px;">${f.modulo}${f.detalle?' — '+escHtml(f.detalle):''}</td>
               <td class="num">${f.cargo?fmt(f.cargo):''}</td>
               <td class="num">${f.abono?fmt(f.abono):''}</td>
               <td class="num" style="font-weight:600;">${fmt(Math.abs(f.saldo))}</td>
@@ -11737,15 +11742,15 @@ async function renderDiariosPolizasVista() {
     return `<div class="card" style="margin-bottom:12px;">
       <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:6px;">
         <div>
-          <p style="font-size:12px;color:var(--muted);">${fechaCorta(d.fecha)} · ${d.modulo}${d.referencia ? ' · '+d.referencia : ''}</p>
-          <p style="font-size:13.5px;font-weight:600;">${d.detalle || ''}</p>
+          <p style="font-size:12px;color:var(--muted);">${fechaCorta(d.fecha)} · ${d.modulo}${d.referencia ? ' · '+escHtml(d.referencia) : ''}</p>
+          <p style="font-size:13.5px;font-weight:600;">${escHtml(d.detalle || '')}</p>
         </div>
         <span style="font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px;background:${d.generacion==='Automática'?'#eef2f8':'#fdf3e3'};color:${d.generacion==='Automática'?'var(--navy-3)':'var(--gold)'};height:fit-content;">${d.generacion}</span>
       </div>
       <div class="table-wrap" style="margin-bottom:8px;">
         <table>
           <thead><tr><th>Cuenta</th><th>Cargo</th><th>Abono</th></tr></thead>
-          <tbody>${d.lineas.map(l=>`<tr><td>${l.cuenta}</td><td class="num">${l.cargo?fmt(l.cargo):''}</td><td class="num">${l.abono?fmt(l.abono):''}</td></tr>`).join('')}</tbody>
+          <tbody>${d.lineas.map(l=>`<tr><td>${escHtml(l.cuenta)}</td><td class="num">${l.cargo?fmt(l.cargo):''}</td><td class="num">${l.abono?fmt(l.abono):''}</td></tr>`).join('')}</tbody>
           <tfoot><tr class="total-row"><td>TOTAL</td><td class="num">${fmt(d.cargo)}</td><td class="num">${fmt(d.abono)}</td></tr></tfoot>
         </table>
       </div>
@@ -11760,7 +11765,7 @@ async function renderDiariosPolizasVista() {
       <div class="grid-4">
         <div class="field" style="margin-bottom:0;"><label>Desde</label><input type="date" id="dpDesde" value="${desde}"></div>
         <div class="field" style="margin-bottom:0;"><label>Hasta</label><input type="date" id="dpHasta" value="${hasta}"></div>
-        <div class="field" style="margin-bottom:0;"><label>Origen</label><select id="dpOrigen">${origenesDisponibles.map(o=>`<option value="${o.id}" ${o.id===STATE_dpFiltros.origen?'selected':''}>${o.label}</option>`).join('')}</select></div>
+        <div class="field" style="margin-bottom:0;"><label>Origen</label><select id="dpOrigen">${origenesDisponibles.map(o=>`<option value="${o.id}" ${o.id===STATE_dpFiltros.origen?'selected':''}>${escHtml(o.label)}</option>`).join('')}</select></div>
         <div class="field" style="margin-bottom:0;"><label>Tipo</label><select id="dpTipo"><option value="todas" ${STATE_dpFiltros.tipo==='todas'?'selected':''}>Manual / Automática / Todas</option><option value="manual" ${STATE_dpFiltros.tipo==='manual'?'selected':''}>Solo Manual</option><option value="automatica" ${STATE_dpFiltros.tipo==='automatica'?'selected':''}>Solo Automática</option></select></div>
       </div>
       <div class="grid-2" style="margin-top:10px;">
@@ -11819,7 +11824,7 @@ async function renderLibroDiario() {
   const contenido = document.createElement('div');
   contenido.innerHTML = `
     <div class="card">
-      <div class="card-head"><h3>Libro Diario — ${b.name}</h3><span class="hint">Todos los movimientos en formato Cargo/Abono</span></div>
+      <div class="card-head"><h3>Libro Diario — ${escHtml(b.name)}</h3><span class="hint">Todos los movimientos en formato Cargo/Abono</span></div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;">Reúne Pólizas de Diario, Facturas de Proveedores y Clientes, y movimientos de Bancos/Efectivo — cada uno convertido al mismo formato contable, en orden cronológico. Útil para entregar a auditoría o revisar todo un periodo de un vistazo.</p>
       <div class="grid-3" style="max-width:640px;margin-bottom:14px;">
         <div class="field" style="margin-bottom:0;">
@@ -11867,9 +11872,9 @@ async function renderLibroDiario() {
     document.getElementById('ldLista').innerHTML = filas.length ? filas.map((f,idx) => `
       <tr>
         <td>${fechaCorta(f.fecha)}</td>
-        <td>${f.referencia}</td>
-        <td>${f.cuenta}</td>
-        <td>${f.concepto}</td>
+        <td>${escHtml(f.referencia)}</td>
+        <td>${escHtml(f.cuenta)}</td>
+        <td>${escHtml(f.concepto)}</td>
         <td class="num">${f.cargo ? fmt(f.cargo) : ''}</td>
         <td class="num">${f.abono ? fmt(f.abono) : ''}</td>
         <td>${f.origen ? `<button class="btn btn-ghost btn-sm ld-ver-documento" data-idx="${idx}" style="font-size:11px;padding:3px 8px;">Ver documento</button>` : ''}</td>
@@ -12059,7 +12064,7 @@ async function renderBalanzaCuerpo() {
   const cuadraBalanceGeneral = Math.abs(totalActivoNeto - (totalPasivoNeto + totalCapitalContable)) < 0.01;
 
   const filaCuenta = (c) => `<tr>
-    <td><span class="balanza-ir-auxiliar" data-clave="${c.clave}" style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted;">${c.nombre}</span></td>
+    <td><span class="balanza-ir-auxiliar" data-clave="${c.clave}" style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted;">${escHtml(c.nombre)}</span></td>
     <td style="color:var(--muted);font-size:12px;">${TIPO_CUENTA_LABEL[c.tipo]||c.tipo}</td>
     <td class="num">${c.saldoInicialDeudor>0.004?fmt(c.saldoInicialDeudor):''}</td>
     <td class="num">${c.saldoInicialAcreedor>0.004?fmt(c.saldoInicialAcreedor):''}</td>
@@ -12087,7 +12092,7 @@ async function renderBalanzaCuerpo() {
   contenido.innerHTML = `
     <div class="card">
       <div class="card-head">
-        <h3>Balanza de Comprobación — ${b.name}</h3>
+        <h3>Balanza de Comprobación — ${escHtml(b.name)}</h3>
         <div style="display:flex;align-items:center;gap:10px;">
           <span class="hint">${MESES_LARGO[Number(STATE.currentMonth.slice(5,7))-1]} ${STATE.currentMonth.slice(0,4)}</span>
           <button class="btn btn-ghost btn-sm" id="balanzaExcelBtn">Excel</button>
@@ -12262,25 +12267,25 @@ async function renderConfiguracion() {
   el.innerHTML = `
     <p style="font-size:13px;font-weight:700;color:var(--navy-1);margin-bottom:10px;">Contabilidad</p>
     ${grid(`
-      ${tarjetaConfigHtml('cfgCatalogo', 'Catálogo de Cuentas', b ? `Cuenta mayor, subcuentas y su estructura contable para ${b.name}.` : 'Selecciona un negocio para configurar su catálogo.')}
-      ${tarjetaConfigHtml('cfgCierre', 'Cierre de periodo', b ? `Bloquea la captura de meses ya cerrados en ${b.name}.` : 'Selecciona un negocio para gestionar sus cierres.')}
-      ${tarjetaConfigHtml('cfgTcCierre', 'Revaluación de divisas', b ? `Activa la revaluación al cierre de lo que debes, te deben y tienes en divisas en ${b.name}. Los tipos de cambio se capturan una sola vez en Parámetros fiscales.` : 'Selecciona un negocio.')}
-      ${tarjetaConfigHtml('cfgActivosFijos', 'Activos Fijos', b ? `Equipo, mobiliario y su depreciación mensual automática en ${b.name}.` : 'Selecciona un negocio para gestionar sus activos.')}
-      ${tarjetaConfigHtml('cfgPagosClasificar', 'Pagos por clasificar', b ? `Salidas de dinero pendientes de asignar a proveedor/factura y/o de clasificar hacia Banco/Efectivo en ${b.name}.` : 'Selecciona un negocio.')}
-      ${esFin ? '' : tarjetaConfigHtml('cfgSaldosFavorIVA', 'Control de saldos a favor IVA', b ? `Confirmar, acreditar y solicitar devolución de saldos a favor de IVA declarados en ${b.name}.` : 'Selecciona un negocio.')}
+      ${tarjetaConfigHtml('cfgCatalogo', 'Catálogo de Cuentas', b ? `Cuenta mayor, subcuentas y su estructura contable para ${escHtml(b.name)}.` : 'Selecciona un negocio para configurar su catálogo.')}
+      ${tarjetaConfigHtml('cfgCierre', 'Cierre de periodo', b ? `Bloquea la captura de meses ya cerrados en ${escHtml(b.name)}.` : 'Selecciona un negocio para gestionar sus cierres.')}
+      ${tarjetaConfigHtml('cfgTcCierre', 'Revaluación de divisas', b ? `Activa la revaluación al cierre de lo que debes, te deben y tienes en divisas en ${escHtml(b.name)}. Los tipos de cambio se capturan una sola vez en Parámetros fiscales.` : 'Selecciona un negocio.')}
+      ${tarjetaConfigHtml('cfgActivosFijos', 'Activos Fijos', b ? `Equipo, mobiliario y su depreciación mensual automática en ${escHtml(b.name)}.` : 'Selecciona un negocio para gestionar sus activos.')}
+      ${tarjetaConfigHtml('cfgPagosClasificar', 'Pagos por clasificar', b ? `Salidas de dinero pendientes de asignar a proveedor/factura y/o de clasificar hacia Banco/Efectivo en ${escHtml(b.name)}.` : 'Selecciona un negocio.')}
+      ${esFin ? '' : tarjetaConfigHtml('cfgSaldosFavorIVA', 'Control de saldos a favor IVA', b ? `Confirmar, acreditar y solicitar devolución de saldos a favor de IVA declarados en ${escHtml(b.name)}.` : 'Selecciona un negocio.')}
     `)}
     ${esFin ? '' : `
     <p style="font-size:13px;font-weight:700;color:var(--navy-1);margin-bottom:10px;">Fiscal</p>
     <p style="font-size:11.5px;color:var(--muted);margin:-4px 0 10px;">INPC, recargos y el calendario de días inhábiles se movieron a <a href="#" id="cfgIrParametrosFiscales" class="pt-editar-link" style="display:inline;">Parámetros Fiscales</a>, en el menú principal.</p>
     ${grid(`
-      ${tarjetaConfigHtml('cfgFuentesFiscales', 'Fuentes Fiscales', b ? `Qué subcuentas contables proponen automáticamente cada concepto de los Papeles de Trabajo en ${b.name}.` : 'Selecciona un negocio para configurar sus fuentes fiscales.')}
+      ${tarjetaConfigHtml('cfgFuentesFiscales', 'Fuentes Fiscales', b ? `Qué subcuentas contables proponen automáticamente cada concepto de los Papeles de Trabajo en ${escHtml(b.name)}.` : 'Selecciona un negocio para configurar sus fuentes fiscales.')}
     `)}
     `}
     <p style="font-size:13px;font-weight:700;color:var(--navy-1);margin-bottom:10px;">Administración</p>
     ${grid(`
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgNegocios', 'Negocios (todos)', 'Alta, edición y respaldo de cada negocio del grupo.') : ''}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgUsuarios', 'Usuarios autorizados', 'Quién puede entrar a Finanzas y a qué negocios.') : ''}
-      ${tarjetaConfigHtml('cfgAuditoria', 'Auditoría', b ? `Quién creó, editó o eliminó cada registro en ${b.name}.` : 'Selecciona un negocio para ver su auditoría.')}
+      ${tarjetaConfigHtml('cfgAuditoria', 'Auditoría', b ? `Quién creó, editó o eliminó cada registro en ${escHtml(b.name)}.` : 'Selecciona un negocio para ver su auditoría.')}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgMfa', 'Autenticación de dos pasos', 'Protege tu cuenta con un código adicional al iniciar sesión.') : ''}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgRespaldo', 'Respaldo completo', respaldoEstadoHtml()) : ''}
       ${STATE.esAdministrador ? tarjetaConfigHtml('cfgRestaurarArchivos', 'Restaurar archivos', 'Vuelve a subir los adjuntos y XML de CFDI de un respaldo completo. No sobrescribe nada y comprueba que no falte ninguno.') : ''}
@@ -12333,12 +12338,12 @@ async function renderNegocios() {
           <thead><tr><th>Nombre comercial</th><th>Razón social</th><th>Estatus</th><th>Respaldo</th><th></th></tr></thead>
           <tbody>
             ${negocios.length ? negocios.map(n => `<tr>
-              <td>${n.name}</td>
-              <td>${n.razon_social || '<span style="color:var(--muted);">— sin capturar —</span>'}</td>
+              <td>${escHtml(n.name)}</td>
+              <td>${n.razon_social ? escHtml(n.razon_social) : '<span style="color:var(--muted);">— sin capturar —</span>'}</td>
               <td>${n.active !== false ? '<span class="badge pag">Activo</span>' : '<span class="badge pend">Inactivo</span>'}</td>
               <td style="white-space:nowrap;">
-                <button class="btn btn-ghost btn-sm negocio-respaldo-excel" data-id="${n.id}" data-nombre="${(n.name||'').replace(/"/g,'&quot;')}">Excel</button>
-                <button class="btn btn-ghost btn-sm negocio-respaldo-json" data-id="${n.id}" data-nombre="${(n.name||'').replace(/"/g,'&quot;')}">JSON</button>
+                <button class="btn btn-ghost btn-sm negocio-respaldo-excel" data-id="${n.id}" data-nombre="${escAttr((n.name||''))}">Excel</button>
+                <button class="btn btn-ghost btn-sm negocio-respaldo-json" data-id="${n.id}" data-nombre="${escAttr((n.name||''))}">JSON</button>
               </td>
               <td><button class="btn btn-ghost btn-sm negocio-editar" data-id="${n.id}">Editar</button></td>
             </tr>`).join('') : `<tr><td colspan="5" class="empty">Aún no hay negocios registrados.</td></tr>`}
@@ -12368,7 +12373,7 @@ async function renderAuditoria() {
   const scrollY = window.scrollY;
 
   const { data, error } = await sb.from('fz_auditoria').select('*').eq('business_id', b.id).order('created_at', { ascending: false }).limit(500);
-  if (error) { el.innerHTML = `<div class="empty">Error: ${error.message}</div>`; return; }
+  if (error) { el.innerHTML = `<div class="empty">Error: ${escHtml(error.message)}</div>`; return; }
   const todos = data || [];
   const usuarios = [...new Set(todos.map(a => a.usuario_email).filter(Boolean))].sort();
 
@@ -12390,7 +12395,7 @@ async function renderAuditoria() {
       <div class="kpi"><div class="label">Eliminaciones</div><div class="value num red">${todos.filter(a=>a.accion==='eliminar').length}</div></div>
     </div>
     <div class="card">
-      <div class="card-head"><h3>Bitácora de actividad — ${b.name}</h3></div>
+      <div class="card-head"><h3>Bitácora de actividad — ${escHtml(b.name)}</h3></div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;">Por ahora se registran acciones en Pólizas de Diario, Proveedores, y eliminaciones de movimientos en Bancos/Efectivo. Se irá ampliando a más módulos.</p>
       <div class="grid-3" style="margin-bottom:12px;">
         <div class="field" style="margin-bottom:0;">
@@ -12420,10 +12425,10 @@ async function renderAuditoria() {
           <tbody>
             ${filtrados.length ? filtrados.map(a => `<tr>
               <td>${new Date(a.created_at).toLocaleString('es-MX', { dateStyle:'short', timeStyle:'short' })}</td>
-              <td>${a.usuario_email || '—'}</td>
+              <td>${escHtml(a.usuario_email || '—')}</td>
               <td>${ACCION_LABEL[a.accion] || a.accion}</td>
               <td>${a.modulo}</td>
-              <td>${a.descripcion || ''}</td>
+              <td>${escHtml(a.descripcion || '')}</td>
             </tr>`).join('') : `<tr><td colspan="5" class="empty">Sin registros que coincidan.</td></tr>`}
           </tbody>
         </table>
@@ -12506,6 +12511,124 @@ function tipoCuentaDesdeTexto(texto) {
   const desdeLabel = Object.fromEntries(Object.entries(TIPO_CUENTA_LABEL).map(([k,v]) => [v.toLowerCase(), k]));
   return desdeLabel[t] || (['activo','pasivo','capital','ingreso','costo','gasto'].includes(t) ? t : 'gasto');
 }
+/* ---------- H-06 (Fase 2A): lectura de Excel con SheetJS 0.20.3 conservando el comportamiento de 0.18.5 ----------
+   PROBLEMA: SheetJS 0.20.3 decodifica DOS veces las entidades XML (&amp; &lt; &#39; ...) de las celdas t="str"; 0.18.5 lo hacia una sola vez.
+   Una celda con el texto «Smith &amp; Sons» se leeria «Smith & Sons». No hay opcion de lectura que lo evite y no es reversible despues de leer.
+   SOLUCION: antes de XLSX.read, en MEMORIA y sobre una copia, se reescribe SOLO el texto del <v> de las celdas t="str" (dentro de <sheetData>) que
+   presentan la diferencia. No se toca ninguna otra parte del archivo (formulas, numeros, fechas, cadenas compartidas, estilos, otras hojas).
+   El archivo original del usuario y el archivo oficial de SheetJS no se modifican; nada se guarda.
+   CONDUCTA ANTE FALLOS (nunca se importa en silencio algo potencialmente distinto):
+     - formato que no es ZIP (.xls, .csv...) o version de SheetJS distinta de la medida: se lee igual que antes, sin preparacion.
+     - archivo grande, con demasiadas partes, con ratio de compresion sospechoso, o con una hoja no UTF-8 / con marcado dentro de <v>: se RECHAZA con un mensaje claro.
+     - si no se puede inspeccionar el ZIP: si SheetJS tampoco puede leerlo, se propaga SU error (igual que antes); si SheetJS si pudiera, se RECHAZA (no se puede garantizar el contenido).
+   Los limites de SheetJS no se debilitan: el archivo preparado pasa igualmente por XLSX.read. */
+const XLSX_PREP = { version: '0.20.3', maxArchivo: 150 * 1048576, maxEntradas: 10000, maxHoja: 250 * 1048576, maxTotal: 500 * 1048576, maxRatio: 1000, ratioDesde: 8 * 1048576, maxContentTypes: 5 * 1048576 };
+class ErrorLecturaExcel extends Error { constructor(mensaje) { super(mensaje); this.name = 'ErrorLecturaExcel'; } }
+const XLSX_PREP_DISPARADOR = /&amp;(?:quot|apos|gt|lt|amp|#x?[0-9a-f]+);|&#|_x[0-9a-f]{4}_|&lt;!\[CDATA\[/i;   // refleja la expresion interna de SheetJS: entidad que quedaria tras la 1.ª pasada
+const XLSX_PREP_AYUDA = ' Ábralo en Excel y guárdelo como un .xlsx nuevo, o use un archivo más pequeño.';
+
+/* Lee una parte del ZIP como texto UTF-8 con tope de tamano REAL en bytes (no se fia de las cabeceras). Se acumulan los bytes y se decodifican DE UNA VEZ y de forma
+   estricta: un UTF-8 invalido se rechaza en lugar de alterarse en silencio. */
+function xlsxLeerParteAcotada(entrada, maximo, nombre) {
+  return new Promise((resolve, reject) => {
+    const trozos = []; let n = 0, terminado = false;
+    const flujo = entrada.internalStream('uint8array');
+    flujo.on('data', (d) => { if (terminado) return; n += d.length; if (n > maximo) { terminado = true; flujo.pause(); reject(new ErrorLecturaExcel(`La parte «${nombre}» del archivo Excel excede ${Math.round(maximo / 1048576)} MB al descomprimirse; no se lee por seguridad.` + XLSX_PREP_AYUDA)); return; } trozos.push(d); });
+    flujo.on('error', (e) => { if (!terminado) { terminado = true; reject(e); } });
+    flujo.on('end', () => {
+      if (terminado) return; terminado = true;
+      try { const todo = new Uint8Array(n); let p = 0; for (const tz of trozos) { todo.set(tz, p); p += tz.length; } resolve(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(todo)); }
+      catch (e) { reject(new ErrorLecturaExcel(`La parte «${nombre}» del archivo Excel no es texto UTF-8 válido y no se puede validar antes de leerla.` + XLSX_PREP_AYUDA)); } });
+    flujo.resume();
+  });
+}
+
+/* Reescribe el XML de UNA hoja. Devuelve null si no hay nada que corregir, o { xml, n } con el XML nuevo. Lanza ErrorLecturaExcel ante variantes que no puede tratar con certeza. */
+function xlsxReescribirHoja(xml, nombre) {
+  if (xml.indexOf('\u0000') >= 0 || /^\uFEFF?<\?xml[^>]*encoding\s*=\s*["'](?!utf-8["'])/i.test(xml.slice(0, 200)))
+    throw new ErrorLecturaExcel(`La hoja «${nombre}» no usa codificación UTF-8 y no se puede validar antes de leerla.` + XLSX_PREP_AYUDA);
+  if (!/\bt\s*=\s*(?:"str"|'str')/.test(xml)) return null;                                   // sin celdas t="str": nada que hacer (caso tipico de Excel)
+  const ini0 = xml.search(/<(?:[A-Za-z_][\w.-]*:)?sheetData\b/); if (ini0 < 0) return null;
+  const reFinHoja = /<\/(?:[A-Za-z_][\w.-]*:)?sheetData\s*>/g; let fin0 = -1, m; while ((m = reFinHoja.exec(xml))) fin0 = m.index; if (fin0 < ini0) return null;
+  const hit = /\bt\s*=\s*(?:"str"|'str')/g; hit.lastIndex = ini0;
+  const reEtiqueta = /<((?:[A-Za-z_][\w.-]*:)?)([A-Za-z_][\w.-]*)((?:\s+[^\s=\/>]+\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*(\/?)>/y;
+  const reAttr = /([^\s=\/>]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+  const reFinC = /<\/(?:[A-Za-z_][\w.-]*:)?c\s*>/g;
+  const cambios = []; let h;
+  while ((h = hit.exec(xml)) && h.index < fin0) {
+    const ini = xml.lastIndexOf('<', h.index); if (ini < ini0) continue;
+    reEtiqueta.lastIndex = ini; const t = reEtiqueta.exec(xml);
+    if (!t || t[2] !== 'c' || h.index >= ini + t[0].length) continue;                      // el hallazgo debe estar DENTRO de una etiqueta <c ...>
+    let tipo = null, ref = '?'; reAttr.lastIndex = 0; let a;
+    while ((a = reAttr.exec(t[3]))) { const val = a[2] !== undefined ? a[2] : a[3]; if (a[1] === 't') tipo = val; else if (a[1] === 'r') ref = val; }
+    if (tipo !== 'str') continue;                                                          // el atributo t de ESA celda debe ser exactamente «str»
+    if (t[4] === '/') continue;                                                            // celda vacia <c .../>
+    const cuerpoIni = ini + t[0].length; reFinC.lastIndex = cuerpoIni; const fc = reFinC.exec(xml);
+    if (!fc) throw new ErrorLecturaExcel(`La celda ${ref} de la hoja «${nombre}» no está bien formada.` + XLSX_PREP_AYUDA);
+    const cuerpo = xml.slice(cuerpoIni, fc.index); hit.lastIndex = fc.index;
+    const reV = /<(?:[A-Za-z_][\w.-]*:)?v(?=[\s>\/])(?:\s[^>]*)?>/g; const v1 = reV.exec(cuerpo); if (!v1 || v1[0].slice(-2) === '/>') continue;
+    const inicioTexto = v1.index + v1[0].length;
+    const reFinV = /<\/(?:[A-Za-z_][\w.-]*:)?v\s*>/g; reFinV.lastIndex = reV.lastIndex; const v2 = reFinV.exec(cuerpo);
+    if (!v2) throw new ErrorLecturaExcel(`La celda ${ref} de la hoja «${nombre}» no está bien formada.` + XLSX_PREP_AYUDA);
+    reV.lastIndex = reFinV.lastIndex; if (reV.exec(cuerpo)) throw new ErrorLecturaExcel(`La celda ${ref} de la hoja «${nombre}» tiene más de un valor y no se puede validar.` + XLSX_PREP_AYUDA);
+    const texto = cuerpo.slice(inicioTexto, v2.index);
+    if (texto.indexOf('<') >= 0) throw new ErrorLecturaExcel(`La celda ${ref} de la hoja «${nombre}» tiene marcado XML (CDATA o comentarios) dentro de su valor; Excel no genera este formato y no se puede validar.` + XLSX_PREP_AYUDA);
+    if (!XLSX_PREP_DISPARADOR.test(texto)) continue;                                       // sin entidades ni _xHHHH_: la celda NO presenta la diferencia y no se toca
+    cambios.push([cuerpoIni + inicioTexto, cuerpoIni + v2.index, texto.replace(/_x/g, '_x005F_x').replace(/&/g, '&amp;')]);
+  }
+  if (!cambios.length) return null;
+  let salida = '', p = 0; for (const [desde, hasta, nuevo] of cambios) { salida += xml.slice(p, desde) + nuevo; p = hasta; } salida += xml.slice(p);
+  return { xml: salida, n: cambios.length };
+}
+
+/* Devuelve los bytes a leer: los originales (misma referencia) si nada requiere correccion, o una COPIA nueva con las hojas corregidas. */
+async function xlsxPrepararLibro(u8) {
+  const L = XLSX_PREP;
+  if (u8.length > L.maxArchivo) throw new ErrorLecturaExcel(`El archivo Excel pesa ${(u8.length / 1048576).toFixed(1)} MB y excede el máximo de ${Math.round(L.maxArchivo / 1048576)} MB que la aplicación valida antes de leerlo.` + XLSX_PREP_AYUDA);
+  if (typeof JSZip === 'undefined') throw new Error('JSZip no está disponible');
+  const zip = await JSZip.loadAsync(u8, { createFolders: false });
+  const nombres = Object.keys(zip.files);
+  if (nombres.length > L.maxEntradas) throw new ErrorLecturaExcel(`El archivo Excel tiene ${nombres.length} partes (máximo ${L.maxEntradas}); no se lee por seguridad.` + XLSX_PREP_AYUDA);
+  const hojas = new Set(nombres.filter(n => /^xl\/(worksheets|macrosheets|dialogsheets)\/[^\/]+\.xml$/i.test(n)));
+  const ct = zip.file('[Content_Types].xml');
+  if (ct) {
+    const txt = await xlsxLeerParteAcotada(ct, L.maxContentTypes, '[Content_Types].xml');
+    const reOv = /<(?:[A-Za-z_][\w.-]*:)?(?:Override|Default)((?:\s+[^\s=\/>]+\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*\/?>/g, reAt = /([^\s=\/>]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g; let o;
+    while ((o = reOv.exec(txt))) { let parte = null, tipo = null, a; reAt.lastIndex = 0;
+      while ((a = reAt.exec(o[1]))) { const val = a[2] !== undefined ? a[2] : a[3]; if (a[1] === 'PartName') parte = val; else if (a[1] === 'ContentType') tipo = val; }
+      if (parte && tipo && /spreadsheetml\.(worksheet|macrosheet|dialogsheet)\+xml$/.test(tipo)) hojas.add(parte.replace(/^\//, '')); }
+  }
+  let total = 0, cambiadas = 0;
+  for (const nombre of hojas) {
+    const entrada = zip.file(nombre); if (!entrada) continue;
+    const d = entrada._data || {}; const ud = d.uncompressedSize, cd = d.compressedSize;
+    if (ud > L.maxHoja) throw new ErrorLecturaExcel(`La hoja «${nombre}» ocupa ${(ud / 1048576).toFixed(0)} MB al descomprimirse (máximo ${Math.round(L.maxHoja / 1048576)} MB); no se lee por seguridad.` + XLSX_PREP_AYUDA);
+    if (ud > L.ratioDesde && cd > 0 && ud / cd > L.maxRatio) throw new ErrorLecturaExcel(`La hoja «${nombre}» tiene una relación de compresión sospechosa (${Math.round(ud / cd)}:1); no se lee por seguridad.` + XLSX_PREP_AYUDA);
+    const xml = await xlsxLeerParteAcotada(entrada, L.maxHoja, nombre);
+    total += xml.length; if (total > L.maxTotal) throw new ErrorLecturaExcel(`Las hojas del archivo Excel exceden ${Math.round(L.maxTotal / 1048576)} MB en total al descomprimirse; no se leen por seguridad.` + XLSX_PREP_AYUDA);
+    /* se escriben BYTES, no una cadena: JSZip parte los pares sustitutos (emoji) al codificar cadenas largas */
+    const r = xlsxReescribirHoja(xml, nombre); if (r) { zip.file(nombre, new TextEncoder().encode(r.xml), { createFolders: false, binary: true }); cambiadas += r.n; }
+  }
+  if (!cambiadas) return u8;
+  return await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
+}
+
+/* Punto unico de lectura de Excel (sustituye a XLSX.read en los tres lectores de la app). Devuelve el libro de SheetJS. */
+async function xlsxLeerLibro(bytes, opciones) {
+  if (typeof XLSX === 'undefined') throw new Error('Falta la librería para leer Excel.');
+  const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  if (XLSX.version !== XLSX_PREP.version || u8.length < 4 || u8[0] !== 0x50 || u8[1] !== 0x4B) return XLSX.read(bytes, opciones);   // no requiere preparacion
+  let preparado;
+  try { preparado = await xlsxPrepararLibro(u8); }
+  catch (e) {
+    if (e instanceof ErrorLecturaExcel) throw e;                                          // rechazo controlado, con mensaje claro
+    XLSX.read(bytes, opciones);                                                           // si SheetJS tampoco puede leerlo, se propaga SU error (como antes)
+    throw new ErrorLecturaExcel('No se pudo validar el archivo Excel antes de leerlo, y por eso no se importó (no se puede garantizar que los textos queden intactos).' + XLSX_PREP_AYUDA);
+  }
+  return XLSX.read(preparado === u8 ? bytes : preparado, opciones);
+}
+/* ---------- fin H-06 ---------- */
+
 function abrirSubirCatalogoCuentas(businessId, onDone) {
   const input = document.createElement('input');
   input.type = 'file';
@@ -12515,7 +12638,7 @@ function abrirSubirCatalogoCuentas(businessId, onDone) {
     if (!file) return;
     try {
       const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: 'array' });
+      const wb = await xlsxLeerLibro(buf, { type: 'array' });
       const sheet = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
       if (!rows.length) { toast('El archivo no tiene filas.', 'error'); return; }
@@ -12599,7 +12722,7 @@ async function renderCatalogoCuentas() {
         <label>Vincular a categoría de venta (para calcular % de costo)</label>
         <select id="ccNuevaMayorVinculo">
           <option value="">— sin vincular —</option>
-          ${conceptosVenta.map(c => `<option value="${c.id}">${c.nombre}</option>`).join('')}
+          ${conceptosVenta.map(c => `<option value="${c.id}">${escHtml(c.nombre)}</option>`).join('')}
         </select>
       </div>
       <p style="font-size:11.5px;color:var(--muted);margin-top:-4px;">Al crearla se agrega automáticamente una subcuenta con el mismo nombre, lista para usarse en Pólizas de Diario. Puedes agregarle más subcuentas abajo si necesitas desglosarla.</p>
@@ -12648,8 +12771,8 @@ async function renderCatalogoCuentas() {
                   ${pendientes.map(s => {
                     const mayor = mayores.find(m => m.id === s.cuenta_mayor_id);
                     return `<tr>
-                      <td>${mayor ? mayor.nombre : '—'}</td>
-                      <td>${s.nombre}</td>
+                      <td>${mayor ? escHtml(mayor.nombre) : '—'}</td>
+                      <td>${escHtml(s.nombre)}</td>
                       <td><select class="cc-pend-clasif-iva" data-id="${s.id}" style="min-width:200px;">
                         <option value="">— elegir —</option>
                         <option value="bienes">Bienes/compras</option>
@@ -12672,11 +12795,11 @@ async function renderCatalogoCuentas() {
       <div class="grid-2">
         <div>
           <div style="font-weight:700;font-size:12.5px;color:var(--navy-1);margin-bottom:6px;">Cuentas bancarias</div>
-          ${cuentasBanco.map(c => `<div style="display:flex;justify-content:space-between;padding:5px 4px;border-bottom:1px solid var(--line);font-size:13px;"><span>${c.nombre}${c.activo===false?' (inactiva)':''}</span></div>`).join('') || `<div class="empty" style="padding:8px;">Aún no hay cuentas bancarias.</div>`}
+          ${cuentasBanco.map(c => `<div style="display:flex;justify-content:space-between;padding:5px 4px;border-bottom:1px solid var(--line);font-size:13px;"><span>${escHtml(c.nombre)}${c.activo===false?' (inactiva)':''}</span></div>`).join('') || `<div class="empty" style="padding:8px;">Aún no hay cuentas bancarias.</div>`}
         </div>
         <div>
           <div style="font-weight:700;font-size:12.5px;color:var(--navy-1);margin-bottom:6px;">Cajas de efectivo</div>
-          ${monedasEfectivo.map(m => `<div style="display:flex;justify-content:space-between;padding:5px 4px;border-bottom:1px solid var(--line);font-size:13px;"><span>${m.nombre}${m.activo===false?' (inactiva)':''}</span></div>`).join('') || `<div class="empty" style="padding:8px;">Aún no hay cajas de efectivo.</div>`}
+          ${monedasEfectivo.map(m => `<div style="display:flex;justify-content:space-between;padding:5px 4px;border-bottom:1px solid var(--line);font-size:13px;"><span>${escHtml(m.nombre)}${m.activo===false?' (inactiva)':''}</span></div>`).join('') || `<div class="empty" style="padding:8px;">Aún no hay cajas de efectivo.</div>`}
         </div>
       </div>
       <p style="font-size:11.5px;color:var(--muted);margin-top:10px;">Para agregar o editar cuentas bancarias ve a "Bancos"; para cajas de efectivo ve a "Efectivo & Divisas".</p>
@@ -12699,7 +12822,7 @@ async function renderCatalogoCuentas() {
     <div style="display:flex;align-items:center;gap:8px;padding:6px 4px 6px ${16 + nivel*18}px;border-bottom:1px solid var(--line);font-size:13px;flex-wrap:wrap;">
       ${nivel>0?'<span style="color:var(--muted);">—</span>':''}
       ${editando ? `
-        <input class="cell cc-sub-nombre" type="text" value="${s.nombre}" data-id="${s.id}" style="flex:1;min-width:120px;">
+        <input class="cell cc-sub-nombre" type="text" value="${escAttr(s.nombre)}" data-id="${s.id}" style="flex:1;min-width:120px;">
         <select class="cell cc-sub-padre" data-id="${s.id}" style="min-width:200px;">${opcionesMoverSubcuenta(s, subcuentas)}</select>
         <select class="cell cc-sub-clasif-iva" data-id="${s.id}" style="min-width:180px;" title="Clasificación fiscal de IVA acreditable — solo aplica a subcuentas de gasto/costo con IVA">
           <option value="" ${!s.clasificacion_iva_acreditable?'selected':''}>IVA acreditable: sin clasificar</option>
@@ -12710,9 +12833,9 @@ async function renderCatalogoCuentas() {
         </select>
         <button class="btn btn-ghost btn-sm cc-sub-save" data-id="${s.id}">Guardar</button>
       ` : `
-        <span style="flex:1;min-width:0;">${s.nombre}</span>
+        <span style="flex:1;min-width:0;">${escHtml(s.nombre)}</span>
         <button class="btn btn-ghost btn-sm cc-sub-editar" data-id="${s.id}">Editar</button>
-        ${nivel===0 ? `<button class="btn btn-ghost btn-sm cc-sub-promover" data-id="${s.id}" data-mayor="${s.cuenta_mayor_id}" title="Convierte esta subcuenta en su propia cuenta mayor, con todo y lo que tenga adentro">Promover a cuenta mayor</button>` : ''}
+        ${nivel===0 ? `<button class="btn btn-ghost btn-sm cc-sub-promover" data-id="${s.id}" data-mayor="${escAttr(s.cuenta_mayor_id)}" title="Convierte esta subcuenta en su propia cuenta mayor, con todo y lo que tenga adentro">Promover a cuenta mayor</button>` : ''}
       `}
       <button class="row-del cc-sub-del" data-id="${s.id}" style="font-size:14px;">Eliminar</button>
     </div>
@@ -12730,7 +12853,7 @@ async function renderCatalogoCuentas() {
         <div style="display:flex;align-items:center;gap:8px;padding:6px 4px;background:#f7f9fc;border-radius:7px;flex-wrap:wrap;">
           ${botonesOrdenHtml(idx, mayoresTipo.length, 'cc-mayor-orden')}
           ${editando ? `
-            <input class="cell cc-mayor-nombre" type="text" value="${m.nombre}" data-id="${m.id}" style="flex:1;min-width:0;font-weight:700;">
+            <input class="cell cc-mayor-nombre" type="text" value="${escAttr(m.nombre)}" data-id="${m.id}" style="flex:1;min-width:0;font-weight:700;">
             <select class="cell cc-mayor-tipo" data-id="${m.id}" style="width:auto;">
               <option value="activo" ${m.tipo==='activo'?'selected':''}>Activo</option>
               <option value="pasivo" ${m.tipo==='pasivo'?'selected':''}>Pasivo</option>
@@ -12741,12 +12864,12 @@ async function renderCatalogoCuentas() {
             </select>
             ${m.tipo==='costo' ? `<select class="cell cc-mayor-vinculo" data-id="${m.id}" style="width:auto;min-width:180px;">
               <option value="">— sin vincular a venta —</option>
-              ${conceptosVenta.map(c => `<option value="${c.id}" ${m.concepto_venta_vinculado_id===c.id?'selected':''}>% vs ${c.nombre}</option>`).join('')}
+              ${conceptosVenta.map(c => `<option value="${c.id}" ${m.concepto_venta_vinculado_id===c.id?'selected':''}>% vs ${escHtml(c.nombre)}</option>`).join('')}
             </select>` : ''}
             <button class="btn btn-ghost btn-sm cc-mayor-save" data-id="${m.id}">Guardar</button>
           ` : `
-            <strong style="flex:1;min-width:0;">${m.nombre}</strong>
-            ${m.concepto_venta_vinculado_id ? `<span style="font-size:11px;color:var(--muted);">(% vs ${conceptosVenta.find(c=>c.id===m.concepto_venta_vinculado_id)?.nombre||''})</span>` : ''}
+            <strong style="flex:1;min-width:0;">${escHtml(m.nombre)}</strong>
+            ${m.concepto_venta_vinculado_id ? `<span style="font-size:11px;color:var(--muted);">(% vs ${escHtml(conceptosVenta.find(c=>c.id===m.concepto_venta_vinculado_id)?.nombre||'')})</span>` : ''}
             <button class="btn btn-ghost btn-sm cc-mayor-editar" data-id="${m.id}">Editar</button>
           `}
           <button class="row-del cc-mayor-del" data-id="${m.id}" style="font-size:15px;">Eliminar</button>
@@ -12762,10 +12885,10 @@ async function renderCatalogoCuentas() {
     const mayorId = document.getElementById('ccNuevaSubMayor').value;
     const sel = document.getElementById('ccNuevaSubPadre');
     const construirNivel = (padreId, nivel) => subcuentas.filter(s => s.cuenta_mayor_id === mayorId && (s.subcuenta_padre_id || null) === padreId)
-      .flatMap(s => [`<option value="${s.id}">${'—'.repeat(nivel)} ${s.nombre}</option>`, ...construirNivel(s.id, nivel + 1)]);
+      .flatMap(s => [`<option value="${s.id}">${'—'.repeat(nivel)} ${escHtml(s.nombre)}</option>`, ...construirNivel(s.id, nivel + 1)]);
     sel.innerHTML = `<option value="">— nivel superior —</option>` + construirNivel(null, 0).join('');
   };
-  document.getElementById('ccNuevaSubMayor').innerHTML = mayores.map(m => `<option value="${m.id}">${m.nombre} (${TIPO_CUENTA_LABEL[m.tipo]})</option>`).join('') || `<option value="">— crea una cuenta mayor primero —</option>`;
+  document.getElementById('ccNuevaSubMayor').innerHTML = mayores.map(m => `<option value="${m.id}">${escHtml(m.nombre)} (${TIPO_CUENTA_LABEL[m.tipo]})</option>`).join('') || `<option value="">— crea una cuenta mayor primero —</option>`;
   actualizarSubPadre();
   document.getElementById('ccNuevaSubMayor').addEventListener('change', actualizarSubPadre);
   const toggleVinculo = () => {
@@ -12928,7 +13051,7 @@ async function actualizarSelectSubcuentaPadre(businessId) {
   const subcuentas = await loadSubcuentas(businessId);
   const sel = document.getElementById('newSubcuentaPadre');
   const construirNivel = (padreId, nivel) => subcuentas.filter(s => s.cuenta_mayor_id === mayorId && (s.subcuenta_padre_id || null) === padreId)
-    .flatMap(s => [`<option value="${s.id}">${'—'.repeat(nivel)} ${s.nombre}</option>`, ...construirNivel(s.id, nivel + 1)]);
+    .flatMap(s => [`<option value="${s.id}">${'—'.repeat(nivel)} ${escHtml(s.nombre)}</option>`, ...construirNivel(s.id, nivel + 1)]);
   sel.innerHTML = `<option value="">— nivel superior —</option>` + construirNivel(null, 0).join('');
 }
 const ROL_LABEL = { propietario: 'Propietario', socio: 'Socio', gerencia: 'Gerencia' };
@@ -12941,20 +13064,20 @@ async function renderCuentasList(businessId) {
   const [mayores, subcuentas] = await Promise.all([loadCuentasMayor(businessId), loadSubcuentas(businessId)]);
   const box = document.getElementById('cuentasMayorList');
   const sel = document.getElementById('newSubcuentaMayor');
-  sel.innerHTML = mayores.map(m => `<option value="${m.id}">${m.nombre} (${TIPO_CUENTA_LABEL[m.tipo]||m.tipo})</option>`).join('') || `<option value="">— crea una cuenta mayor primero —</option>`;
+  sel.innerHTML = mayores.map(m => `<option value="${m.id}">${escHtml(m.nombre)} (${TIPO_CUENTA_LABEL[m.tipo]||m.tipo})</option>`).join('') || `<option value="">— crea una cuenta mayor primero —</option>`;
   await actualizarSelectSubcuentaPadre(businessId);
 
   if (!mayores.length) { box.innerHTML = `<div class="empty" style="padding:16px;">Aún no hay cuentas mayor. Crea la primera abajo.</div>`; return; }
   const filaSubHtml = (s, nivel) => `
     <div style="display:flex;align-items:center;justify-content:space-between;padding:5px 4px 5px ${16 + nivel*18}px;border-bottom:1px solid var(--line);font-size:13px;">
-      <span>${nivel>0?'— ':''}${s.nombre}</span>
+      <span>${nivel>0?'— ':''}${escHtml(s.nombre)}</span>
       <button class="row-del sub-del" data-id="${s.id}" style="font-size:14px;">✕</button>
     </div>
     ${subcuentasHijas(s.id, subcuentas).map(h => filaSubHtml(h, nivel+1)).join('')}`;
   box.innerHTML = mayores.map(m => `
     <div style="margin-bottom:10px;">
       <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 4px;background:#f7f9fc;border-radius:7px;">
-        <strong>${m.nombre}</strong>
+        <strong>${escHtml(m.nombre)}</strong>
         <span style="display:flex;align-items:center;gap:10px;">
           <span class="tag" style="cursor:default;padding:2px 10px;font-size:11px;">${TIPO_CUENTA_LABEL[m.tipo]||m.tipo}</span>
           <button class="row-del mayor-del" data-id="${m.id}" style="font-size:15px;">✕</button>
@@ -13285,7 +13408,7 @@ async function renderDesgloseList(businessId, facturaId, subcuentas, mayores) {
     return `<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 4px;border-bottom:1px solid var(--line);font-size:13px;gap:8px;">
       <div style="min-width:0;">
         <div>${sub ? rutaSubcuenta(sub, subcuentas, mayores) : '(subcuenta eliminada)'}</div>
-        ${linea.descripcion ? `<div style="color:var(--muted);font-size:11.5px;">${linea.descripcion}</div>` : ''}
+        ${linea.descripcion ? `<div style="color:var(--muted);font-size:11.5px;">${escHtml(linea.descripcion)}</div>` : ''}
         ${(linea.importe || linea.iva) ? `<div style="color:var(--muted);font-size:11px;">Importe ${fmt(linea.importe||0)} + IVA ${fmt(linea.iva||0)}</div>` : ''}
       </div>
       <span style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
@@ -13325,8 +13448,8 @@ async function populateTraspasoSelects(businessId, keepOrigen, keepDestino) {
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
   ]);
   const options = [
-    ...(cuentas.data||[]).map(c => `<option value="banco:${c.id}" data-tc="1">Banco — ${c.nombre}</option>`),
-    ...(monedas.data||[]).map(m => `<option value="efectivo:${m.id}" data-tc="${m.tc_reporte||1}">Caja — ${m.nombre}</option>`),
+    ...(cuentas.data||[]).map(c => `<option value="banco:${c.id}" data-tc="1">Banco — ${escHtml(c.nombre)}</option>`),
+    ...(monedas.data||[]).map(m => `<option value="efectivo:${m.id}" data-tc="${m.tc_reporte||1}">Caja — ${escHtml(m.nombre)}</option>`),
     `<option value="nuevo:banco" data-tc="1">+ Nueva cuenta bancaria…</option>`,
     `<option value="nuevo:efectivo" data-tc="1">+ Nueva caja de efectivo…</option>`,
   ].join('');
@@ -13433,7 +13556,7 @@ function openImportExcelModal(tipo, businessId, onDone, extra) {
     if (!file) return;
     try {
       const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+      const wb = await xlsxLeerLibro(buf, { type: 'array', cellDates: true });
       const sheet = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
       if (!rows.length) { toast('El archivo no tiene filas.', 'error'); return; }
@@ -13702,12 +13825,12 @@ async function openVentaDiaModal(businessId, onDone) {
     ${conceptosVenta.length ? `
       <h4 style="margin:16px 0 8px;color:var(--navy-1);font-family:'Cormorant Garamond',serif;font-size:18px;">Lo vendido</h4>
       <div class="grid-2">
-        ${conceptosVenta.map(c => `<div class="field" style="margin-bottom:8px;"><label>${c.nombre}${c.tipo==='resta'?' (descuento)':''}</label><input type="text" inputmode="decimal" class="vd-venta num-fmt" data-id="${c.id}" value="0.00"></div>`).join('')}
+        ${conceptosVenta.map(c => `<div class="field" style="margin-bottom:8px;"><label>${escHtml(c.nombre)}${c.tipo==='resta'?' (descuento)':''}</label><input type="text" inputmode="decimal" class="vd-venta num-fmt" data-id="${c.id}" value="0.00"></div>`).join('')}
       </div>` : `<div class="empty" style="margin:12px 0;">Este negocio no tiene categorías de venta configuradas.</div>`}
 
     <h4 style="margin:16px 0 8px;color:var(--navy-1);font-family:'Cormorant Garamond',serif;font-size:18px;">Sistema</h4>
     <div class="grid-2">
-      ${conceptosSistema.length ? conceptosSistema.map(c => `<div class="field"><label>${c.nombre} (sistema)</label><input type="text" inputmode="decimal" class="vd-sistema num-fmt" data-id="${c.id}" value="0.00"></div>`).join('') : `
+      ${conceptosSistema.length ? conceptosSistema.map(c => `<div class="field"><label>${escHtml(c.nombre)} (sistema)</label><input type="text" inputmode="decimal" class="vd-sistema num-fmt" data-id="${c.id}" value="0.00"></div>`).join('') : `
         <div class="field"><label>Efectivo (sistema)</label><input type="text" inputmode="decimal" class="num-fmt" id="vdEfectivoSistema" value="0.00"></div>
         <div class="field"><label>Tarjetas (sistema)</label><input type="text" inputmode="decimal" class="num-fmt" id="vdTarjetasSistema" value="0.00"></div>
         <div class="field"><label>CxC (sistema)</label><input type="text" inputmode="decimal" class="num-fmt" id="vdCxc" value="0.00"></div>
@@ -13720,7 +13843,7 @@ async function openVentaDiaModal(businessId, onDone) {
       <div class="grid-2">
         ${porCat[cat].map(c => `
           <div class="field" style="margin-bottom:8px;">
-            <label>${c.nombre}${c.es_moneda?' (+ TC)':''}</label>
+            <label>${escHtml(c.nombre)}${c.es_moneda?' (+ TC)':''}</label>
             <input type="text" inputmode="decimal" class="vd-recon num-fmt" data-id="${c.id}" value="0.00">
             ${c.es_moneda ? `<input type="text" inputmode="decimal" class="vd-recon-tc num-fmt" data-id="${c.id}" placeholder="Tipo de cambio" style="margin-top:5px;">` : ''}
           </div>`).join('')}
@@ -14322,9 +14445,9 @@ function openFacturasCobroModal(rowId, table, facturasClientesPend, onDone) {
           return `<tr>
             <td><input type="checkbox" class="factura-check" value="${f.id}" data-importe="${saldo}" ${idsActuales.has(f.id)?'checked':''}></td>
             <td>${fechaCorta(f.fecha)}</td>
-            <td>#${f.folio}</td>
-            <td>${f.numero_factura || '—'}${cli === GRUPO_APLICADAS_COBRO ? `<div style="font-size:10.5px;color:var(--muted);">${f.clienteNombre || '(sin cliente)'}</div>` : ''}</td>
-            <td><span class="mf-badge-moneda">${f.moneda||'MXN'}</span></td>
+            <td>#${escHtml(f.folio)}</td>
+            <td>${escHtml(f.numero_factura || '—')}${cli === GRUPO_APLICADAS_COBRO ? `<div style="font-size:10.5px;color:var(--muted);">${escHtml(f.clienteNombre || '(sin cliente)')}</div>` : ''}</td>
+            <td><span class="mf-badge-moneda">${escHtml(f.moneda||'MXN')}</span></td>
             <td class="mf-num">${fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}${yaAplicadoPorFactura[f.id] ? `<div style="font-size:10px;color:var(--muted);">este cobro aplicó ${fmt(yaAplicadoPorFactura[f.id])}</div>` : ''}</td>
             <td>${f.fecha_vencimiento ? fechaCorta(f.fecha_vencimiento) : '—'}</td>
           </tr>`;
@@ -14481,16 +14604,16 @@ function openFacturasPagoModal(rowId, table, facturasPend, traspasoCtx, onDone) 
           return `<tr>
             <td><input type="checkbox" class="factura-check" value="${f.id}" data-importe="${saldo}" ${idsActuales.has(f.id)?'checked':''}></td>
             <td>${fechaCorta(f.fecha)}</td>
-            <td>${f.folio ? '#'+f.folio : '—'}</td>
-            <td>${f.factura || '—'}${prov === GRUPO_APLICADAS ? `<div style="font-size:10.5px;color:var(--muted);">${nombreProveedorMostrado(f, catalogoNombresProv)}</div>` : ''}</td>
-            <td><span class="mf-badge-moneda">${f.moneda||'MXN'}</span></td>
+            <td>${f.folio ? '#'+escHtml(f.folio) : '—'}</td>
+            <td>${escHtml(f.factura || '—')}${prov === GRUPO_APLICADAS ? `<div style="font-size:10.5px;color:var(--muted);">${nombreProveedorMostrado(f, catalogoNombresProv)}</div>` : ''}</td>
+            <td><span class="mf-badge-moneda">${escHtml(f.moneda||'MXN')}</span></td>
             <td class="mf-num" style="${esCredito?'color:var(--green);':''}">${esCredito?'crédito ':''}${fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}${yaAplicadoPorFactura[f.id] ? `<div style="font-size:10px;color:var(--muted);">este pago aplicó ${fmt(yaAplicadoPorFactura[f.id])}</div>` : ''}</td>
             <td>${f.fecha_vencimiento ? fechaCorta(f.fecha_vencimiento) : '—'}</td>
           </tr>`;
         }).join('');
         return `<div class="mf-grupo">
           <div class="mf-grupo-head">
-            <span class="mf-grupo-nombre">${prov}</span>
+            <span class="mf-grupo-nombre">${escHtml(prov)}</span>
             <span class="mf-grupo-meta">${facturasProv.length} factura(s) <span class="mf-grupo-chevron">▾</span></span>
           </div>
           <div class="mf-tabla-wrap"><table class="mf-tabla">
@@ -14635,7 +14758,7 @@ function actualizarPanelDocumentoEmbebido(ids, pendientes) {
     if (panel._archivoMostrado !== file || !embed.firstElementChild) {   // solo si cambió el archivo: recrear el visor recarga el PDF (parpadeo de varios segundos)
       if (panel._urlVista) { try { URL.revokeObjectURL(panel._urlVista); } catch (_) { /* nada */ } }
       const url = panel._urlVista = URL.createObjectURL(file); panel._archivoMostrado = file;
-      embed.innerHTML = esImagen ? `<img src="${url}">` : `<iframe src="${url}"></iframe>`;
+      embed.innerHTML = esImagen ? `<img src="${escAttr(url)}">` : `<iframe src="${escAttr(url)}"></iframe>`;
     }
     document.getElementById(ids.nombre).textContent = file.name;
   }
@@ -14724,9 +14847,9 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     const tipoVal = document.getElementById('movTipoSalida').value;
     const destSel = document.getElementById('movTraspasoDestino');
     if (tipoVal === 'traspaso_banco') {
-      destSel.innerHTML = (cuentasBancoMov.data||[]).filter(c => !(contexto.tipo==='banco' && c.id===contexto.refId)).map(c => `<option value="${c.id}">${c.nombre}</option>`).join('');
+      destSel.innerHTML = (cuentasBancoMov.data||[]).filter(c => !(contexto.tipo==='banco' && c.id===contexto.refId)).map(c => `<option value="${c.id}">${escHtml(c.nombre)}</option>`).join('');
     } else if (tipoVal === 'traspaso_efectivo') {
-      destSel.innerHTML = (monedasEfvoMov.data||[]).filter(m => !(contexto.tipo==='efectivo' && m.id===contexto.refId)).map(m => `<option value="${m.id}">${m.nombre}</option>`).join('');
+      destSel.innerHTML = (monedasEfvoMov.data||[]).filter(m => !(contexto.tipo==='efectivo' && m.id===contexto.refId)).map(m => `<option value="${m.id}">${escHtml(m.nombre)}</option>`).join('');
     }
     if (destinoRealExistente && Array.from(destSel.options).some(o => o.value === destinoRealExistente)) {
       destSel.value = destinoRealExistente;
@@ -14779,8 +14902,8 @@ async function openMovimientoModal(contexto, movimientoExistente) {
           return `<tr>
             <td style="width:20px;"><input type="checkbox" class="mov-factura-check" value="${f.id}" data-importe="${saldo}" ${idsProvYaVinculados.includes(f.id)?'checked':''}></td>
             <td>${fechaCorta(f.fecha)}</td>
-            <td>${f.factura||'—'}${prov === GRUPO_APLICADAS_MOV ? `<div style="font-size:10.5px;color:var(--muted);">${nombreProveedorMostrado(f, catalogoNombresProv)}${f.folio ? ' · #' + f.folio : ''}</div>` : ''}</td>
-            <td><span class="mf-badge-moneda">${f.moneda||'MXN'}</span></td>
+            <td>${escHtml(f.factura||'—')}${prov === GRUPO_APLICADAS_MOV ? `<div style="font-size:10.5px;color:var(--muted);">${nombreProveedorMostrado(f, catalogoNombresProv)}${f.folio ? ' · #' + escHtml(f.folio) : ''}</div>` : ''}</td>
+            <td><span class="mf-badge-moneda">${escHtml(f.moneda||'MXN')}</span></td>
             <td class="mf-num" style="${esCredito?'color:var(--green);':''}">${esCredito?'crédito ':''}${fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}${yaAplicadoPorFactura[f.id] ? `<div style="font-size:10px;color:var(--muted);">este pago aplicó ${fmt(yaAplicadoPorFactura[f.id])}</div>` : ''}</td>
           </tr>`;
         }).join('')}
@@ -14927,16 +15050,16 @@ async function openMovimientoModal(contexto, movimientoExistente) {
           return `<tr>
             <td style="width:20px;"><input type="checkbox" class="mov-factura-cliente-check" value="${f.id}" data-importe="${saldo}" data-cliente="${cli}" ${idsClienteYaVinculados.includes(f.id)?'checked':''}></td>
             <td>${fechaCorta(f.fecha)}</td>
-            <td>#${f.folio}</td>
-            <td>${f.numero_factura || '—'}${cli === GRUPO_APLICADAS_COBRO_MOV ? `<div style="font-size:10.5px;color:var(--muted);">${f.clienteNombre || '(sin cliente)'}</div>` : ''}</td>
-            <td><span class="mf-badge-moneda">${f.moneda||'MXN'}</span></td>
+            <td>#${escHtml(f.folio)}</td>
+            <td>${escHtml(f.numero_factura || '—')}${cli === GRUPO_APLICADAS_COBRO_MOV ? `<div style="font-size:10.5px;color:var(--muted);">${escHtml(f.clienteNombre || '(sin cliente)')}</div>` : ''}</td>
+            <td><span class="mf-badge-moneda">${escHtml(f.moneda||'MXN')}</span></td>
             <td class="mf-num">${fmt(saldo)}${f.estatus==='Parcial'?' (parcial)':''}${yaAplicadoPorFacturaCli[f.id] ? `<div style="font-size:10px;color:var(--muted);">este cobro aplicó ${fmt(yaAplicadoPorFacturaCli[f.id])}</div>` : ''}</td>
           </tr>`;
         }).join('')}
         ${cli === GRUPO_APLICADAS_COBRO_MOV ? '' : creditosClienteMov.filter(c => c.clienteNombre === cli).map(c => `<tr class="mf-credito-fila">
-            <td style="width:20px;"><input type="checkbox" class="mov-credito-cliente-check" value="${c.key}" data-importe="${-c.monto}" data-cliente="${c.clienteNombre}"></td>
+            <td style="width:20px;"><input type="checkbox" class="mov-credito-cliente-check" value="${c.key}" data-importe="${-c.monto}" data-cliente="${escAttr(c.clienteNombre)}"></td>
             <td>${fechaCorta(c.fecha)}</td>
-            <td colspan="3" style="color:var(--green);">Crédito a favor · ${c.descripcion}</td>
+            <td colspan="3" style="color:var(--green);">Crédito a favor · ${escHtml(c.descripcion)}</td>
             <td class="mf-num" style="color:var(--green);">crédito ${fmt(c.monto)}</td>
           </tr>`).join('')}
         </tbody>
@@ -15399,7 +15522,7 @@ function salidaCellsHtml(r, subcuentas, mayores, facturasPend, prefix, traspasoC
   if (tipo === 'gasto') {
     const subActual = subcuentas.find(s => s.id === r.subcuenta_id);
     const labelActual = subActual ? rutaSubcuenta(subActual, subcuentas, mayores) : '';
-    detalle = `<input class="cell salida-detalle-buscar" list="datalistGastoSubcuentas" data-id="${r.id}" value="${labelActual.replace(/"/g,'&quot;')}" placeholder="Escribe para buscar…">`;
+    detalle = `<input class="cell salida-detalle-buscar" list="datalistGastoSubcuentas" data-id="${r.id}" value="${escAttr(labelActual)}" placeholder="Escribe para buscar…">`;
   } else if (tipo === 'proveedor') {
     const idsVinculados = facturaIdsDe(r);
     detalle = `<button class="btn btn-ghost btn-sm salida-abrir-facturas" data-id="${r.id}">${idsVinculados.length ? '' + idsVinculados.length + ' factura(s)' : 'Elegir facturas'}</button>`;
@@ -15410,13 +15533,13 @@ function salidaCellsHtml(r, subcuentas, mayores, facturasPend, prefix, traspasoC
     const opciones = (traspasoCtx.cuentasBanco || []).filter(c => !(traspasoCtx.origenTipo === 'banco' && c.id === traspasoCtx.origenId));
     detalle = `<select class="cell salida-traspaso-destino" data-id="${r.id}" data-tipo="banco">
       <option value="">— elegir cuenta destino —</option>
-      ${opciones.map(c => `<option value="${c.id}">${c.nombre}</option>`).join('')}
+      ${opciones.map(c => `<option value="${c.id}">${escHtml(c.nombre)}</option>`).join('')}
     </select>`;
   } else if (tipo === 'traspaso_efectivo' && traspasoCtx) {
     const opciones = (traspasoCtx.monedasEfectivo || []).filter(m => !(traspasoCtx.origenTipo === 'efectivo' && m.id === traspasoCtx.origenId));
     detalle = `<select class="cell salida-traspaso-destino" data-id="${r.id}" data-tipo="efectivo">
       <option value="">— elegir caja destino —</option>
-      ${opciones.map(m => `<option value="${m.id}">${m.nombre}</option>`).join('')}
+      ${opciones.map(m => `<option value="${m.id}">${escHtml(m.nombre)}</option>`).join('')}
     </select>`;
   }
   return `<td data-salida-tipo-cell="${r.id}">${tipoSelect}</td><td data-salida-detalle-cell="${r.id}">${detalle}</td>`;
@@ -15647,17 +15770,17 @@ async function renderEfectivo() {
 
   el.innerHTML = `
     <div class="card">
-      <div class="card-head"><h3>Resumen de liquidez — ${b.name}</h3><span class="hint">Al día de hoy · edita el TC si cambió</span></div>
+      <div class="card-head"><h3>Resumen de liquidez — ${escHtml(b.name)}</h3><span class="hint">Al día de hoy · edita el TC si cambió</span></div>
       <table>
         <tbody>
           ${monedasConSaldo.map(m => `<tr>
-            <td>${m.nombre}${m.activo===false?' (inactiva)':''}</td>
+            <td>${escHtml(m.nombre)}${m.activo===false?' (inactiva)':''}</td>
             <td class="num">${fmtNum(m.saldo)}</td>
             <td class="num"><input class="cell tc-reporte-cell" type="text" inputmode="decimal" value="${m.tc_reporte}" data-id="${m.id}" style="width:75px;color:var(--muted);"></td>
             <td class="num" style="font-weight:700;">${fmt(m.pesoEquiv)}</td>
           </tr>`).join('')}
           ${bancosConSaldo.map(c => `<tr>
-            <td>Banco — ${c.nombre}${c.activo===false?' (inactiva)':''}</td>
+            <td>Banco — ${escHtml(c.nombre)}${c.activo===false?' (inactiva)':''}</td>
             <td class="num">—</td><td class="num">—</td>
             <td class="num" style="font-weight:700;">${fmt(c.saldo)}</td>
           </tr>`).join('')}
@@ -15676,7 +15799,7 @@ async function renderEfectivo() {
       </div>
       <p style="font-size:12.5px;color:var(--muted);margin-bottom:12px;">El efectivo ya conciliado en Ventas entra aquí automáticamente como "Corte de caja" (solo lo recibido en efectivo — tarjetas, CxC y gastos no se registran en esta caja). Aquí anotas lo que pagas en efectivo.</p>
       <div class="tag-row">
-        ${monedasConSaldo.map(m => `<div class="tag moneda-tab ${m.id===STATE_monedaAbierta?'active':''}" data-id="${m.id}">${m.nombre} · ${fmtNum(m.saldo)}</div>`).join('') || '<span class="hint">Aún no hay monedas configuradas.</span>'}
+        ${monedasConSaldo.map(m => `<div class="tag moneda-tab ${m.id===STATE_monedaAbierta?'active':''}" data-id="${m.id}">${escHtml(m.nombre)} · ${fmtNum(m.saldo)}</div>`).join('') || '<span class="hint">Aún no hay monedas configuradas.</span>'}
       </div>
       <div id="monedaLedger"></div>
     </div>
@@ -15738,7 +15861,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
   const traspasoCtx = { cuentasBanco: cuentasBancoQ.data || [], monedasEfectivo: monedasEfectivoQ.data || [], origenTipo: 'efectivo', origenId: moneda.id, origenNombre: 'la caja ' + moneda.nombre, origenCorto: 'Caja — ' + moneda.nombre };
   let saldo = saldoApertura;
   const conteoAdjuntosEfvo = await contarAdjuntosPorRegistro('fz_efectivo_mov', ledger.filter(r => !r.auto).map(r => r.id));
-  const referenciaLegibleEfvo = (r) => r.factura || r.descripcion || '<span style="color:var(--muted);">—</span>';
+  const referenciaLegibleEfvo = (r) => { const t = r.factura || r.descripcion; return t ? escHtml(t) : '<span style="color:var(--muted);">—</span>'; };
   const rowsHtml = ledger.map(r => {
     saldo += (Number(r.depositos) || 0) - (Number(r.cargos) || 0);
     // Resumen visual — SOLO para el ledger compacto móvil. Usa exactamente el mismo dato que ya
@@ -15748,10 +15871,10 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
       return `<tr style="background:#f7f9fc;">
         <td data-rol="principal">${fechaCorta(r.fecha)}</td>
         <td data-rol="importe" class="ledger-movimiento-resumen">${resumenMovil}</td>
-        <td data-rol="secundario"><em>${r.proveedor}</em> <span style="color:var(--muted);font-size:11px;">· auto</span></td>
+        <td data-rol="secundario"><em>${escHtml(r.proveedor)}</em> <span style="color:var(--muted);font-size:11px;">· auto</span></td>
         <td data-rol="estado" class="ledger-saldo-movil"><span class="ledger-saldo-label">Saldo</span> ${fmtNum(saldo)}</td>
-        <td data-rol="meta" class="ledger-input-detalle">${r.descripcion}</td>
-        <td class="ledger-input-detalle">${moneda.nombre}</td>
+        <td data-rol="meta" class="ledger-input-detalle">${escHtml(r.descripcion)}</td>
+        <td class="ledger-input-detalle">${escHtml(moneda.nombre)}</td>
         <td class="num ledger-input-detalle">${fmtNum(r.depositos)}</td>
         <td class="num ledger-input-detalle">${fmtNum(r.cargos)}</td>
         <td class="num ledger-input-detalle">${fmtNum(saldo)}</td>
@@ -15764,10 +15887,10 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
     return `<tr${sinClasificarFila ? ' style="background:#fff8ec;"' : ''}>
       <td data-rol="principal">${fechaCorta(r.fecha)}</td>
       <td data-rol="importe" class="ledger-movimiento-resumen" style="font-weight:600;">${resumenMovil}</td>
-      <td data-rol="secundario">${r.proveedor || '<span style="color:var(--muted);">—</span>'}</td>
+      <td data-rol="secundario">${r.proveedor ? escHtml(r.proveedor) : '<span style="color:var(--muted);">—</span>'}</td>
       <td data-rol="estado" class="ledger-saldo-movil"><span class="ledger-saldo-label">Saldo</span> ${fmtNum(saldo)}</td>
       <td data-rol="meta" class="ledger-input-detalle">${referenciaLegibleEfvo(r)}</td>
-      <td class="ledger-input-detalle"><span class="mf-badge-moneda">${moneda.nombre}</span></td>
+      <td class="ledger-input-detalle"><span class="mf-badge-moneda">${escHtml(moneda.nombre)}</span></td>
       <td class="num ledger-input-detalle">${fmtNum(r.depositos)}</td>
       <td class="num ledger-input-detalle">${fmtNum(r.cargos)}</td>
       <td class="num ledger-input-detalle" style="font-weight:700;">${fmtNum(saldo)}</td>
@@ -15785,7 +15908,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
   const totalDepositosMes = ledger.reduce((s,r)=>s+(Number(r.depositos)||0),0);
   const sinClasificar = ledger.filter(r => !r.auto && (r.tipo_salida || 'otro') === 'otro' && (Number(r.cargos)||0) > 0);
   const totalSinClasificar = sinClasificar.reduce((s,r)=>s+(Number(r.cargos)||0),0);
-  const datalistSubcuentas = `<datalist id="datalistGastoSubcuentas">${subcuentas.map(s => `<option value="${rutaSubcuenta(s, subcuentas, mayores).replace(/"/g,'&quot;')}">`).join('')}</datalist>`;
+  const datalistSubcuentas = `<datalist id="datalistGastoSubcuentas">${subcuentas.map(s => `<option value="${escAttr(rutaSubcuenta(s, subcuentas, mayores))}">`).join('')}</datalist>`;
   // Equivalente MXN de referencia — dato SECUNDARIO, solo para consolidación, nunca sustituye el
   // saldo real de la caja (que sigue siendo en su propia moneda, arriba).
   const equivalenteMxnRef = moneda.nombre !== 'MXN' && moneda.nombre !== 'Pesos' ? ` <span style="color:var(--muted);font-size:11.5px;">(≈ MXN ${fmt(saldo * (Number(moneda.tc_reporte)||1))} de referencia, TC ${fmtTC(moneda.tc_reporte||1)})</span>` : '';
@@ -15794,7 +15917,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
     ${datalistSubcuentas}
     <div id="sinClasificarBannerEfvo">${sinClasificarBannerHtml(sinClasificar.length, totalSinClasificar)}</div>
     <div class="card-head" style="margin-top:14px;">
-      <span class="hint">${moneda.nombre} · <span class="mf-badge-moneda">${moneda.nombre}</span> — ${STATE.currentMonth}: Saldo inicial ${fmtNum(saldoApertura)} · Entradas ${fmtNum(totalDepositosMes)} · Salidas ${fmtNum(totalCargosMes)} · <strong>Saldo final ${fmtNum(saldo)} ${moneda.nombre}</strong>${equivalenteMxnRef}</span>
+      <span class="hint">${escHtml(moneda.nombre)} · <span class="mf-badge-moneda">${escHtml(moneda.nombre)}</span> — ${STATE.currentMonth}: Saldo inicial ${fmtNum(saldoApertura)} · Entradas ${fmtNum(totalDepositosMes)} · Salidas ${fmtNum(totalCargosMes)} · <strong>Saldo final ${fmtNum(saldo)} ${escHtml(moneda.nombre)}</strong>${equivalenteMxnRef}</span>
       <div style="display:flex;gap:8px;">
         <button class="btn btn-ghost btn-sm" id="importMovBtnEfvo" title="Columnas: Fecha, Proveedor/Concepto, Descripción, Factura/Referencia, Depósitos, Cargos. Opcional para traspasos: Tipo (escribe &quot;Traspaso&quot;) y Cuenta destino (nombre exacto del banco o caja de efectivo).">Importar movimientos (Excel)</button>
         <button class="btn btn-ghost btn-sm" id="addMovBtnEfvo">+ Agregar movimiento (pago en efectivo)</button>
@@ -15803,8 +15926,8 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
     <div class="table-wrap scroll-sticky">
       <table class="tabla-operativa tabla-operativa--ledger">
         <thead><tr><th>Fecha</th><th>Tercero</th><th>Concepto / Referencia</th><th>Moneda</th><th>Depósitos</th><th>Retiros</th><th>Saldo</th><th></th></tr></thead>
-        <tbody>${rowsHtml || `<tr><td colspan="10" class="empty">Sin movimientos en el periodo · Saldo al cierre: ${fmtNum(saldo)} ${moneda.nombre}</td></tr>`}</tbody>
-        <tfoot><tr class="total-row"><td colspan="4">Total ${STATE.currentMonth} (${moneda.nombre})</td><td class="num">${fmtNum(totalDepositosMes)}</td><td class="num">${fmtNum(totalCargosMes)}</td><td class="num">${fmtNum(saldo)}</td><td colspan="1"></td></tr></tfoot>
+        <tbody>${rowsHtml || `<tr><td colspan="10" class="empty">Sin movimientos en el periodo · Saldo al cierre: ${fmtNum(saldo)} ${escHtml(moneda.nombre)}</td></tr>`}</tbody>
+        <tfoot><tr class="total-row"><td colspan="4">Total ${STATE.currentMonth} (${escHtml(moneda.nombre)})</td><td class="num">${fmtNum(totalDepositosMes)}</td><td class="num">${fmtNum(totalCargosMes)}</td><td class="num">${fmtNum(saldo)}</td><td colspan="1"></td></tr></tfoot>
       </table>
     </div>
   `;
@@ -15865,7 +15988,7 @@ async function renderBancos() {
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', b.id).order('nombre'),
     sb.from('fz_conceptos').select('*').eq('business_id', b.id).in('categoria', ['tarjetas','bancos']),
   ]);
-  if (cuentasQ.error) { el.innerHTML = `<div class="empty">Error: ${cuentasQ.error.message}</div>`; return; }
+  if (cuentasQ.error) { el.innerHTML = `<div class="empty">Error: ${escHtml(cuentasQ.error.message)}</div>`; return; }
   const conceptosTarjetas = conceptosQ.data || [];
 
   const cuentasConSaldo = [];
@@ -15896,7 +16019,7 @@ async function renderBancos() {
       </div>
       <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">Las terminales/tarjetas conciliadas en Ventas que estén vinculadas a una cuenta (en "Conceptos de recibido") entran aquí automáticamente como "Corte de caja". Dentro de cada cuenta puedes importar su estado de cuenta desde Excel.</p>
       <div class="tag-row">
-        ${cuentasConSaldo.map(c => `<div class="tag banco-tab ${c.id===STATE_bancoCuentaAbierta?'active':''}" data-id="${c.id}">${c.nombre} · <span class="mf-badge-moneda">${c.moneda}</span> · ${prefijoMoneda(c.moneda)} ${fmt(c.saldo)}</div>`).join('') || '<span class="hint">Aún no hay cuentas.</span>'}
+        ${cuentasConSaldo.map(c => `<div class="tag banco-tab ${c.id===STATE_bancoCuentaAbierta?'active':''}" data-id="${c.id}">${escHtml(c.nombre)} · <span class="mf-badge-moneda">${escHtml(c.moneda)}</span> · ${prefijoMoneda(c.moneda)} ${fmt(c.saldo)}</div>`).join('') || '<span class="hint">Aún no hay cuentas.</span>'}
       </div>
       <div id="bancoLedger"></div>
     </div>
@@ -15957,7 +16080,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
   const conteoAdjuntosBanco = await contarAdjuntosPorRegistro('fz_bancos_mov', ledger.filter(m => !m.auto).map(m => m.id));
   // Referencia legible — reutiliza SIEMPRE dato ya guardado (referencia > concepto > descripción),
   // nunca inventa texto nuevo.
-  const referenciaLegible = (m) => m.referencia || m.concepto || m.descripcion || '<span style="color:var(--muted);">—</span>';
+  const referenciaLegible = (m) => { const t = m.referencia || m.concepto || m.descripcion; return t ? escHtml(t) : '<span style="color:var(--muted);">—</span>'; };
   const rowsHtml = ledger.map(m => {
     saldo += (Number(m.depositos)||0) - (Number(m.cargos)||0);
     // Resumen visual — SOLO para el ledger compacto móvil. Usa exactamente el mismo dato que ya
@@ -15968,10 +16091,10 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
       return `<tr style="background:#f7f9fc;">
         <td data-rol="principal">${fechaCorta(m.fecha)}${conciliadoIcono}</td>
         <td data-rol="importe" class="ledger-movimiento-resumen">${resumenMovil}</td>
-        <td data-rol="secundario"><em>${m.proveedor||''}</em> <span style="color:var(--muted);font-size:11px;">· auto</span></td>
-        <td data-rol="estado" class="ledger-saldo-movil"><span class="ledger-saldo-label">Saldo</span> ${pfxBanco} ${fmt(saldo)}</td>
-        <td class="ledger-input-detalle">${m.descripcion}</td>
-        <td class="ledger-input-detalle">${monedaCuentaBanco}</td>
+        <td data-rol="secundario"><em>${escHtml(m.proveedor||'')}</em> <span style="color:var(--muted);font-size:11px;">· auto</span></td>
+        <td data-rol="estado" class="ledger-saldo-movil"><span class="ledger-saldo-label">Saldo</span> ${escHtml(pfxBanco)} ${fmt(saldo)}</td>
+        <td class="ledger-input-detalle">${escHtml(m.descripcion)}</td>
+        <td class="ledger-input-detalle">${escHtml(monedaCuentaBanco)}</td>
         <td class="num ledger-input-detalle">${fmtNum(m.depositos)}</td>
         <td class="num ledger-input-detalle">${fmtNum(m.cargos)}</td>
         <td class="num ledger-input-detalle" style="font-weight:700;">${fmt(saldo)}</td>
@@ -15985,10 +16108,10 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     return `<tr${sinClasificarFila ? ' style="background:#fff8ec;"' : ''}>
       <td data-rol="principal">${fechaCorta(m.fecha)}${conciliadoIcono}</td>
       <td data-rol="importe" class="ledger-movimiento-resumen" style="font-weight:600;">${resumenMovil}</td>
-      <td data-rol="secundario">${m.proveedor || '<span style="color:var(--muted);">—</span>'}</td>
-      <td data-rol="estado" class="ledger-saldo-movil"><span class="ledger-saldo-label">Saldo</span> ${pfxBanco} ${fmt(saldo)}</td>
+      <td data-rol="secundario">${m.proveedor ? escHtml(m.proveedor) : '<span style="color:var(--muted);">—</span>'}</td>
+      <td data-rol="estado" class="ledger-saldo-movil"><span class="ledger-saldo-label">Saldo</span> ${escHtml(pfxBanco)} ${fmt(saldo)}</td>
       <td class="ledger-input-detalle">${referenciaLegible(m)}</td>
-      <td class="ledger-input-detalle"><span class="mf-badge-moneda">${monedaCuentaBanco}</span></td>
+      <td class="ledger-input-detalle"><span class="mf-badge-moneda">${escHtml(monedaCuentaBanco)}</span></td>
       <td class="num ledger-input-detalle">${fmtNum(m.depositos)}</td>
       <td class="num ledger-input-detalle">${fmtNum(m.cargos)}</td>
       <td class="num ledger-input-detalle" style="font-weight:700;">${fmt(saldo)}</td>
@@ -16007,13 +16130,13 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
   const totalCargosMes = ledger.reduce((s,m)=>s+(Number(m.cargos)||0),0);
   const sinClasificar = ledger.filter(m => !m.auto && (m.tipo_salida || 'otro') === 'otro' && (Number(m.cargos)||0) > 0);
   const totalSinClasificar = sinClasificar.reduce((s,m)=>s+(Number(m.cargos)||0),0);
-  const datalistSubcuentas = `<datalist id="datalistGastoSubcuentas">${subcuentas.map(s => `<option value="${rutaSubcuenta(s, subcuentas, mayores).replace(/"/g,'&quot;')}">`).join('')}</datalist>`;
+  const datalistSubcuentas = `<datalist id="datalistGastoSubcuentas">${subcuentas.map(s => `<option value="${escAttr(rutaSubcuenta(s, subcuentas, mayores))}">`).join('')}</datalist>`;
 
   box.innerHTML = `
     ${datalistSubcuentas}
     <div id="sinClasificarBannerBanco">${sinClasificarBannerHtml(sinClasificar.length, totalSinClasificar)}</div>
     <div class="card-head" style="margin-top:14px;">
-      <span class="hint">${cuentaArr?.nombre || ''} · <span class="mf-badge-moneda">${monedaCuentaBanco}</span> — ${STATE.currentMonth}: Saldo inicial ${pfxBanco} ${fmt(saldoApertura)} · Depósitos ${pfxBanco} ${fmt(totalDepositosMes)} · Retiros ${pfxBanco} ${fmt(totalCargosMes)} · <strong>Saldo final ${pfxBanco} ${fmt(saldo)}</strong></span>
+      <span class="hint">${escHtml(cuentaArr?.nombre || '')} · <span class="mf-badge-moneda">${escHtml(monedaCuentaBanco)}</span> — ${STATE.currentMonth}: Saldo inicial ${escHtml(pfxBanco)} ${fmt(saldoApertura)} · Depósitos ${escHtml(pfxBanco)} ${fmt(totalDepositosMes)} · Retiros ${escHtml(pfxBanco)} ${fmt(totalCargosMes)} · <strong>Saldo final ${escHtml(pfxBanco)} ${fmt(saldo)}</strong></span>
       <div style="display:flex;gap:8px;">
         <button class="btn btn-ghost btn-sm" id="conciliarBtn">Conciliar</button>
         <button class="btn btn-ghost btn-sm" id="importMovBtn" title="Columnas: Fecha, Descripción, Concepto, Referencia, Depósitos, Cargos. Opcional para traspasos: Tipo (escribe &quot;Traspaso&quot;) y Cuenta destino (nombre exacto del banco o caja de efectivo).">Importar movimientos (Excel)</button>
@@ -16023,8 +16146,8 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     <div class="table-wrap scroll-sticky">
       <table class="tabla-operativa tabla-operativa--ledger">
         <thead><tr><th>Fecha</th><th>Tercero</th><th>Concepto / Referencia</th><th>Moneda</th><th>Depósitos</th><th>Retiros</th><th>Saldo</th><th title="Conciliado">✓</th><th></th></tr></thead>
-        <tbody>${rowsHtml || `<tr><td colspan="11" class="empty">Sin movimientos en el periodo · Saldo al cierre: ${pfxBanco} ${fmt(saldo)}</td></tr>`}</tbody>
-        <tfoot><tr class="total-row"><td colspan="4">Total ${STATE.currentMonth} (${monedaCuentaBanco})</td><td class="num">${fmtNum(totalDepositosMes)}</td><td class="num">${fmtNum(totalCargosMes)}</td><td class="num">${fmt(saldo)}</td><td colspan="4"></td></tr></tfoot>
+        <tbody>${rowsHtml || `<tr><td colspan="11" class="empty">Sin movimientos en el periodo · Saldo al cierre: ${escHtml(pfxBanco)} ${fmt(saldo)}</td></tr>`}</tbody>
+        <tfoot><tr class="total-row"><td colspan="4">Total ${STATE.currentMonth} (${escHtml(monedaCuentaBanco)})</td><td class="num">${fmtNum(totalDepositosMes)}</td><td class="num">${fmtNum(totalCargosMes)}</td><td class="num">${fmt(saldo)}</td><td colspan="4"></td></tr></tfoot>
       </table>
     </div>
   `;
@@ -16124,7 +16247,7 @@ async function renderProveedores() {
     sb.from('fz_bancos_cuentas').select('*').eq('business_id', b.id).eq('activo', true),
     sb.from('fz_efectivo_monedas').select('*').eq('business_id', b.id).eq('activo', true),
   ]);
-  if (provQ.error) { el.innerHTML = `<div class="empty">Error: ${provQ.error.message}</div>`; return; }
+  if (provQ.error) { el.innerHTML = `<div class="empty">Error: ${escHtml(provQ.error.message)}</div>`; return; }
   const all = provQ.data || [];
   const opcionesPagoDesde = [
     ...(cuentasBancoQ.data || []).map(c => ({ value: 'banco:' + c.id, label: 'Banco — ' + c.nombre })),
@@ -16165,14 +16288,14 @@ async function renderProveedores() {
           <tbody>
             ${resumenProveedores.length ? resumenProveedores.map(p => `
               <tr class="prov-resumen-row" data-prov="${revEsc(p.clave)}" style="cursor:pointer;">
-                <td>${STATE_provExpandido===p.clave?'▾':'▸'} ${p.nombre}</td>
+                <td>${STATE_provExpandido===p.clave?'▾':'▸'} ${escHtml(p.nombre)}</td>
                 <td>${p.facturas.length}</td>
                 <td class="num" style="font-weight:700;color:${p.total<0?'var(--green)':'var(--red)'};">${fmt(p.total)}</td>
               </tr>
               ${STATE_provExpandido===p.clave ? `<tr><td colspan="3" style="padding:0 0 10px 0;background:#f7f9fc;">
                 <table style="width:100%;">
                   <thead><tr><th style="padding-left:24px;">Fecha</th><th>Factura</th><th>Saldo</th></tr></thead>
-                  <tbody>${p.facturas.map(f => `<tr><td style="padding-left:24px;">${f.fecha}</td><td>${f.factura||'s/f'}${f.estatus==='Parcial'?' (parcial)':''}</td><td class="num" style="color:${saldoPend(f)<0?'var(--green)':'inherit'};">${fmt(saldoPend(f))}</td></tr>`).join('')}</tbody>
+                  <tbody>${p.facturas.map(f => `<tr><td style="padding-left:24px;">${f.fecha}</td><td>${escHtml(f.factura||'s/f')}${f.estatus==='Parcial'?' (parcial)':''}</td><td class="num" style="color:${saldoPend(f)<0?'var(--green)':'inherit'};">${fmt(saldoPend(f))}</td></tr>`).join('')}</tbody>
                 </table>
               </td></tr>` : ''}
             `).join('') : `<tr><td colspan="3" class="empty">No hay adeudos pendientes.</td></tr>`}
@@ -16376,7 +16499,7 @@ function pagosDeFacturaHtml(datos) {
     <table style="width:100%;font-size:12px;border-collapse:collapse;">
       <thead><tr style="text-align:left;color:var(--muted);"><th>Fecha</th><th>Pagado desde</th><th>Referencia</th><th class="num" style="text-align:right;">Monto</th><th></th></tr></thead>
       <tbody>${e.map(x => `<tr style="border-top:1px solid var(--line);">
-        <td>${fechaCorta(x.fecha)}</td><td>${x.cuenta}</td><td>${x.referencia || '—'}${x.sinAplicacion ? ' <span style="color:var(--gold);" title="Está ligado a la factura pero no tiene la aplicación registrada. En Revisión de consistencia puedes registrarla.">· sin aplicación registrada</span>' : ''}</td>
+        <td>${fechaCorta(x.fecha)}</td><td>${escHtml(x.cuenta)}</td><td>${escHtml(x.referencia || '—')}${x.sinAplicacion ? ' <span style="color:var(--gold);" title="Está ligado a la factura pero no tiene la aplicación registrada. En Revisión de consistencia puedes registrarla.">· sin aplicación registrada</span>' : ''}</td>
         <td class="num" style="text-align:right;">${fmt(x.monto)}</td>
         <td style="text-align:right;">${x.editable ? `<button type="button" class="btn btn-ghost btn-sm pdf-editar-mov" data-tabla="${x.tabla}" data-id="${x.movId}" style="font-size:11px;padding:2px 8px;">Ver / Editar</button>` : ''}</td>
       </tr>`).join('')}</tbody>
@@ -16395,7 +16518,7 @@ async function verPagosDeFactura(facturaId, businessId) {
   info.innerHTML = ''; list.innerHTML = '<p class="empty">Cargando…</p>';
   const [datos, catalogoNombres] = await Promise.all([obtenerPagosDeFactura(facturaId, businessId), cargarCatalogoProveedoresNombres(businessId)]);
   const f = datos.factura || {};
-  info.innerHTML = `${nombreProveedorMostrado(f, catalogoNombres)} · factura ${f.factura || 's/f'} · ${fechaCorta(f.fecha || '')}`;
+  info.innerHTML = `${escHtml(nombreProveedorMostrado(f, catalogoNombres))} · factura ${escHtml(f.factura || 's/f')} · ${fechaCorta(f.fecha || '')}`;
   list.innerHTML = pagosDeFacturaHtml(datos);
   wirePagosDeFactura(list, businessId, () => document.getElementById('modalPagosFactura').classList.remove('show'));
 }
@@ -16422,7 +16545,7 @@ async function verDesglosePago(origenTabla, origenId, businessId) {
   document.getElementById('pagosFacturaTitulo').textContent = `Pago desde ${nombreTabla}`;
   const info = document.getElementById('pagosFacturaInfo');
   const list = document.getElementById('pagosFacturaList');
-  info.innerHTML = `${fechaCorta(mov.fecha)} · ${mov.descripcion || mov.concepto || mov.proveedor || ''} · Importe total <strong>${fmt(mov.cargos)}</strong> <button class="btn btn-gold btn-sm" id="pagosFacturaEditarMov" style="font-size:11px;padding:3px 8px;margin-left:6px;">Editar movimiento</button><button class="btn btn-ghost btn-sm" id="pagosFacturaAbrirMov" style="font-size:11px;padding:3px 8px;margin-left:6px;">Ver en ${origenTabla==='fz_bancos_mov'?'Bancos':'Efectivo'}${iconoAbrir()}</button>`;
+  info.innerHTML = `${fechaCorta(mov.fecha)} · ${escHtml(mov.descripcion || mov.concepto || mov.proveedor || '')} · Importe total <strong>${fmt(mov.cargos)}</strong> <button class="btn btn-gold btn-sm" id="pagosFacturaEditarMov" style="font-size:11px;padding:3px 8px;margin-left:6px;">Editar movimiento</button><button class="btn btn-ghost btn-sm" id="pagosFacturaAbrirMov" style="font-size:11px;padding:3px 8px;margin-left:6px;">Ver en ${origenTabla==='fz_bancos_mov'?'Bancos':'Efectivo'}${iconoAbrir()}</button>`;
   document.getElementById('pagosFacturaEditarMov').onclick = () => {
     document.getElementById('modalPagosFactura').classList.remove('show');
     editarMovimientoDesdeProveedor(origenTabla, mov.id, businessId, () => renderProveedores());
@@ -16442,7 +16565,7 @@ async function verDesglosePago(origenTabla, origenId, businessId) {
       <p style="font-size:12px;color:var(--muted);margin-bottom:8px;">Este pago se registró antes de guardar el desglose exacto por factura — se listan las facturas que cubrió, sin el monto exacto de cada una.</p>
       <table style="width:100%;">
         <thead><tr><th>Factura</th><th>Fecha</th><th></th></tr></thead>
-        <tbody>${facturasViejas.map(f => `<tr><td>${f.factura||'s/f'} — ${f.proveedor||''}</td><td>${fechaCorta(f.fecha)}</td><td><button class="btn btn-ghost btn-sm pagos-ver-factura" data-id="${f.id}" style="font-size:11px;padding:3px 8px;">Ver factura</button></td></tr>`).join('')}</tbody>
+        <tbody>${facturasViejas.map(f => `<tr><td>${escHtml(f.factura||'s/f')} — ${escHtml(f.proveedor||'')}</td><td>${fechaCorta(f.fecha)}</td><td><button class="btn btn-ghost btn-sm pagos-ver-factura" data-id="${f.id}" style="font-size:11px;padding:3px 8px;">Ver factura</button></td></tr>`).join('')}</tbody>
       </table>` : `<p class="empty" style="padding:10px 0;">No se encontró ninguna factura vinculada a este pago.</p>`;
   } else {
     const facturaIds = pagos.map(p => p.factura_id);
@@ -16454,7 +16577,7 @@ async function verDesglosePago(origenTabla, origenId, businessId) {
         <tbody>${pagos.map(p => {
           const f = facturaMap[p.factura_id];
           return `<tr>
-            <td>${f?.factura || 's/f'}${f ? ' — ' + (f.proveedor||'') : ''}</td>
+            <td>${escHtml(f?.factura || 's/f')}${f ? ' — ' + escHtml(f.proveedor || '') : ''}</td>
             <td>${f ? fechaCorta(f.fecha) : ''}</td>
             <td class="num">${f ? fmt(f.importe) : ''}</td>
             <td class="num" style="font-weight:600;">${fmt(p.monto)}</td>
@@ -16528,7 +16651,7 @@ async function renderDirectorioProveedores(el, b) {
     <div class="kpi-grid kpi-grid-mobile-compact" style="margin-bottom:14px;">
       <div class="kpi"><div class="label">Total por pagar (MXN)</div><div class="value num ${totalPorPagar>0.004?'red':''}">${fmt(totalPorPagar)}</div></div>
       <div class="kpi"><div class="label">Pagado este mes (MXN)</div><div class="value num green">${fmt(pagadoEsteMes)}</div></div>
-      <div class="kpi"><div class="label">Facturas pendientes</div><div class="value">${facturasPendientes}</div></div>
+      <div class="kpi"><div class="label">Facturas pendientes</div><div class="value">${escHtml(facturasPendientes)}</div></div>
       <div class="kpi"><div class="label">Pendientes de desglosar</div><div class="value ${pendientesDesglose>0?'red':''}">${pendientesDesglose}</div></div>
     </div>
     <div class="card">
@@ -16558,10 +16681,10 @@ async function renderDirectorioProveedores(el, b) {
               const saldoTexto = monedas.length
                 ? monedas.map(m => `${prefijoMoneda(m)} ${fmt(g.porMoneda[m])}`).join('<br>')
                 : fmt(0);
-              return `<tr class="prov-dir-row" data-key="${g.key}" style="cursor:pointer;">
-              <td data-rol="principal">${g.nombre}</td>
+              return `<tr class="prov-dir-row" data-key="${escAttr(g.key)}" style="cursor:pointer;">
+              <td data-rol="principal">${escHtml(g.nombre)}</td>
               <td data-rol="meta">${g.cantidad} factura(s)</td>
-              <td data-rol="meta">${monedaTexto}</td>
+              <td data-rol="meta">${escHtml(monedaTexto)}</td>
               <td class="num" data-rol="meta">${Object.keys(g.facPorMon).some(m => m !== 'MXN') ? fmtPorMoneda(g.facPorMon) : fmt(g.facturado)}</td>
               <td class="num" data-rol="meta">${Object.keys(g.pagPorMon).some(m => m !== 'MXN') ? fmtPorMoneda(g.pagPorMon) : fmt(g.pagado)}</td>
               <td class="num" data-rol="importe" style="font-weight:700;">${saldoTexto}</td>
@@ -16766,7 +16889,7 @@ async function renderProveedorDetalle(el, b) {
     </div>
     <div class="card">
       <div class="card-head">
-        <h3>${nombre}</h3>
+        <h3>${escHtml(nombre)}</h3>
         <div style="display:flex;gap:8px;align-items:center;">
           <span class="hint">Todas las transacciones, más reciente primero</span>
           <button class="btn btn-ghost btn-sm" id="provDetalleNuevaFactura">+ Nueva factura</button>
@@ -16780,9 +16903,9 @@ async function renderProveedorDetalle(el, b) {
           <tbody>
             ${transacciones.length ? transacciones.map(t => `<tr>
               <td>${fechaCorta(t.fecha)}</td>
-              <td>${t.etiqueta || t.tipo}</td>
+              <td>${escHtml(t.etiqueta || t.tipo)}</td>
               <td class="ref">${t.numero}</td>
-              ${hayDivisas ? `<td>${t.moneda || 'MXN'}</td><td class="num">${t.moneda && t.moneda !== 'MXN' ? fmtTC(t.tc || 1) : '—'}</td>` : ''}
+              ${hayDivisas ? `<td>${escHtml(t.moneda || 'MXN')}</td><td class="num">${t.moneda && t.moneda !== 'MXN' ? fmtTC(t.tc || 1) : '—'}</td>` : ''}
               <td class="num ${t.monto<0?'red':''}">${t.monto<0?'-':''}${hayDivisas ? fmtMon(Math.abs(t.monto), t.moneda) : fmt(Math.abs(t.monto))}</td>
               ${hayDivisas ? `<td class="num ${t.montoMxn<0?'red':''}">${t.moneda && t.moneda !== 'MXN' ? `${t.montoMxn<0?'-':''}${fmt(Math.abs(t.montoMxn))}` : '—'}</td>` : ''}
               <td class="num" style="${t.saldo!=null && Math.abs(t.saldo)>0.004?'color:var(--gold);font-weight:600;':''}">${t.saldo!=null ? (hayDivisas ? fmtMonNeg(t.saldo, t.moneda) : fmtNeg(t.saldo)) : '—'}</td>
@@ -17124,7 +17247,7 @@ async function renderClienteDetalle(el, b) {
       ${hayDivisas && Math.abs(fxReal) > 0.004 ? `<div class="kpi"><div class="label">${fxReal > 0 ? 'Ganancia' : 'Pérdida'} cambiaria realizada</div><div class="value num ${fxReal > 0 ? 'green' : 'red'}">${fmt(Math.abs(fxReal))}</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">cobrado vs. tipo de cambio de la factura</div></div>` : ''}
     </div>
     <div class="card">
-      <div class="card-head"><h3>${nombreCliente}</h3>${cliente.razon_social ? `<span class="hint">${cliente.nombre_comercial}</span>` : ''}<span class="hint">Facturas y cobros, más reciente primero</span>
+      <div class="card-head"><h3>${escHtml(nombreCliente)}</h3>${cliente.razon_social ? `<span class="hint">${escHtml(cliente.nombre_comercial)}</span>` : ''}<span class="hint">Facturas y cobros, más reciente primero</span>
         <div style="position:relative;margin-left:auto;"><button class="btn btn-gold btn-sm" id="cdtBtn">+ Nueva transacción</button><div id="cdtDropdown" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:190px;overflow:hidden;">
           <button class="cdt-factura" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Factura</button><button class="cdt-orden" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Orden de venta</button><button class="cdt-pago" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Registrar cobro</button><button class="cdt-nc" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Nota de crédito</button><button class="cdt-dev" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Devolución a cliente</button></div></div></div>
       <div class="table-wrap scroll-sticky">
@@ -17140,9 +17263,9 @@ async function renderClienteDetalle(el, b) {
               const diasRetraso = esFactura ? calcularDiasRetraso(f.fecha_vencimiento, t.saldo) : '';
               return `<tr>
                 <td>${fechaCorta(t.fecha)}</td>
-                <td>${t.etiqueta || t.tipo}</td>
+                <td>${escHtml(t.etiqueta || t.tipo)}</td>
                 <td class="ref">${t.numero}</td>
-                ${hayDivisas ? `<td>${t.moneda || 'MXN'}</td><td class="num">${t.moneda && t.moneda !== 'MXN' ? fmtTC(t.tc || 1) : '—'}</td>` : ''}
+                ${hayDivisas ? `<td>${escHtml(t.moneda || 'MXN')}</td><td class="num">${t.moneda && t.moneda !== 'MXN' ? fmtTC(t.tc || 1) : '—'}</td>` : ''}
                 <td class="num ${t.monto<0?'red':''}">${t.monto<0?'-':''}${hayDivisas ? fmtMon(Math.abs(t.monto), t.moneda) : fmt(Math.abs(t.monto))}</td>
                 ${hayDivisas ? `<td class="num ${t.montoMxn<0?'red':''}">${t.moneda && t.moneda !== 'MXN' ? `${t.montoMxn<0?'-':''}${fmt(Math.abs(t.montoMxn))}` : '—'}</td>` : ''}
                 <td class="num" style="${esFactura && t.saldo>0.004?'color:var(--gold);font-weight:600;':''}">${esFactura ? (hayDivisas ? fmtMonNeg(t.saldo, t.moneda) : fmtNeg(t.saldo)) : '—'}</td>
@@ -17254,10 +17377,10 @@ async function renderDirectorioClientes(el, b) {
                 ? monedasConSaldo.map(m => `${prefijoMoneda(m)} ${fmt(desglose[m])}`).join('<br>')
                 : fmt(0);
               return `<tr class="cliente-fila" data-id="${c.id}" style="cursor:pointer;">
-              <td data-rol="meta">${c.razon_social || '<span style="color:var(--muted);">—</span>'}</td>
-              <td data-rol="principal"><strong>${c.nombre_comercial}</strong></td>
-              <td data-rol="meta">${c.telefono || '<span style="color:var(--muted);">—</span>'}</td>
-              <td data-rol="meta">${monedaTexto}</td>
+              <td data-rol="meta">${c.razon_social ? escHtml(c.razon_social) : '<span style="color:var(--muted);">—</span>'}</td>
+              <td data-rol="principal"><strong>${escHtml(c.nombre_comercial)}</strong></td>
+              <td data-rol="meta">${c.telefono ? escHtml(c.telefono) : '<span style="color:var(--muted);">—</span>'}</td>
+              <td data-rol="meta">${escHtml(monedaTexto)}</td>
               <td class="num" data-rol="importe" style="font-weight:700;">${openBalanceTexto}</td>
               <td data-rol="acciones" style="position:relative;">
                 <button class="btn btn-ghost btn-sm cliente-menu-btn" data-id="${c.id}" style="padding:5px 12px;">⋯</button>
@@ -17411,8 +17534,8 @@ async function renderProductosList(businessId) {
   box.innerHTML = productos.length ? productos.map(p => `
     <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 4px;border-bottom:1px solid var(--line);">
       <div style="min-width:0;">
-        <strong style="font-size:13.5px;">${p.nombre}</strong>${p.precio ? ` <span style="color:var(--muted);font-size:12px;">— ${fmt(p.precio)}</span>` : ''}
-        <div style="font-size:11.5px;color:var(--muted);margin-top:2px;">${nombreSubcuenta(p.subcuenta_id)}${p.descripcion ? ' · ' + p.descripcion : ''}</div>
+        <strong style="font-size:13.5px;">${escHtml(p.nombre)}</strong>${p.precio ? ` <span style="color:var(--muted);font-size:12px;">— ${fmt(p.precio)}</span>` : ''}
+        <div style="font-size:11.5px;color:var(--muted);margin-top:2px;">${nombreSubcuenta(p.subcuenta_id)}${p.descripcion ? ' · ' + escHtml(p.descripcion) : ''}</div>
       </div>
       <button class="row-del producto-del" data-id="${p.id}" style="font-size:15px;flex-shrink:0;">✕</button>
     </div>`).join('') : `<div class="empty" style="padding:14px;">Aún no tienes productos o servicios dados de alta.</div>`;
@@ -17499,7 +17622,7 @@ async function abrirModalConciliacion(cuentaId, businessId, onDone) {
       <tr>
         <td><input type="checkbox" class="conc-check" data-id="${m.id}" data-monto="${(Number(m.depositos)||0)-(Number(m.cargos)||0)}"></td>
         <td>${fechaCorta(m.fecha)}</td>
-        <td>${m.proveedor ? m.proveedor + ' — ' : ''}${m.descripcion || ''}</td>
+        <td>${m.proveedor ? escHtml(m.proveedor) + ' — ' : ''}${escHtml(m.descripcion || '')}</td>
         <td class="num">${fmtNum(m.depositos)}</td>
         <td class="num">${fmtNum(m.cargos)}</td>
       </tr>`).join('') : `<tr><td colspan="5" class="empty">No hay movimientos pendientes de conciliar hasta esta fecha.</td></tr>`;
@@ -17563,8 +17686,8 @@ async function abrirElegirFacturaCobro(businessId, clientePreseleccionado) {
   ]);
   const selCuenta = document.getElementById('elegirFacturaCobroCuenta');
   selCuenta.innerHTML = `<option value="manual">Ingreso directo (sin registrar en Banco/Efectivo)</option>`
-    + (cuentasBancoQ.data||[]).map(c => `<option value="banco:${c.id}">Banco — ${c.nombre}</option>`).join('')
-    + (monedasQ.data||[]).map(m => `<option value="efectivo:${m.id}">Efectivo — ${m.nombre}</option>`).join('');
+    + (cuentasBancoQ.data||[]).map(c => `<option value="banco:${c.id}">Banco — ${escHtml(c.nombre)}</option>`).join('')
+    + (monedasQ.data||[]).map(m => `<option value="efectivo:${m.id}">Efectivo — ${escHtml(m.nombre)}</option>`).join('');
   document.getElementById('elegirFacturaCobroFecha').value = todayStr();
   document.getElementById('elegirFacturaCobroMonto').value = '';
   document.getElementById('elegirFacturaCobroTc').value = '';
@@ -17638,11 +17761,11 @@ async function abrirElegirFacturaCobro(businessId, clientePreseleccionado) {
       const filasHtml = facturasCli.map(f => {
         const saldo = Number(f.total) - Number(f.importe_pagado||0);
         return `<tr>
-          <td><input type="checkbox" class="efc-check" value="${f.id}" data-importe="${saldo}" data-moneda="${f.moneda||'MXN'}" data-tc="${f.tipo_cambio||1}" data-tercero="${cli.replace(/"/g,'&quot;')}" data-folio="${f.folio}"></td>
+          <td><input type="checkbox" class="efc-check" value="${f.id}" data-importe="${saldo}" data-moneda="${escAttr(f.moneda||'MXN')}" data-tc="${f.tipo_cambio||1}" data-tercero="${escAttr(cli)}" data-folio="${escAttr(f.folio)}"></td>
           <td>${fechaCorta(f.fecha)}</td>
-          <td>#${f.folio}</td>
-          <td>${f.numero_factura || '—'}</td>
-          <td><span class="mf-badge-moneda">${f.moneda||'MXN'}</span></td>
+          <td>#${escHtml(f.folio)}</td>
+          <td>${escHtml(f.numero_factura || '—')}</td>
+          <td><span class="mf-badge-moneda">${escHtml(f.moneda||'MXN')}</span></td>
           <td class="mf-num">${fmt(saldo)}</td>
           <td>${f.fecha_vencimiento ? fechaCorta(f.fecha_vencimiento) : '—'}</td>
         </tr>`;
@@ -17772,8 +17895,8 @@ async function abrirElegirFacturaPago(businessId, proveedorPreseleccionado) {
   ]);
   const selCuenta = document.getElementById('elegirFacturaPagoCuenta');
   selCuenta.innerHTML = `<option value="manual">Pago por clasificar (contrapartida Banco/Efectivo por definir después)</option>`
-    + (cuentasBancoQ.data||[]).map(c => `<option value="banco:${c.id}">Banco — ${c.nombre}</option>`).join('')
-    + (monedasQ.data||[]).map(m => `<option value="efectivo:${m.id}">Efectivo — ${m.nombre}</option>`).join('');
+    + (cuentasBancoQ.data||[]).map(c => `<option value="banco:${c.id}">Banco — ${escHtml(c.nombre)}</option>`).join('')
+    + (monedasQ.data||[]).map(m => `<option value="efectivo:${m.id}">Efectivo — ${escHtml(m.nombre)}</option>`).join('');
   document.getElementById('elegirFacturaPagoFecha').value = todayStr();
   document.getElementById('elegirFacturaPagoMonto').value = '';
   document.getElementById('elegirFacturaPagoTc').value = '';
@@ -17849,18 +17972,18 @@ async function abrirElegirFacturaPago(businessId, proveedorPreseleccionado) {
       const filasHtml = facturasProv.map(f => {
         const saldo = Number(f.importe) - Number(f.importe_pagado||0);
         return `<tr>
-          <td><input type="checkbox" class="efp-check" value="${f.id}" data-importe="${saldo}" data-moneda="${f.moneda||'MXN'}" data-tc="${f.tipo_cambio||1}" data-tercero="${prov.replace(/"/g,'&quot;')}" data-factura="${(f.factura||'').replace(/"/g,'&quot;')}"></td>
+          <td><input type="checkbox" class="efp-check" value="${f.id}" data-importe="${saldo}" data-moneda="${escAttr(f.moneda||'MXN')}" data-tc="${f.tipo_cambio||1}" data-tercero="${escAttr(prov)}" data-factura="${escAttr((f.factura||''))}"></td>
           <td>${fechaCorta(f.fecha)}</td>
-          <td>${f.folio ? '#'+f.folio : '—'}</td>
-          <td>${f.factura || '—'}</td>
-          <td><span class="mf-badge-moneda">${f.moneda||'MXN'}</span></td>
+          <td>${f.folio ? '#'+escHtml(f.folio) : '—'}</td>
+          <td>${escHtml(f.factura || '—')}</td>
+          <td><span class="mf-badge-moneda">${escHtml(f.moneda||'MXN')}</span></td>
           <td class="mf-num">${fmt(saldo)}</td>
           <td>${f.fecha_vencimiento ? fechaCorta(f.fecha_vencimiento) : '—'}</td>
         </tr>`;
       }).join('');
       return `<div class="mf-grupo">
         <div class="mf-grupo-head">
-          <span class="mf-grupo-nombre">${prov}</span>
+          <span class="mf-grupo-nombre">${escHtml(prov)}</span>
           <span class="mf-grupo-meta">${facturasProv.length} factura(s) <span class="mf-grupo-chevron">▾</span></span>
         </div>
         <div class="mf-tabla-wrap"><table class="mf-tabla">
@@ -17984,16 +18107,16 @@ document.getElementById('closeElegirFacturaPago2').addEventListener('click', () 
 function facturaMenuHtml(facturaId, f) {
   const esNota = !!f && f.tipo_documento === 'nota_credito', aplicada = esNota && (f.estatus === 'Pagado' || Math.abs(Number(f.importe_pagado) || 0) > 0.004), devolver = esNota && (!f.moneda || f.moneda === 'MXN') && f.estatus !== 'Pagado' && Math.abs(Number(f.total) || 0) - Math.abs(Number(f.importe_pagado) || 0) > 0.004, estilo = 'display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;';
   if (esNota) return `<td data-rol="acciones" style="position:relative;">
-    <button class="btn btn-ghost btn-sm factura-menu-btn" data-id="${facturaId}" style="padding:5px 12px;">⋮</button>
-    <div class="factura-menu-dropdown" data-menu="${facturaId}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:170px;overflow:hidden;">${devolver ? `<button class="factura-nc-devolver" data-id="${facturaId}" style="${estilo}">Devolver dinero al cliente</button>` : ''}${aplicada ? `<button class="factura-nc-deshacer" data-id="${facturaId}" style="${estilo}">Deshacer aplicación</button>` : ''}<button class="factura-eliminar" data-id="${facturaId}" style="${estilo}color:var(--red);${aplicada ? 'border-top:1px solid var(--line);' : ''}">Eliminar</button></div></td>`;
+    <button class="btn btn-ghost btn-sm factura-menu-btn" data-id="${escAttr(facturaId)}" style="padding:5px 12px;">⋮</button>
+    <div class="factura-menu-dropdown" data-menu="${escAttr(facturaId)}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:170px;overflow:hidden;">${devolver ? `<button class="factura-nc-devolver" data-id="${escAttr(facturaId)}" style="${estilo}">Devolver dinero al cliente</button>` : ''}${aplicada ? `<button class="factura-nc-deshacer" data-id="${escAttr(facturaId)}" style="${estilo}">Deshacer aplicación</button>` : ''}<button class="factura-eliminar" data-id="${escAttr(facturaId)}" style="${estilo}color:var(--red);${aplicada ? 'border-top:1px solid var(--line);' : ''}">Eliminar</button></div></td>`;
   return `<td data-rol="acciones" style="position:relative;">
-    <button class="btn btn-ghost btn-sm factura-menu-btn" data-id="${facturaId}" style="padding:5px 12px;">⋯</button>
-    <div class="factura-menu-dropdown" data-menu="${facturaId}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:160px;overflow:hidden;">
-      <button class="factura-modificar" data-id="${facturaId}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Modificar</button>
-      <button class="factura-cobrar" data-id="${facturaId}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Recibir un pago</button>
-      <button class="factura-nc" data-id="${facturaId}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Nota de crédito</button>
-      <button class="factura-pdf" data-id="${facturaId}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Descargar PDF</button>
-      <button class="factura-eliminar" data-id="${facturaId}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>
+    <button class="btn btn-ghost btn-sm factura-menu-btn" data-id="${escAttr(facturaId)}" style="padding:5px 12px;">⋯</button>
+    <div class="factura-menu-dropdown" data-menu="${escAttr(facturaId)}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:160px;overflow:hidden;">
+      <button class="factura-modificar" data-id="${escAttr(facturaId)}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Modificar</button>
+      <button class="factura-cobrar" data-id="${escAttr(facturaId)}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Recibir un pago</button>
+      <button class="factura-nc" data-id="${escAttr(facturaId)}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Nota de crédito</button>
+      <button class="factura-pdf" data-id="${escAttr(facturaId)}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Descargar PDF</button>
+      <button class="factura-eliminar" data-id="${escAttr(facturaId)}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>
     </div>
   </td>`;
 }
@@ -18345,10 +18468,10 @@ async function renderFacturasClientes(el, b) {
               const esMxn = !f.moneda || f.moneda === 'MXN';
               return `<tr>
               <td data-rol="principal">${fechaCorta(f.fecha)}</td>
-              <td data-rol="secundario">#${f.folio}</td>
-              <td data-rol="secundario">${f.numero_factura || '—'}</td>
+              <td data-rol="secundario">#${escHtml(f.folio)}</td>
+              <td data-rol="secundario">${escHtml(f.numero_factura || '—')}</td>
               <td data-rol="secundario">${nombreCliente(f.cliente_id)}</td>
-              <td data-rol="meta">${f.moneda || 'MXN'}</td>
+              <td data-rol="meta">${escHtml(f.moneda || 'MXN')}</td>
               <td class="num" data-rol="meta">${esMxn ? '—' : fmtTC(f.tipo_cambio || 1)}</td>
               <td class="num" data-rol="importe" style="font-weight:700;">${prefijoMoneda(f.moneda)} ${fmt(f.total)}${f.tipo_documento === 'nota_credito' ? `<div style="font-size:10.5px;font-weight:400;color:var(--green);">nota de crédito${f.factura_origen_id ? ' de #' + revEsc(((facturas.find(x => x.id === f.factura_origen_id)) || {}).folio || '?') : ''}</div>` : ''}</td>
               <td class="num" data-rol="meta">${prefijoMoneda(f.moneda)} ${fmt(f.importe_pagado||0)}</td>
@@ -18384,7 +18507,7 @@ async function openModalFactura(factura, businessId) {
 
   document.getElementById('modalFacturaTitulo').textContent = factura ? `Factura #${factura.folio}` : 'Nueva factura';
   const selCliente = document.getElementById('facturaCliente');
-  selCliente.innerHTML = clientes.map(c => `<option value="${c.id}" ${factura?.cliente_id===c.id?'selected':''}>${c.razon_social || c.nombre_comercial}</option>`).join('') || '<option value="">— crea un cliente primero —</option>';
+  selCliente.innerHTML = clientes.map(c => `<option value="${c.id}" ${factura?.cliente_id===c.id?'selected':''}>${escHtml(c.razon_social || c.nombre_comercial)}</option>`).join('') || '<option value="">— crea un cliente primero —</option>';
   const actualizarNombreComercial = () => {
     const c = clientes.find(x => x.id === selCliente.value);
     document.getElementById('facturaNombreComercial').value = c?.nombre_comercial || '';
@@ -18437,8 +18560,8 @@ async function openModalFactura(factura, businessId) {
     ]);
     const selCuenta = document.getElementById('cobroCuenta');
     selCuenta.innerHTML = `<option value="manual">Ingreso directo (sin registrar en Banco/Efectivo)</option>`
-      + (cuentasBancoQ.data||[]).map(c => `<option value="banco:${c.id}">Banco — ${c.nombre}</option>`).join('')
-      + (monedasQ.data||[]).map(m => `<option value="efectivo:${m.id}">Efectivo — ${m.nombre}</option>`).join('');
+      + (cuentasBancoQ.data||[]).map(c => `<option value="banco:${c.id}">Banco — ${escHtml(c.nombre)}</option>`).join('')
+      + (monedasQ.data||[]).map(m => `<option value="efectivo:${m.id}">Efectivo — ${escHtml(m.nombre)}</option>`).join('');
     await renderCobrosList(businessId, factura.id);
   } else {
     cobrosSection.style.display = 'none';
@@ -18462,10 +18585,10 @@ function renderFacturaLineas() {
       <td>
         <select class="cell factura-linea-producto" data-idx="${idx}" style="min-width:160px;">
           <option value="">— manual —</option>
-          ${productos.map(p => `<option value="${p.id}" ${l.producto_id===p.id?'selected':''}>${p.nombre}</option>`).join('')}
+          ${productos.map(p => `<option value="${p.id}" ${l.producto_id===p.id?'selected':''}>${escHtml(p.nombre)}</option>`).join('')}
         </select>
       </td>
-      <td><input class="cell factura-linea-desc" data-idx="${idx}" type="text" value="${(l.descripcion||'').replace(/"/g,'&quot;')}" placeholder="Descripción"></td>
+      <td><input class="cell factura-linea-desc" data-idx="${idx}" type="text" value="${escAttr((l.descripcion||''))}" placeholder="Descripción"></td>
       <td><input class="cell factura-linea-cant" data-idx="${idx}" type="text" inputmode="decimal" value="${l.cantidad||1}"></td>
       <td><input class="cell factura-linea-precio" data-idx="${idx}" type="text" inputmode="decimal" value="${fmtInputVal(l.precio_unitario||0)}"></td>
       <td class="num">${fmt((Number(l.cantidad)||0) * (Number(l.precio_unitario)||0))}</td>
@@ -18765,7 +18888,7 @@ async function renderOrdenesVenta(el, b) {
           <thead><tr><th>Folio</th><th>Fecha</th><th>Cliente</th><th>Total</th><th>Estatus</th><th></th></tr></thead>
           <tbody>
             ${(ordenes||[]).length ? ordenes.map(o => `<tr>
-              <td>#${o.folio}</td>
+              <td>#${escHtml(o.folio)}</td>
               <td>${fechaCorta(o.fecha)}</td>
               <td>${nombreCliente(o.cliente_id)}</td>
               <td class="num" style="font-weight:700;">${o.moneda==='USD'?'US':''}${fmt(o.total)}</td>
@@ -18794,7 +18917,7 @@ async function openModalOrden(orden, businessId) {
 
   document.getElementById('modalOrdenTitulo').textContent = orden ? `Orden de venta #${orden.folio}` : 'Nueva orden de venta';
   const selCliente = document.getElementById('ordenCliente');
-  selCliente.innerHTML = clientes.map(c => `<option value="${c.id}" ${orden?.cliente_id===c.id?'selected':''}>${c.razon_social || c.nombre_comercial}</option>`).join('') || '<option value="">— crea un cliente primero —</option>';
+  selCliente.innerHTML = clientes.map(c => `<option value="${c.id}" ${orden?.cliente_id===c.id?'selected':''}>${escHtml(c.razon_social || c.nombre_comercial)}</option>`).join('') || '<option value="">— crea un cliente primero —</option>';
   const actualizarNombreComercial = () => {
     const c = clientes.find(x => x.id === selCliente.value);
     document.getElementById('ordenNombreComercial').value = c?.nombre_comercial || '';
@@ -18835,10 +18958,10 @@ function renderOrdenLineas(soloLectura) {
       <td>
         <select class="cell orden-linea-producto" data-idx="${idx}" style="min-width:160px;" ${soloLectura?'disabled':''}>
           <option value="">— manual —</option>
-          ${productos.map(p => `<option value="${p.id}" ${l.producto_id===p.id?'selected':''}>${p.nombre}</option>`).join('')}
+          ${productos.map(p => `<option value="${p.id}" ${l.producto_id===p.id?'selected':''}>${escHtml(p.nombre)}</option>`).join('')}
         </select>
       </td>
-      <td><input class="cell orden-linea-desc" data-idx="${idx}" type="text" value="${(l.descripcion||'').replace(/"/g,'&quot;')}" placeholder="Descripción" ${soloLectura?'disabled':''}></td>
+      <td><input class="cell orden-linea-desc" data-idx="${idx}" type="text" value="${escAttr((l.descripcion||''))}" placeholder="Descripción" ${soloLectura?'disabled':''}></td>
       <td><input class="cell orden-linea-cant" data-idx="${idx}" type="text" inputmode="decimal" value="${l.cantidad||1}" ${soloLectura?'disabled':''}></td>
       <td><input class="cell orden-linea-precio" data-idx="${idx}" type="text" inputmode="decimal" value="${fmtInputVal(l.precio_unitario||0)}" ${soloLectura?'disabled':''}></td>
       <td class="num">${fmt((Number(l.cantidad)||0) * (Number(l.precio_unitario)||0))}</td>
@@ -19088,8 +19211,8 @@ async function openModalFacturaProveedor(factura, businessId, catalogo, opciones
   document.getElementById('modalFacturaProveedorTitulo').textContent = factura ? 'Editar factura de proveedor' : 'Nueva factura de proveedor';
   const selProv = document.getElementById('fpProveedor');
   const proveedorAPreseleccionar = factura?.proveedor_id || proveedorPreseleccionadoId || null;
-  selProv.innerHTML = `<option value="">${factura?.proveedor || '— elegir —'}</option>` +
-    catalogo.map(c => `<option value="${c.id}" ${proveedorAPreseleccionar===c.id?'selected':''}>${c.razon_social ? c.razon_social + ' — ' : ''}${c.nombre_comercial || c.nombre}</option>`).join('');
+  selProv.innerHTML = `<option value="">${escHtml(factura?.proveedor || '— elegir —')}</option>` +
+    catalogo.map(c => `<option value="${c.id}" ${proveedorAPreseleccionar===c.id?'selected':''}>${c.razon_social ? escHtml(c.razon_social) + ' — ' : ''}${escHtml(c.nombre_comercial || c.nombre)}</option>`).join('');
   document.getElementById('fpFactura').value = factura?.factura || '';
   document.getElementById('fpFecha').value = factura?.fecha || todayStr();
   {
@@ -19130,7 +19253,7 @@ async function openModalFacturaProveedor(factura, businessId, catalogo, opciones
   document.getElementById('fpImporteLabel').textContent = esFiscalContable ? 'Importe (calculado)' : 'Importe';
 
   const selRetCat = document.getElementById('fpRetencionCategoria');
-  selRetCat.innerHTML = `<option value="">— sin categoría —</option>` + CATEGORIAS_RETENCION.map(c => `<option value="${c.nombre}" data-isr="${c.isr ?? ''}" data-iva="${c.iva ?? ''}">${c.nombre}</option>`).join('');
+  selRetCat.innerHTML = `<option value="">— sin categoría —</option>` + CATEGORIAS_RETENCION.map(c => `<option value="${escAttr(c.nombre)}" data-isr="${c.isr ?? ''}" data-iva="${c.iva ?? ''}">${escHtml(c.nombre)}</option>`).join('');
   document.getElementById('fpAplicaRetencion').checked = factura ? !!factura.aplica_retencion : false;
   document.getElementById('fpRetencionCampos').style.display = document.getElementById('fpAplicaRetencion').checked ? '' : 'none';
   selRetCat.value = factura?.retencion_categoria || '';
@@ -19142,7 +19265,7 @@ async function openModalFacturaProveedor(factura, businessId, catalogo, opciones
   const selPagado = document.getElementById('fpPagadoDesde');
   const valorPagadoDesde = factura?.pagado_desde_tipo ? (factura.pagado_desde_tipo + ':' + factura.pagado_desde_cuenta_id) : '';
   selPagado.innerHTML = `<option value="">— sin especificar —</option>` +
-    opcionesPagoDesde.map(o => `<option value="${o.value}" ${valorPagadoDesde===o.value?'selected':''}>${o.label}</option>`).join('');
+    opcionesPagoDesde.map(o => `<option value="${o.value}" ${valorPagadoDesde===o.value?'selected':''}>${escHtml(o.label)}</option>`).join('');
   document.getElementById('deleteFacturaProveedor').style.display = factura ? '' : 'none';
 
   const [subcuentas, mayores] = await Promise.all([loadSubcuentas(businessId), loadCuentasMayor(businessId)]);
@@ -19160,7 +19283,7 @@ async function openModalFacturaProveedor(factura, businessId, catalogo, opciones
   // Sección de Activo Fijo dentro de la misma factura
   STATE_fpActivoFijoExistente = null;
   const selAfCat = document.getElementById('fpAfCategoria');
-  selAfCat.innerHTML = `<option value="">— sin categoría —</option>` + CATEGORIAS_ACTIVO_LISR.map(c => `<option value="${c.nombre}" data-pct="${c.pct ?? ''}">${c.nombre}${c.pct!==null?' — '+c.pct+'% anual':''}</option>`).join('');
+  selAfCat.innerHTML = `<option value="">— sin categoría —</option>` + CATEGORIAS_ACTIVO_LISR.map(c => `<option value="${escAttr(c.nombre)}" data-pct="${c.pct ?? ''}">${escHtml(c.nombre)}${c.pct!==null?' — '+c.pct+'% anual':''}</option>`).join('');
   document.getElementById('fpAfCuentaGasto').innerHTML = opcionesSubcuentaHtml(subcuentas, mayores, null) || `<option value="">— crea una subcuenta primero —</option>`;
   document.getElementById('fpAfCuentaDepreciacion').innerHTML = opcionesSubcuentaHtml(subcuentas, mayores, null) || `<option value="">— crea una subcuenta primero —</option>`;
   document.getElementById('fpAfNombre').value = '';
@@ -19280,7 +19403,7 @@ function renderFpDesgloseList() {
   const cuadra = Math.abs(total - importe) < 0.5;
   box.innerHTML = STATE_fpDesgloseLineas.map((l, i) => `
     <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 2px;border-bottom:1px solid var(--line);font-size:12.5px;">
-      <span>${nombreSubcuentaFp(l.subcuenta_id)}${l.descripcion?' — '+l.descripcion:''}</span>
+      <span>${escHtml(nombreSubcuentaFp(l.subcuenta_id))}${l.descripcion?' — '+escHtml(l.descripcion):''}</span>
       <span style="display:flex;align-items:center;gap:8px;">
         <strong>${fmt(l.monto)}</strong>
         <button class="fp-desglose-editar" data-idx="${i}" style="border:none;background:none;color:var(--navy-3);cursor:pointer;font-size:12px;text-decoration:underline;">Editar</button>
@@ -19481,10 +19604,10 @@ function provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntos, todasFactur
   const esMxnProv = !p.moneda || p.moneda === 'MXN';
   return `<tr style="${esCredito?'background:#f2fbf5;':''}">
     <td data-rol="principal"><input class="cell prov-cell" type="date" value="${p.fecha}" data-id="${p.id}" data-field="fecha"></td>
-    <td data-rol="secundario">${p.folio ? '#'+p.folio : '—'}</td>
-    <td data-rol="secundario"><input class="cell prov-cell" type="text" value="${p.factura||''}" data-id="${p.id}" data-field="factura"></td>
-    <td data-rol="secundario">${nombreMostrado}</td>
-    <td data-rol="meta">${p.moneda || 'MXN'}</td>
+    <td data-rol="secundario">${p.folio ? '#'+escHtml(p.folio) : '—'}</td>
+    <td data-rol="secundario"><input class="cell prov-cell" type="text" value="${escAttr(p.factura||'')}" data-id="${p.id}" data-field="factura"></td>
+    <td data-rol="secundario">${escHtml(nombreMostrado)}</td>
+    <td data-rol="meta">${escHtml(p.moneda || 'MXN')}</td>
     <td class="num" data-rol="meta">${esMxnProv ? '—' : fmtTC(p.tipo_cambio || 1)}</td>
     <td data-rol="importe">
       <input class="cell prov-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(p.importe)}" data-id="${p.id}" data-field="importe">
@@ -19503,7 +19626,7 @@ function provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntos, todasFactur
     <td data-rol="meta"><input class="cell prov-cell" type="date" value="${p.fecha_pago||''}" data-id="${p.id}" data-field="fecha_pago"></td>
     <td data-rol="meta"><select class="cell prov-pagodesde" data-id="${p.id}" style="min-width:150px;">
       <option value="">— sin especificar —</option>
-      ${opcionesPagoDesde.map(o => `<option value="${o.value}" ${(p.pagado_desde_tipo && (p.pagado_desde_tipo+':'+p.pagado_desde_cuenta_id)===o.value)?'selected':''}>${o.label}</option>`).join('')}
+      ${opcionesPagoDesde.map(o => `<option value="${o.value}" ${(p.pagado_desde_tipo && (p.pagado_desde_tipo+':'+escHtml(p.pagado_desde_cuenta_id))===o.value)?'selected':''}>${escHtml(o.label)}</option>`).join('')}
     </select></td>
     <td data-rol="meta">${adjuntosCellHtml(conteoAdjuntos, p.id)}</td>
     <td data-rol="acciones" style="position:relative;">
@@ -20519,18 +20642,18 @@ async function abrirDiagnosticoFiscal(businessId, periodo) {
   const filaAplicado = (a, tipoLabel) => `
     <tr>
       <td>${fechaCorta(a.fecha)}</td>
-      <td>${a.factura ? (a.factura.factura || `Folio #${a.factura.folio}`) : '(factura no encontrada)'}</td>
-      <td>${a.factura?.proveedor || ''}</td>
+      <td>${a.factura ? (escHtml(a.factura.factura) || `Folio #${escHtml(a.factura.folio)}`) : '(factura no encontrada)'}</td>
+      <td>${escHtml(a.factura?.proveedor || '')}</td>
       <td class="num">${fmt(a.monto)}</td>
-      <td style="font-size:11.5px;">${a.origen_tabla||'manual'}</td>
+      <td style="font-size:11.5px;">${escHtml(a.origen_tabla||'manual')}</td>
       <td>${a.origenExiste ? '<span style="color:var(--green);">✓ existe</span>' : '<span style="color:var(--red);font-weight:700;">✗ NO existe (huérfano)</span>'}</td>
       <td>${a.facturaExiste ? '<span style="color:var(--green);">✓ existe</span>' : '<span style="color:var(--red);font-weight:700;">✗ NO existe</span>'}</td>
     </tr>`;
 
   const filaRealizacion = (r, idx) => `
     <tr style="${!r.facturaExiste || r.polizaExiste===false ? 'background:#fdeeee;' : ''}">
-      <td>${r.tipo}${r.categoria?' — '+r.categoria:''}</td>
-      <td>${r.factura ? (r.factura.factura || `Folio #${r.factura.folio}`) : '(factura eliminada)'}</td>
+      <td>${r.tipo}${r.categoria?' — '+escHtml(r.categoria):''}</td>
+      <td>${r.factura ? (escHtml(r.factura.factura) || `Folio #${escHtml(r.factura.folio)}`) : '(factura eliminada)'}</td>
       <td class="num">${fmt(r.monto_realizado_acumulado)}</td>
       <td class="num">${r.numPagosAplicados}</td>
       <td class="num">${fmt(r.totalAplicado)}</td>
@@ -20557,21 +20680,21 @@ async function abrirDiagnosticoFiscal(businessId, periodo) {
     ${d.polizasAuto.length ? d.polizasAuto.map(p => `
       <div class="card" style="margin-bottom:8px;padding:10px 12px;">
         <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:6px;">
-          <span style="font-size:12px;"><strong>${fechaCorta(p.fecha)}</strong> — ${p.concepto}</span>
+          <span style="font-size:12px;"><strong>${fechaCorta(p.fecha)}</strong> — ${escHtml(p.concepto)}</span>
           <button class="btn btn-ghost btn-sm diag-fiscal-ver-poliza" data-id="${p.id}" style="font-size:11px;padding:3px 8px;">Ver póliza</button>
         </div>
         <div class="table-wrap"><table><thead><tr><th>Cuenta</th><th>Cargo</th><th>Abono</th></tr></thead>
-          <tbody>${p.lineas.map(l=>`<tr><td style="font-size:11.5px;">${l.cuenta}</td><td class="num">${l.cargo?fmt(l.cargo):''}</td><td class="num">${l.abono?fmt(l.abono):''}</td></tr>`).join('')}</tbody></table></div>
+          <tbody>${p.lineas.map(l=>`<tr><td style="font-size:11.5px;">${escHtml(l.cuenta)}</td><td class="num">${l.cargo?fmt(l.cargo):''}</td><td class="num">${l.abono?fmt(l.abono):''}</td></tr>`).join('')}</tbody></table></div>
       </div>`).join('') : '<div class="empty">Ninguna.</div>'}
 
     <p style="font-size:12.5px;font-weight:700;color:var(--navy-1);margin:14px 0 6px;">5. Registros de Retención en Pagos de Impuestos (TODOS los periodos, para ver la etiqueta exacta)</p>
     <div class="table-wrap"><table><thead><tr><th>Periodo</th><th>Tipo</th><th>Categoría</th><th>Monto</th><th>Fecha de pago</th></tr></thead>
-      <tbody>${d.pagosRetencion.length ? d.pagosRetencion.map(p=>`<tr><td><strong>${p.periodo}</strong></td><td>${p.tipo_impuesto}</td><td>${p.concepto||''}</td><td class="num">${fmt(p.monto)}</td><td>${p.fecha_pago?fechaCorta(p.fecha_pago):'—'}</td></tr>`).join('') : '<tr><td colspan="5" class="empty">Ninguno.</td></tr>'}</tbody></table></div>
+      <tbody>${d.pagosRetencion.length ? d.pagosRetencion.map(p=>`<tr><td><strong>${p.periodo}</strong></td><td>${p.tipo_impuesto}</td><td>${escHtml(p.concepto||'')}</td><td class="num">${fmt(p.monto)}</td><td>${p.fecha_pago?fechaCorta(p.fecha_pago):'—'}</td></tr>`).join('') : '<tr><td colspan="5" class="empty">Ninguno.</td></tr>'}</tbody></table></div>
 
     <p style="font-size:12.5px;font-weight:700;color:var(--navy-1);margin:14px 0 6px;">6. Pólizas automáticas históricas fechadas al día 28 fijo (convención vieja, ya reemplazada por fin de mes real) — ${d.polizasDia28.length}</p>
     <p style="font-size:11.5px;color:var(--muted);margin-bottom:6px;">Ninguna se movió automáticamente — esto es solo para que decidas si migrarlas.</p>
     <div class="table-wrap"><table><thead><tr><th>Fecha actual</th><th>Concepto</th><th>Fecha correcta propuesta</th></tr></thead>
-      <tbody>${d.polizasDia28.length ? d.polizasDia28.map(p=>`<tr><td>${fechaCorta(p.fecha)}</td><td style="font-size:12px;">${p.concepto}</td><td>${fechaCorta(monthBounds(p.fecha.slice(0,7)).end)}</td></tr>`).join('') : '<tr><td colspan="3" class="empty">Ninguna encontrada.</td></tr>'}</tbody></table></div>
+      <tbody>${d.polizasDia28.length ? d.polizasDia28.map(p=>`<tr><td>${fechaCorta(p.fecha)}</td><td style="font-size:12px;">${escHtml(p.concepto)}</td><td>${fechaCorta(monthBounds(p.fecha.slice(0,7)).end)}</td></tr>`).join('') : '<tr><td colspan="3" class="empty">Ninguna encontrada.</td></tr>'}</tbody></table></div>
   `;
   body.querySelectorAll('.diag-fiscal-ver-poliza').forEach(btn => btn.addEventListener('click', () => openPolizaModal(btn.dataset.id, businessId)));
 
@@ -20597,7 +20720,7 @@ async function abrirDiagnosticoFiscal(businessId, periodo) {
     prev.innerHTML = `
       <p style="font-size:12.5px;color:var(--red);font-weight:600;margin-bottom:6px;">Se borrarán ${p.totalPolizas} póliza(s), de estas facturas: ${p.referenciasFacturas.join(', ')||'—'}</p>
       <div class="table-wrap" style="max-height:200px;overflow-y:auto;margin-bottom:8px;"><table><thead><tr><th>Fecha</th><th>Concepto</th></tr></thead>
-        <tbody>${p.polizas.map(x=>`<tr><td>${fechaCorta(x.fecha)}</td><td style="font-size:11.5px;">${x.concepto}</td></tr>`).join('')}</tbody></table></div>
+        <tbody>${p.polizas.map(x=>`<tr><td>${fechaCorta(x.fecha)}</td><td style="font-size:11.5px;">${escHtml(x.concepto)}</td></tr>`).join('')}</tbody></table></div>
       <button class="btn btn-gold btn-sm" id="reinicioConfirmarBtn">Confirmar y reiniciar</button>
     `;
     document.getElementById('reinicioConfirmarBtn').addEventListener('click', async () => {
@@ -20614,12 +20737,12 @@ async function abrirDiagnosticoFiscal(businessId, periodo) {
     const grupos = await diagnosticarCuentasDuplicadas(businessId, ['Actualización fiscal', 'Recargos fiscales', 'Diferencias por redondeo fiscal']);
     zona.innerHTML = grupos.map(g => `
       <div style="margin-bottom:10px;">
-        <p style="font-size:12px;font-weight:700;">${g.nombre} — ${g.mayores.length} cuenta(s) mayor encontrada(s)${g.mayores.length>1?' <span style="color:var(--red);">← DUPLICADO</span>':''}</p>
+        <p style="font-size:12px;font-weight:700;">${escHtml(g.nombre)} — ${g.mayores.length} cuenta(s) mayor encontrada(s)${g.mayores.length>1?' <span style="color:var(--red);">← DUPLICADO</span>':''}</p>
         ${g.mayores.map(m => `
           <div style="margin-left:14px;margin-bottom:6px;font-size:11.5px;">
             <div style="color:var(--muted);">Cuenta mayor id: ${m.id} · tipo: ${m.tipo} · creada: ${m.created_at ? fechaCorta(m.created_at.slice(0,10)) : '—'}</div>
             <div class="table-wrap"><table><thead><tr><th>Subcuenta id</th><th>Nombre</th><th>Creada</th><th># líneas de póliza</th><th>Cargo</th><th>Abono</th><th>Saldo neto</th></tr></thead>
-              <tbody>${m.subs.map(s=>`<tr><td style="font-size:10.5px;">${s.id}</td><td>${s.nombre}</td><td>${s.created_at?fechaCorta(s.created_at.slice(0,10)):'—'}</td><td class="num">${s.numMovimientos}</td><td class="num">${fmt(s.cargo)}</td><td class="num">${fmt(s.abono)}</td><td class="num" style="font-weight:700;">${fmtNeg(s.saldoNeto)}</td></tr>`).join('')}</tbody>
+              <tbody>${m.subs.map(s=>`<tr><td style="font-size:10.5px;">${s.id}</td><td>${escHtml(s.nombre)}</td><td>${s.created_at?fechaCorta(s.created_at.slice(0,10)):'—'}</td><td class="num">${s.numMovimientos}</td><td class="num">${fmt(s.cargo)}</td><td class="num">${fmt(s.abono)}</td><td class="num" style="font-weight:700;">${fmtNeg(s.saldoNeto)}</td></tr>`).join('')}</tbody>
             </table></div>
           </div>`).join('')}
       </div>`).join('');
@@ -20634,7 +20757,7 @@ async function abrirDiagnosticoFiscal(businessId, periodo) {
     if (!totalDuplicados) { zona.innerHTML = `<div class="empty">No se encontró ningún duplicado — nada que limpiar.</div>`; return; }
     const hayAbortados = verificacion.some(g=>g.abortar);
     const previewHtml = verificacion.map(g => `
-      <p style="font-size:12px;"><strong>${g.nombre}</strong>: ${g.duplicados.length} duplicado(s) encontrado(s)${g.abortar?' — <span style="color:var(--red);">al menos uno TIENE referencias reales, este grupo se abortará</span>':' — todos verificados sin ninguna referencia, seguros de borrar'}</p>
+      <p style="font-size:12px;"><strong>${escHtml(g.nombre)}</strong>: ${g.duplicados.length} duplicado(s) encontrado(s)${g.abortar?' — <span style="color:var(--red);">al menos uno TIENE referencias reales, este grupo se abortará</span>':' — todos verificados sin ninguna referencia, seguros de borrar'}</p>
     `).join('');
     zona.innerHTML = previewHtml + (hayAbortados ? `<p style="font-size:11.5px;color:var(--red);">Revisa la consola/apóyate conmigo antes de continuar — hay referencias inesperadas.</p>` : `<button class="btn btn-gold btn-sm" id="confirmarLimpiezaBtn">Confirmar limpieza</button>`);
     const btnConfirmar = document.getElementById('confirmarLimpiezaBtn');
@@ -20642,7 +20765,7 @@ async function abrirDiagnosticoFiscal(businessId, periodo) {
       if (!confirm(`Se eliminarán ${totalDuplicados} cuenta(s) mayor/subcuenta duplicada(s), conservando la más antigua de cada una. ¿Continuar?`)) return;
       const reporte = await ejecutarLimpiezaCuentasDuplicadas(businessId, nombres);
       registrarAuditoria(businessId, 'eliminar', 'Configuración', `Limpieza de cuentas duplicadas: ${reporte.map(r=>`${r.nombre} — ${r.accion}`).join(' | ')}`);
-      zona.innerHTML = `<p style="font-size:12px;font-weight:700;color:var(--green);">Listo:</p>` + reporte.map(r=>`<p style="font-size:12px;">${r.nombre}: ${r.accion}</p>`).join('');
+      zona.innerHTML = `<p style="font-size:12px;font-weight:700;color:var(--green);">Listo:</p>` + reporte.map(r=>`<p style="font-size:12px;">${escHtml(r.nombre)}: ${r.accion}</p>`).join('');
       toast('Limpieza completada.');
     };
   };
@@ -20671,8 +20794,8 @@ async function abrirDiagnosticoFiscal(businessId, periodo) {
     const { gruposMayor, gruposSub } = await verificarTodosLosDuplicadosCatalogo(businessId);
     if (!gruposMayor.length && !gruposSub.length) { zona.innerHTML = `<div class="empty">No se encontró ningún duplicado en todo el catálogo.</div>`; return; }
     const hayAbortados = gruposMayor.some(g=>g.abortar) || gruposSub.some(g=>g.abortar);
-    const filaMayor = g => `<p style="font-size:12px;"><strong>Cuenta mayor "${g.nombre}"</strong> (${g.tipo}): ${g.duplicados.length} duplicado(s)${g.abortar?' — <span style="color:var(--red);">tiene referencias reales, se abortará</span>':' — seguro de borrar'}</p>`;
-    const filaSub = g => `<p style="font-size:12px;"><strong>Subcuenta "${g.mayorNombre} → ${g.nombre}"</strong>: ${g.duplicados.length} duplicado(s)${g.abortar?' — <span style="color:var(--red);">tiene referencias reales, se abortará</span>':' — seguro de borrar'}</p>`;
+    const filaMayor = g => `<p style="font-size:12px;"><strong>Cuenta mayor "${escHtml(g.nombre)}"</strong> (${g.tipo}): ${g.duplicados.length} duplicado(s)${g.abortar?' — <span style="color:var(--red);">tiene referencias reales, se abortará</span>':' — seguro de borrar'}</p>`;
+    const filaSub = g => `<p style="font-size:12px;"><strong>Subcuenta "${escHtml(g.mayorNombre)} → ${escHtml(g.nombre)}"</strong>: ${g.duplicados.length} duplicado(s)${g.abortar?' — <span style="color:var(--red);">tiene referencias reales, se abortará</span>':' — seguro de borrar'}</p>`;
     zona.innerHTML = gruposMayor.map(filaMayor).join('') + gruposSub.map(filaSub).join('') +
       `<button class="btn btn-gold btn-sm" id="confirmarLimpiezaTotalBtn" style="margin-top:8px;">Confirmar limpieza de los grupos seguros</button>` +
       (hayAbortados ? `<p style="font-size:11.5px;color:var(--red);margin-top:6px;">Los grupos marcados en rojo NO se tocarán — tienen referencias reales que revisar manualmente.</p>` : '');
@@ -20680,7 +20803,7 @@ async function abrirDiagnosticoFiscal(businessId, periodo) {
       if (!confirm('Se eliminarán todos los duplicados seguros encontrados (los que tienen referencias reales se dejarán intactos). ¿Continuar?')) return;
       const reporte = await ejecutarLimpiezaTotalCatalogo(businessId);
       registrarAuditoria(businessId, 'eliminar', 'Configuración', `Limpieza total de catálogo: ${reporte.map(r=>`${r.nombre} — ${r.accion}`).join(' | ')}`);
-      zona.innerHTML = `<p style="font-size:12px;font-weight:700;color:var(--green);">Listo:</p>` + reporte.map(r=>`<p style="font-size:12px;">[${r.tipo}] ${r.nombre}: ${r.accion}</p>`).join('');
+      zona.innerHTML = `<p style="font-size:12px;font-weight:700;color:var(--green);">Listo:</p>` + reporte.map(r=>`<p style="font-size:12px;">[${r.tipo}] ${escHtml(r.nombre)}: ${r.accion}</p>`).join('');
       toast('Limpieza completada.');
     };
   };
@@ -20696,7 +20819,7 @@ async function bloqueCausasRevisionHtml(businessId) {
   const conHallazgos = revs.filter(r => r.error || r.items.length);
   const filas = conHallazgos.map(r => {
     const total = revRedondeo(r.items.reduce((a, x) => a + (Number(x.monto) || 0), 0));
-    return `<tr><td>${revEsc(r.titulo)}</td><td class="num">${r.error ? 'error' : r.items.length}</td><td class="num">${r.error || !total ? '' : fmt(total)}</td></tr>`;
+    return `<tr><td>${revEsc(r.titulo)}</td><td class="num">${r.error ? 'error' : r.items.length}</td><td class="num">${escHtml(r.error || !total ? '' : fmt(total))}</td></tr>`;
   }).join('');
   return `<div class="card" style="margin-top:14px;">
     <p style="font-size:12.5px;font-weight:700;color:var(--navy-1);margin-bottom:6px;">Causas frecuentes (Revisión de consistencia)</p>
@@ -20724,12 +20847,12 @@ async function abrirDiagnosticoDescuadre(businessId, hastaFecha) {
   const filaDocumento = (g, idx) => `
     <div class="card" style="margin-bottom:12px;">
       <p style="font-size:12px;color:var(--muted);margin-bottom:4px;">Origen detectado: <strong style="color:var(--navy-1);">${g.modulo}</strong></p>
-      <p style="font-size:13.5px;margin-bottom:2px;"><strong>${g.referencia}</strong>${g.detalle ? ' — ' + g.detalle : ''}</p>
+      <p style="font-size:13.5px;margin-bottom:2px;"><strong>${escHtml(g.referencia)}</strong>${g.detalle ? ' — ' + escHtml(g.detalle) : ''}</p>
       <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">${fechaCorta(g.fecha)}</p>
       <div class="table-wrap" style="margin-bottom:8px;">
         <table>
           <thead><tr><th>Cuenta</th><th>Cargo</th><th>Abono</th></tr></thead>
-          <tbody>${g.lineas.map(l => `<tr><td>${l.cuenta}</td><td class="num">${l.cargo?fmt(l.cargo):''}</td><td class="num">${l.abono?fmt(l.abono):''}</td></tr>`).join('')}</tbody>
+          <tbody>${g.lineas.map(l => `<tr><td>${escHtml(l.cuenta)}</td><td class="num">${l.cargo?fmt(l.cargo):''}</td><td class="num">${l.abono?fmt(l.abono):''}</td></tr>`).join('')}</tbody>
         </table>
       </div>
       <p style="font-size:13px;font-weight:700;color:var(--red);">Diferencia generada: ${fmt(Math.abs(g.cargo-g.abono))}</p>
@@ -20743,7 +20866,7 @@ async function abrirDiagnosticoDescuadre(businessId, hastaFecha) {
       <div class="table-wrap" style="margin-bottom:8px;">
         <table>
           <thead><tr><th>Cuenta</th><th>Fecha</th><th>Cargo</th><th>Depósito</th><th></th></tr></thead>
-          <tbody>${t.movs.map((m,i) => `<tr><td>${m._cuenta}</td><td>${fechaCorta(m.fecha)}</td><td class="num">${m.cargos?fmt(m.cargos):''}</td><td class="num">${m.depositos?fmt(m.depositos):''}</td><td><button class="btn btn-ghost btn-sm diag-ver-traspaso" data-tidx="${idx}" data-midx="${i}" style="font-size:11px;padding:3px 8px;">Ver documento</button></td></tr>`).join('')}</tbody>
+          <tbody>${t.movs.map((m,i) => `<tr><td>${escHtml(m._cuenta)}</td><td>${fechaCorta(m.fecha)}</td><td class="num">${m.cargos?fmt(m.cargos):''}</td><td class="num">${m.depositos?fmt(m.depositos):''}</td><td><button class="btn btn-ghost btn-sm diag-ver-traspaso" data-tidx="${idx}" data-midx="${i}" style="font-size:11px;padding:3px 8px;">Ver documento</button></td></tr>`).join('')}</tbody>
         </table>
       </div>
       <p style="font-size:13px;font-weight:700;color:var(--red);">Diferencia generada: ${fmt(Math.abs(t.diferencia))}</p>
@@ -20869,8 +20992,8 @@ async function abrirModalMovimientosCuenta(nombre, subcuentaIds, businessId, nom
         totalCargo += f.cargo; totalAbono += f.abono;
         return `<tr>
           <td>${fechaCorta(f.fecha)}</td>
-          <td>${f.proveedor}</td>
-          <td>${f.descripcion}</td>
+          <td>${escHtml(f.proveedor)}</td>
+          <td>${escHtml(f.descripcion)}</td>
           <td class="num">${f.cargo?fmt(f.cargo):''}</td>
           <td class="num">${f.abono?fmt(f.abono):''}</td>
           <td class="num">${fmt(saldoCorrido)}</td>
@@ -20884,7 +21007,7 @@ async function abrirModalMovimientosCuenta(nombre, subcuentaIds, businessId, nom
       `;
     });
     if (subcuentaIds.length > 1) {
-      filasHtml += `<tr class="total-row"><td colspan="3">Total ${nombre}</td><td class="num">${fmt(totalCargoGeneral)}</td><td class="num">${fmt(totalAbonoGeneral)}</td><td class="num">${fmt(saldoFinal)}</td></tr>`;
+      filasHtml += `<tr class="total-row"><td colspan="3">Total ${escHtml(nombre)}</td><td class="num">${fmt(totalCargoGeneral)}</td><td class="num">${fmt(totalAbonoGeneral)}</td><td class="num">${fmt(saldoFinal)}</td></tr>`;
     }
     document.getElementById('movCuentaLista').innerHTML = filasHtml || `<tr><td colspan="6" class="empty">No hay movimientos en este rango.</td></tr>`;
   };
@@ -20985,7 +21108,7 @@ function filaArbolBalanceHtml(nodo, nivel, detalleAbiertoHtml) {
   const indent = 40 + (nivel - 1) * 18;
   const estilo = nivel === 1 ? 'font-weight:600;' : 'color:var(--muted);font-size:12.5px;';
   const abierto = STATE_balanceDetalleAbierto === nodo.id;
-  let html = `<tr class="balance-subcuenta-row" data-subcuenta="${nodo.id}" data-nombre="${nodo.nombre.replace(/"/g,'&quot;')}" style="cursor:pointer;"><td style="padding-left:${indent}px;${estilo}">${nodo.nombre}</td><td class="num" style="${nivel === 1 ? 'font-weight:600;' : ''}">${fmtNeg(nodo.total)}</td></tr>`;
+  let html = `<tr class="balance-subcuenta-row" data-subcuenta="${nodo.id}" data-nombre="${escAttr(nodo.nombre)}" style="cursor:pointer;"><td style="padding-left:${indent}px;${estilo}">${escHtml(nodo.nombre)}</td><td class="num" style="${nivel === 1 ? 'font-weight:600;' : ''}">${fmtNeg(nodo.total)}</td></tr>`;
   if (abierto) html += detalleAbiertoHtml;
   nodo.hijos.forEach(h => { html += filaArbolBalanceHtml(h, nivel + 1, detalleAbiertoHtml); });
   return html;
@@ -21136,13 +21259,13 @@ async function renderBalanceGeneralCuerpo() {
 
   const filaCuentaBalance = (c) => `
     <tr class="balance-cuenta-row" data-clave="${c.clave}" style="cursor:pointer;">
-      <td style="padding-left:22px;color:var(--muted);font-size:12.5px;">${c.nombre}${iconoAbrir()}</td>
+      <td style="padding-left:22px;color:var(--muted);font-size:12.5px;">${escHtml(c.nombre)}${iconoAbrir()}</td>
       <td class="num">${fmtNeg(c.saldoNeto)}</td>
     </tr>`;
 
   // Presentación agrupada por cuenta mayor → subcuentas → sub-subcuentas. Solo reacomoda lo que ya
   // se calculó: cada saldo aparece una sola vez, y la suma de lo mostrado es la misma de siempre.
-  const escAttr = (t) => String(t).replace(/"/g, '&quot;');
+  /* (escAttr ahora es global y escapa también &, <, > y la comilla simple: ver el bloque de seguridad antes de registrarAuditoria) */
   const grupoBalanceHtml = (lista) => {
     const sueltas = [];
     const propiosPorMayor = new Map(); // mayorId -> Map(subId -> saldoNeto)
@@ -21175,9 +21298,9 @@ async function renderBalanceGeneralCuerpo() {
       propios.forEach((_, id) => { if (!usados.has(id)) raices.push(construir(id)); }); // salvaguarda: nunca se pierde un saldo
       const totalMayor = raices.reduce((a,r) => a + r.total, 0);
       const mismaQueSuUnicaSub = raices.length === 1 && !raices[0].hijos.length && raices[0].nombre === mayor.nombre;
-      html += `<tr class="bg-mayor-row" data-mayor="${mayor.id}" data-nombre="${escAttr(mayor.nombre)}" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">${mayor.nombre}${iconoAbrir()}</td><td class="num" style="font-weight:600;">${fmtNeg(totalMayor)}</td></tr>`;
+      html += `<tr class="bg-mayor-row" data-mayor="${mayor.id}" data-nombre="${escAttr(mayor.nombre)}" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">${escHtml(mayor.nombre)}${iconoAbrir()}</td><td class="num" style="font-weight:600;">${fmtNeg(totalMayor)}</td></tr>`;
       const pintar = (nodo, nivel) => {
-        html += `<tr class="bg-sub-row" data-sub="${nodo.id}" data-nombre="${escAttr(nodo.nombre)}" style="cursor:pointer;"><td style="padding-left:${22 + nivel * 18}px;color:var(--muted);font-size:12.5px;">${nodo.nombre}${iconoAbrir()}</td><td class="num">${fmtNeg(nodo.total)}</td></tr>`;
+        html += `<tr class="bg-sub-row" data-sub="${nodo.id}" data-nombre="${escAttr(nodo.nombre)}" style="cursor:pointer;"><td style="padding-left:${22 + nivel * 18}px;color:var(--muted);font-size:12.5px;">${escHtml(nodo.nombre)}${iconoAbrir()}</td><td class="num">${fmtNeg(nodo.total)}</td></tr>`;
         nodo.hijos.forEach(h => pintar(h, nivel + 1));
       };
       if (!mismaQueSuUnicaSub) raices.forEach(r => pintar(r, 1));
@@ -21198,15 +21321,15 @@ async function renderBalanceGeneralCuerpo() {
       <div class="kpi"><div class="label">¿Cuadra?</div><div class="value num ${cuadra?'green':'red'}">${cuadra ? '✓ Sí' : fmt(diferenciaCuadre)}</div></div>
     </div>
     <div class="card">
-      <div class="card-head"><h3>Balance General — ${b.name}</h3><span class="hint">${esHoy ? 'Al día de hoy · ' + todayStr() : 'Al cierre de ' + MESES_LARGO[Number(hastaYm.slice(5,7))-1] + ' ' + hastaYm.slice(0,4)}</span></div>
+      <div class="card-head"><h3>Balance General — ${escHtml(b.name)}</h3><span class="hint">${esHoy ? 'Al día de hoy · ' + todayStr() : 'Al cierre de ' + MESES_LARGO[Number(hastaYm.slice(5,7))-1] + ' ' + hastaYm.slice(0,4)}</span></div>
       <div class="table-wrap scroll-sticky tabla-contable-wrap">
       <table class="report-table">
         <tbody>
           <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">ACTIVO</td></tr>
           <tr><td style="padding-left:22px;font-weight:600;">Efectivo y equivalentes</td><td class="num" style="font-weight:600;">${fmtNeg(totalEfectivo)}</td></tr>
-          ${detalleEfectivo.map(d => `<tr class="balance-cuenta-row" data-clave="${d.clave}" style="cursor:pointer;"><td style="padding-left:40px;color:var(--muted);font-size:12.5px;">${d.nombre}${iconoAbrir()}</td><td class="num">${fmtNeg(d.monto)}</td></tr>`).join('')}
+          ${detalleEfectivo.map(d => `<tr class="balance-cuenta-row" data-clave="${d.clave}" style="cursor:pointer;"><td style="padding-left:40px;color:var(--muted);font-size:12.5px;">${escHtml(d.nombre)}${iconoAbrir()}</td><td class="num">${fmtNeg(d.monto)}</td></tr>`).join('')}
           <tr><td style="padding-left:22px;font-weight:600;">Bancos</td><td class="num" style="font-weight:600;">${fmtNeg(totalBancos)}</td></tr>
-          ${detalleBancos.map(d => `<tr class="balance-cuenta-row" data-clave="${d.clave}" style="cursor:pointer;"><td style="padding-left:40px;color:var(--muted);font-size:12.5px;">${d.nombre}${iconoAbrir()}</td><td class="num">${fmtNeg(d.monto)}</td></tr>`).join('')}
+          ${detalleBancos.map(d => `<tr class="balance-cuenta-row" data-clave="${d.clave}" style="cursor:pointer;"><td style="padding-left:40px;color:var(--muted);font-size:12.5px;">${escHtml(d.nombre)}${iconoAbrir()}</td><td class="num">${fmtNeg(d.monto)}</td></tr>`).join('')}
           <tr class="balance-cuenta-row" data-clave="clientes" style="cursor:pointer;"><td style="padding-left:22px;font-weight:600;">Cuentas por cobrar (Clientes)${iconoAbrir()}</td><td class="num" style="font-weight:600;">${fmtNeg(cuentasPorCobrar)}</td></tr>
           ${grupoBalanceHtml(otrosActivos)}
           <tr class="total-row"><td>Total Activo</td><td class="num">${fmtNeg(totalActivo)}</td></tr>
@@ -21655,7 +21778,7 @@ async function abrirModalTcCierre(businessId) {
         return `<td>${t ? `<strong>${fmtTC(t.tc)}</strong>${t.fuente ? `<div style="font-size:10.5px;color:var(--muted);">${revEsc(t.fuente)}</div>` : ''}` : (ym < hoyYm || fin <= todayStr() ? '<span style="color:var(--red);font-size:12px;">falta capturar</span>' : '<span style="color:var(--muted);">—</span>')}${e ? `<div style="font-size:10.5px;color:var(--muted);margin-top:2px;">Ajuste acum.: prov ${fmt(e.ajusteProveedores)} · cli ${fmt(e.ajusteClientes)} · cuentas ${fmt(e.ajusteCuentas)} · <a href="#" class="tc-ver-calculo" data-moneda="${m}" data-fecha="${fin}">Ver cálculo</a></div>` : ''}</td>`;
       }).join('')}</tr>`;
     });
-    cuerpo = `<div style="max-height:46vh;overflow:auto;"><table class="tabla-operativa"><thead><tr><th>Cierre de</th>${monedas.map(m => `<th>${m} (pesos por 1 ${m})</th>`).join('')}</tr></thead><tbody>${filas.join('')}</tbody></table></div>`;
+    cuerpo = `<div style="max-height:46vh;overflow:auto;"><table class="tabla-operativa"><thead><tr><th>Cierre de</th>${monedas.map(m => `<th>${escHtml(m)} (pesos por 1 ${escHtml(m)})</th>`).join('')}</tr></thead><tbody>${filas.join('')}</tbody></table></div>`;
   }
   const bloqueInterruptor = configurado ? `<div style="border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:12px;">
       <label style="display:flex;gap:8px;align-items:center;font-weight:600;font-size:13.5px;"><input type="checkbox" id="revActiva" ${activa ? 'checked' : ''} ${puedeCambiar ? '' : 'disabled'}> Revaluar al cierre de cada mes los saldos en divisas de este negocio</label>
@@ -21993,8 +22116,8 @@ function detalleSubcuentaHtml(filas, colspan) {
       <thead><tr><th>Fecha</th><th>Proveedor</th><th>Concepto</th><th>Importe</th><th>Cómo se pagó</th><th></th></tr></thead>
       <tbody>${filas.map(f => `<tr>
         <td style="white-space:nowrap;">${fechaCorta(f.fecha)}</td>
-        <td style="white-space:normal;word-break:break-word;">${f.proveedor}</td>
-        <td style="white-space:normal;word-break:break-word;">${f.concepto}</td>
+        <td style="white-space:normal;word-break:break-word;">${escHtml(f.proveedor)}</td>
+        <td style="white-space:normal;word-break:break-word;">${escHtml(f.concepto)}</td>
         <td class="num" style="white-space:nowrap;">${fmt(f.importe)}</td>
         <td style="white-space:normal;">${f.pago}</td>
         <td style="white-space:nowrap;">${f.origen && f.origen.tipo !== 'ajuste' ? `<button class="btn btn-ghost btn-sm abrir-origen-btn" data-origen='${JSON.stringify(f.origen).replace(/'/g,'&apos;')}' style="font-size:11px;padding:3px 8px;">Abrir${iconoAbrir()}</button>` : ''}</td>
@@ -22526,7 +22649,7 @@ async function abrirUnificarProveedores(b) {
       <div style="font-size:13px;font-weight:700;">RFC faltantes (${rf.length} proveedor(es) sin RFC)</div>
       <div style="font-size:11.5px;color:var(--muted);margin:2px 0 6px;">Salen de los CFDI que ya cargaste cuando el nombre del emisor coincide. El RFC es lo que identifica a un proveedor: con él se reconoce sin dudas y se detectan duplicados aunque cambie el nombre. Si hay varios RFC con ese nombre, elige tú.</div>
       <div style="max-height:200px;overflow:auto;">${rf.map(x => `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--line);font-size:12.5px;"><div style="flex:1;min-width:0;overflow-wrap:anywhere;"><strong>${revEsc(provNombreVisible(x.p))}</strong></div>
-        <select class="cell rfc-sel" data-id="${x.p.id}" style="width:250px;">${x.opciones.length > 1 ? '<option value="">— elige el RFC —</option>' : ''}${x.opciones.map(o => `<option value="${o.rfc}">${o.rfc} · ${o.n} CFDI${o.yaDe.length ? ' · ya lo tiene ' + revEsc(o.yaDe[0].slice(0, 22)) : ''}</option>`).join('')}</select></div>`).join('')}</div>
+        <select class="cell rfc-sel" data-id="${x.p.id}" style="width:250px;">${x.opciones.length > 1 ? '<option value="">— elige el RFC —</option>' : ''}${x.opciones.map(o => `<option value="${escAttr(o.rfc)}">${escHtml(o.rfc)} · ${o.n} CFDI${o.yaDe.length ? ' · ya lo tiene ' + revEsc(o.yaDe[0].slice(0, 22)) : ''}</option>`).join('')}</select></div>`).join('')}</div>
       <div style="text-align:right;margin-top:8px;"><button class="btn btn-gold btn-sm" id="unifGuardarRfc">Guardar los RFC elegidos</button></div></div>` : '';
     const bloquesGrupos = !D.grupos.length ? '<p class="empty" style="padding:10px 0;">✓ No se detectaron proveedores repetidos en el catálogo.</p>' : D.grupos.map((g, gi) => {
       const st = ST[gi] = ST[gi] && g.miembros.some(m => m.p.id === ST[gi].keep) ? ST[gi] : iniciar(g, g.sugerido), keep = g.miembros.find(m => m.p.id === st.keep), ops = opcionesNC(g, st), nc = ncActual(g, st);
@@ -22645,7 +22768,7 @@ async function abrirProveedoresFaltantes(b, alCambiar) {
   const pintar = () => {
     const F = D.F, activos = D.catalogo.filter(provVisibleEnCatalogo).sort((a, z) => provNombreVisible(a).localeCompare(provNombreVisible(z)));
     const optsLigar = (sel) => `<optgroup label="Ligar a un proveedor del catálogo">${activos.map(p => `<option value="lig:${p.id}" ${sel === p.id ? 'selected' : ''}>${revEsc(provNombreVisible(p))}${p.rfc ? ' · ' + revEsc(p.rfc) : ''}</option>`).join('')}</optgroup>`;
-    const selRfc = (ops) => ops.length ? `<select class="cell falt-rfc" style="width:170px;"><option value="">sin RFC</option>${ops.map(o => `<option value="${o.rfc}" ${ops.length === 1 ? 'selected' : ''}>${o.rfc} · ${o.n} XML</option>`).join('')}</select>` : '<span style="color:var(--muted);font-size:11.5px;">sin XML con ese nombre</span>';
+    const selRfc = (ops) => ops.length ? `<select class="cell falt-rfc" style="width:170px;"><option value="">sin RFC</option>${ops.map(o => `<option value="${escAttr(o.rfc)}" ${ops.length === 1 ? 'selected' : ''}>${escHtml(o.rfc)} · ${o.n} XML</option>`).join('')}</select>` : '<span style="color:var(--muted);font-size:11.5px;">sin XML con ese nombre</span>';
     const fila = (cls, i, nombre, sub, cuenta, controles) => `<div class="falt-fila" data-cls="${cls}" data-i="${i}" style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);font-size:12.5px;">
       <input type="checkbox" class="falt-sel" checked><div style="flex:1;min-width:0;overflow-wrap:anywhere;"><strong>${revEsc(nombre)}</strong>${sub ? `<div style="color:var(--muted);font-size:11px;">${sub}</div>` : ''}</div><div style="white-space:nowrap;color:var(--muted);min-width:110px;text-align:right;">${cuenta}</div><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end;max-width:420px;">${controles}</div></div>`;
     const b1 = F.sinVinculo.map((g, i) => fila('s', i, g.texto, g.variantes.length > 1 ? `También escrito: ${g.variantes.slice(1, 4).map(revEsc).join(' · ')}` : '', `${g.n} factura(s) · ${fmt(g.total)}`,
@@ -23135,7 +23258,7 @@ async function cfdiLeerArchivoMetadata(file) {
     }
     if (/\.xlsx?$/i.test(nombre)) {
       if (typeof XLSX === 'undefined') return { ok: false, motivo: 'Falta la librería para leer Excel.' };
-      const wb = XLSX.read(await cfdiBytesDe(file), { type: 'array' }); return cfdiFilasDeMatriz(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '', raw: false }));
+      const wb = await xlsxLeerLibro(await cfdiBytesDe(file), { type: 'array' }); return cfdiFilasDeMatriz(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '', raw: false }));
     }
     return cfdiLeerMetadata(decodificar(await cfdiBytesDe(file)));
   } catch (e) { return { ok: false, motivo: 'No se pudo leer el archivo: ' + ((e && e.message) || e) }; }
@@ -23188,7 +23311,7 @@ async function abrirMetadataSat(b, alCambiar) {
   const cerrar = () => { bg.remove(); if (hubo && alCambiar) alCambiar(); };
   bg.querySelector('#metaCerrar').addEventListener('click', cerrar);
   const nombreC = (c) => c.direccion === 'emitido' ? (c.nombre_receptor || c.rfc_receptor) : (c.nombre_emisor || c.rfc_emisor);
-  const tabla = (items, conCheck, marcado, extra, bloque) => `<div style="max-height:230px;overflow:auto;border:1px solid var(--line);border-radius:8px;"><table data-bloque="${bloque}" style="width:100%;font-size:12px;border-collapse:collapse;"><thead><tr style="background:var(--bg);text-align:left;">${conCheck ? '<th style="padding:5px 8px;width:26px;"></th>' : ''}<th style="padding:5px 8px;">Fecha</th><th style="padding:5px 8px;">Tipo</th><th style="padding:5px 8px;">Folio</th><th style="padding:5px 8px;">Contraparte</th><th style="padding:5px 8px;text-align:right;">Total</th><th style="padding:5px 8px;">${extra}</th></tr></thead><tbody>${items.map((x, i) => `<tr class="meta-fila" data-i="${i}" style="border-top:1px solid var(--line);">${conCheck ? `<td style="padding:5px 8px;"><input type="checkbox" class="meta-sel" ${marcado ? 'checked' : ''}></td>` : ''}<td style="padding:5px 8px;white-space:nowrap;">${revEsc(String(x.c.fecha || '').slice(0, 10))}</td><td style="padding:5px 8px;">${x.c.direccion === 'emitido' ? 'Emitido' : 'Recibido'} ${revEsc(x.c.tipo_comprobante || '')}</td><td style="padding:5px 8px;">${revEsc([x.c.serie, x.c.folio].filter(Boolean).join('-') || '-')}</td><td style="padding:5px 8px;overflow-wrap:anywhere;">${revEsc(nombreC(x.c))}</td><td style="padding:5px 8px;text-align:right;white-space:nowrap;">${fmt(x.c.total)}</td><td style="padding:5px 8px;">${x.nota || ''}</td></tr>`).join('')}</tbody></table></div>`;
+  const tabla = (items, conCheck, marcado, extra, bloque) => `<div style="max-height:230px;overflow:auto;border:1px solid var(--line);border-radius:8px;"><table data-bloque="${bloque}" style="width:100%;font-size:12px;border-collapse:collapse;"><thead><tr style="background:var(--bg);text-align:left;">${conCheck ? '<th style="padding:5px 8px;width:26px;"></th>' : ''}<th style="padding:5px 8px;">Fecha</th><th style="padding:5px 8px;">Tipo</th><th style="padding:5px 8px;">Folio</th><th style="padding:5px 8px;">Contraparte</th><th style="padding:5px 8px;text-align:right;">Total</th><th style="padding:5px 8px;">${extra}</th></tr></thead><tbody>${items.map((x, i) => `<tr class="meta-fila" data-i="${i}" style="border-top:1px solid var(--line);">${conCheck ? `<td style="padding:5px 8px;"><input type="checkbox" class="meta-sel" ${marcado ? 'checked' : ''}></td>` : ''}<td style="padding:5px 8px;white-space:nowrap;">${revEsc(String(x.c.fecha || '').slice(0, 10))}</td><td style="padding:5px 8px;">${x.c.direccion === 'emitido' ? 'Emitido' : 'Recibido'} ${revEsc(x.c.tipo_comprobante || '')}</td><td style="padding:5px 8px;">${revEsc([x.c.serie, x.c.folio].filter(Boolean).join('-') || '-')}</td><td style="padding:5px 8px;overflow-wrap:anywhere;">${revEsc(nombreC(x.c))}</td><td style="padding:5px 8px;text-align:right;white-space:nowrap;">${fmt(x.c.total)}</td><td style="padding:5px 8px;">${escHtml(x.nota || '')}</td></tr>`).join('')}</tbody></table></div>`;
   const pintar = (r, archivo, meta) => {
     ctx = { r, archivo };
     const kpi = (t, v, color) => `<div style="flex:1;min-width:120px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;"><div style="font-size:10.5px;color:var(--muted);text-transform:uppercase;">${t}</div><div style="font-size:18px;font-weight:700;${color ? 'color:' + color + ';' : ''}">${v}</div></div>`;
@@ -23325,7 +23448,7 @@ async function abrirCfdiClasificarEmitido(c) {
     else {
       const opcSubs = (sel) => `<option value="">Elige…</option>${opcionesSubcuentaHtml(subsIng, mayoresIng, sel)}`, todasIgual = E.subs.length > 1 ? `<div style="margin:6px 0;font-size:12px;"><label>Misma subcuenta para todos: <select id="ceTodas" class="cell" style="width:240px;">${opcSubs('')}</select></label></div>` : '';
       panel = `<div style="margin-top:8px;"><div style="font-size:12px;font-weight:700;">Cliente</div><select id="ceCliente" class="cell" style="width:100%;margin:3px 0 4px;">${rfcOk ? `<option value="nuevo" ${E.cliente === 'nuevo' ? 'selected' : ''}>➕ Crear cliente nuevo: ${revEsc(c.nombre_receptor || rfcR)} (${revEsc(rfcR)})</option>` : '<option value="">Elige un cliente…</option>'}${clientes.map(x => `<option value="${x.id}" ${E.cliente === x.id ? 'selected' : ''}>${revEsc(nomCli(x))}${x.rfc ? ' · ' + revEsc(x.rfc) : ''}</option>`).join('')}</select>
-        <div style="font-size:11.5px;color:var(--muted);">${match.cliente ? `Cliente reconocido ${match.motivo}.` : (generico ? 'El RFC es genérico: elige un cliente existente (por ejemplo "Público en general"); no se crea uno nuevo con ese RFC.' : (rfcOk ? 'No hay un cliente con ese RFC ni con ese nombre.' : 'El CFDI no trae un RFC válido para dar de alta al cliente.'))}</div>
+        <div style="font-size:11.5px;color:var(--muted);">${match.cliente ? `Cliente reconocido ${escHtml(match.motivo)}.` : (generico ? 'El RFC es genérico: elige un cliente existente (por ejemplo "Público en general"); no se crea uno nuevo con ese RFC.' : (rfcOk ? 'No hay un cliente con ese RFC ni con ese nombre.' : 'El CFDI no trae un RFC válido para dar de alta al cliente.'))}</div>
         <div style="font-size:12px;font-weight:700;margin-top:10px;">Subcuenta de ingreso de cada concepto</div>${subsIng.length ? '' : '<div style="color:var(--red);font-size:12px;">Este negocio no tiene subcuentas de ingreso: créalas en Catálogo de cuentas.</div>'}${todasIgual}
         <table class="tabla-operativa" style="margin-top:4px;"><thead><tr><th>Concepto</th><th style="text-align:right;">Importe</th><th>Subcuenta</th></tr></thead><tbody>${conceptos.map((x, i) => `<tr><td style="overflow-wrap:anywhere;">${revEsc(x.descripcion)}<div style="font-size:10.5px;color:var(--muted);">${revEsc(x.clave || '')}</div></td><td style="text-align:right;white-space:nowrap;">${fmt((Number(x.importe) || 0) - (Number(x.descuento) || 0))}</td><td><select class="cell ce-sub" data-i="${i}" style="width:100%;">${opcSubs(E.subs[i])}</select></td></tr>`).join('')}</tbody></table></div>`;
       panel += plan && plan.ok ? `<div style="margin-top:10px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;font-size:12.5px;"><strong>Así quedará la factura de cliente</strong><div style="display:flex;justify-content:space-between;margin-top:4px;"><span>Subtotal</span><span>${fmtMon(plan.resumen.subtotal, plan.payload.moneda)}</span></div><div style="display:flex;justify-content:space-between;"><span>IVA${plan.resumen.pct ? ' ' + plan.resumen.pct + '%' : ''}</span><span>${fmtMon(plan.resumen.iva, plan.payload.moneda)}</span></div><div style="display:flex;justify-content:space-between;font-weight:700;border-top:1px solid var(--line);margin-top:3px;padding-top:3px;"><span>Total</span><span>${fmtMon(plan.resumen.total, plan.payload.moneda)}</span></div><div style="font-size:11.5px;color:var(--muted);margin-top:5px;">Queda <strong>Pendiente de cobro</strong> y "facturada" con este UUID. Si ya te la pagaron, regístralo en Clientes como siempre.</div></div>` : (plan && !plan.ok ? `<div style="margin-top:10px;padding:10px 12px;border:1px solid var(--red);border-radius:8px;font-size:12.5px;color:var(--red);">${plan.errores.map(revEsc).join('<br>')}</div>` : '');
@@ -23333,7 +23456,7 @@ async function abrirCfdiClasificarEmitido(c) {
     cuerpo.innerHTML = `<div style="font-size:12.5px;color:var(--muted);margin-bottom:6px;">${revEsc(ref)} · ${revEsc(String(c.fecha).slice(0, 10))} · ${revEsc(c.nombre_receptor || '')} (${revEsc(rfcR)}) · Total ${fmtMon(c.total, c.moneda)}</div>
       ${generico ? '<div style="padding:8px 10px;margin-bottom:8px;border-radius:8px;background:var(--gold-soft,#fff7e0);font-size:12.5px;"><strong>Este CFDI es a público en general (RFC genérico).</strong> Normalmente es la <strong>factura global</strong> de las ventas del periodo, y esas ventas <strong>ya están registradas en Ventas</strong>: crear una factura de cliente <strong>duplicaría el ingreso</strong>.</div>' : ''}
       <div style="font-size:12.5px;font-weight:700;margin-bottom:2px;">¿Qué quieres hacer con este CFDI?</div>
-      ${candidatas.map(x => opt('ligar:' + x.f.id, `<strong>Ligarlo a la factura de cliente ya capturada</strong> #${x.f.folio}${x.f.numero_factura ? ' · ' + revEsc(x.f.numero_factura) : ''} · ${revEsc(String(x.f.fecha).slice(0, 10))} · ${fmtMon(x.f.total, x.f.moneda)} <span style="color:var(--muted);">(${x.razones.join(', ')})</span>`)).join('')}
+      ${candidatas.map(x => opt('ligar:' + x.f.id, `<strong>Ligarlo a la factura de cliente ya capturada</strong> #${escHtml(x.f.folio)}${x.f.numero_factura ? ' · ' + revEsc(x.f.numero_factura) : ''} · ${revEsc(String(x.f.fecha).slice(0, 10))} · ${fmtMon(x.f.total, x.f.moneda)} <span style="color:var(--muted);">(${x.razones.join(', ')})</span>`)).join('')}
       ${opt('crear', '<strong>Crear la factura de cliente</strong> desde este CFDI')}${opt('global', '<strong>Es una factura global o las ventas ya están registradas</strong>: no crear nada')}${panel}`;
     cuerpo.querySelectorAll('input[name="ceAccion"]').forEach(r => r.addEventListener('change', () => { E.accion = r.value; pintar(); }));
     const cl = cuerpo.querySelector('#ceCliente'); if (cl) cl.addEventListener('change', async () => { E.cliente = cl.value; const d = await cfdiSubcuentaIngresoPorDefecto(b, cl.value && cl.value !== 'nuevo' ? cl.value : null); if (d && E.subs.every(x => !x)) E.subs = conceptos.map(() => d); pintar(); });
@@ -23638,7 +23761,7 @@ async function abrirNotaCreditoCliente(b, facturaId, alCambiar, opciones = {}) {
   const acreditado = (fid) => cfdiR2(E.ncPrevias.filter(n => n.factura_origen_id === fid).reduce((s, n) => s + Math.abs(Number(n.total) || 0), 0));
   const maxAcreditable = () => { const f = orig(); return f ? cfdiR2(Number(f.total) - acreditado(f.id)) : null; };
   const pintarFacturas = () => {
-    $('nccFactura').innerHTML = `<option value="">— Sin factura (crédito general del cliente) —</option>${E.facturas.map(f => `<option value="${f.id}" ${E.facturaId === f.id ? 'selected' : ''}>${revEsc(fechaCorta(f.fecha))} · #${f.folio}${f.numero_factura ? ' · ' + revEsc(f.numero_factura) : ''} · ${fmtMon(f.total, f.moneda)}${acreditado(f.id) ? ` (ya acreditado ${fmt(acreditado(f.id))})` : ''}</option>`).join('')}`;
+    $('nccFactura').innerHTML = `<option value="">— Sin factura (crédito general del cliente) —</option>${E.facturas.map(f => `<option value="${f.id}" ${E.facturaId === f.id ? 'selected' : ''}>${revEsc(fechaCorta(f.fecha))} · #${escHtml(f.folio)}${f.numero_factura ? ' · ' + revEsc(f.numero_factura) : ''} · ${fmtMon(f.total, f.moneda)}${acreditado(f.id) ? ` (ya acreditado ${fmt(acreditado(f.id))})` : ''}</option>`).join('')}`;
     const sinF = !E.facturaId || !E.lineas.some(l => Math.abs(Number(l.importe) || 0) > 0); $('nccSinFactura').style.display = sinF ? '' : 'none'; $('nccPct').parentElement.style.display = E.facturaId ? 'none' : '';
   };
   const calcular = () => {
@@ -23745,7 +23868,7 @@ async function abrirCfdiClasificarEgreso(c) {
     <div style="font-size:12.5px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin:0 0 10px;line-height:1.5;"><strong>${prov ? 'Nota de crédito recibida de ' : 'Nota de crédito emitida a '}${revEsc((prov ? c.nombre_emisor : c.nombre_receptor) || (prov ? c.rfc_emisor : c.rfc_receptor))}</strong> · ${revEsc(ref)} · ${fechaCorta(c.fecha)} · total <strong>${fmtMon(c.total, c.moneda)}</strong> <span style="color:var(--muted);">(subtotal ${fmt(c.subtotal)} · IVA ${fmt(c.iva_trasladado)})</span>
       ${cfdiTiposRelacionTexto(c) ? `<div style="color:var(--muted);">Relación: ${revEsc(cfdiTiposRelacionTexto(c))}</div>` : ''}
       <div style="margin-top:4px;"><span style="color:var(--muted);">Corrige:</span>${lineaOrigen}</div>
-      <div style="margin-top:4px;color:var(--muted);">${prov ? 'Proveedor' : 'Cliente'} en tu catálogo: ${contraSel ? `<strong style="color:var(--ink);">${revEsc(nomContra(contraSel))}</strong>${origenUnico ? ' (el de la factura que corrige)' : (match && match.motivo ? ' (' + match.motivo + ')' : '')}` : 'no lo encontré: lo eliges al crear la nota'}</div></div>
+      <div style="margin-top:4px;color:var(--muted);">${prov ? 'Proveedor' : 'Cliente'} en tu catálogo: ${contraSel ? `<strong style="color:var(--ink);">${revEsc(nomContra(contraSel))}</strong>${origenUnico ? ' (el de la factura que corrige)' : (match && match.motivo ? ' (' + escHtml(match.motivo) + ')' : '')}` : 'no lo encontré: lo eliges al crear la nota'}</div></div>
     <label style="display:flex;gap:8px;align-items:flex-start;margin:0 0 6px;font-size:13px;"><input type="radio" name="ceeAccion" value="crear" checked style="margin-top:3px;"><span><strong>Crear la nota de crédito desde este CFDI</strong><br><span style="font-size:12px;color:var(--muted);">${prov ? 'Baja el gasto, el IVA acreditable y lo que le debes al proveedor.' : 'Baja tus ingresos, el IVA trasladado y lo que te debe el cliente.'} Se abre la ventana de nota con el total y la fecha del CFDI ya puestos; lo ves todo antes de guardar.</span></span></label>
     ${origenes.length > 1 ? `<div id="ceeOrigenWrap" style="margin:0 0 8px 22px;"><label style="font-size:12px;color:var(--muted);">El CFDI relaciona varias facturas; esta nota corrige:</label><select id="ceeOrigen" class="cell" style="width:100%;">${origenes.map(f => `<option value="${f.id}">${revEsc(refOrig(f))} · ${fechaCorta(f.fecha)} · ${fmtMon(impOrig(f), f.moneda)}</option>`).join('')}<option value="">Ninguna (crédito general)</option></select></div>` : ''}
     <label style="display:flex;gap:8px;align-items:flex-start;margin:0 0 6px;font-size:13px;${candidatas.length ? '' : 'opacity:.55;'}"><input type="radio" name="ceeAccion" value="ligar" ${candidatas.length ? '' : 'disabled'} style="margin-top:3px;"><span><strong>Ligar a una nota de crédito que ya capturé</strong><br><span style="font-size:12px;color:var(--muted);">${candidatas.length ? 'Solo le agrega el UUID (y la marca facturada); no toca importes, líneas ni pagos.' : `No hay notas de crédito ${contraId ? 'de esa ' + (prov ? 'proveedor' : 'cliente') + ' ' : ''}por ${fmtMon(c.total, c.moneda)} sin UUID.`}</span></span></label>
@@ -24094,7 +24217,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-10-14.9';
+const APP_VERSION = '2026-10-19.6';
 const RESPALDO_TABLAS = [['businesses', ['id']], ['fz_cuentas_mayor', ['id']], ['fz_subcuentas', ['id']], ['fz_polizas', ['id']], ['fz_polizas_lineas', ['id']], ['fz_proveedores_catalogo', ['id']], ['fz_proveedores', ['id']], ['fz_ventas', ['id']], ['fz_conceptos_venta', ['id']], ['fz_conceptos_sistema', ['id']], ['fz_conceptos', ['id']], ['fz_efectivo_monedas', ['id']], ['fz_efectivo_mov', ['id']], ['fz_bancos_cuentas', ['id']], ['fz_bancos_mov', ['id']], ['fz_pl_gastos', ['id']], ['fz_usuarios_autorizados', ['id']], ['fz_usuario_negocios', ['id']], ['fz_auditoria', ['id']], ['fz_adjuntos', ['id']], ['fz_pagos_aplicados', ['id']], ['fz_clientes', ['id']], ['fz_productos_servicios', ['id']], ['fz_folios_contador', ['business_id', 'tipo']], ['fz_facturas_clientes', ['id']], ['fz_facturas_clientes_lineas', ['id']], ['fz_cobros_aplicados', ['id']], ['fz_ordenes_venta', ['id']], ['fz_ordenes_venta_lineas', ['id']], ['fz_conciliaciones_bancarias', ['id']], ['fz_cierres_periodo', ['id']], ['fz_tc_cierre', ['id']], ['fz_tipos_cambio_cierre', ['id']], ['fz_cfdi', ['id']], ['fz_cfdi_bitacora', ['id']], ['fz_activos_fijos', ['id']], ['fz_depreciaciones_generadas', ['id']], ['fz_inpc_valores', ['id']], ['fz_recargos_tasas', ['id']], ['fz_pagos_impuestos', ['id']], ['fz_isr_datos_anuales', ['id']], ['fz_isr_conceptos', ['id']], ['fz_provisiones_fiscales', ['id']], ['fz_iva_realizaciones', ['id']], ['fz_aplicaciones_pago_fiscal', ['id']], ['fz_regimenes_fiscales_negocio', ['id']], ['fz_dias_inhabiles_fiscales', ['id']], ['fz_declaraciones_fiscales', ['id']], ['fz_reglas_vencimiento_impuesto', []], ['fz_calendario_fiscal_validacion', []], ['fz_catalogo_regimenes_fiscales', []], ['fz_papeles_trabajo', ['id']], ['fz_papel_conceptos', ['id']], ['fz_papel_concepto_fuentes', ['id']], ['fz_papel_concepto_accesorios', ['id']], ['fz_papel_historial', ['id']], ['fz_papel_soportes', ['id']], ['fz_mapeo_cuenta_concepto_fiscal', ['id']], ['fz_perdidas_fiscales', ['id']], ['fz_perdidas_fiscales_actualizaciones', ['id']], ['fz_perdidas_fiscales_aplicaciones', ['id']], ['fz_perdidas_fiscales_cierres', ['id']], ['fz_perdidas_fiscales_historial', ['id']], ['fz_perdidas_fiscales_soportes', ['id']], ['fz_ptu_eventos', ['id']], ['fz_ptu_historial', ['id']], ['fz_pagos_por_clasificar', ['id']], ['fz_iva_saldos_favor', ['id']], ['fz_iva_saldos_favor_movimientos', ['id']], ['fz_iva_saldos_favor_devoluciones', ['id']], ['fz_iva_saldo_favor_periodo_activo', ['id']]];
 const RESPALDO_BUCKETS = ['adjuntos', 'cfdi'], RESPALDO_MAX_ARCHIVOS_BYTES = 400 * 1024 * 1024, RESPALDO_AVISO_DIAS = 7;
 function respaldoEstado() { try { return JSON.parse(localStorage.getItem('finanzas_ultimo_respaldo') || 'null'); } catch (_) { return null; } }
@@ -24103,7 +24226,7 @@ function respaldoEstadoHtml() { // texto de la tarjeta de Configuración
   const e = respaldoEstado();
   if (!e || !e.fecha) return '<span style="color:var(--red);font-weight:600;">⚠ Nunca has descargado un respaldo completo.</span> Descarga las 70 tablas de Finanzas y tus negocios (y opcionalmente sus archivos) en un ZIP.';
   const d = respaldoDiasDesde(e.fecha), cuando = d <= 0 ? 'hoy' : (d === 1 ? 'ayer' : `hace ${d} días`), viejo = d >= RESPALDO_AVISO_DIAS;
-  return `${viejo ? '<span style="color:var(--red);font-weight:600;">⚠ ' : '<span style="color:var(--green);font-weight:600;">✓ '}Último respaldo: ${cuando}</span> (${fechaCorta(e.fecha.slice(0, 10))} · ${Number(e.filas || 0).toLocaleString('es-MX')} filas${e.archivos ? ' · ' + e.archivos + ' archivos' : ''}${e.avisos ? ' · ' + e.avisos + ' aviso(s)' : ''}).${viejo ? ' Ya pasó más de una semana.' : ''}`;
+  return `${viejo ? '<span style="color:var(--red);font-weight:600;">⚠ ' : '<span style="color:var(--green);font-weight:600;">✓ '}Último respaldo: ${cuando}</span> (${fechaCorta(e.fecha.slice(0, 10))} · ${Number(e.filas || 0).toLocaleString('es-MX')} filas${e.archivos ? ' · ' + escHtml(e.archivos) + ' archivos' : ''}${e.avisos ? ' · ' + e.avisos + ' aviso(s)' : ''}).${viejo ? ' Ya pasó más de una semana.' : ''}`;
 }
 async function respaldoLeerTabla(tabla, orden) { // todas las filas (de 1000 en 1000) y, aparte, el conteo real para comprobar que no falte ninguna
   const { data, error } = await fetchTodasLasPaginas(() => { let q = sb.from(tabla).select('*'); orden.forEach(c => { q = q.order(c); }); return q; });
@@ -24244,7 +24367,7 @@ function abrirRestaurarArchivos() {
     <div style="height:8px;background:#eef1f6;border-radius:6px;overflow:hidden;margin:8px 0;display:none;" id="raBarraWrap"><div id="raBarra" style="height:100%;width:0;background:var(--gold,#b8892b);transition:width .15s;"></div></div><div id="raEstado" style="font-size:12.5px;"></div>
     <div class="modal-actions" style="position:sticky;bottom:0;background:#fff;border-top:1px solid var(--line);padding:12px 0 2px;margin-top:12px;z-index:2;flex-wrap:wrap;"><button class="btn btn-ghost" id="raCerrar">Cerrar</button><button class="btn btn-ghost" id="raComprobar" disabled>Solo comprobar</button><button class="btn btn-gold" id="raSubir" disabled>Subir los que falten</button></div></div>`;
   document.body.appendChild(bg); const $ = (id) => bg.querySelector('#' + id); $('raCerrar').addEventListener('click', cerrar);
-  const resumenVerif = (v) => `<div style="margin-top:6px;">${v.delZipPresentes !== null ? `Del respaldo, <strong>${v.delZipPresentes}</strong> de ${A.lista.length} archivos están en el almacenamiento${v.faltan.length ? ` y <strong style="color:var(--red);">faltan ${v.faltan.length}</strong>` : ' ✓'}.` : ''}${v.registrosSinArchivo !== null ? `<br>Registros de adjuntos <strong>sin archivo</strong>: <strong${v.registrosSinArchivo ? ' style="color:var(--red);"' : ''}>${v.registrosSinArchivo}</strong>. Archivos <strong>sin registro</strong>: ${v.archivosSinRegistro} (no es un error: puede ser un archivo suelto).` : ''}${v.errores.length ? `<br><span style="color:#9a6a00;">⚠ ${v.errores.map(revEsc).join('<br>⚠ ')}</span>` : ''}</div>`;
+  const resumenVerif = (v) => `<div style="margin-top:6px;">${v.delZipPresentes !== null ? `Del respaldo, <strong>${v.delZipPresentes}</strong> de ${A.lista.length} archivos están en el almacenamiento${v.faltan.length ? ` y <strong style="color:var(--red);">faltan ${v.faltan.length}</strong>` : ' ✓'}.` : ''}${v.registrosSinArchivo !== null ? `<br>Registros de adjuntos <strong>sin archivo</strong>: <strong${v.registrosSinArchivo ? ' style="color:var(--red);"' : ''}>${escHtml(v.registrosSinArchivo)}</strong>. Archivos <strong>sin registro</strong>: ${escHtml(v.archivosSinRegistro)} (no es un error: puede ser un archivo suelto).` : ''}${v.errores.length ? `<br><span style="color:#9a6a00;">⚠ ${v.errores.map(revEsc).join('<br>⚠ ')}</span>` : ''}</div>`;
   $('raArchivo').addEventListener('change', async (ev) => {
     const f = ev.target.files && ev.target.files[0]; if (!f) return; $('raInfo').textContent = 'Leyendo…'; $('raSubir').disabled = $('raComprobar').disabled = true;
     try { A = await restaurarArchAnalizar(await f.arrayBuffer()); }
@@ -24484,7 +24607,7 @@ function pintarCfdi(el, b) {
   const visibles = todos.filter(c => pasa(c, null));
   const cnt = (fn) => todos.filter(fn).length;
   const puedeCambiar = puedeReabrirPeriodo();
-  const tag = (campo, v, texto) => `<div class="tag ${f[campo] === v ? 'active' : ''}" data-filtro="${campo}" data-valor="${v}">${texto}</div>`;
+  const tag = (campo, v, texto) => `<div class="tag ${f[campo] === v ? 'active' : ''}" data-filtro="${campo}" data-valor="${escAttr(v)}">${escHtml(texto)}</div>`;
   // un renglón de opciones: "Todos" + solo las que tienen resultados (y la elegida), cada una con su conteo
   const fila = (campo, orden, textoTodos, etiqueta, conteos, siempre = false) => {
     const total = Object.values(conteos).reduce((x, y) => x + y, 0);
@@ -24639,7 +24762,7 @@ async function abrirCfdiEstatus(id) {
   if (error || !c) { toast('No se encontró el CFDI.', 'error'); return; }
   const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalCfdiEstatus';
   bg.innerHTML = `<div class="modal" style="width:min(560px,95vw);"><h3>Estatus ante el SAT</h3>
-    <p style="font-size:12.5px;color:var(--muted);">${CFDI_TIPOS[c.tipo_comprobante]} ${c.direccion} · ${revEsc([c.serie, c.folio].filter(Boolean).join('-') || c.uuid)} · ${fmtMon(c.total, c.moneda)}<br>Estatus actual: <strong>${CFDI_ESTATUS_SAT[c.estatus_sat]}</strong>. Esto <strong>no modifica el XML ni sus datos</strong>: solo registra el estatus, con su fecha, motivo y quién lo cambió.</p>
+    <p style="font-size:12.5px;color:var(--muted);">${CFDI_TIPOS[c.tipo_comprobante]} ${escHtml(c.direccion)} · ${revEsc([c.serie, c.folio].filter(Boolean).join('-') || c.uuid)} · ${fmtMon(c.total, c.moneda)}<br>Estatus actual: <strong>${CFDI_ESTATUS_SAT[c.estatus_sat]}</strong>. Esto <strong>no modifica el XML ni sus datos</strong>: solo registra el estatus, con su fecha, motivo y quién lo cambió.</p>
     <label style="font-size:12.5px;font-weight:600;">Nuevo estatus</label>
     <select id="ceNuevo" class="cell" style="width:100%;margin-bottom:10px;">${Object.entries(CFDI_ESTATUS_SAT).filter(([k]) => k !== c.estatus_sat).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>
     <label style="font-size:12.5px;font-weight:600;" id="ceFechaLbl">Fecha en que se verificó</label>
@@ -24861,7 +24984,7 @@ async function renderPLAnual(el, b) {
   const sum = arr => arr.reduce((s,x)=>s+x,0);
   const colorCelda = (v, opts) => opts.perValueColor ? `color:${Number(v)>=0?'var(--green)':'var(--red)'};` : (opts.color?`color:${opts.color};`:(Number(v)<0?'color:var(--red);':''));
   const filaHtml = (label, valores, opts={}) => `<tr class="${opts.total?'total-row':''}" style="${opts.bg?'background:#f7f9fc;':''}">
-    <td style="${opts.indentPx?`padding-left:${opts.indentPx}px;`:(opts.indent?'padding-left:22px;':'')}${opts.italic?'font-style:italic;color:var(--muted);':''}${opts.bold?'font-weight:700;':''}">${label}</td>
+    <td style="${opts.indentPx?`padding-left:${opts.indentPx}px;`:(opts.indent?'padding-left:22px;':'')}${opts.italic?'font-style:italic;color:var(--muted);':''}${opts.bold?'font-weight:700;':''}">${escHtml(label)}</td>
     ${valores.map(v => `<td class="num" style="${colorCelda(v, opts)}">${fmt(v)}</td>`).join('')}
     <td class="num" style="font-weight:700;${colorCelda(sum(valores), opts)}">${fmt(sum(valores))}</td>
   </tr>`;
@@ -24905,7 +25028,7 @@ async function renderPLAnual(el, b) {
     const valoresVenta = datos.map((d) => g.items.reduce((s, it) => s + (d.ingresosPorConcepto[it.idx] * (it.c.tipo==='resta'?-1:1)), 0));
     const valoresPoliza = datos.map(d => d.iPoliza.porMayor.find(pm => pm.id === g.mayor.id)?.subtotal || 0);
     const valoresCombinados = valoresVenta.map((v, i) => v + valoresPoliza[i]);
-    return `<tr style="background:#f7f9fc;"><td colspan="${mesesYm.length + 2}" style="font-weight:700;">${g.mayor.nombre}</td></tr>`
+    return `<tr style="background:#f7f9fc;"><td colspan="${mesesYm.length + 2}" style="font-weight:700;">${escHtml(g.mayor.nombre)}</td></tr>`
       + g.items.map(filaIngresoAnualHtml).join('')
       + filasSubcuentasPorMayor(g.mayor, d => d.iPoliza.porMayor.find(pm => pm.id === g.mayor.id))
       + filaHtml(`Subtotal ${g.mayor.nombre}`, valoresCombinados, { italic: true, indentPx: 22 });
@@ -24925,7 +25048,7 @@ async function renderPLAnual(el, b) {
         const venta = d.ingresosPorConcepto[idxVenta];
         return venta ? (totalPorMes[i] / venta * 100) : null;
       });
-      filaPct = `<tr><td style="padding-left:22px;font-style:italic;color:var(--muted);font-size:11px;">% vs ${conceptosVenta[idxVenta].nombre}</td>${pctPorMes.map(v => `<td class="num" style="color:var(--muted);font-size:11px;">${v===null?'—':v.toFixed(1)+'%'}</td>`).join('')}<td class="num" style="color:var(--muted);font-size:11px;"></td></tr>`;
+      filaPct = `<tr><td style="padding-left:22px;font-style:italic;color:var(--muted);font-size:11px;">% vs ${escHtml(conceptosVenta[idxVenta].nombre)}</td>${pctPorMes.map(v => `<td class="num" style="color:var(--muted);font-size:11px;">${v===null?'—':v.toFixed(1)+'%'}</td>`).join('')}<td class="num" style="color:var(--muted);font-size:11px;"></td></tr>`;
     }
     return filaHtml(m.nombre, totalPorMes, { bold:true, bg:true }) + filasSubcuentasPorMayor(m, d => d.gCostos.porMayor.find(pm=>pm.nombre===m.nombre)) + filaPct;
   }).join('');
@@ -25000,7 +25123,7 @@ function filaArbolSubcuentaHtml(nodo, conTerceraColumna, nivel, detalleHtmlSiAbi
   const abierto = STATE_plDetalleAbierto === nodo.id;
   const estilo = nivel === 0 ? 'font-weight:600;' : 'color:var(--muted);font-size:12.5px;';
   let html = `<tr class="pl-subcuenta-row" data-subcuenta="${nodo.id}" style="cursor:pointer;">
-    <td style="padding-left:${indent}px;${estilo}">${abierto?'▾':'▸'} ${nodo.nombre}</td>
+    <td style="padding-left:${indent}px;${estilo}">${abierto?'▾':'▸'} ${escHtml(nodo.nombre)}</td>
     <td class="num" style="${nivel === 0 ? 'font-weight:600;' : ''}">${fmtNeg(nodo.total)}</td>${conTerceraColumna?'<td class="td-vacia-reporte"></td>':''}
   </tr>`;
   if (abierto) html += detalleHtmlSiAbierto;
@@ -25172,7 +25295,7 @@ async function renderPLCuerpo() {
 
     ${comparativo ? `
     <div class="card">
-      <div class="card-head"><h3>Comparación — ${periodoLabel} vs. ${periodoCompLabel}</h3></div>
+      <div class="card-head"><h3>Comparación — ${escHtml(periodoLabel)} vs. ${escHtml(periodoCompLabel)}</h3></div>
       <div class="table-wrap tabla-contable-wrap">
       <table class="report-table">
         <thead><tr><th>Concepto</th><th>Periodo actual</th><th>Periodo comparativo</th><th>Variación $</th><th>Variación %</th></tr></thead>
@@ -25191,7 +25314,7 @@ async function renderPLCuerpo() {
     </div>` : ''}
 
     <div class="card">
-      <div class="card-head"><h3>Ingresos — ${periodoLabel}</h3><span class="hint">Calculado de Ventas</span></div>
+      <div class="card-head"><h3>Ingresos — ${escHtml(periodoLabel)}</h3><span class="hint">Calculado de Ventas</span></div>
       <div class="table-wrap tabla-contable-wrap">
       <table class="report-table">
         <tbody>
@@ -25209,14 +25332,14 @@ async function renderPLCuerpo() {
             iPoliza.porMayor.forEach(m => {
               (grupos[m.id] ||= { id: m.id, nombre: m.nombre, items: [], iPoliza: null }).iPoliza = m;
             });
-            const filaIngresoHtml = (i) => `<tr><td style="padding-left:22px;color:var(--muted);font-size:12.5px;">${i.nombre}${i.tipo==='resta'?' (descuento)':''}</td><td class="num" style="${i.tipo==='resta'?'color:var(--red);':''}">${i.tipo==='resta'?'-':''}${fmt(i.monto)}</td></tr>`;
+            const filaIngresoHtml = (i) => `<tr><td style="padding-left:22px;color:var(--muted);font-size:12.5px;">${escHtml(i.nombre)}${i.tipo==='resta'?' (descuento)':''}</td><td class="num" style="${i.tipo==='resta'?'color:var(--red);':''}">${i.tipo==='resta'?'-':''}${fmt(i.monto)}</td></tr>`;
             const gruposHtml = Object.values(grupos).map(g => {
               const subtotalVenta = g.items.reduce((s,i)=>s+(i.tipo==='resta'?-i.monto:i.monto),0);
               const subtotalPoliza = g.iPoliza ? g.iPoliza.subtotal : 0;
-              return `<tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">${g.nombre}</td></tr>`
+              return `<tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">${escHtml(g.nombre)}</td></tr>`
                 + g.items.map(filaIngresoHtml).join('')
                 + (g.iPoliza ? g.iPoliza.subs.map(s => filaArbolSubcuentaHtml(s, false, 0, detalleIngresoHtml)).join('') : '')
-                + `<tr><td style="padding-left:22px;font-style:italic;color:var(--muted);">Subtotal ${g.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(subtotalVenta + subtotalPoliza)}</td></tr>`;
+                + `<tr><td style="padding-left:22px;font-style:italic;color:var(--muted);">Subtotal ${escHtml(g.nombre)}</td><td class="num" style="font-weight:600;">${fmtNeg(subtotalVenta + subtotalPoliza)}</td></tr>`;
             }).join('');
             return (ingresosPorConcepto.length ? gruposHtml + sinGrupo.map(filaIngresoHtml).join('') : (Object.keys(grupos).length ? gruposHtml : `<tr><td colspan="2" class="empty">Este negocio no tiene categorías de venta configuradas (ve a Ventas → Configurar categorías de venta).</td></tr>`));
           })()}
@@ -25229,17 +25352,17 @@ async function renderPLCuerpo() {
 
     ${mayores.some(m => m.tipo === 'costo') ? `
     <div class="card">
-      <div class="card-head"><h3>Costo de Ventas — ${periodoLabel}</h3></div>
+      <div class="card-head"><h3>Costo de Ventas — ${escHtml(periodoLabel)}</h3></div>
       <div class="table-wrap tabla-contable-wrap">
       <table class="report-table">
         <tbody>
           ${gCostos.porMayor.length ? gCostos.porMayor.map(m => {
             const ventaVinculada = m.conceptoVentaVinculadoId ? ingresosPorConcepto.find(i => i.id === m.conceptoVentaVinculadoId) : null;
-            const porcentaje = (ventaVinculada && ventaVinculada.monto) ? ` <span style="color:var(--muted);font-weight:400;">(${(m.subtotal/ventaVinculada.monto*100).toFixed(1)}% de ${ventaVinculada.nombre})</span>` : '';
+            const porcentaje = (ventaVinculada && ventaVinculada.monto) ? ` <span style="color:var(--muted);font-weight:400;">(${(m.subtotal/ventaVinculada.monto*100).toFixed(1)}% de ${escHtml(ventaVinculada.nombre)})</span>` : '';
             return `
-            <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">${m.nombre}</td></tr>
+            <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">${escHtml(m.nombre)}</td></tr>
             ${m.subs.map(s => filaArbolSubcuentaHtml(s, false, 0, detalleCostoHtml)).join('')}
-            <tr><td style="padding-left:22px;font-style:italic;color:var(--muted);">Subtotal ${m.nombre}${porcentaje}</td><td class="num" style="font-weight:600;">${fmtNeg(m.subtotal)}</td></tr>
+            <tr><td style="padding-left:22px;font-style:italic;color:var(--muted);">Subtotal ${escHtml(m.nombre)}${porcentaje}</td><td class="num" style="font-weight:600;">${fmtNeg(m.subtotal)}</td></tr>
           `;
           }).join('') : `<tr><td colspan="2" class="empty">Sin costos clasificados en este periodo.</td></tr>`}
           <tr class="total-row"><td>Total Costo de Ventas</td><td class="num">${fmtNeg(gCostos.totalClasificado)}</td></tr>
@@ -25251,7 +25374,7 @@ async function renderPLCuerpo() {
 
     <div class="card">
       <div class="card-head">
-        <h3>Gastos por cuenta — ${periodoLabel}</h3>
+        <h3>Gastos por cuenta — ${escHtml(periodoLabel)}</h3>
         <div style="display:flex;gap:8px;">
           <button class="btn btn-gold btn-sm" id="addGastoBtn">+ Ajuste manual</button>
         </div>
@@ -25262,9 +25385,9 @@ async function renderPLCuerpo() {
           <tr><td>Gastos operativos del día (desde Ventas, sin clasificar)</td><td class="num">${fmtNeg(gastosOperativos)}</td><td class="td-vacia-reporte"></td></tr>
           ${faltanteCaja ? `<tr><td>Faltante de caja (conciliación de Ventas)</td><td class="num" style="color:var(--red);">${fmt(faltanteCaja)}</td><td class="td-vacia-reporte"></td></tr>` : ''}
           ${gClasOperacion.porMayor.map(m => `
-            <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">${m.nombre}</td><td class="td-vacia-reporte"></td></tr>
+            <tr style="background:#f7f9fc;"><td colspan="2" style="font-weight:700;">${escHtml(m.nombre)}</td><td class="td-vacia-reporte"></td></tr>
             ${m.subs.map(s => filaArbolSubcuentaHtml(s, true, 0, detalleGastoHtml)).join('')}
-            <tr><td style="padding-left:22px;font-style:italic;color:var(--muted);">Subtotal ${m.nombre}</td><td class="num" style="font-weight:600;">${fmtNeg(m.subtotal)}</td><td class="td-vacia-reporte"></td></tr>
+            <tr><td style="padding-left:22px;font-style:italic;color:var(--muted);">Subtotal ${escHtml(m.nombre)}</td><td class="num" style="font-weight:600;">${fmtNeg(m.subtotal)}</td><td class="td-vacia-reporte"></td></tr>
           `).join('')}
           ${gClasOperacion.sinClasificar ? `<tr class="pl-sinclas-fila" style="cursor:pointer;" title="Ver de qué está hecho y clasificarlo"><td>Otros gastos sin subcuenta asignada <span style="color:var(--gold);font-size:12px;">${STATE_plSinClasAbierto ? '▾ ocultar detalle' : '▸ ver detalle'}</span></td><td class="num">${fmtNeg(gClasOperacion.sinClasificar)}</td><td class="td-vacia-reporte"></td></tr>${STATE_plSinClasAbierto ? detalleSubcuentaHtml(gClasOperacion.detalleSinClasificar || [], 3) : ''}` : ''}
           <tr class="total-row"><td>Total gastos de operación</td><td class="num">${fmtNeg(gastosTotales)}</td><td class="td-vacia-reporte"></td></tr>
@@ -25284,7 +25407,7 @@ async function renderPLCuerpo() {
                 <option value="">— sin subcuenta —</option>
                 ${opcionesSubcuentaHtml(subcuentas, mayores, g.subcuenta_id)}
               </select></td>
-              <td><input class="cell gasto-cell" type="text" placeholder="Ej. Cloro, Servilletas" value="${g.descripcion||''}" data-id="${g.id}" data-field="descripcion"></td>
+              <td><input class="cell gasto-cell" type="text" placeholder="Ej. Cloro, Servilletas" value="${escAttr(g.descripcion||'')}" data-id="${g.id}" data-field="descripcion"></td>
               <td><input class="cell gasto-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(g.monto)}" data-id="${g.id}" data-field="monto"></td>
               <td><button class="row-del gasto-del" data-id="${g.id}">✕</button></td>
             </tr>`).join('')}
@@ -25294,7 +25417,7 @@ async function renderPLCuerpo() {
     </div>
 
     <div class="card">
-      <div class="card-head"><h3>Resultado Integral de Financiamiento (RIF) — ${periodoLabel}</h3></div>
+      <div class="card-head"><h3>Resultado Integral de Financiamiento (RIF) — ${escHtml(periodoLabel)}</h3></div>
       <div class="table-wrap tabla-contable-wrap">
       <table class="report-table">
         <tbody>
@@ -25406,15 +25529,15 @@ async function renderFlujo() {
 
   el.innerHTML = `
     <div class="card">
-      <div class="card-head"><h3>Cash Position — ${b.name}</h3><span class="hint">Al día de hoy</span></div>
+      <div class="card-head"><h3>Cash Position — ${escHtml(b.name)}</h3><span class="hint">Al día de hoy</span></div>
       <div class="table-wrap tabla-contable-wrap">
       <table>
         <tbody>
-          ${efectivoDetalle.map(m => `<tr class="flujo-link-efectivo" data-id="${m.clave.replace('efectivo:','')}" style="cursor:pointer;"><td>Caja — ${m.nombre}${iconoAbrir()}</td><td class="num">${fmt(m.monto)}</td></tr>`).join('')}
-          ${bancosDetalle.map(d => `<tr class="flujo-link-banco" data-id="${d.clave.replace('banco:','')}" style="cursor:pointer;"><td>Banco — ${d.nombre}${iconoAbrir()}</td><td class="num">${fmt(d.monto)}</td></tr>`).join('')}
+          ${efectivoDetalle.map(m => `<tr class="flujo-link-efectivo" data-id="${m.clave.replace('efectivo:','')}" style="cursor:pointer;"><td>Caja — ${escHtml(m.nombre)}${iconoAbrir()}</td><td class="num">${fmt(m.monto)}</td></tr>`).join('')}
+          ${bancosDetalle.map(d => `<tr class="flujo-link-banco" data-id="${d.clave.replace('banco:','')}" style="cursor:pointer;"><td>Banco — ${escHtml(d.nombre)}${iconoAbrir()}</td><td class="num">${fmt(d.monto)}</td></tr>`).join('')}
           <tr class="total-row"><td>Total disponible (caja + bancos)</td><td class="num">${fmt(efectivoTotal + bancosTotal)}</td></tr>
           <tr><td>Menos: proveedores pendientes de pago</td><td class="num" style="color:var(--red);">-${fmt(proveedoresPendientes)}</td></tr>
-          ${otrosPasivosDetalle.map(p => `<tr><td>Menos: ${p.nombre}</td><td class="num" style="color:var(--red);">-${fmt(p.monto)}</td></tr>`).join('')}
+          ${otrosPasivosDetalle.map(p => `<tr><td>Menos: ${escHtml(p.nombre)}</td><td class="num" style="color:var(--red);">-${fmt(p.monto)}</td></tr>`).join('')}
           <tr class="total-row"><td>Posición neta de efectivo</td><td class="num" style="color:${posicionNeta>=0?'var(--green)':'var(--red)'};font-size:16px;">${fmt(posicionNeta)}</td></tr>
         </tbody>
       </table>
@@ -25515,7 +25638,7 @@ async function renderPolizas() {
       <div class="grid-3" style="margin-bottom:12px;">
         <div class="field" style="margin-bottom:0;">
           <label>Buscar (concepto, número o importe)</label>
-          <input type="text" id="polizaBuscarTexto" placeholder="Ej. renta, 1500, #12" value="${STATE_polizaFiltroTexto}">
+          <input type="text" id="polizaBuscarTexto" placeholder="Ej. renta, 1500, #12" value="${escAttr(STATE_polizaFiltroTexto)}">
         </div>
         <div class="field" style="margin-bottom:0;">
           <label>Desde</label>
@@ -25539,7 +25662,7 @@ async function renderPolizas() {
               return `<tr class="poliza-resumen-row" data-poliza="${p.id}" style="cursor:pointer;">
                 <td data-rol="secundario">#${p.numero ?? '—'}</td>
                 <td data-rol="principal">${fechaCorta(p.fecha)}</td>
-                <td data-rol="secundario">${p.concepto || '<span style="color:var(--muted);">(sin concepto)</span>'}</td>
+                <td data-rol="secundario">${p.concepto ? escHtml(p.concepto) : '<span style="color:var(--muted);">(sin concepto)</span>'}</td>
                 <td data-rol="meta">${nAdj ? '📎 ' + nAdj + (nAdj===1?' archivo':' archivos') : ''}</td>
                 <td class="num" data-rol="importe" style="font-weight:700;">${fmt(t.cargo)}</td>
                 <td data-rol="estado"><span class="badge ${cuadrada?'pag':'pend'}">${cuadrada ? 'Cuadrada' : 'Diferencia ' + fmt(t.cargo-t.abono)}</span></td>
@@ -25584,12 +25707,12 @@ function opcionesSubcuentaHtmlPrefijadas(subcuentas, mayores, selectedId) {
     const construirNivel = (padreId, nivel) => {
       return subcuentas.filter(s => s.cuenta_mayor_id === m.id && (s.subcuenta_padre_id || null) === padreId)
         .flatMap(s => [
-          `<option value="sub:${s.id}" ${selectedId===s.id?'selected':''}>${'—'.repeat(nivel)} ${s.nombre}</option>`,
+          `<option value="sub:${s.id}" ${selectedId===s.id?'selected':''}>${'—'.repeat(nivel)} ${escHtml(s.nombre)}</option>`,
           ...construirNivel(s.id, nivel + 1),
         ]);
     };
     const opts = construirNivel(null, 0);
-    return opts.length ? `<optgroup label="${m.nombre}">${opts.join('')}</optgroup>` : '';
+    return opts.length ? `<optgroup label="${escAttr(m.nombre)}">${opts.join('')}</optgroup>` : '';
   }).join('');
   return porMayor;
 }
@@ -25638,12 +25761,12 @@ async function abrirModalPolizaSoloLectura(poliza) {
       <div style="background:#fff8e6;border:1px solid #e6c674;border-radius:8px;padding:12px 14px;margin-bottom:14px;font-size:12.5px;line-height:1.5;">
         Esta póliza fue generada automáticamente por el sistema y se muestra aquí solo de lectura. Para corregirla, edita o revierte el <strong>cobro o pago</strong> que la originó — el sistema la ajustará o regenerará automáticamente a partir de ahí.
       </div>
-      <p style="font-size:12.5px;color:var(--muted);margin-bottom:10px;">${poliza.concepto || ''}</p>
+      <p style="font-size:12.5px;color:var(--muted);margin-bottom:10px;">${escHtml(poliza.concepto || '')}</p>
       <div class="table-wrap">
         <table class="tabla-operativa">
           <thead><tr><th>Cuenta</th><th class="num">Cargo</th><th class="num">Abono</th></tr></thead>
           <tbody>
-            ${(lineas||[]).map(l => `<tr><td>${nombreSubcuenta[l.subcuenta_id] || '—'}</td><td class="num">${Number(l.cargo)?fmt(l.cargo):''}</td><td class="num">${Number(l.abono)?fmt(l.abono):''}</td></tr>`).join('')}
+            ${(lineas||[]).map(l => `<tr><td>${escHtml(nombreSubcuenta[l.subcuenta_id] || '—')}</td><td class="num">${Number(l.cargo)?fmt(l.cargo):''}</td><td class="num">${Number(l.abono)?fmt(l.abono):''}</td></tr>`).join('')}
           </tbody>
         </table>
       </div>
@@ -25806,7 +25929,7 @@ function polizaCardHtmlBorrador(borrador) {
 
   return `
     <datalist id="listaCuentasPoliza">
-      ${catalogoItems.map(it => `<option value="${it.label.replace(/"/g,'&quot;')}">`).join('')}
+      ${catalogoItems.map(it => `<option value="${escAttr(it.label)}">`).join('')}
     </datalist>
     <div class="card" style="background:#fbfcfe;border:1.5px solid var(--line);margin-bottom:16px;position:relative;">
       <button class="poliza-cerrar-x" title="Cerrar" style="position:absolute;top:10px;right:14px;background:none;border:none;font-size:20px;color:var(--muted);cursor:pointer;line-height:1;">✕</button>
@@ -25814,7 +25937,7 @@ function polizaCardHtmlBorrador(borrador) {
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
           <strong style="color:var(--navy-1);">${borrador.esNueva ? 'Nueva póliza' : 'Póliza #' + (p.numero ?? '—')}</strong>
           <input class="cell poliza-cell" type="date" value="${p.fecha}" data-field="fecha" style="width:auto;">
-          <input class="cell poliza-cell" type="text" placeholder="Concepto de la póliza" value="${p.concepto || ''}" data-field="concepto" enterkeyhint="next" style="min-width:220px;">
+          <input class="cell poliza-cell" type="text" placeholder="Concepto de la póliza" value="${escAttr(p.concepto || '')}" data-field="concepto" enterkeyhint="next" style="min-width:220px;">
         </div>
         <div style="display:flex;align-items:center;gap:10px;">
           <span class="badge ${cuadrada ? 'pag' : 'pend'}">${cuadrada ? 'Cuadrada' : 'Diferencia ' + fmt(diff)}</span>
@@ -25830,10 +25953,10 @@ function polizaCardHtmlBorrador(borrador) {
           <thead><tr><th>Cuenta</th><th>Proveedor</th><th>Referencia/Factura</th><th>Descripción</th><th>Cargo</th><th>Abono</th><th></th></tr></thead>
           <tbody>
             ${lineasPoliza.map(l => `<tr>
-              <td><input class="cell linea-cuenta-buscar" list="listaCuentasPoliza" placeholder="Escribe para buscar…" value="${labelDeLinea(l).replace(/"/g,'&quot;')}" title="${labelDeLinea(l).replace(/"/g,'&quot;')}" data-id="${l.id}" data-field="cuenta" enterkeyhint="next"></td>
-              <td><input class="cell linea-cell" type="text" value="${l.proveedor || ''}" placeholder="Nombre (opcional)" data-id="${l.id}" data-field="proveedor" enterkeyhint="next"></td>
-              <td><input class="cell linea-cell" type="text" value="${l.referencia || ''}" data-id="${l.id}" data-field="referencia" enterkeyhint="next"></td>
-              <td><input class="cell linea-cell" type="text" value="${l.descripcion || ''}" data-id="${l.id}" data-field="descripcion" enterkeyhint="next"></td>
+              <td><input class="cell linea-cuenta-buscar" list="listaCuentasPoliza" placeholder="Escribe para buscar…" value="${escAttr(labelDeLinea(l))}" title="${escAttr(labelDeLinea(l))}" data-id="${l.id}" data-field="cuenta" enterkeyhint="next"></td>
+              <td><input class="cell linea-cell" type="text" value="${escAttr(l.proveedor || '')}" placeholder="Nombre (opcional)" data-id="${l.id}" data-field="proveedor" enterkeyhint="next"></td>
+              <td><input class="cell linea-cell" type="text" value="${escAttr(l.referencia || '')}" data-id="${l.id}" data-field="referencia" enterkeyhint="next"></td>
+              <td><input class="cell linea-cell" type="text" value="${escAttr(l.descripcion || '')}" data-id="${l.id}" data-field="descripcion" enterkeyhint="next"></td>
               <td><input class="cell linea-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(l.cargo)}" data-id="${l.id}" data-field="cargo" enterkeyhint="next"></td>
               <td><input class="cell linea-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(l.abono)}" data-id="${l.id}" data-field="abono" enterkeyhint="next"></td>
               <td><button class="row-del linea-del" tabindex="-1" data-id="${l.id}">✕</button></td>
