@@ -685,12 +685,24 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   .tabla-operativa--ledger td:empty{display:none;}
   .tabla-operativa--ledger .ledger-saldo-label{color:var(--muted);font-weight:400;font-size:10.5px;margin-right:3px;}
   .ledger-conciliado-movil{color:var(--green);font-weight:700;font-size:11px;}
+  .ledger-tipo-movil{color:var(--muted);font-weight:400;font-size:11px;}
 }
 @media (min-width:641px){
   /* En escritorio/tablet, el resumen de movimiento consolidado y el saldo compacto (móvil)
      permanecen ocultos — las columnas reales de siempre (Depósitos/Cargos/Saldo) son las que se
      muestran, sin cambios. */
-  .ledger-movimiento-resumen,.ledger-saldo-movil,.ledger-conciliado-movil{display:none;}
+  .ledger-movimiento-resumen,.ledger-saldo-movil,.ledger-conciliado-movil,.ledger-tipo-movil{display:none;}
+}
+/* Bancos y Efectivo (v2026-10-21.3): con las columnas «Tipo de póliza» y «Factura», la tabla sigue cabiendo en portátiles (641 a 1380 px) */
+@media (min-width:641px) and (max-width:1380px){
+  .tabla-operativa--ledger thead th:nth-child(2){white-space:normal;min-width:0;}
+  .tabla-operativa--ledger td,.tabla-operativa--ledger th{padding-left:8px;padding-right:8px;}
+}
+/* Estados de cuenta de Proveedores y Clientes (v2026-10-21.4): con la columna «Factura», la tabla no se ensancha más que antes (solo pantalla; la impresión tiene sus propias reglas). El salto de línea solo en Proveedor: en Cliente, con más columnas, aplastaría el texto */
+@media screen{
+  .tabla-ec-prov td.ref{white-space:normal !important;max-width:220px;overflow-wrap:anywhere;}
+  .tabla-ec-prov td.tip{white-space:normal !important;max-width:135px;}
+  .tabla-estado-cuenta td,.tabla-estado-cuenta th{padding-left:8px !important;padding-right:8px !important;}
 }
 
 /* ---------- .tabla-contable — base para reportes contables (Libro Diario, Auxiliares, Balanza,
@@ -3177,6 +3189,6 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 </div>
 
 <script src="config.js"></script>
-<script src="app.js?v=2026-10-21.2"></script>
+<script src="app.js?v=2026-10-21.4"></script>
 </body>
 </html>

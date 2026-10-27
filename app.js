@@ -1502,7 +1502,7 @@ async function getBancoLedgerRows(businessId, cuenta, conceptosTarjetas, mesFilt
   }
   const polizaLineas = await getPolizaLineasParaCuenta(businessId, 'banco', cuenta.id);
   polizaLineas.forEach(l => {
-    autoRows.push({ id: 'poliza-' + l.id, fecha: l.poliza.fecha, descripcion: `Póliza #${l.poliza.numero ?? ''} — ${l.descripcion || l.poliza.concepto || ''}`, concepto: 'Póliza de diario', cargos: Number(l.abono) || 0, depositos: Number(l.cargo) || 0, auto: true });
+    autoRows.push({ tipoDoc: 'poliza', numeroPoliza: l.poliza.numero, terceroLinea: l.proveedor || '', conceptoLinea: l.descripcion || l.poliza.concepto || '', facturaLinea: l.referencia || '', provFacId: l.proveedor_factura_id || null, cliFacId: l.cliente_factura_id || null, id: 'poliza-' + l.id, fecha: l.poliza.fecha, descripcion: `Póliza #${l.poliza.numero ?? ''} — ${l.descripcion || l.poliza.concepto || ''}`, concepto: 'Póliza de diario', cargos: Number(l.abono) || 0, depositos: Number(l.cargo) || 0, auto: true });
   });
   const { data: movs } = await sb.from('fz_bancos_mov').select('*').eq('cuenta_id', cuenta.id).order('fecha').order('created_at');
   const manualRows = (movs || []).map(m => ({ ...m, auto: false }));
@@ -15788,7 +15788,7 @@ async function getMonedaLedgerRows(businessId, moneda, conceptosEfectivo, mesFil
   }
   const polizaLineas = await getPolizaLineasParaCuenta(businessId, 'efectivo', moneda.id);
   polizaLineas.forEach(l => {
-    autoRows.push({ id: 'poliza-' + l.id, fecha: l.poliza.fecha, proveedor: 'Póliza de diario', descripcion: `Póliza #${l.poliza.numero ?? ''} — ${l.descripcion || l.poliza.concepto || ''}`, factura: '', cargos: Number(l.abono) || 0, depositos: Number(l.cargo) || 0, auto: true });
+    autoRows.push({ tipoDoc: 'poliza', numeroPoliza: l.poliza.numero, terceroLinea: l.proveedor || '', conceptoLinea: l.descripcion || l.poliza.concepto || '', facturaLinea: l.referencia || '', provFacId: l.proveedor_factura_id || null, cliFacId: l.cliente_factura_id || null, id: 'poliza-' + l.id, fecha: l.poliza.fecha, proveedor: 'Póliza de diario', descripcion: `Póliza #${l.poliza.numero ?? ''} — ${l.descripcion || l.poliza.concepto || ''}`, factura: '', cargos: Number(l.abono) || 0, depositos: Number(l.cargo) || 0, auto: true });
   });
   const { data: movs } = await sb.from('fz_efectivo_mov').select('*').eq('moneda_id', moneda.id).order('fecha').order('created_at');
   const manualRows = (movs || []).map(m => ({ ...m, auto: false }));
@@ -15927,7 +15927,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
   const traspasoCtx = { cuentasBanco: cuentasBancoQ.data || [], monedasEfectivo: monedasEfectivoQ.data || [], origenTipo: 'efectivo', origenId: moneda.id, origenNombre: 'la caja ' + moneda.nombre, origenCorto: 'Caja — ' + moneda.nombre };
   let saldo = saldoApertura;
   const conteoAdjuntosEfvo = await contarAdjuntosPorRegistro('fz_efectivo_mov', ledger.filter(r => !r.auto).map(r => r.id));
-  const referenciaLegibleEfvo = (r) => { const t = r.factura || r.descripcion; return t ? escHtml(t) : '<span style="color:var(--muted);">—</span>'; };
+  const facturaDe = await prepararFacturasLedger(ledger); // folio de la factura de cada renglón (solo presentación)
   const rowsHtml = ledger.map(r => {
     saldo += (Number(r.depositos) || 0) - (Number(r.cargos) || 0);
     // Resumen visual — SOLO para el ledger compacto móvil. Usa exactamente el mismo dato que ya
@@ -15937,9 +15937,11 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
       return `<tr style="background:#f7f9fc;">
         <td data-rol="principal">${fechaCorta(r.fecha)}</td>
         <td data-rol="importe" class="ledger-movimiento-resumen">${resumenMovil}</td>
-        <td data-rol="secundario"><em>${escHtml(r.proveedor)}</em> <span style="color:var(--muted);font-size:11px;">· auto</span></td>
+        <td class="ledger-input-detalle">${escHtml(tipoPolizaDerivado(r))}</td>
+        <td data-rol="secundario">${celdaTerceroLedger(r, r.tipoDoc === 'poliza' ? r.terceroLinea : r.proveedor, r.tipoDoc !== 'poliza')}</td>
         <td data-rol="estado" class="ledger-saldo-movil"><span class="ledger-saldo-label">Saldo</span> ${fmtNum(saldo)}</td>
-        <td data-rol="meta" class="ledger-input-detalle">${escHtml(r.descripcion)}</td>
+        <td data-rol="meta" class="ledger-input-detalle">${textoLedger(r.tipoDoc === 'poliza' ? r.conceptoLinea : r.descripcion)}</td>
+        <td class="ledger-input-detalle">${textoLedger(facturaDe(r, false))}</td>
         <td class="ledger-input-detalle">${escHtml(moneda.nombre)}</td>
         <td class="num ledger-input-detalle">${fmtNum(r.depositos)}</td>
         <td class="num ledger-input-detalle">${fmtNum(r.cargos)}</td>
@@ -15953,9 +15955,11 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
     return `<tr${sinClasificarFila ? ' style="background:#fff8ec;"' : ''}>
       <td data-rol="principal">${fechaCorta(r.fecha)}</td>
       <td data-rol="importe" class="ledger-movimiento-resumen" style="font-weight:600;">${resumenMovil}</td>
-      <td data-rol="secundario">${r.proveedor ? escHtml(r.proveedor) : '<span style="color:var(--muted);">—</span>'}</td>
+      <td class="ledger-input-detalle">${escHtml(tipoPolizaDerivado(r))}</td>
+      <td data-rol="secundario">${celdaTerceroLedger(r, r.proveedor, false)}</td>
       <td data-rol="estado" class="ledger-saldo-movil"><span class="ledger-saldo-label">Saldo</span> ${fmtNum(saldo)}</td>
-      <td data-rol="meta" class="ledger-input-detalle">${referenciaLegibleEfvo(r)}</td>
+      <td data-rol="meta" class="ledger-input-detalle">${textoLedger(r.descripcion)}</td>
+      <td class="ledger-input-detalle">${textoLedger(facturaDe(r, false))}</td>
       <td class="ledger-input-detalle"><span class="mf-badge-moneda">${escHtml(moneda.nombre)}</span></td>
       <td class="num ledger-input-detalle">${fmtNum(r.depositos)}</td>
       <td class="num ledger-input-detalle">${fmtNum(r.cargos)}</td>
@@ -15991,9 +15995,9 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
     </div>
     <div class="table-wrap scroll-sticky">
       <table class="tabla-operativa tabla-operativa--ledger">
-        <thead><tr><th>Fecha</th><th>Tercero</th><th>Concepto / Referencia</th><th>Moneda</th><th>Depósitos</th><th>Retiros</th><th>Saldo</th><th></th></tr></thead>
-        <tbody>${rowsHtml || `<tr><td colspan="10" class="empty">Sin movimientos en el periodo · Saldo al cierre: ${fmtNum(saldo)} ${escHtml(moneda.nombre)}</td></tr>`}</tbody>
-        <tfoot><tr class="total-row"><td colspan="4">Total ${STATE.currentMonth} (${escHtml(moneda.nombre)})</td><td class="num">${fmtNum(totalDepositosMes)}</td><td class="num">${fmtNum(totalCargosMes)}</td><td class="num">${fmtNum(saldo)}</td><td colspan="1"></td></tr></tfoot>
+        <thead><tr><th>Fecha</th><th>Tipo de póliza</th><th>Tercero</th><th>Concepto</th><th>Factura</th><th>Moneda</th><th class="num">Depósitos</th><th class="num">Retiros</th><th class="num">Saldo</th><th></th></tr></thead>
+        <tbody>${rowsHtml || `<tr><td colspan="12" class="empty">Sin movimientos en el periodo · Saldo al cierre: ${fmtNum(saldo)} ${escHtml(moneda.nombre)}</td></tr>`}</tbody>
+        <tfoot><tr class="total-row"><td colspan="6">Total ${STATE.currentMonth} (${escHtml(moneda.nombre)})</td><td class="num">${fmtNum(totalDepositosMes)}</td><td class="num">${fmtNum(totalCargosMes)}</td><td class="num">${fmtNum(saldo)}</td><td colspan="1"></td></tr></tfoot>
       </table>
     </div>
   `;
@@ -16146,7 +16150,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
   const conteoAdjuntosBanco = await contarAdjuntosPorRegistro('fz_bancos_mov', ledger.filter(m => !m.auto).map(m => m.id));
   // Referencia legible — reutiliza SIEMPRE dato ya guardado (referencia > concepto > descripción),
   // nunca inventa texto nuevo.
-  const referenciaLegible = (m) => { const t = m.referencia || m.concepto || m.descripcion; return t ? escHtml(t) : '<span style="color:var(--muted);">—</span>'; };
+  const facturaDe = await prepararFacturasLedger(ledger); // folio de la factura de cada renglón (solo presentación)
   const rowsHtml = ledger.map(m => {
     saldo += (Number(m.depositos)||0) - (Number(m.cargos)||0);
     // Resumen visual — SOLO para el ledger compacto móvil. Usa exactamente el mismo dato que ya
@@ -16157,9 +16161,11 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
       return `<tr style="background:#f7f9fc;">
         <td data-rol="principal">${fechaCorta(m.fecha)}${conciliadoIcono}</td>
         <td data-rol="importe" class="ledger-movimiento-resumen">${resumenMovil}</td>
-        <td data-rol="secundario"><em>${escHtml(m.proveedor||'')}</em> <span style="color:var(--muted);font-size:11px;">· auto</span></td>
+        <td class="ledger-input-detalle">${escHtml(tipoPolizaDerivado(m))}</td>
+        <td data-rol="secundario">${celdaTerceroLedger(m, m.tipoDoc === 'poliza' ? m.terceroLinea : m.concepto, m.tipoDoc !== 'poliza')}</td>
         <td data-rol="estado" class="ledger-saldo-movil"><span class="ledger-saldo-label">Saldo</span> ${escHtml(pfxBanco)} ${fmt(saldo)}</td>
-        <td class="ledger-input-detalle">${escHtml(m.descripcion)}</td>
+        <td class="ledger-input-detalle">${textoLedger(m.tipoDoc === 'poliza' ? m.conceptoLinea : m.descripcion)}</td>
+        <td class="ledger-input-detalle">${textoLedger(facturaDe(m, true))}</td>
         <td class="ledger-input-detalle">${escHtml(monedaCuentaBanco)}</td>
         <td class="num ledger-input-detalle">${fmtNum(m.depositos)}</td>
         <td class="num ledger-input-detalle">${fmtNum(m.cargos)}</td>
@@ -16174,9 +16180,11 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     return `<tr${sinClasificarFila ? ' style="background:#fff8ec;"' : ''}>
       <td data-rol="principal">${fechaCorta(m.fecha)}${conciliadoIcono}</td>
       <td data-rol="importe" class="ledger-movimiento-resumen" style="font-weight:600;">${resumenMovil}</td>
-      <td data-rol="secundario">${m.proveedor ? escHtml(m.proveedor) : '<span style="color:var(--muted);">—</span>'}</td>
+      <td class="ledger-input-detalle">${escHtml(tipoPolizaDerivado(m))}</td>
+      <td data-rol="secundario">${celdaTerceroLedger(m, m.proveedor, false)}</td>
       <td data-rol="estado" class="ledger-saldo-movil"><span class="ledger-saldo-label">Saldo</span> ${escHtml(pfxBanco)} ${fmt(saldo)}</td>
-      <td class="ledger-input-detalle">${referenciaLegible(m)}</td>
+      <td class="ledger-input-detalle">${textoLedger(m.concepto || m.descripcion)}</td>
+      <td class="ledger-input-detalle">${textoLedger(facturaDe(m, true))}</td>
       <td class="ledger-input-detalle"><span class="mf-badge-moneda">${escHtml(monedaCuentaBanco)}</span></td>
       <td class="num ledger-input-detalle">${fmtNum(m.depositos)}</td>
       <td class="num ledger-input-detalle">${fmtNum(m.cargos)}</td>
@@ -16211,9 +16219,9 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     </div>
     <div class="table-wrap scroll-sticky">
       <table class="tabla-operativa tabla-operativa--ledger">
-        <thead><tr><th>Fecha</th><th>Tercero</th><th>Concepto / Referencia</th><th>Moneda</th><th>Depósitos</th><th>Retiros</th><th>Saldo</th><th title="Conciliado">✓</th><th></th></tr></thead>
-        <tbody>${rowsHtml || `<tr><td colspan="11" class="empty">Sin movimientos en el periodo · Saldo al cierre: ${escHtml(pfxBanco)} ${fmt(saldo)}</td></tr>`}</tbody>
-        <tfoot><tr class="total-row"><td colspan="4">Total ${STATE.currentMonth} (${escHtml(monedaCuentaBanco)})</td><td class="num">${fmtNum(totalDepositosMes)}</td><td class="num">${fmtNum(totalCargosMes)}</td><td class="num">${fmt(saldo)}</td><td colspan="4"></td></tr></tfoot>
+        <thead><tr><th>Fecha</th><th>Tipo de póliza</th><th>Tercero</th><th>Concepto</th><th>Factura</th><th>Moneda</th><th class="num">Depósitos</th><th class="num">Retiros</th><th class="num">Saldo</th><th title="Conciliado">✓</th><th></th></tr></thead>
+        <tbody>${rowsHtml || `<tr><td colspan="13" class="empty">Sin movimientos en el periodo · Saldo al cierre: ${escHtml(pfxBanco)} ${fmt(saldo)}</td></tr>`}</tbody>
+        <tfoot><tr class="total-row"><td colspan="6">Total ${STATE.currentMonth} (${escHtml(monedaCuentaBanco)})</td><td class="num">${fmtNum(totalDepositosMes)}</td><td class="num">${fmtNum(totalCargosMes)}</td><td class="num">${fmt(saldo)}</td><td colspan="4"></td></tr></tfoot>
       </table>
     </div>
   `;
@@ -16794,6 +16802,7 @@ function inyectarEstilosEstadoCuenta() {
     table.tabla-estado-cuenta th { font-size: 7.5px !important; }
     table.tabla-estado-cuenta td.num, table.tabla-estado-cuenta th.num { white-space: nowrap !important; }
     table.tabla-estado-cuenta td.ref { white-space: normal !important; overflow-wrap: anywhere !important; word-break: break-word !important; min-width: 130px !important; max-width: 230px !important; }
+    table.tabla-estado-cuenta td.fac { white-space: normal !important; overflow-wrap: anywhere !important; min-width: 48px !important; max-width: 90px !important; }
     body[data-print-section="proveedores"] .kpi, body[data-print-section="clientes"] .kpi { margin-bottom: 10px !important; }
     table.tabla-estado-cuenta .solo-pantalla { display: none !important; }
   }`;
@@ -16811,6 +16820,7 @@ async function getTransaccionesProveedor(businessId, facturas) {
     return partes.length ? partes.join(' · ') : '—';
   };
   const facturaPorId = Object.fromEntries(facturas.map(f => [f.id, f]));
+  const facturasAplicadasTxt = (m) => [...new Set(facturaIdsDe(m).filter(id => facturaPorId[id]).map(id => facturaPorId[id].factura || 's/f'))].join(', '); // facturas a las que aplica un pago (solo presentación)
   const monedaDe = (f) => (f && f.moneda) || 'MXN';
   const tcDe = (f) => (monedaDe(f) !== 'MXN') ? (Number(f.tipo_cambio) || 1) : 1;
   const hayDivisas = facturas.some(f => monedaDe(f) !== 'MXN'); // sin divisas todo queda exactamente como siempre
@@ -16819,7 +16829,7 @@ async function getTransaccionesProveedor(businessId, facturas) {
   facturas.forEach(f => {
     const mon = monedaDe(f), tc = tcDe(f);
     transacciones.push({
-      fecha: f.fecha, tipo: 'Factura', etiqueta: f.tipo_documento === 'nota_credito' ? 'Nota de crédito' : undefined, numero: f.factura || 's/f', monto: Number(f.importe) || 0,
+      fecha: f.fecha, tipo: 'Factura', etiqueta: f.tipo_documento === 'nota_credito' ? 'Nota de crédito' : undefined, numero: f.factura || 's/f', facturaTxt: f.factura || 's/f', monto: Number(f.importe) || 0,
       saldo: redondearMoneda(Number(f.importe||0) - Number(f.importe_pagado||0)),
       moneda: mon, tc: mon !== 'MXN' ? tc : null, montoMxn: mon !== 'MXN' ? redondearMoneda((Number(f.importe) || 0) * tc) : (Number(f.importe) || 0),
       origen: { tipo: 'proveedor', id: f.id, fecha: f.fecha },
@@ -16839,7 +16849,7 @@ async function getTransaccionesProveedor(businessId, facturas) {
     const f = facturaPorId[l.proveedor_factura_id], mon = monedaDe(f), tc = tcDe(f);
     // un pago por póliza ligado a una factura en divisa se cuenta en la moneda de la factura (así lo suma el sistema a lo pagado)
     transacciones.push({
-      fecha: p.fecha, tipo: 'Pago — Póliza de diario', numero: componerReferencia(`#${p.numero ?? ''}`), monto: -(Number(l.cargo) || 0),
+      fecha: p.fecha, tipo: 'Pago — Póliza de diario', facturaTxt: (f && f.factura) || 's/f', numero: componerReferencia(`#${p.numero ?? ''}`), monto: -(Number(l.cargo) || 0),
       moneda: mon, tc: mon !== 'MXN' ? tc : null, montoMxn: -(mon !== 'MXN' ? redondearMoneda((Number(l.cargo) || 0) * tc) : (Number(l.cargo) || 0)),
       origen: { tipo: 'poliza', id: p.id, fecha: p.fecha },
     });
@@ -16887,7 +16897,7 @@ async function getTransaccionesProveedor(businessId, facturas) {
     if (!facturaIdsDe(m).some(id => facturaIds.includes(id))) return;
     const div = hayDivisas ? pagoEnDivisa(m, 'fz_bancos_mov', monedaCuentaBanco[m.cuenta_id] || 'MXN') : null;
     transacciones.push({
-      fecha: m.fecha, tipo: 'Pago — Banco', numero: componerReferencia(m.concepto || m.descripcion),
+      fecha: m.fecha, tipo: 'Pago — Banco', facturaTxt: facturasAplicadasTxt(m), numero: componerReferencia(m.concepto || m.descripcion),
       monto: div ? div.monto : -(Number(m.cargos) || 0), moneda: div ? div.moneda : 'MXN', tc: div ? div.tc : null, montoMxn: div ? div.montoMxn : -(Number(m.cargos) || 0),
       origen: { tipo: 'bancos', id: m.id, cuentaId: m.cuenta_id, fecha: m.fecha },
     });
@@ -16896,7 +16906,7 @@ async function getTransaccionesProveedor(businessId, facturas) {
     if (!facturaIdsDe(m).some(id => facturaIds.includes(id))) return;
     const div = hayDivisas ? pagoEnDivisa(m, 'fz_efectivo_mov', monedaCaja[m.moneda_id] || 'MXN') : null;
     transacciones.push({
-      fecha: m.fecha, tipo: 'Pago — Efectivo', numero: componerReferencia(m.descripcion || m.proveedor),
+      fecha: m.fecha, tipo: 'Pago — Efectivo', facturaTxt: facturasAplicadasTxt(m), numero: componerReferencia(m.descripcion || m.proveedor),
       monto: div ? div.monto : -(Number(m.cargos) || 0), moneda: div ? div.moneda : 'MXN', tc: div ? div.tc : null, montoMxn: div ? div.montoMxn : -(Number(m.cargos) || 0),
       origen: { tipo: 'efectivo', id: m.id, monedaId: m.moneda_id, fecha: m.fecha },
     });
@@ -16922,6 +16932,7 @@ async function renderProveedorDetalle(el, b) {
   const facturas = (all || []).filter(f => claveProveedor(f) === key);
   const primeraFactura = facturas[0];
   const catMatch = primeraFactura?.proveedor_id ? catalogoMap[primeraFactura.proveedor_id] : null;
+  const rfcProv = catMatch ? String(catMatch.rfc || '').trim() : null; // RFC del catálogo (necesario para la DIOT); null si el proveedor no está en el catálogo
   const nombre = catMatch
     ? (catMatch.razon_social ? `${catMatch.razon_social}${catMatch.nombre_comercial ? ' — ' + catMatch.nombre_comercial : ''}` : (catMatch.nombre_comercial || catMatch.nombre || primeraFactura?.proveedor))
     : (primeraFactura?.proveedor || '(sin proveedor)');
@@ -16955,7 +16966,7 @@ async function renderProveedorDetalle(el, b) {
     </div>
     <div class="card">
       <div class="card-head">
-        <h3>${escHtml(nombre)}</h3>
+        <div><h3>${escHtml(nombre)}</h3>${rfcProv === null ? '' : `<div class="hint" style="margin-top:2px;">RFC: ${rfcProv ? escHtml(rfcProv) : '<span style="color:var(--red);">sin registrar</span>'}</div>`}</div>
         <div style="display:flex;gap:8px;align-items:center;">
           <span class="hint">Todas las transacciones, más reciente primero</span>
           <button class="btn btn-ghost btn-sm" id="provDetalleNuevaFactura">+ Nueva factura</button>
@@ -16964,20 +16975,21 @@ async function renderProveedorDetalle(el, b) {
         </div>
       </div>
       <div class="table-wrap scroll-sticky">
-        <table class="tabla-estado-cuenta">
-          <thead><tr><th>Fecha</th><th>Tipo</th><th>Referencia</th>${hayDivisas ? '<th>Moneda</th><th class="num">TC</th>' : ''}<th class="num">Monto</th>${hayDivisas ? '<th class="num">Equivalente MXN</th>' : ''}<th class="num">Saldo</th><th class="num">Saldo acumulado</th><th class="solo-pantalla"></th></tr></thead>
+        <table class="tabla-estado-cuenta tabla-ec-prov">
+          <thead><tr><th>Fecha</th><th>Tipo</th><th>Factura</th><th>Referencia</th>${hayDivisas ? '<th>Moneda</th><th class="num">TC</th>' : ''}<th class="num">Monto</th>${hayDivisas ? '<th class="num">Equivalente MXN</th>' : ''}<th class="num">Saldo</th><th class="num">Saldo acumulado</th><th class="solo-pantalla"></th></tr></thead>
           <tbody>
             ${transacciones.length ? transacciones.map(t => `<tr>
               <td>${fechaCorta(t.fecha)}</td>
-              <td>${escHtml(t.etiqueta || t.tipo)}</td>
-              <td class="ref">${t.numero}</td>
+              <td class="tip">${escHtml(t.etiqueta || t.tipo)}</td>
+              <td class="fac">${textoLedger(t.facturaTxt)}</td>
+              <td class="ref">${escHtml(t.numero)}</td>
               ${hayDivisas ? `<td>${escHtml(t.moneda || 'MXN')}</td><td class="num">${t.moneda && t.moneda !== 'MXN' ? fmtTC(t.tc || 1) : '—'}</td>` : ''}
               <td class="num ${t.monto<0?'red':''}">${t.monto<0?'-':''}${hayDivisas ? fmtMon(Math.abs(t.monto), t.moneda) : fmt(Math.abs(t.monto))}</td>
               ${hayDivisas ? `<td class="num ${t.montoMxn<0?'red':''}">${t.moneda && t.moneda !== 'MXN' ? `${t.montoMxn<0?'-':''}${fmt(Math.abs(t.montoMxn))}` : '—'}</td>` : ''}
               <td class="num" style="${t.saldo!=null && Math.abs(t.saldo)>0.004?'color:var(--gold);font-weight:600;':''}">${t.saldo!=null ? (hayDivisas ? fmtMonNeg(t.saldo, t.moneda) : fmtNeg(t.saldo)) : '—'}</td>
               <td class="num" style="font-weight:600;">${hayDivisas ? fmtMonNeg(t.saldoAcumulado, t.moneda) : fmtNeg(t.saldoAcumulado)}</td>
               <td class="solo-pantalla"><button class="btn btn-ghost btn-sm ${t.origen.tipo==='proveedor'?'ver-factura-btn':(t.origen.tipo==='bancos'||t.origen.tipo==='efectivo'?'ver-desglose-pago-btn':'abrir-origen-btn')}" data-origen='${JSON.stringify(t.origen).replace(/'/g,'&apos;')}' style="font-size:11px;padding:3px 8px;">Ver / Editar</button></td>
-            </tr>`).join('') : `<tr><td colspan="${hayDivisas ? 10 : 7}" class="empty">Sin transacciones.</td></tr>`}
+            </tr>`).join('') : `<tr><td colspan="${hayDivisas ? 11 : 8}" class="empty">Sin transacciones.</td></tr>`}
           </tbody>
         </table>
       </div>
@@ -17212,7 +17224,7 @@ async function getTransaccionesCliente(businessId, facturas, nombreCliente) {
   facturas.forEach(f => {
     const mon = monedaDe(f), tc = tcDe(f), total = Number(f.total) || 0;
     transacciones.push({
-      fecha: f.fecha, tipo: 'Factura', etiqueta: f.tipo_documento === 'nota_credito' ? 'Nota de crédito' : undefined, numero: `#${f.folio}${f.numero_factura ? ' · ' + f.numero_factura : ''}`, monto: total,
+      fecha: f.fecha, tipo: 'Factura', etiqueta: f.tipo_documento === 'nota_credito' ? 'Nota de crédito' : undefined, numero: `#${f.folio}${f.numero_factura ? ' · ' + f.numero_factura : ''}`, facturaTxt: numeroFacturaCliente(f), monto: total,
       saldo: redondearMoneda(Math.max(0, total - (Number(f.importe_pagado) || 0))),
       moneda: mon, tc: mon !== 'MXN' ? tc : null, montoMxn: mon !== 'MXN' ? redondearMoneda(total * tc) : total, factura: f,
       origen: { tipo: 'factura_cliente', id: f.id, fecha: f.fecha },
@@ -17246,11 +17258,11 @@ async function getTransaccionesCliente(businessId, facturas, nombreCliente) {
     const tipo = g.tabla === 'fz_bancos_mov' ? 'Cobro — Banco' : g.tabla === 'fz_efectivo_mov' ? 'Cobro — Efectivo' : 'Cobro — Manual';
     const origen = !mov ? null : (g.tabla === 'fz_bancos_mov' ? { tipo: 'bancos', id: mov.id, cuentaId: mov.cuenta_id, fecha: mov.fecha } : { tipo: 'efectivo', id: mov.id, monedaId: mov.moneda_id, fecha: mov.fecha });
     const esDev = Number(f0 && f0.total) < 0; // aplicación sobre una nota de crédito = devolución de dinero al cliente: el saldo SUBE
-    transacciones.push({ fecha, tipo: esDev ? tipo.replace(/^Cobro/, 'Devolución') : tipo, numero: esDev ? ['Devolución al cliente', nombreCliente, mov ? (mov.referencia || mov.descripcion) : g.propias[0].notas].filter(Boolean).join(' · ') : componerReferencia(mov ? (mov.concepto || mov.descripcion) : g.propias[0].notas), monto: esDev ? redondearMoneda(montoDoc) : -redondearMoneda(montoDoc), moneda: mon,
+    transacciones.push({ fecha, facturaTxt: [...new Set(g.propias.map(a => numeroFacturaCliente(facturaPorId[a.factura_id])).filter(Boolean))].join(', '), tipo: esDev ? tipo.replace(/^Cobro/, 'Devolución') : tipo, numero: esDev ? ['Devolución al cliente', nombreCliente, mov ? (mov.referencia || mov.descripcion) : g.propias[0].notas].filter(Boolean).join(' · ') : componerReferencia(mov ? (mov.concepto || mov.descripcion) : g.propias[0].notas), monto: esDev ? redondearMoneda(montoDoc) : -redondearMoneda(montoDoc), moneda: mon,
       tc: mon !== 'MXN' ? (montoDoc > 0 ? equivalente / montoDoc : tcHist) : null, montoMxn: esDev ? redondearMoneda(equivalente) : -redondearMoneda(equivalente), origen });
     // sobrante del cobro que quedó como crédito a favor del cliente (solo si el cobro fue únicamente de este cliente)
     if (g.credito > 0.004 && !g.ajenas) {
-      transacciones.push({ fecha, tipo: 'Crédito a favor del cliente', numero: componerReferencia('sobrante del cobro'), monto: -redondearMoneda(g.credito), moneda: mon,
+      transacciones.push({ fecha, facturaTxt: [...new Set(g.propias.map(a => numeroFacturaCliente(facturaPorId[a.factura_id])).filter(Boolean))].join(', '), tipo: 'Crédito a favor del cliente', numero: componerReferencia('sobrante del cobro'), monto: -redondearMoneda(g.credito), moneda: mon,
         tc: mon !== 'MXN' ? tcHist : null, montoMxn: -redondearMoneda(mon !== 'MXN' ? g.credito * tcHist : g.credito), origen });
     }
   });
@@ -17265,7 +17277,7 @@ async function getTransaccionesCliente(businessId, facturas, nombreCliente) {
     const pz = polizaMap[l.poliza_id]; if (!pz || !(Number(l.abono) > 0.004)) return;
     const fa = facturaPorId[l.cliente_factura_id], mon = monedaDe(fa), tc = tcDe(fa);
     porPoliza[l.cliente_factura_id] = (porPoliza[l.cliente_factura_id] || 0) + (Number(l.abono) || 0);
-    transacciones.push({ fecha: pz.fecha, tipo: 'Cobro — Póliza de diario', numero: componerReferencia(`#${pz.numero ?? ''}`), monto: -(Number(l.abono) || 0), moneda: mon, tc: mon !== 'MXN' ? tc : null,
+    transacciones.push({ fecha: pz.fecha, facturaTxt: fa ? numeroFacturaCliente(fa) : '', tipo: 'Cobro — Póliza de diario', numero: componerReferencia(`#${pz.numero ?? ''}`), monto: -(Number(l.abono) || 0), moneda: mon, tc: mon !== 'MXN' ? tc : null,
       montoMxn: -(mon !== 'MXN' ? redondearMoneda((Number(l.abono) || 0) * tc) : (Number(l.abono) || 0)), origen: { tipo: 'poliza', id: pz.id, fecha: pz.fecha } });
   });
 
@@ -17276,7 +17288,7 @@ async function getTransaccionesCliente(businessId, facturas, nombreCliente) {
     // lo que una NOTA DE CRÉDITO ya aplicó contra esta factura (sin mover dinero) ya está en el estado de cuenta como el renglón de la nota: no es un «cobro sin movimiento»
     const compensado = facturas.filter(n => n.tipo_documento === 'nota_credito' && n.factura_origen_id === f.id).reduce((t, n) => t + Math.max(0, Math.abs(Number(n.importe_pagado) || 0) - apsPropias.filter(a => a.factura_id === n.id).reduce((u, a) => u + (Number(a.monto) || 0), 0)), 0);
     const faltante = redondearMoneda((Number(f.importe_pagado) || 0) - cubierto - compensado);
-    if (faltante > 0.004) { const mon = monedaDe(f), tc = tcDe(f); transacciones.push({ fecha: f.fecha, tipo: 'Cobro sin movimiento ligado', numero: `#${f.folio} — revisa: figura cobrado pero ningún movimiento lo respalda`, monto: -faltante, moneda: mon, tc: mon !== 'MXN' ? tc : null, montoMxn: -(mon !== 'MXN' ? redondearMoneda(faltante * tc) : faltante), origen: null }); }
+    if (faltante > 0.004) { const mon = monedaDe(f), tc = tcDe(f); transacciones.push({ fecha: f.fecha, facturaTxt: numeroFacturaCliente(f), tipo: 'Cobro sin movimiento ligado', numero: `#${f.folio} — revisa: figura cobrado pero ningún movimiento lo respalda`, monto: -faltante, moneda: mon, tc: mon !== 'MXN' ? tc : null, montoMxn: -(mon !== 'MXN' ? redondearMoneda(faltante * tc) : faltante), origen: null }); }
   });
 
   transacciones.sort((a, b) => a.fecha.localeCompare(b.fecha) || (a.tipo === 'Factura' ? -1 : 1) - (b.tipo === 'Factura' ? -1 : 1));
@@ -17313,13 +17325,13 @@ async function renderClienteDetalle(el, b) {
       ${hayDivisas && Math.abs(fxReal) > 0.004 ? `<div class="kpi"><div class="label">${fxReal > 0 ? 'Ganancia' : 'Pérdida'} cambiaria realizada</div><div class="value num ${fxReal > 0 ? 'green' : 'red'}">${fmt(Math.abs(fxReal))}</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">cobrado vs. tipo de cambio de la factura</div></div>` : ''}
     </div>
     <div class="card">
-      <div class="card-head"><h3>${escHtml(nombreCliente)}</h3>${cliente.razon_social ? `<span class="hint">${escHtml(cliente.nombre_comercial)}</span>` : ''}<span class="hint">Facturas y cobros, más reciente primero</span>
+      <div class="card-head"><h3>${escHtml(nombreCliente)}</h3>${cliente.razon_social ? `<span class="hint">${escHtml(cliente.nombre_comercial)}</span>` : ''}<span class="hint">RFC: ${cliente.rfc ? escHtml(cliente.rfc) : '<span style="color:var(--red);">sin registrar</span>'}</span><span class="hint">Facturas y cobros, más reciente primero</span>
         <div style="position:relative;margin-left:auto;"><button class="btn btn-gold btn-sm" id="cdtBtn">+ Nueva transacción</button><div id="cdtDropdown" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:190px;overflow:hidden;">
           <button class="cdt-factura" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Factura</button><button class="cdt-orden" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Orden de venta</button><button class="cdt-pago" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Registrar cobro</button><button class="cdt-nc" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Nota de crédito</button><button class="cdt-dev" style="display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:none;cursor:pointer;font-size:13px;border-top:1px solid var(--line);">Devolución a cliente</button></div></div></div>
       <div class="table-wrap scroll-sticky">
         <table class="tabla-estado-cuenta">
           <thead><tr>
-            <th>Fecha</th><th>Tipo</th><th>Referencia</th>${hayDivisas ? '<th>Moneda</th><th class="num">TC</th>' : ''}
+            <th>Fecha</th><th>Tipo</th><th>Factura</th><th>Referencia</th>${hayDivisas ? '<th>Moneda</th><th class="num">TC</th>' : ''}
             <th class="num">Monto</th>${hayDivisas ? '<th class="num">Equivalente MXN</th>' : ''}<th class="num">Saldo</th><th class="num">Saldo acumulado</th>
             <th>Vencimiento</th><th class="num solo-pantalla">Días retraso</th><th>Estatus</th><th class="solo-pantalla">Fiscal</th><th class="solo-pantalla"></th>
           </tr></thead>
@@ -17329,8 +17341,9 @@ async function renderClienteDetalle(el, b) {
               const diasRetraso = esFactura ? calcularDiasRetraso(f.fecha_vencimiento, t.saldo) : '';
               return `<tr>
                 <td>${fechaCorta(t.fecha)}</td>
-                <td>${escHtml(t.etiqueta || t.tipo)}</td>
-                <td class="ref">${t.numero}</td>
+                <td class="tip">${escHtml(t.etiqueta || t.tipo)}</td>
+                <td class="fac">${textoLedger(t.facturaTxt)}</td>
+                <td class="ref">${escHtml(t.numero)}</td>
                 ${hayDivisas ? `<td>${escHtml(t.moneda || 'MXN')}</td><td class="num">${t.moneda && t.moneda !== 'MXN' ? fmtTC(t.tc || 1) : '—'}</td>` : ''}
                 <td class="num ${t.monto<0?'red':''}">${t.monto<0?'-':''}${hayDivisas ? fmtMon(Math.abs(t.monto), t.moneda) : fmt(Math.abs(t.monto))}</td>
                 ${hayDivisas ? `<td class="num ${t.montoMxn<0?'red':''}">${t.moneda && t.moneda !== 'MXN' ? `${t.montoMxn<0?'-':''}${fmt(Math.abs(t.montoMxn))}` : '—'}</td>` : ''}
@@ -17342,7 +17355,7 @@ async function renderClienteDetalle(el, b) {
                 <td class="solo-pantalla">${esFactura ? (ESTATUS_FISCAL_BADGE[f.estatus_fiscal] || ESTATUS_FISCAL_BADGE.no_aplica) : ''}</td>
                 ${esFactura ? facturaMenuHtml(f.id, f).replace('<td data-rol="acciones"', '<td class="solo-pantalla" data-rol="acciones"') : `<td class="solo-pantalla">${t.origen ? `<button class="btn btn-ghost btn-sm abrir-origen-btn" data-origen='${JSON.stringify(t.origen).replace(/'/g, '&apos;')}'>Ver / Editar</button>` : ''}</td>`}
               </tr>`;
-            }).join('') : `<tr><td colspan="${hayDivisas ? 14 : 12}" class="empty">Este cliente aún no tiene facturas.</td></tr>`}
+            }).join('') : `<tr><td colspan="${hayDivisas ? 15 : 13}" class="empty">Este cliente aún no tiene facturas.</td></tr>`}
           </tbody>
         </table>
       </div>
@@ -21047,6 +21060,47 @@ function exportarExcelProfesional({ archivo, hoja, negocio, titulo, subtitulo, c
 // Las cifras y sus encabezados (y totales) de un PDF van alineados a la derecha en las columnas indicadas.
 const alinearCifrasPdf = (data, columnas) => { if (columnas.includes(data.column.index)) data.cell.styles.halign = 'right'; };
 
+/* ============================================================
+   BANCOS Y EFECTIVO — columnas Tipo de póliza · Tercero · Concepto · Factura (SOLO presentación; sin UUID).
+   «Tipo de póliza» es una ETIQUETA CALCULADA que no se guarda: Diario #N (líneas de póliza), Traspaso, Ingreso (depósito)
+   o Egreso (retiro). Los movimientos de banco y efectivo no son pólizas numeradas. No toca cargos, depósitos ni saldos.
+   ============================================================ */
+function tipoPolizaDerivado(r) {
+  if (r.tipoDoc === 'poliza') return 'Diario' + (r.numeroPoliza !== null && r.numeroPoliza !== undefined && r.numeroPoliza !== '' ? ' #' + r.numeroPoliza : '');
+  if (r.traspaso_id || r.tipo_salida === 'traspaso' || r.tipo_entrada === 'traspaso') return 'Traspaso';
+  if ((Number(r.depositos) || 0) > 0) return 'Ingreso';
+  if ((Number(r.cargos) || 0) > 0) return 'Egreso';
+  return '—';
+}
+// Devuelve una función (renglón, esBanco) → folio de la factura (nunca el UUID). Una sola consulta por lote para toda la tabla.
+async function prepararFacturasLedger(filas) {
+  const idsP = [], idsC = [];
+  filas.forEach(r => { idsP.push(r.provFacId, r.proveedor_factura_id, ..._idsDe(r.proveedor_factura_ids)); idsC.push(r.cliFacId, r.cliente_factura_id, ..._idsDe(r.cliente_factura_ids)); });
+  let pv = [], cl = [];
+  try {
+    [pv, cl] = await Promise.all([
+      _traerPorIds('fz_proveedores', 'id,factura', null, idsP),
+      _traerPorIds('fz_facturas_clientes', 'id,folio,numero_factura', 'id,folio', idsC),
+    ]);
+  } catch (_) { /* opcional: sin esto solo se muestran las referencias escritas */ }
+  const mp = Object.fromEntries(pv.map(x => [x.id, x])), mc = Object.fromEntries(cl.map(x => [x.id, x]));
+  return (r, esBanco) => {
+    const vinc = [];
+    _unicosIds([r.provFacId, r.proveedor_factura_id, ..._idsDe(r.proveedor_factura_ids)]).forEach(id => { if (mp[id] && mp[id].factura) vinc.push(String(mp[id].factura)); });
+    _unicosIds([r.cliFacId, r.cliente_factura_id, ..._idsDe(r.cliente_factura_ids)]).forEach(id => { if (mc[id]) { const n = numeroFacturaCliente(mc[id]); if (n) vinc.push(n); } });
+    const vincTxt = [...new Set(vinc)].join(', ');
+    if (r.tipoDoc === 'poliza') return String(r.facturaLinea || '').trim() || vincTxt;
+    if (esBanco) return vincTxt || String(r.referencia || '').trim();
+    return String(r.factura || '').trim() || vincTxt;
+  };
+}
+const textoLedger = (t) => t ? escHtml(t) : '<span style="color:var(--muted);">—</span>';
+// Celda «Tercero»: el tercero real (o «—»). En celular, si no hay tercero o es una póliza, se añade el tipo para no perder el origen.
+function celdaTerceroLedger(r, tercero, conAuto) {
+  const base = (conAuto && tercero) ? `<em>${escHtml(tercero)}</em> <span style="color:var(--muted);font-size:11px;">· auto</span>` : textoLedger(tercero);
+  const movil = (r.tipoDoc === 'poliza' || !tercero) ? ` <span class="ledger-tipo-movil">· ${escHtml(tipoPolizaDerivado(r))}</span>` : '';
+  return base + movil;
+}
 const numeroFacturaCliente = (c) => { const nf = String((c && c.numero_factura) || '').trim(); if (nf) return nf; return (c && c.folio !== null && c.folio !== undefined && c.folio !== '') ? 'Folio #' + c.folio : ''; };
 const UUID_SUB_STYLE = 'font-size:10px;color:var(--muted);font-family:ui-monospace,Consolas,monospace;white-space:normal;overflow-wrap:break-word;max-width:136px;line-height:1.25;'; // el UUID se parte en dos líneas por los guiones: la tabla no se ensancha
 const _unicosIds = (ids) => [...new Set((ids || []).filter(x => x !== null && x !== undefined && x !== '').map(String))];
@@ -24449,7 +24503,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-10-21.2';
+const APP_VERSION = '2026-10-21.4';
 const RESPALDO_TABLAS = [['businesses', ['id']], ['fz_cuentas_mayor', ['id']], ['fz_subcuentas', ['id']], ['fz_polizas', ['id']], ['fz_polizas_lineas', ['id']], ['fz_proveedores_catalogo', ['id']], ['fz_proveedores', ['id']], ['fz_ventas', ['id']], ['fz_conceptos_venta', ['id']], ['fz_conceptos_sistema', ['id']], ['fz_conceptos', ['id']], ['fz_efectivo_monedas', ['id']], ['fz_efectivo_mov', ['id']], ['fz_bancos_cuentas', ['id']], ['fz_bancos_mov', ['id']], ['fz_pl_gastos', ['id']], ['fz_usuarios_autorizados', ['id']], ['fz_usuario_negocios', ['id']], ['fz_auditoria', ['id']], ['fz_adjuntos', ['id']], ['fz_pagos_aplicados', ['id']], ['fz_clientes', ['id']], ['fz_productos_servicios', ['id']], ['fz_folios_contador', ['business_id', 'tipo']], ['fz_facturas_clientes', ['id']], ['fz_facturas_clientes_lineas', ['id']], ['fz_cobros_aplicados', ['id']], ['fz_ordenes_venta', ['id']], ['fz_ordenes_venta_lineas', ['id']], ['fz_conciliaciones_bancarias', ['id']], ['fz_cierres_periodo', ['id']], ['fz_tc_cierre', ['id']], ['fz_tipos_cambio_cierre', ['id']], ['fz_cfdi', ['id']], ['fz_cfdi_bitacora', ['id']], ['fz_activos_fijos', ['id']], ['fz_depreciaciones_generadas', ['id']], ['fz_inpc_valores', ['id']], ['fz_recargos_tasas', ['id']], ['fz_pagos_impuestos', ['id']], ['fz_isr_datos_anuales', ['id']], ['fz_isr_conceptos', ['id']], ['fz_provisiones_fiscales', ['id']], ['fz_iva_realizaciones', ['id']], ['fz_aplicaciones_pago_fiscal', ['id']], ['fz_regimenes_fiscales_negocio', ['id']], ['fz_dias_inhabiles_fiscales', ['id']], ['fz_declaraciones_fiscales', ['id']], ['fz_reglas_vencimiento_impuesto', []], ['fz_calendario_fiscal_validacion', []], ['fz_catalogo_regimenes_fiscales', []], ['fz_papeles_trabajo', ['id']], ['fz_papel_conceptos', ['id']], ['fz_papel_concepto_fuentes', ['id']], ['fz_papel_concepto_accesorios', ['id']], ['fz_papel_historial', ['id']], ['fz_papel_soportes', ['id']], ['fz_mapeo_cuenta_concepto_fiscal', ['id']], ['fz_perdidas_fiscales', ['id']], ['fz_perdidas_fiscales_actualizaciones', ['id']], ['fz_perdidas_fiscales_aplicaciones', ['id']], ['fz_perdidas_fiscales_cierres', ['id']], ['fz_perdidas_fiscales_historial', ['id']], ['fz_perdidas_fiscales_soportes', ['id']], ['fz_ptu_eventos', ['id']], ['fz_ptu_historial', ['id']], ['fz_pagos_por_clasificar', ['id']], ['fz_iva_saldos_favor', ['id']], ['fz_iva_saldos_favor_movimientos', ['id']], ['fz_iva_saldos_favor_devoluciones', ['id']], ['fz_iva_saldo_favor_periodo_activo', ['id']]];
 const RESPALDO_BUCKETS = ['adjuntos', 'cfdi'], RESPALDO_MAX_ARCHIVOS_BYTES = 400 * 1024 * 1024, RESPALDO_AVISO_DIAS = 7;
 function respaldoEstado() { try { return JSON.parse(localStorage.getItem('finanzas_ultimo_respaldo') || 'null'); } catch (_) { return null; } }
