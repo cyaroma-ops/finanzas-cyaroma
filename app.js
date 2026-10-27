@@ -11608,7 +11608,7 @@ async function renderAuxiliares() {
       <div class="card-head"><h3>${escHtml(cuenta?.nombre||'')}</h3><span class="hint">${escHtml(etiquetaPeriodo)} · Saldo inicial: ${fmt(Math.abs(saldoInicialNeto))} ${saldoInicialNeto>=0?(esDeudora?'Deudor':'Acreedor'):(esDeudora?'Acreedor':'Deudor')}</span></div>
       <div class="table-wrap scroll-sticky tabla-contable-wrap">
         <table class="tabla-contable">
-          <thead><tr><th>Fecha</th><th>Documento</th><th>Concepto o descripción</th><th>Factura o Nota</th><th>Debe</th><th>Haber</th><th>Saldo</th></tr></thead>
+          <thead><tr><th>Fecha</th><th>Documento</th><th>Concepto o descripción</th><th>Factura o Nota</th><th class="num">Debe</th><th class="num">Haber</th><th class="num">Saldo</th></tr></thead>
           <tbody>
             ${filasConSaldo.length ? filasConSaldo.map((f,idx) => `<tr>
               <td>${fechaCorta(f.fecha)}</td>
@@ -11640,11 +11640,17 @@ async function renderAuxiliares() {
   document.getElementById('auxRangoAnio').addEventListener('click', () => { STATE_auxiliarRango = { mes: STATE.currentMonth, desde: `${STATE.currentMonth.slice(0,4)}-01-01`, hasta: mesAux.end }; renderAuxiliares(); });
   el.querySelectorAll('.aux-ver-documento').forEach(btn => btn.addEventListener('click', () => verDocumentoDesdeOrigen(filasConSaldo[Number(btn.dataset.idx)], b.id)));
   document.getElementById('auxExcelBtn').addEventListener('click', () => {
-    const wb = XLSX.utils.book_new();
-    const rows = [{ Fecha:'', Documento:'', 'Concepto o descripción':'Saldo inicial', 'Factura o Nota':'', Debe:'', Haber:'', Saldo: Math.abs(saldoInicialNeto), UUID:'' }];
-    filasConSaldo.forEach(f => rows.push({ Fecha: f.fecha, Documento: documentoAux(f), 'Concepto o descripción': conceptoAux(f), 'Factura o Nota': f.colFactura ?? '', Debe: f.cargo||'', Haber: f.abono||'', Saldo: Math.abs(f.saldo), UUID: f.colUuid ?? '' }));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Auxiliar');
-    XLSX.writeFile(wb, `Auxiliar - ${cuenta?.nombre} - ${b.name} - ${sufijoArchivo}.xlsx`);
+    exportarExcelProfesional({
+      archivo: `Auxiliar - ${cuenta?.nombre} - ${b.name} - ${sufijoArchivo}.xlsx`, hoja: 'Auxiliar', negocio: b,
+      titulo: `Auxiliar de cuenta — ${cuenta?.nombre || ''}`, subtitulo: `${etiquetaPeriodo} · Saldo inicial: ${fmt(Math.abs(saldoInicialNeto))}`,
+      columnas: [{ h: 'Fecha', t: 'fecha' }, { h: 'Documento', max: 26 }, { h: 'Concepto o descripción', max: 48 }, { h: 'Factura o Nota', max: 22 }, { h: 'Debe', t: 'monto' }, { h: 'Haber', t: 'monto' }, { h: 'Saldo', t: 'monto' }, { h: 'UUID', min: 38, max: 38 }],
+      filas: [
+        { tipo: 'normal', celdas: ['', '', 'Saldo inicial', '', '', '', Math.abs(saldoInicialNeto), ''] },
+        ...filasConSaldo.map(f => ({ tipo: 'normal', celdas: [f.fecha, documentoAux(f), conceptoAux(f), f.colFactura ?? '', f.cargo || '', f.abono || '', Math.abs(f.saldo), uuidExcel(f.colUuid)] })),
+        { tipo: 'total', celdas: ['', 'TOTAL DEL PERIODO', '', '', totalDebe, totalHaber, Math.abs(saldoCorrido), ''] },
+      ],
+      filtro: true,
+    });
   });
   document.getElementById('auxPdfBtn').addEventListener('click', () => {
     const { doc, margin, y } = iniciarPdfConEncabezado(b, `Auxiliar — ${cuenta?.nombre} — ${etiquetaPeriodo}`);
@@ -11653,8 +11659,9 @@ async function renderAuxiliares() {
       head: [['Fecha','Documento','Concepto o descripción','Factura o Nota','Debe','Haber','Saldo']],
       body: [['','','Saldo inicial','','','',fmt(Math.abs(saldoInicialNeto))], ...filasConSaldo.map(f=>[fechaCorta(f.fecha), documentoAux(f), conceptoAux(f), textoFacturaPdf(f), f.cargo?fmt(f.cargo):'', f.abono?fmt(f.abono):'', fmt(Math.abs(f.saldo))])],
       foot: [['','TOTAL','','', fmt(totalDebe), fmt(totalHaber), fmt(Math.abs(saldoCorrido))]],
-      columnStyles: { 0: { cellWidth: 52 }, 1: { cellWidth: 86 }, 2: { cellWidth: 176 }, 3: { cellWidth: 170 }, 4: { cellWidth: 72, halign: 'right' }, 5: { cellWidth: 72, halign: 'right' }, 6: { cellWidth: 72, halign: 'right' } },
-      styles: { fontSize: 8 }, headStyles: { fillColor: [10,31,61] },
+      columnStyles: { 0: { cellWidth: 52 }, 1: { cellWidth: 86 }, 2: { cellWidth: 200 }, 3: { cellWidth: 170 }, 4: { cellWidth: 72, halign: 'right' }, 5: { cellWidth: 72, halign: 'right' }, 6: { cellWidth: 80, halign: 'right' } },
+      styles: { fontSize: 8, cellPadding: { top: 3, bottom: 3, left: 4, right: 4 } }, headStyles: { fillColor: [10,31,61] },
+      didParseCell: (data) => alinearCifrasPdf(data, [4, 5, 6]), // encabezado, cifras y total a la derecha
     });
     doc.save(`Auxiliar - ${cuenta?.nombre} - ${b.name} - ${sufijoArchivo}.pdf`);
   });
@@ -11754,7 +11761,7 @@ async function renderDiariosPolizasVista() {
       </div>
       <div class="table-wrap" style="margin-bottom:8px;">
         <table class="dp-lineas">
-          <thead><tr><th>Cuenta</th><th>Concepto o descripción</th><th>Factura o Nota</th><th>Cargo</th><th>Abono</th></tr></thead>
+          <thead><tr><th>Cuenta</th><th>Concepto o descripción</th><th>Factura o Nota</th><th class="num">Cargo</th><th class="num">Abono</th></tr></thead>
           <tbody>${d.lineas.map(l=>`<tr><td>${escHtml(l.cuenta)}</td><td class="wrap-text">${escHtml(l.concepto || '')}</td><td>${celdaFacturaHtml({ colFactura: l.factura, colUuid: l.uuid })}</td><td class="num">${l.cargo?fmt(l.cargo):''}</td><td class="num">${l.abono?fmt(l.abono):''}</td></tr>`).join('')}</tbody>
           <tfoot><tr class="total-row"><td colspan="3">TOTAL</td><td class="num">${fmt(d.cargo)}</td><td class="num">${fmt(d.abono)}</td></tr></tfoot>
         </table>
@@ -11796,26 +11803,74 @@ async function renderDiariosPolizasVista() {
   el.querySelectorAll('.dp-ver-documento').forEach(btn => btn.addEventListener('click', () => verDocumentoDesdeOrigen(documentos[Number(btn.dataset.idx)], b.id)));
 
   document.getElementById('dpExcelBtn').addEventListener('click', () => {
-    const wb = XLSX.utils.book_new();
-    const filasXlsx = [];
+    const filasXlsx = []; let tCargo = 0, tAbono = 0;
     documentos.forEach(d => {
-      filasXlsx.push({ Fecha: d.fecha, Documento: d.referencia, Tercero: d.detalle, Generación: d.generacion, Cuenta: '', 'Concepto o descripción': '', 'Factura o Nota': '', Cargo: '', Abono: '', UUID: '' });
-      d.lineas.forEach(l => filasXlsx.push({ Fecha:'', Documento:'', Tercero:'', Generación:'', Cuenta: l.cuenta, 'Concepto o descripción': l.concepto || '', 'Factura o Nota': l.factura || '', Cargo: l.cargo||'', Abono: l.abono||'', UUID: l.uuid || '' }));
-      filasXlsx.push({ Fecha:'', Documento:'', Tercero:'', Generación:'', Cuenta:'TOTAL', 'Concepto o descripción': '', 'Factura o Nota': '', Cargo: d.cargo, Abono: d.abono, UUID: '' });
+      filasXlsx.push({ tipo: 'grupo', celdas: [`${fechaCorta(d.fecha)} — ${d.referencia}${d.detalle ? ' — ' + d.detalle : ''} (${d.generacion})`] });
+      d.lineas.forEach(l => filasXlsx.push({ tipo: 'normal', celdas: [l.cuenta, l.concepto || '', l.factura || '', l.cargo || '', l.abono || '', uuidExcel(l.uuid)] }));
+      filasXlsx.push({ tipo: 'subtotal', celdas: ['TOTAL del documento', '', '', d.cargo, d.abono, ''] });
+      tCargo += d.cargo; tAbono += d.abono;
     });
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filasXlsx), 'Diarios y Pólizas');
-    XLSX.writeFile(wb, `Diarios y Pólizas - ${b.name} - ${desde} a ${hasta}.xlsx`);
+    filasXlsx.push({ tipo: 'total', celdas: ['TOTAL GENERAL', '', '', tCargo, tAbono, ''] });
+    exportarExcelProfesional({
+      archivo: `Diarios y Pólizas - ${b.name} - ${desde} a ${hasta}.xlsx`, hoja: 'Diarios y Pólizas', negocio: b,
+      titulo: 'Diarios y Pólizas', subtitulo: `${fechaCorta(desde)} al ${fechaCorta(hasta)} · ${documentos.length} documento(s)`,
+      columnas: [{ h: 'Cuenta', max: 40 }, { h: 'Concepto o descripción', max: 48 }, { h: 'Factura o Nota', max: 22 }, { h: 'Cargo', t: 'monto' }, { h: 'Abono', t: 'monto' }, { h: 'UUID', min: 38, max: 38 }],
+      filas: filasXlsx,
+    });
   });
   document.getElementById('dpPdfBtn').addEventListener('click', () => {
-    const { doc, margin, y } = iniciarPdfConEncabezado(b, `Diarios y Pólizas — ${desde} a ${hasta}`, { orientation: 'portrait' });
-    let yPos = y;
+    const tituloPdf = `Diarios y Pólizas — ${desde} a ${hasta}`;
+    const body = [], tipos = []; let tCargo = 0, tAbono = 0;
     documentos.forEach(d => {
-      if (yPos > 700) { doc.addPage(); yPos = 40; }
-      doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.text(`${fechaCorta(d.fecha)} — ${d.referencia} — ${d.detalle||''} (${d.generacion})`, margin, yPos);
-      doc.autoTable({ startY: yPos+6, margin:{left:margin,right:margin}, head:[['Cuenta','Concepto o descripción','Factura o Nota','Cargo','Abono']], body: d.lineas.map(l=>[l.cuenta, l.concepto || '', textoFacturaPdf({ colFactura: l.factura, colUuid: l.uuid }), l.cargo?fmt(l.cargo):'', l.abono?fmt(l.abono):'']), foot:[['TOTAL','','', fmt(d.cargo), fmt(d.abono)]], styles:{fontSize:8}, headStyles:{fillColor:[10,31,61]}, columnStyles:{ 0:{cellWidth:104}, 1:{cellWidth:122}, 2:{cellWidth:170}, 3:{cellWidth:84, halign:'right'}, 4:{cellWidth:84, halign:'right'} } });
-      yPos = doc.lastAutoTable.finalY + 14;
+      tipos.push('doc'); body.push([`${fechaCorta(d.fecha)} — ${d.referencia}${d.detalle ? ' — ' + d.detalle : ''} (${d.generacion})`, '', '', '', '']);
+      d.lineas.forEach(l => { tipos.push('linea'); body.push([l.cuenta, l.concepto || '', textoFacturaPdf({ colFactura: l.factura, colUuid: l.uuid }), l.cargo ? fmt(l.cargo) : '', l.abono ? fmt(l.abono) : '']); });
+      tipos.push('total'); body.push(['TOTAL del documento', '', '', fmt(d.cargo), fmt(d.abono)]);
+      tCargo += d.cargo; tAbono += d.abono;
     });
-    doc.save(`Diarios y Pólizas - ${b.name} - ${desde} a ${hasta}.pdf`);
+    tipos.push('general'); body.push(['TOTAL GENERAL', '', '', fmt(tCargo), fmt(tAbono)]);
+    const opciones = (tiposFila, startY, margin) => ({
+      startY, margin: { left: margin, right: margin },
+      head: [['Cuenta', 'Concepto o descripción', 'Factura o Nota', 'Cargo', 'Abono']],
+      styles: { fontSize: 8, cellPadding: { top: 3, bottom: 3, left: 4, right: 4 }, overflow: 'linebreak' }, headStyles: { fillColor: [10, 31, 61] },
+      columnStyles: { 0: { cellWidth: 104 }, 1: { cellWidth: 122 }, 2: { cellWidth: 170 }, 3: { cellWidth: 84 }, 4: { cellWidth: 84 } },
+      rowPageBreak: 'avoid',
+      didParseCell: (data) => {
+        if (data.section === 'head') { alinearCifrasPdf(data, [3, 4]); return; }
+        if (data.section !== 'body') return;
+        const t = tiposFila[data.row.index], col = data.column.index;
+        if (typeof t === 'string' && t.startsWith('espacio:')) { data.cell.styles.cellPadding = 0; data.cell.styles.fillColor = false; data.cell.styles.minCellHeight = Number(t.slice(8)); data.cell.text = []; return; }
+        if (t === 'doc') {
+          data.cell.styles.fillColor = [226, 233, 244]; data.cell.styles.fontStyle = 'bold'; data.cell.styles.textColor = [10, 31, 61];
+          if (col === 0) data.cell.colSpan = 5; else data.cell.text = [];
+        } else if (t === 'total' || t === 'general') {
+          data.cell.styles.fontStyle = 'bold'; data.cell.styles.fillColor = t === 'general' ? [200, 214, 234] : [243, 246, 250];
+          if (col === 0) data.cell.colSpan = 3; else if (col === 1 || col === 2) data.cell.text = [];
+          alinearCifrasPdf(data, [3, 4]);
+        } else alinearCifrasPdf(data, [3, 4]);
+      },
+    });
+    // 1) Pasada de medición: la altura REAL de cada fila, para que ningún encabezado de documento quede solo al pie de una página
+    const seco = iniciarPdfConEncabezado(b, tituloPdf, { orientation: 'portrait' });
+    const altos = []; let altEnc = 0, margenSup = 40, margenInf = 40;
+    seco.doc.autoTable({ ...opciones(tipos, seco.y, seco.margin), body, didDrawCell: (d) => {
+      if (d.column.index !== 0) return;
+      margenSup = d.settings.margin.top; margenInf = d.settings.margin.bottom;
+      if (d.section === 'head') altEnc = d.row.height; else if (d.section === 'body') altos[d.row.index] = d.row.height;
+    } });
+    const limite = seco.doc.internal.pageSize.getHeight() - margenInf, topSig = margenSup + altEnc;
+    let yy = seco.y + altEnc; const body2 = [], tipos2 = [];
+    body.forEach((fila, i) => {
+      const h = altos[i] || 0;
+      if (yy + h > limite && yy > topSig + 0.5) yy = topSig;                       // salto de página natural
+      if (tipos[i] === 'doc' && i + 1 < body.length && yy > topSig + 0.5 && yy + h <= limite && yy + h + (altos[i + 1] || 0) > limite) {
+        body2.push(['', '', '', '', '']); tipos2.push('espacio:' + (limite - yy - 0.5).toFixed(2)); yy = topSig;   // empuja el documento a la página siguiente
+      }
+      body2.push(fila); tipos2.push(tipos[i]); yy += h;
+    });
+    // 2) Tabla definitiva
+    const real = iniciarPdfConEncabezado(b, tituloPdf, { orientation: 'portrait' });
+    real.doc.autoTable({ ...opciones(tipos2, real.y, real.margin), body: body2 });
+    real.doc.save(`Diarios y Pólizas - ${b.name} - ${desde} a ${hasta}.pdf`);
   });
 }
 
@@ -11848,8 +11903,8 @@ async function renderLibroDiario() {
       <div id="ldResumen" style="background:#f7f9fc;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px;"></div>
       <div class="table-wrap scroll-sticky tabla-contable-wrap">
         <table class="tabla-contable">
-          <thead><tr><th>Fecha</th><th>Referencia</th><th>Cuenta</th><th>Concepto</th><th>Cargo</th><th>Abono</th><th></th></tr></thead>
-          <tbody id="ldLista"><tr><td colspan="7" class="empty">Elige un rango y dale "Buscar".</td></tr></tbody>
+          <thead><tr><th>Fecha</th><th>Referencia</th><th>Cuenta</th><th>Concepto</th><th>Factura o Nota</th><th class="num">Cargo</th><th class="num">Abono</th><th></th></tr></thead>
+          <tbody id="ldLista"><tr><td colspan="8" class="empty">Elige un rango y dale "Buscar".</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -11861,9 +11916,11 @@ async function renderLibroDiario() {
     const desde = document.getElementById('ldDesde').value;
     const hasta = document.getElementById('ldHasta').value;
     if (!desde || !hasta) { toast('Elige ambas fechas.', 'error'); return; }
-    document.getElementById('ldLista').innerHTML = `<tr><td colspan="6" class="empty">Calculando…</td></tr>`;
+    document.getElementById('ldLista').innerHTML = `<tr><td colspan="8" class="empty">Calculando…</td></tr>`;
     const resultado = await getLibroDiario(b.id, desde, hasta);
     ultimoResultado = resultado;
+    await enriquecerFilasConDocumento(b.id, resultado.filas.map(r => r._f)); // solo presentación: factura y UUID
+    resultado.filas.forEach(r => { r.colFactura = r._f.colFactura; r.colUuid = r._f.colUuid; delete r._f; });
     const { filas, totalCargo, totalAbono } = resultado;
     const cuadra = Math.abs(totalCargo - totalAbono) < 0.01;
     document.getElementById('ldResumen').innerHTML = `
@@ -11880,24 +11937,28 @@ async function renderLibroDiario() {
         <td>${escHtml(f.referencia)}</td>
         <td>${escHtml(f.cuenta)}</td>
         <td>${escHtml(f.concepto)}</td>
+        <td>${celdaFacturaHtml(f)}</td>
         <td class="num">${f.cargo ? fmt(f.cargo) : ''}</td>
         <td class="num">${f.abono ? fmt(f.abono) : ''}</td>
         <td>${f.origen ? `<button class="btn btn-ghost btn-sm ld-ver-documento" data-idx="${idx}" style="font-size:11px;padding:3px 8px;">Ver documento</button>` : ''}</td>
-      </tr>`).join('') : `<tr><td colspan="7" class="empty">No hay movimientos en este rango.</td></tr>`;
+      </tr>`).join('') : `<tr><td colspan="8" class="empty">No hay movimientos en este rango.</td></tr>`;
     document.getElementById('ldLista').querySelectorAll('.ld-ver-documento').forEach(btn => btn.addEventListener('click', () => abrirOrigenDesdeDetalle(filas[Number(btn.dataset.idx)].origen, b.id)));
   };
   document.getElementById('ldBuscar').addEventListener('click', buscar);
   document.getElementById('ldExportar').addEventListener('click', () => {
     if (!ultimoResultado || !ultimoResultado.filas.length) { toast('Primero busca un rango con movimientos.', 'error'); return; }
-    const filasExcel = ultimoResultado.filas.map(f => ({
-      'Fecha': f.fecha, 'Referencia': f.referencia, 'Cuenta': f.cuenta, 'Concepto': f.concepto,
-      'Cargo': f.cargo || 0, 'Abono': f.abono || 0,
-    }));
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.json_to_sheet(filasExcel);
-    XLSX.utils.book_append_sheet(wb, ws, 'Libro Diario');
     const desde = document.getElementById('ldDesde').value, hasta = document.getElementById('ldHasta').value;
-    XLSX.writeFile(wb, `Libro Diario - ${b.name} - ${desde} a ${hasta}.xlsx`);
+    const { filas, totalCargo, totalAbono } = ultimoResultado;
+    exportarExcelProfesional({
+      archivo: `Libro Diario - ${b.name} - ${desde} a ${hasta}.xlsx`, hoja: 'Libro Diario', negocio: b,
+      titulo: 'Libro Diario', subtitulo: `${fechaCorta(desde)} al ${fechaCorta(hasta)} · ${filas.length} movimiento(s)`,
+      columnas: [{ h: 'Fecha', t: 'fecha' }, { h: 'Referencia', max: 28 }, { h: 'Cuenta', max: 40 }, { h: 'Concepto', max: 46 }, { h: 'Factura o Nota', max: 22 }, { h: 'Cargo', t: 'monto' }, { h: 'Abono', t: 'monto' }, { h: 'UUID', min: 38, max: 38 }],
+      filas: [
+        ...filas.map(f => ({ tipo: 'normal', celdas: [f.fecha, f.referencia, f.cuenta, f.concepto, f.colFactura ?? '', f.cargo || '', f.abono || '', uuidExcel(f.colUuid)] })),
+        { tipo: 'total', celdas: ['TOTAL', '', '', '', '', totalCargo, totalAbono, ''] },
+      ],
+      filtro: true,
+    });
     registrarAuditoria(b.id, 'exportar', 'Libro Diario', `Exportado del ${desde} al ${hasta}`);
   });
   await buscar();
@@ -20922,7 +20983,7 @@ async function getLibroDiario(businessId, startDate, endDate) {
   };
   const filas = filasOrigen
     .filter(f => f.fecha >= startDate && f.fecha <= endDate)
-    .map(f => ({ fecha: f.fecha, referencia: referenciaDe(f), cuenta: f.cuenta, concepto: f.detalle || referenciaDe(f) || '—', cargo: f.cargo, abono: f.abono, origen: origenDe(f) }))
+    .map(f => ({ fecha: f.fecha, referencia: referenciaDe(f), cuenta: f.cuenta, concepto: f.detalle || referenciaDe(f) || '—', cargo: f.cargo, abono: f.abono, origen: origenDe(f), _f: f }))
     .sort((a,b) => a.fecha.localeCompare(b.fecha));
   const totalCargo = filas.reduce((s,f)=>s+f.cargo,0);
   const totalAbono = filas.reduce((s,f)=>s+f.abono,0);
@@ -20941,6 +21002,52 @@ async function getLibroDiario(businessId, startDate, endDate) {
    El UUID vive en su propio dato (cfdi_uuid / folio_fiscal) y se muestra APARTE: nunca se mezcla
    con el número de factura.
    ============================================================ */
+/* ============================================================
+   EXCEL PROFESIONAL (ayudante común): negocio, título, periodo y fecha de generación; encabezado de columnas;
+   anchos ajustados; fechas reales (dd/mm/aaaa); importes con formato #,##0.00; totales; filtro y celdas combinadas.
+   Límite de la biblioteca de Excel de la app (SheetJS comunitaria): no escribe negritas, colores ni paneles congelados.
+   filas: [{ tipo: 'normal'|'grupo'|'subtotal'|'total', celdas: [...] }]  ('grupo': celdas[0] ocupa todo el ancho).
+   ============================================================ */
+const _serieExcelISO = (iso) => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || '')); return m ? Math.round((Date.UTC(+m[1], +m[2] - 1, +m[3]) - Date.UTC(1899, 11, 30)) / 86400000) : null; };
+const uuidExcel = (u) => String(u || '').replace(/\n/g, ', ');
+function exportarExcelProfesional({ archivo, hoja, negocio, titulo, subtitulo, columnas, filas, filtro = false }) {
+  const n = columnas.length, aoa = [], fmts = {}, merges = [];
+  const pad = (x) => String(x).padStart(2, '0'), ahora = new Date();
+  const portada = [(negocio && (negocio.razon_social || negocio.name)) || 'Finanzas', titulo];
+  if (subtitulo) portada.push(subtitulo);
+  portada.push(`Generado: ${pad(ahora.getDate())}/${pad(ahora.getMonth() + 1)}/${ahora.getFullYear()} ${pad(ahora.getHours())}:${pad(ahora.getMinutes())}`);
+  portada.forEach((t, i) => { aoa.push([t]); merges.push({ s: { r: i, c: 0 }, e: { r: i, c: n - 1 } }); });
+  aoa.push([]);
+  const filaEnc = aoa.length; aoa.push(columnas.map(c => c.h));
+  const ancho = columnas.map(c => String(c.h).length);
+  let hayGrupos = false, ultimaNormal = -1;
+  filas.forEach(f => {
+    const r = aoa.length;
+    if (f.tipo === 'grupo') { hayGrupos = true; aoa.push([f.celdas[0]]); merges.push({ s: { r, c: 0 }, e: { r, c: n - 1 } }); return; }
+    if (f.tipo === 'subtotal') hayGrupos = true;
+    if (f.tipo === 'normal') ultimaNormal = r;
+    aoa.push(columnas.map((c, i) => {
+      const v = f.celdas[i];
+      if (v === '' || v === null || v === undefined) return '';
+      if (c.t === 'fecha') { const s = _serieExcelISO(v); if (s !== null) { fmts[r + ':' + i] = 'dd/mm/yyyy'; ancho[i] = Math.max(ancho[i], 10); return s; } return String(v); }
+      if (c.t === 'monto') { const x = Number(v); if (Number.isFinite(x)) { fmts[r + ':' + i] = '#,##0.00'; ancho[i] = Math.max(ancho[i], fmtNum(x).length); return x; } return String(v); }
+      const s = String(v); ancho[i] = Math.max(ancho[i], s.length); return s;
+    }));
+  });
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  Object.keys(fmts).forEach(k => { const [r, c] = k.split(':').map(Number); const cel = ws[XLSX.utils.encode_cell({ r, c })]; if (cel) cel.z = fmts[k]; });
+  ws['!cols'] = columnas.map((c, i) => ({ wch: Math.min(c.max || 46, Math.max(c.min || 10, ancho[i] + 2)) }));
+  ws['!merges'] = merges;
+  ws['!margins'] = { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.3, footer: 0.3 };
+  if (filtro && !hayGrupos && ultimaNormal > filaEnc) ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: filaEnc, c: 0 }, e: { r: ultimaNormal, c: n - 1 } }) };
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, String(hoja || titulo).replace(/[\\\/?*\[\]:]/g, ' ').slice(0, 31));
+  XLSX.writeFile(wb, archivo);
+}
+// Las cifras y sus encabezados (y totales) de un PDF van alineados a la derecha en las columnas indicadas.
+const alinearCifrasPdf = (data, columnas) => { if (columnas.includes(data.column.index)) data.cell.styles.halign = 'right'; };
+
+const numeroFacturaCliente = (c) => { const nf = String((c && c.numero_factura) || '').trim(); if (nf) return nf; return (c && c.folio !== null && c.folio !== undefined && c.folio !== '') ? 'Folio #' + c.folio : ''; };
 const UUID_SUB_STYLE = 'font-size:10px;color:var(--muted);font-family:ui-monospace,Consolas,monospace;white-space:normal;overflow-wrap:break-word;max-width:136px;line-height:1.25;'; // el UUID se parte en dos líneas por los guiones: la tabla no se ensancha
 const _unicosIds = (ids) => [...new Set((ids || []).filter(x => x !== null && x !== undefined && x !== '').map(String))];
 const _idsDe = (v) => Array.isArray(v) ? v : (v ? [v] : []);
@@ -20964,7 +21071,7 @@ async function enriquecerFilasConDocumento(businessId, filas) {
     const [lineas, provs0, clis0, bancos, efectivos] = await Promise.all([
       _traerPorIds('fz_polizas_lineas', 'id,proveedor,descripcion,referencia,proveedor_factura_id,cliente_factura_id', null, de('poliza').map(f => f.lineaId)),
       _traerPorIds('fz_proveedores', 'id,proveedor,factura,cfdi_uuid,desglose', 'id,proveedor,factura,desglose', de('factura_proveedor').map(f => f.id)),
-      _traerPorIds('fz_facturas_clientes', 'id,folio,folio_fiscal', 'id,folio', de('factura_cliente').map(f => f.id)),
+      _traerPorIds('fz_facturas_clientes', 'id,folio,numero_factura,folio_fiscal', 'id,folio,numero_factura', de('factura_cliente').map(f => f.id)),
       _traerPorIds('fz_bancos_mov', 'id,proveedor,concepto,descripcion,referencia,proveedor_factura_id,proveedor_factura_ids,cliente_factura_id,cliente_factura_ids', 'id,concepto,descripcion,referencia,proveedor_factura_id,proveedor_factura_ids', de('banco_mov').map(f => f.id)),
       _traerPorIds('fz_efectivo_mov', 'id,proveedor,descripcion,factura,proveedor_factura_id,proveedor_factura_ids,cliente_factura_id,cliente_factura_ids', 'id,proveedor,descripcion,factura', de('efectivo_mov').map(f => f.id)),
     ]);
@@ -20977,13 +21084,13 @@ async function enriquecerFilasConDocumento(businessId, filas) {
     const faltanProv = _unicosIds(idsProvVinc).filter(id => !provMap[id]), faltanCli = _unicosIds(idsCliVinc).filter(id => !cliMap[id]);
     const [provs1, clis1] = await Promise.all([
       faltanProv.length ? _traerPorIds('fz_proveedores', 'id,proveedor,factura,cfdi_uuid', 'id,proveedor,factura', faltanProv) : [],
-      faltanCli.length ? _traerPorIds('fz_facturas_clientes', 'id,folio,folio_fiscal', 'id,folio', faltanCli) : [],
+      faltanCli.length ? _traerPorIds('fz_facturas_clientes', 'id,folio,numero_factura,folio_fiscal', 'id,folio,numero_factura', faltanCli) : [],
     ]);
     provs1.forEach(x => { provMap[x.id] = x; }); clis1.forEach(x => { cliMap[x.id] = x; });
     const vinculadas = (idsP, idsC) => {
       const nums = [], uuids = [];
       _unicosIds(idsP).forEach(id => { const p = provMap[id]; if (p) { if (p.factura) nums.push(String(p.factura)); if (p.cfdi_uuid) uuids.push(p.cfdi_uuid); } });
-      _unicosIds(idsC).forEach(id => { const c = cliMap[id]; if (c) { if (c.folio !== null && c.folio !== undefined && c.folio !== '') nums.push('Folio #' + c.folio); if (c.folio_fiscal) uuids.push(c.folio_fiscal); } });
+      _unicosIds(idsC).forEach(id => { const c = cliMap[id]; if (c) { const nf = numeroFacturaCliente(c); if (nf) nums.push(nf); if (c.folio_fiscal) uuids.push(c.folio_fiscal); } });
       return { numero: nums.join(', '), uuid: [...new Set(uuids)].join('\n') };
     };
     const conceptoDesglose = (F, f) => {
@@ -21012,7 +21119,7 @@ async function enriquecerFilasConDocumento(businessId, filas) {
       } else if (f.tipoOrigen === 'factura_cliente') {
         const C = cliMap[f.id];
         prov = f.detalle || '';
-        fac = (C && C.folio !== null && C.folio !== undefined && C.folio !== '') ? 'Folio #' + C.folio : (f.referencia || '');
+        fac = (C && numeroFacturaCliente(C)) || (f.referencia || '');
         uu = (C && C.folio_fiscal) || '';
         conc = 'Factura de cliente';
       } else if (f.tipoOrigen === 'banco_mov' || f.tipoOrigen === 'efectivo_mov') {
@@ -21137,30 +21244,30 @@ async function abrirModalMovimientosCuenta(nombre, subcuentaIds, businessId, nom
   document.getElementById('movCuentaBuscar').onclick = buscar;
   document.getElementById('movCuentaExcel').onclick = () => {
     if (!ultimoResultado || !ultimoResultado.filas.length) { toast('No hay movimientos para exportar.', 'error'); return; }
-    const { filas, saldoInicialPorSubcuenta, saldoFinal } = ultimoResultado;
+    const { filas, saldoInicialPorSubcuenta, saldoFinal, desde, hasta } = ultimoResultado;
     const filasExcel = [];
     let totalCargoGeneral = 0, totalAbonoGeneral = 0;
     subcuentaIds.forEach(id => {
       const filasDeEsta = filas.filter(f => f.subcuentaId === id);
       const saldoIni = saldoInicialPorSubcuenta[id] || 0;
       if (!filasDeEsta.length && Math.abs(saldoIni) < 0.004 && subcuentaIds.length > 1) return;
-      filasExcel.push({ 'Fecha/Cuenta': `${nombresPorId[id]||'(cuenta)'} — Saldo inicial: ${fmt(saldoIni)}`, 'Proveedor / Cliente': '', 'Concepto o Descripción': '', 'Factura': '', 'Cargo': '', 'Abono': '', 'Saldo': '', 'UUID': '' });
+      filasExcel.push({ tipo: 'grupo', celdas: [`${nombresPorId[id]||'(cuenta)'} — Saldo inicial: ${fmt(saldoIni)}`] });
       let saldoCorrido = saldoIni, totalCargo = 0, totalAbono = 0;
       filasDeEsta.forEach(f => {
         saldoCorrido += f.cargo - f.abono;
         totalCargo += f.cargo; totalAbono += f.abono;
-        filasExcel.push({ 'Fecha/Cuenta': f.fecha, 'Proveedor / Cliente': f.colProveedor ?? f.proveedor, 'Concepto o Descripción': conceptoMostrado(f), 'Factura': f.colFactura ?? '', 'Cargo': f.cargo||0, 'Abono': f.abono||0, 'Saldo': saldoCorrido, 'UUID': f.colUuid ?? '' });
+        filasExcel.push({ tipo: 'normal', celdas: [f.fecha, f.colProveedor ?? f.proveedor, conceptoMostrado(f), f.colFactura ?? '', f.cargo || '', f.abono || '', saldoCorrido, uuidExcel(f.colUuid)] });
       });
       totalCargoGeneral += totalCargo; totalAbonoGeneral += totalAbono;
-      filasExcel.push({ 'Fecha/Cuenta': 'Total', 'Proveedor / Cliente': '', 'Concepto o Descripción': '', 'Factura': '', 'Cargo': totalCargo, 'Abono': totalAbono, 'Saldo': saldoCorrido, 'UUID': '' });
+      filasExcel.push({ tipo: 'subtotal', celdas: ['Total', '', '', '', totalCargo, totalAbono, saldoCorrido, ''] });
     });
-    if (subcuentaIds.length > 1) {
-      filasExcel.push({ 'Fecha/Cuenta': `Total ${nombre}`, 'Proveedor / Cliente': '', 'Concepto o Descripción': '', 'Factura': '', 'Cargo': totalCargoGeneral, 'Abono': totalAbonoGeneral, 'Saldo': saldoFinal, 'UUID': '' });
-    }
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.json_to_sheet(filasExcel);
-    XLSX.utils.book_append_sheet(wb, ws, 'Movimientos');
-    XLSX.writeFile(wb, `Movimientos - ${nombre} - ${ultimoResultado.desde||'inicio'} a ${ultimoResultado.hasta}.xlsx`);
+    if (subcuentaIds.length > 1) filasExcel.push({ tipo: 'total', celdas: [`Total ${nombre}`, '', '', '', totalCargoGeneral, totalAbonoGeneral, saldoFinal, ''] });
+    exportarExcelProfesional({
+      archivo: `Movimientos - ${nombre} - ${desde||'inicio'} a ${hasta}.xlsx`, hoja: 'Movimientos', negocio: biz(),
+      titulo: `Movimientos de: ${nombre}`, subtitulo: `${desde ? fechaCorta(desde) : 'Inicio'} al ${fechaCorta(hasta)} · Saldo inicial: ${fmt(ultimoResultado.saldoInicial)} · Saldo final: ${fmt(saldoFinal)}`,
+      columnas: [{ h: 'Fecha', t: 'fecha' }, { h: 'Proveedor / Cliente', max: 34 }, { h: 'Concepto o Descripción', max: 46 }, { h: 'Factura', max: 22 }, { h: 'Cargo', t: 'monto' }, { h: 'Abono', t: 'monto' }, { h: 'Saldo', t: 'monto' }, { h: 'UUID', min: 38, max: 38 }],
+      filas: filasExcel,
+    });
   };
   document.getElementById('movCuentaPdf').onclick = () => {
     if (!ultimoResultado || !ultimoResultado.filas.length) { toast('No hay movimientos para exportar.', 'error'); return; }
@@ -21207,6 +21314,7 @@ async function abrirModalMovimientosCuenta(nombre, subcuentaIds, businessId, nom
       styles: { fontSize: 8 }, headStyles: { fillColor: [10,31,61] },
       columnStyles: { 0: { cellWidth: 72 }, 1: { cellWidth: 100 }, 2: { cellWidth: 160 }, 3: { cellWidth: 168 }, 4: { cellWidth: 66, halign: 'right' }, 5: { cellWidth: 66, halign: 'right' }, 6: { cellWidth: 72, halign: 'right' } },
       didParseCell: (data) => {
+        alinearCifrasPdf(data, [4, 5, 6]); // encabezado y cifras a la derecha
         if (data.section !== 'body') return;
         if (filasEncabezado.includes(data.row.index)) {
           data.cell.styles.fillColor = [238,242,248];
@@ -24341,7 +24449,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-10-21.1';
+const APP_VERSION = '2026-10-21.2';
 const RESPALDO_TABLAS = [['businesses', ['id']], ['fz_cuentas_mayor', ['id']], ['fz_subcuentas', ['id']], ['fz_polizas', ['id']], ['fz_polizas_lineas', ['id']], ['fz_proveedores_catalogo', ['id']], ['fz_proveedores', ['id']], ['fz_ventas', ['id']], ['fz_conceptos_venta', ['id']], ['fz_conceptos_sistema', ['id']], ['fz_conceptos', ['id']], ['fz_efectivo_monedas', ['id']], ['fz_efectivo_mov', ['id']], ['fz_bancos_cuentas', ['id']], ['fz_bancos_mov', ['id']], ['fz_pl_gastos', ['id']], ['fz_usuarios_autorizados', ['id']], ['fz_usuario_negocios', ['id']], ['fz_auditoria', ['id']], ['fz_adjuntos', ['id']], ['fz_pagos_aplicados', ['id']], ['fz_clientes', ['id']], ['fz_productos_servicios', ['id']], ['fz_folios_contador', ['business_id', 'tipo']], ['fz_facturas_clientes', ['id']], ['fz_facturas_clientes_lineas', ['id']], ['fz_cobros_aplicados', ['id']], ['fz_ordenes_venta', ['id']], ['fz_ordenes_venta_lineas', ['id']], ['fz_conciliaciones_bancarias', ['id']], ['fz_cierres_periodo', ['id']], ['fz_tc_cierre', ['id']], ['fz_tipos_cambio_cierre', ['id']], ['fz_cfdi', ['id']], ['fz_cfdi_bitacora', ['id']], ['fz_activos_fijos', ['id']], ['fz_depreciaciones_generadas', ['id']], ['fz_inpc_valores', ['id']], ['fz_recargos_tasas', ['id']], ['fz_pagos_impuestos', ['id']], ['fz_isr_datos_anuales', ['id']], ['fz_isr_conceptos', ['id']], ['fz_provisiones_fiscales', ['id']], ['fz_iva_realizaciones', ['id']], ['fz_aplicaciones_pago_fiscal', ['id']], ['fz_regimenes_fiscales_negocio', ['id']], ['fz_dias_inhabiles_fiscales', ['id']], ['fz_declaraciones_fiscales', ['id']], ['fz_reglas_vencimiento_impuesto', []], ['fz_calendario_fiscal_validacion', []], ['fz_catalogo_regimenes_fiscales', []], ['fz_papeles_trabajo', ['id']], ['fz_papel_conceptos', ['id']], ['fz_papel_concepto_fuentes', ['id']], ['fz_papel_concepto_accesorios', ['id']], ['fz_papel_historial', ['id']], ['fz_papel_soportes', ['id']], ['fz_mapeo_cuenta_concepto_fiscal', ['id']], ['fz_perdidas_fiscales', ['id']], ['fz_perdidas_fiscales_actualizaciones', ['id']], ['fz_perdidas_fiscales_aplicaciones', ['id']], ['fz_perdidas_fiscales_cierres', ['id']], ['fz_perdidas_fiscales_historial', ['id']], ['fz_perdidas_fiscales_soportes', ['id']], ['fz_ptu_eventos', ['id']], ['fz_ptu_historial', ['id']], ['fz_pagos_por_clasificar', ['id']], ['fz_iva_saldos_favor', ['id']], ['fz_iva_saldos_favor_movimientos', ['id']], ['fz_iva_saldos_favor_devoluciones', ['id']], ['fz_iva_saldo_favor_periodo_activo', ['id']]];
 const RESPALDO_BUCKETS = ['adjuntos', 'cfdi'], RESPALDO_MAX_ARCHIVOS_BYTES = 400 * 1024 * 1024, RESPALDO_AVISO_DIAS = 7;
 function respaldoEstado() { try { return JSON.parse(localStorage.getItem('finanzas_ultimo_respaldo') || 'null'); } catch (_) { return null; } }
@@ -25742,6 +25850,27 @@ async function renderPolizas() {
     return true;
   });
   const conteoAdjuntosPolizas = await contarAdjuntosPorRegistro('fz_polizas', polizas.map(p => p.id));
+  // Factura o Nota de cada póliza (solo presentación): la referencia escrita en sus líneas o el número de la factura vinculada
+  const lineasDePoliza = new Map(); polizas.forEach(p => lineasDePoliza.set(p.id, []));
+  lineas.forEach(l => { if (lineasDePoliza.has(l.poliza_id)) lineasDePoliza.get(l.poliza_id).push(l); });
+  const sinReferencia = lineas.filter(l => lineasDePoliza.has(l.poliza_id) && !String(l.referencia || '').trim());
+  const provFacMap = {}, cliFacMap = {};
+  try {
+    const [pv, cl] = await Promise.all([
+      _traerPorIds('fz_proveedores', 'id,factura', null, sinReferencia.map(l => l.proveedor_factura_id)),
+      _traerPorIds('fz_facturas_clientes', 'id,folio,numero_factura', 'id,folio', sinReferencia.map(l => l.cliente_factura_id)),
+    ]);
+    pv.forEach(x => { provFacMap[x.id] = x; }); cl.forEach(x => { cliFacMap[x.id] = x; });
+  } catch (_) { /* opcional: sin esto la columna solo muestra las referencias escritas */ }
+  const facturasDePoliza = (p) => {
+    const out = [];
+    (lineasDePoliza.get(p.id) || []).forEach(l => {
+      const v = String(l.referencia || '').trim() || (provFacMap[l.proveedor_factura_id] && provFacMap[l.proveedor_factura_id].factura) || (cliFacMap[l.cliente_factura_id] ? numeroFacturaCliente(cliFacMap[l.cliente_factura_id]) : '');
+      if (v && !out.includes(String(v))) out.push(String(v));
+    });
+    return out;
+  };
+  const celdaFacturasPoliza = (fs) => fs.length ? escHtml(fs[0]) + (fs.length > 1 ? ` <span title="${escAttr(fs.join(', '))}" style="color:var(--muted);font-size:11px;">+${fs.length - 1}</span>` : '') : '';
 
   el.innerHTML = `
     <div class="kpi-grid">
@@ -25777,9 +25906,9 @@ async function renderPolizas() {
       ${subcuentas.length === 0 ? `<div class="empty">Aún no tienes cuentas en el catálogo. Crea al menos una (de cualquier tipo) para poder registrar pólizas.</div>` : ''}
       <div class="table-wrap scroll-sticky">
         <table class="tabla-operativa">
-          <thead><tr><th>No. Póliza</th><th>Fecha</th><th>Concepto</th><th>Adjunto</th><th>Importe</th><th>Estado</th><th></th></tr></thead>
+          <thead><tr><th>No. Póliza</th><th>Fecha</th><th>Concepto</th><th>Factura o Nota</th><th>Adjunto</th><th class="num">Importe</th><th>Estado</th><th></th></tr></thead>
           <tbody id="polizasList">
-            ${polizas.length === 0 ? `<tr><td colspan="7" class="empty">${todasPolizas.length ? 'Ninguna póliza coincide con la búsqueda.' : 'Sin pólizas todavía.'}</td></tr>` : polizas.map(p => {
+            ${polizas.length === 0 ? `<tr><td colspan="8" class="empty">${todasPolizas.length ? 'Ninguna póliza coincide con la búsqueda.' : 'Sin pólizas todavía.'}</td></tr>` : polizas.map(p => {
               const t = totalesPoliza(p);
               const cuadrada = Math.abs(t.cargo-t.abono)<0.01 && t.count>0;
               const nAdj = conteoAdjuntosPolizas[p.id] || 0;
@@ -25787,6 +25916,7 @@ async function renderPolizas() {
                 <td data-rol="secundario">#${p.numero ?? '—'}</td>
                 <td data-rol="principal">${fechaCorta(p.fecha)}</td>
                 <td data-rol="secundario">${p.concepto ? escHtml(p.concepto) : '<span style="color:var(--muted);">(sin concepto)</span>'}</td>
+                <td data-rol="meta">${celdaFacturasPoliza(facturasDePoliza(p))}</td>
                 <td data-rol="meta">${nAdj ? '📎 ' + nAdj + (nAdj===1?' archivo':' archivos') : ''}</td>
                 <td class="num" data-rol="importe" style="font-weight:700;">${fmt(t.cargo)}</td>
                 <td data-rol="estado"><span class="badge ${cuadrada?'pag':'pend'}">${cuadrada ? 'Cuadrada' : 'Diferencia ' + fmt(t.cargo-t.abono)}</span></td>
@@ -25879,12 +26009,12 @@ async function abrirModalPolizaSoloLectura(poliza) {
   // Factura o Nota y UUID de cada línea (solo presentación; si la consulta falla, quedan vacíos)
   const [provsV, clisV] = await Promise.all([
     _traerPorIds('fz_proveedores', 'id,factura,cfdi_uuid', 'id,factura', (lineas||[]).map(l => l.proveedor_factura_id)),
-    _traerPorIds('fz_facturas_clientes', 'id,folio,folio_fiscal', 'id,folio', (lineas||[]).map(l => l.cliente_factura_id)),
+    _traerPorIds('fz_facturas_clientes', 'id,folio,numero_factura,folio_fiscal', 'id,folio,numero_factura', (lineas||[]).map(l => l.cliente_factura_id)),
   ]);
   const provMapV = Object.fromEntries(provsV.map(x => [x.id, x])), cliMapV = Object.fromEntries(clisV.map(x => [x.id, x]));
   const facturaLineaV = (l) => {
     const p = provMapV[l.proveedor_factura_id], c = cliMapV[l.cliente_factura_id];
-    return { colFactura: l.referencia || (p && p.factura) || (c && c.folio !== null && c.folio !== undefined && c.folio !== '' ? 'Folio #' + c.folio : ''), colUuid: (p && p.cfdi_uuid) || (c && c.folio_fiscal) || '' };
+    return { colFactura: l.referencia || (p && p.factura) || (c ? numeroFacturaCliente(c) : ''), colUuid: (p && p.cfdi_uuid) || (c && c.folio_fiscal) || '' };
   };
   wrap.innerHTML = `
     <div class="card" style="background:#fbfcfe;border:1.5px solid var(--line);margin-bottom:16px;position:relative;">

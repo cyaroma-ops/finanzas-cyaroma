@@ -889,6 +889,11 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   .dp-lineas th,.dp-lineas td{white-space:normal;padding:6px 3px;font-size:11px;}
   .dp-lineas .uuid-sub{display:none;}
 }
+/* Pólizas de Diario (v2026-10-21.2): con la columna «Factura o Nota», el listado sigue cabiendo en pantallas de 641 a 1220 px */
+@media (min-width:641px) and (max-width:1220px){
+  #sec-polizas thead th:nth-child(4){white-space:normal;min-width:0;}
+  #sec-polizas td,#sec-polizas th{padding-left:8px;padding-right:8px;}
+}
 </style>
 </head>
 <body>
@@ -2576,7 +2581,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
     <div id="movCuentaPorHijo" style="margin-bottom:12px;"></div>
     <div class="table-wrap scroll-sticky">
       <table>
-        <thead><tr><th>Fecha</th><th>Proveedor / Cliente</th><th>Concepto o Descripción</th><th>Factura</th><th>Cargo</th><th>Abono</th><th>Saldo</th></tr></thead>
+        <thead><tr><th>Fecha</th><th>Proveedor / Cliente</th><th>Concepto o Descripción</th><th>Factura</th><th class="num">Cargo</th><th class="num">Abono</th><th class="num">Saldo</th></tr></thead>
         <tbody id="movCuentaLista"></tbody>
       </table>
     </div>
@@ -3172,6 +3177,6 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 </div>
 
 <script src="config.js"></script>
-<script src="app.js?v=2026-10-21.1"></script>
+<script src="app.js?v=2026-10-21.2"></script>
 </body>
 </html>
