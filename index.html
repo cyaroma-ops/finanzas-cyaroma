@@ -906,6 +906,15 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   #sec-polizas thead th:nth-child(4){white-space:normal;min-width:0;}
   #sec-polizas td,#sec-polizas th{padding-left:8px;padding-right:8px;}
 }
+/* Ayuda en icono «ⓘ» (v2026-10-27.1): el texto aparece al pasar el ratón, al enfocar con teclado o al tocar */
+.info-tip{position:relative;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;border:1px solid var(--line);background:#fff;color:var(--muted);font-size:13px;line-height:1;cursor:help;flex:none;}
+.info-tip:hover,.info-tip:focus{color:var(--navy-1);border-color:var(--navy-1);outline:none;}
+.info-tip-texto{display:none;position:absolute;top:calc(100% + 8px);left:0;z-index:80;width:min(380px,82vw);background:var(--navy-1);color:#fff;padding:10px 12px;border-radius:8px;font-size:12px;line-height:1.45;font-weight:400;font-family:inherit;text-align:left;white-space:normal;box-shadow:0 8px 24px rgba(0,0,0,.28);}
+.info-tip:hover .info-tip-texto,.info-tip:focus .info-tip-texto{display:block;}
+@media print{.info-tip{display:none !important;}}
+/* Movimientos del Balance (v2026-10-27.1): el texto largo salta de línea en lugar de obligar a recorrer la tabla con el cursor */
+#modalMovimientosCuenta tbody td{white-space:normal;}
+@media (max-width:1100px){ #modalMovimientosCuenta tbody td,#modalMovimientosCuenta thead th{padding-left:8px;padding-right:8px;} }
 </style>
 </head>
 <body>
@@ -2568,7 +2577,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 
 <!-- Modal: Movimientos de cuenta (auxiliar) -->
 <div class="modal-bg" id="modalMovimientosCuenta">
-  <div class="modal" style="width:min(980px,98vw);max-height:94vh;overflow-y:auto;">
+  <div class="modal" style="width:min(1320px,98vw);max-height:94vh;overflow-y:auto;">
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px;">
       <h3 id="movCuentaTitulo" style="margin-bottom:0;">Movimientos de la cuenta</h3>
       <div style="display:flex;gap:8px;">
@@ -2593,7 +2602,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
     <div id="movCuentaPorHijo" style="margin-bottom:12px;"></div>
     <div class="table-wrap scroll-sticky">
       <table>
-        <thead><tr><th>Fecha</th><th>Proveedor / Cliente</th><th>Concepto o Descripción</th><th>Factura</th><th class="num">Cargo</th><th class="num">Abono</th><th class="num">Saldo</th></tr></thead>
+        <thead><tr><th>Fecha</th><th>Tipo de documento</th><th>Proveedor / Cliente</th><th>Concepto o Descripción</th><th>Factura</th><th class="num">Cargo</th><th class="num">Abono</th><th class="num">Saldo</th></tr></thead>
         <tbody id="movCuentaLista"></tbody>
       </table>
     </div>
@@ -3189,6 +3198,6 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 </div>
 
 <script src="config.js"></script>
-<script src="app.js?v=2026-10-21.4"></script>
+<script src="app.js?v=2026-10-27.1"></script>
 </body>
 </html>

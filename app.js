@@ -15857,13 +15857,12 @@ async function renderEfectivo() {
 
     <div class="card">
       <div class="card-head">
-        <h3>Cajas de efectivo por moneda</h3>
+        <div style="display:flex;align-items:center;gap:8px;"><h3 style="margin-bottom:0;">Cajas de efectivo por moneda</h3>${infoTipHtml(`El efectivo ya conciliado en Ventas entra aquí automáticamente como "Corte de caja" (solo lo recibido en efectivo — tarjetas, CxC y gastos no se registran en esta caja). Aquí anotas lo que pagas en efectivo.`)}</div>
         <div style="display:flex;gap:8px;">
           <button class="btn btn-ghost btn-sm" id="traspasoBtnEfvo">Transferir</button>
           <button class="btn btn-gold btn-sm" id="addMonedaBtn">+ Agregar moneda</button>
         </div>
       </div>
-      <p style="font-size:12.5px;color:var(--muted);margin-bottom:12px;">El efectivo ya conciliado en Ventas entra aquí automáticamente como "Corte de caja" (solo lo recibido en efectivo — tarjetas, CxC y gastos no se registran en esta caja). Aquí anotas lo que pagas en efectivo.</p>
       <div class="tag-row">
         ${monedasConSaldo.map(m => `<div class="tag moneda-tab ${m.id===STATE_monedaAbierta?'active':''}" data-id="${m.id}">${escHtml(m.nombre)} · ${fmtNum(m.saldo)}</div>`).join('') || '<span class="hint">Aún no hay monedas configuradas.</span>'}
       </div>
@@ -16081,13 +16080,12 @@ async function renderBancos() {
 
     <div class="card">
       <div class="card-head">
-        <h3>Cuentas bancarias</h3>
+        <div style="display:flex;align-items:center;gap:8px;"><h3 style="margin-bottom:0;">Cuentas bancarias</h3>${infoTipHtml(`Las terminales/tarjetas conciliadas en Ventas que estén vinculadas a una cuenta (en "Conceptos de recibido") entran aquí automáticamente como "Corte de caja". Dentro de cada cuenta puedes importar su estado de cuenta desde Excel.`)}</div>
         <div style="display:flex;gap:8px;">
           <button class="btn btn-ghost btn-sm" id="traspasoBtnBanco">Transferir</button>
           <button class="btn btn-gold btn-sm" id="addCuentaBtn">+ Agregar cuenta</button>
         </div>
       </div>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">Las terminales/tarjetas conciliadas en Ventas que estén vinculadas a una cuenta (en "Conceptos de recibido") entran aquí automáticamente como "Corte de caja". Dentro de cada cuenta puedes importar su estado de cuenta desde Excel.</p>
       <div class="tag-row">
         ${cuentasConSaldo.map(c => `<div class="tag banco-tab ${c.id===STATE_bancoCuentaAbierta?'active':''}" data-id="${c.id}">${escHtml(c.nombre)} · <span class="mf-badge-moneda">${escHtml(c.moneda)}</span> · ${prefijoMoneda(c.moneda)} ${fmt(c.saldo)}</div>`).join('') || '<span class="hint">Aún no hay cuentas.</span>'}
       </div>
@@ -21095,7 +21093,18 @@ async function prepararFacturasLedger(filas) {
   };
 }
 const textoLedger = (t) => t ? escHtml(t) : '<span style="color:var(--muted);">—</span>';
+// Ayuda en un icono «ⓘ»: el texto aparece al pasar el ratón, al enfocar con el teclado o al tocar (celular). Texto siempre escapado.
+const infoTipHtml = (texto) => `<span class="info-tip" tabindex="0" role="button" aria-label="Información"><span aria-hidden="true">ⓘ</span><span class="info-tip-texto" role="tooltip">${escHtml(texto)}</span></span>`;
 // Celda «Tercero»: el tercero real (o «—»). En celular, si no hay tercero o es una póliza, se añade el tipo para no perder el origen.
+// Mantiene el texto de un «ⓘ» dentro de la pantalla: si se saldría por la derecha, se desplaza hacia la izquierda
+function ajustarInfoTip(e) {
+  const tip = e.target && e.target.closest ? e.target.closest('.info-tip') : null; if (!tip) return;
+  const tx = tip.querySelector('.info-tip-texto'); if (!tx) return;
+  tx.style.left = '0px';
+  const r = tx.getBoundingClientRect(), exceso = r.right - (window.innerWidth - 8);
+  if (exceso > 0) tx.style.left = (-Math.min(exceso, Math.max(0, r.left - 8))) + 'px';
+}
+document.addEventListener('mouseover', ajustarInfoTip); document.addEventListener('focusin', ajustarInfoTip);
 function celdaTerceroLedger(r, tercero, conAuto) {
   const base = (conAuto && tercero) ? `<em>${escHtml(tercero)}</em> <span style="color:var(--muted);font-size:11px;">· auto</span>` : textoLedger(tercero);
   const movil = (r.tipoDoc === 'poliza' || !tercero) ? ` <span class="ledger-tipo-movil">· ${escHtml(tipoPolizaDerivado(r))}</span>` : '';
@@ -21200,10 +21209,8 @@ function celdaFacturaHtml(f) {
   return num + uu;
 }
 const textoFacturaPdf = (f) => `${f.colFactura ?? ''}${f.colUuid ? (f.colFactura ? '\n' : '') + String(f.colUuid) : ''}`;
-function conceptoMostrado(f) { // Movimientos del Balance: el número de póliza va al inicio del concepto
-  const base = f.colConcepto ?? f.descripcion ?? '';
-  const pref = (f.tipoOrigen === 'poliza' && f.referencia) ? String(f.referencia) : '';
-  return pref && base ? pref + ' · ' + base : (pref || base);
+function conceptoMostrado(f) { // Movimientos del Balance: el número de póliza ya va en su propia columna «Tipo de documento»
+  return f.colConcepto ?? f.descripcion ?? '';
 }
 const documentoAux = (f) => f.tipoOrigen === 'poliza' ? (f.referencia || f.modulo) : (f.modulo || f.referencia || '');
 const conceptoLineaDiario = (f) => [f.colProveedor, f.colConcepto].filter(Boolean).join(' — ');
@@ -21232,7 +21239,7 @@ async function getMovimientosCuentaMotor(businessId, subcuentaIds, startDate, en
   todas.filter(f => claves.has(f.clave) && f.fecha <= hasta).forEach(f => {
     const id = f.clave.slice(4);
     if (startDate && f.fecha < startDate) { saldoInicialPorSubcuenta[id] += f.cargo - f.abono; return; }
-    filas.push({ fecha: f.fecha, subcuentaId: id, proveedor: referenciaDe(f) || '—', descripcion: f.detalle || referenciaDe(f) || '—', cargo: f.cargo, abono: f.abono, origen: origenDe(f), tipoOrigen: f.tipoOrigen, referencia: f.referencia, _f: f });
+    filas.push({ fecha: f.fecha, subcuentaId: id, proveedor: referenciaDe(f) || '—', descripcion: f.detalle || referenciaDe(f) || '—', cargo: f.cargo, abono: f.abono, origen: origenDe(f), tipoOrigen: f.tipoOrigen, referencia: f.referencia, modulo: f.modulo, _f: f });
   });
   filas.sort((a, b) => a.fecha.localeCompare(b.fecha));
   await enriquecerFilasConDocumento(businessId, filas.map(r => r._f)); // solo presentación: Proveedor, Concepto, Factura y UUID
@@ -21251,7 +21258,7 @@ async function abrirModalMovimientosCuenta(nombre, subcuentaIds, businessId, nom
   const buscar = async () => {
     const desde = document.getElementById('movCuentaDesde').value || null;
     const hasta = document.getElementById('movCuentaHasta').value || todayStr();
-    document.getElementById('movCuentaLista').innerHTML = `<tr><td colspan="7" class="empty">Calculando…</td></tr>`;
+    document.getElementById('movCuentaLista').innerHTML = `<tr><td colspan="8" class="empty">Calculando…</td></tr>`;
     const { filas, saldoInicial, saldoFinal, saldoInicialPorSubcuenta } = await getMovimientosCuentaMotor(businessId, subcuentaIds, desde, hasta);
     ultimoResultado = { filas, saldoInicial, saldoFinal, desde, hasta, saldoInicialPorSubcuenta };
     document.getElementById('movCuentaResumen').innerHTML = `
@@ -21275,6 +21282,7 @@ async function abrirModalMovimientosCuenta(nombre, subcuentaIds, businessId, nom
         totalCargo += f.cargo; totalAbono += f.abono;
         return `<tr>
           <td>${fechaCorta(f.fecha)}</td>
+          <td>${escHtml(documentoAux(f))}</td>
           <td>${escHtml(f.colProveedor ?? f.proveedor)}</td>
           <td>${escHtml(conceptoMostrado(f))}</td>
           <td>${celdaFacturaHtml(f)}</td>
@@ -21285,15 +21293,15 @@ async function abrirModalMovimientosCuenta(nombre, subcuentaIds, businessId, nom
       }).join('');
       totalCargoGeneral += totalCargo; totalAbonoGeneral += totalAbono;
       filasHtml += `
-        <tr style="background:#eef2f8;"><td colspan="7" style="font-weight:700;">${nombresPorId[id]||'(cuenta)'} — Saldo inicial: ${fmt(saldoIni)}</td></tr>
+        <tr style="background:#eef2f8;"><td colspan="8" style="font-weight:700;">${escHtml(nombresPorId[id]||'(cuenta)')} — Saldo inicial: ${fmt(saldoIni)}</td></tr>
         ${filasRender}
-        <tr style="font-style:italic;color:var(--muted);"><td colspan="4">Total</td><td class="num">${fmt(totalCargo)}</td><td class="num">${fmt(totalAbono)}</td><td class="num" style="font-weight:700;">${fmt(saldoCorrido)}</td></tr>
+        <tr style="font-style:italic;color:var(--muted);"><td colspan="5">Total</td><td class="num">${fmt(totalCargo)}</td><td class="num">${fmt(totalAbono)}</td><td class="num" style="font-weight:700;">${fmt(saldoCorrido)}</td></tr>
       `;
     });
     if (subcuentaIds.length > 1) {
-      filasHtml += `<tr class="total-row"><td colspan="4">Total ${escHtml(nombre)}</td><td class="num">${fmt(totalCargoGeneral)}</td><td class="num">${fmt(totalAbonoGeneral)}</td><td class="num">${fmt(saldoFinal)}</td></tr>`;
+      filasHtml += `<tr class="total-row"><td colspan="5">Total ${escHtml(nombre)}</td><td class="num">${fmt(totalCargoGeneral)}</td><td class="num">${fmt(totalAbonoGeneral)}</td><td class="num">${fmt(saldoFinal)}</td></tr>`;
     }
-    document.getElementById('movCuentaLista').innerHTML = filasHtml || `<tr><td colspan="7" class="empty">No hay movimientos en este rango.</td></tr>`;
+    document.getElementById('movCuentaLista').innerHTML = filasHtml || `<tr><td colspan="8" class="empty">No hay movimientos en este rango.</td></tr>`;
   };
   document.getElementById('movCuentaBuscar').onclick = buscar;
   document.getElementById('movCuentaExcel').onclick = () => {
@@ -21310,16 +21318,16 @@ async function abrirModalMovimientosCuenta(nombre, subcuentaIds, businessId, nom
       filasDeEsta.forEach(f => {
         saldoCorrido += f.cargo - f.abono;
         totalCargo += f.cargo; totalAbono += f.abono;
-        filasExcel.push({ tipo: 'normal', celdas: [f.fecha, f.colProveedor ?? f.proveedor, conceptoMostrado(f), f.colFactura ?? '', f.cargo || '', f.abono || '', saldoCorrido, uuidExcel(f.colUuid)] });
+        filasExcel.push({ tipo: 'normal', celdas: [f.fecha, documentoAux(f), f.colProveedor ?? f.proveedor, conceptoMostrado(f), f.colFactura ?? '', f.cargo || '', f.abono || '', saldoCorrido, uuidExcel(f.colUuid)] });
       });
       totalCargoGeneral += totalCargo; totalAbonoGeneral += totalAbono;
-      filasExcel.push({ tipo: 'subtotal', celdas: ['Total', '', '', '', totalCargo, totalAbono, saldoCorrido, ''] });
+      filasExcel.push({ tipo: 'subtotal', celdas: ['Total', '', '', '', '', totalCargo, totalAbono, saldoCorrido, ''] });
     });
-    if (subcuentaIds.length > 1) filasExcel.push({ tipo: 'total', celdas: [`Total ${nombre}`, '', '', '', totalCargoGeneral, totalAbonoGeneral, saldoFinal, ''] });
+    if (subcuentaIds.length > 1) filasExcel.push({ tipo: 'total', celdas: [`Total ${nombre}`, '', '', '', '', totalCargoGeneral, totalAbonoGeneral, saldoFinal, ''] });
     exportarExcelProfesional({
       archivo: `Movimientos - ${nombre} - ${desde||'inicio'} a ${hasta}.xlsx`, hoja: 'Movimientos', negocio: biz(),
       titulo: `Movimientos de: ${nombre}`, subtitulo: `${desde ? fechaCorta(desde) : 'Inicio'} al ${fechaCorta(hasta)} · Saldo inicial: ${fmt(ultimoResultado.saldoInicial)} · Saldo final: ${fmt(saldoFinal)}`,
-      columnas: [{ h: 'Fecha', t: 'fecha' }, { h: 'Proveedor / Cliente', max: 34 }, { h: 'Concepto o Descripción', max: 46 }, { h: 'Factura', max: 22 }, { h: 'Cargo', t: 'monto' }, { h: 'Abono', t: 'monto' }, { h: 'Saldo', t: 'monto' }, { h: 'UUID', min: 38, max: 38 }],
+      columnas: [{ h: 'Fecha', t: 'fecha' }, { h: 'Tipo de documento', max: 26 }, { h: 'Proveedor / Cliente', max: 34 }, { h: 'Concepto o Descripción', max: 46 }, { h: 'Factura', max: 22 }, { h: 'Cargo', t: 'monto' }, { h: 'Abono', t: 'monto' }, { h: 'Saldo', t: 'monto' }, { h: 'UUID', min: 38, max: 38 }],
       filas: filasExcel,
     });
   };
@@ -21345,39 +21353,41 @@ async function abrirModalMovimientosCuenta(nombre, subcuentaIds, businessId, nom
       const saldoIni = saldoInicialPorSubcuenta[id] || 0;
       if (!filasDeEsta.length && Math.abs(saldoIni) < 0.004 && subcuentaIds.length > 1) return;
       filasEncabezado.push(body.length);
-      body.push([`${nombresPorId[id]||'(cuenta)'} — Saldo inicial: ${fmt(saldoIni)}`, '', '', '', '', '', '']);
+      body.push([`${nombresPorId[id]||'(cuenta)'} — Saldo inicial: ${fmt(saldoIni)}`, '', '', '', '', '', '', '']);
       let saldoCorrido = saldoIni, totalCargo = 0, totalAbono = 0;
       filasDeEsta.forEach(f => {
         saldoCorrido += f.cargo - f.abono;
         totalCargo += f.cargo; totalAbono += f.abono;
-        body.push([fechaCorta(f.fecha), f.colProveedor ?? f.proveedor, conceptoMostrado(f), textoFacturaPdf(f), f.cargo?fmt(f.cargo):'', f.abono?fmt(f.abono):'', fmt(saldoCorrido)]);
+        body.push([fechaCorta(f.fecha), documentoAux(f), f.colProveedor ?? f.proveedor, conceptoMostrado(f), textoFacturaPdf(f), f.cargo?fmt(f.cargo):'', f.abono?fmt(f.abono):'', fmt(saldoCorrido)]);
       });
       totalCargoGeneral += totalCargo; totalAbonoGeneral += totalAbono;
       filasSubtotal.push(body.length);
-      body.push(['Total', '', '', '', fmt(totalCargo), fmt(totalAbono), fmt(saldoCorrido)]);
+      body.push(['Total', '', '', '', '', fmt(totalCargo), fmt(totalAbono), fmt(saldoCorrido)]);
     });
     if (subcuentaIds.length > 1) {
       filasSubtotal.push(body.length);
-      body.push([`Total ${nombre}`, '', '', '', fmt(totalCargoGeneral), fmt(totalAbonoGeneral), fmt(saldoFinal)]);
+      body.push([`Total ${nombre}`, '', '', '', '', fmt(totalCargoGeneral), fmt(totalAbonoGeneral), fmt(saldoFinal)]);
     }
 
     doc.autoTable({
       startY: 90, margin: { left: margin, right: margin },
-      head: [['Fecha / Cuenta', 'Proveedor / Cliente', 'Concepto o Descripción', 'Factura', 'Cargo', 'Abono', 'Saldo']],
+      head: [['Fecha', 'Tipo de documento', 'Proveedor / Cliente', 'Concepto o Descripción', 'Factura', 'Cargo', 'Abono', 'Saldo']],
       body,
       styles: { fontSize: 8 }, headStyles: { fillColor: [10,31,61] },
-      columnStyles: { 0: { cellWidth: 72 }, 1: { cellWidth: 100 }, 2: { cellWidth: 160 }, 3: { cellWidth: 168 }, 4: { cellWidth: 66, halign: 'right' }, 5: { cellWidth: 66, halign: 'right' }, 6: { cellWidth: 72, halign: 'right' } },
+      columnStyles: { 0: { cellWidth: 56 }, 1: { cellWidth: 72 }, 2: { cellWidth: 90 }, 3: { cellWidth: 147 }, 4: { cellWidth: 163 }, 5: { cellWidth: 60, halign: 'right' }, 6: { cellWidth: 60, halign: 'right' }, 7: { cellWidth: 64, halign: 'right' } },
       didParseCell: (data) => {
-        alinearCifrasPdf(data, [4, 5, 6]); // encabezado y cifras a la derecha
+        alinearCifrasPdf(data, [5, 6, 7]); // encabezado y cifras a la derecha
         if (data.section !== 'body') return;
         if (filasEncabezado.includes(data.row.index)) {
           data.cell.styles.fillColor = [238,242,248];
           data.cell.styles.fontStyle = 'bold';
-          if (data.column.index === 0) data.cell.colSpan = 7;
+          if (data.column.index === 0) data.cell.colSpan = 8;
           else data.cell.text = [];
         } else if (filasSubtotal.includes(data.row.index)) {
           data.cell.styles.fontStyle = 'italic';
           data.cell.styles.textColor = [102,112,133];
+          // la etiqueta («Total» / «Total {cuenta}») ocupa las 5 primeras columnas: así cabe en UNA línea aunque el nombre sea largo
+          if (data.column.index === 0) data.cell.colSpan = 5; else if (data.column.index <= 4) data.cell.text = [];
         }
       },
     });
@@ -24503,7 +24513,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-10-21.4';
+const APP_VERSION = '2026-10-27.1';
 const RESPALDO_TABLAS = [['businesses', ['id']], ['fz_cuentas_mayor', ['id']], ['fz_subcuentas', ['id']], ['fz_polizas', ['id']], ['fz_polizas_lineas', ['id']], ['fz_proveedores_catalogo', ['id']], ['fz_proveedores', ['id']], ['fz_ventas', ['id']], ['fz_conceptos_venta', ['id']], ['fz_conceptos_sistema', ['id']], ['fz_conceptos', ['id']], ['fz_efectivo_monedas', ['id']], ['fz_efectivo_mov', ['id']], ['fz_bancos_cuentas', ['id']], ['fz_bancos_mov', ['id']], ['fz_pl_gastos', ['id']], ['fz_usuarios_autorizados', ['id']], ['fz_usuario_negocios', ['id']], ['fz_auditoria', ['id']], ['fz_adjuntos', ['id']], ['fz_pagos_aplicados', ['id']], ['fz_clientes', ['id']], ['fz_productos_servicios', ['id']], ['fz_folios_contador', ['business_id', 'tipo']], ['fz_facturas_clientes', ['id']], ['fz_facturas_clientes_lineas', ['id']], ['fz_cobros_aplicados', ['id']], ['fz_ordenes_venta', ['id']], ['fz_ordenes_venta_lineas', ['id']], ['fz_conciliaciones_bancarias', ['id']], ['fz_cierres_periodo', ['id']], ['fz_tc_cierre', ['id']], ['fz_tipos_cambio_cierre', ['id']], ['fz_cfdi', ['id']], ['fz_cfdi_bitacora', ['id']], ['fz_activos_fijos', ['id']], ['fz_depreciaciones_generadas', ['id']], ['fz_inpc_valores', ['id']], ['fz_recargos_tasas', ['id']], ['fz_pagos_impuestos', ['id']], ['fz_isr_datos_anuales', ['id']], ['fz_isr_conceptos', ['id']], ['fz_provisiones_fiscales', ['id']], ['fz_iva_realizaciones', ['id']], ['fz_aplicaciones_pago_fiscal', ['id']], ['fz_regimenes_fiscales_negocio', ['id']], ['fz_dias_inhabiles_fiscales', ['id']], ['fz_declaraciones_fiscales', ['id']], ['fz_reglas_vencimiento_impuesto', []], ['fz_calendario_fiscal_validacion', []], ['fz_catalogo_regimenes_fiscales', []], ['fz_papeles_trabajo', ['id']], ['fz_papel_conceptos', ['id']], ['fz_papel_concepto_fuentes', ['id']], ['fz_papel_concepto_accesorios', ['id']], ['fz_papel_historial', ['id']], ['fz_papel_soportes', ['id']], ['fz_mapeo_cuenta_concepto_fiscal', ['id']], ['fz_perdidas_fiscales', ['id']], ['fz_perdidas_fiscales_actualizaciones', ['id']], ['fz_perdidas_fiscales_aplicaciones', ['id']], ['fz_perdidas_fiscales_cierres', ['id']], ['fz_perdidas_fiscales_historial', ['id']], ['fz_perdidas_fiscales_soportes', ['id']], ['fz_ptu_eventos', ['id']], ['fz_ptu_historial', ['id']], ['fz_pagos_por_clasificar', ['id']], ['fz_iva_saldos_favor', ['id']], ['fz_iva_saldos_favor_movimientos', ['id']], ['fz_iva_saldos_favor_devoluciones', ['id']], ['fz_iva_saldo_favor_periodo_activo', ['id']]];
 const RESPALDO_BUCKETS = ['adjuntos', 'cfdi'], RESPALDO_MAX_ARCHIVOS_BYTES = 400 * 1024 * 1024, RESPALDO_AVISO_DIAS = 7;
 function respaldoEstado() { try { return JSON.parse(localStorage.getItem('finanzas_ultimo_respaldo') || 'null'); } catch (_) { return null; } }
