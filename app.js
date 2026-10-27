@@ -11884,8 +11884,8 @@ async function renderLibroDiario() {
   const contenido = document.createElement('div');
   contenido.innerHTML = `
     <div class="card">
-      <div class="card-head"><h3>Libro Diario — ${escHtml(b.name)}</h3><span class="hint">Todos los movimientos en formato Cargo/Abono</span></div>
-      <p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;">Reúne Pólizas de Diario, Facturas de Proveedores y Clientes, y movimientos de Bancos/Efectivo — cada uno convertido al mismo formato contable, en orden cronológico. Útil para entregar a auditoría o revisar todo un periodo de un vistazo.</p>
+      <div class="card-head"><div style="display:flex;align-items:center;gap:8px;"><h3 style="margin-bottom:0;">Libro Diario — ${escHtml(b.name)}</h3>${infoTipHtml(NOTAS_AYUDA.libroDiario)}</div><span class="hint">Todos los movimientos en formato Cargo/Abono</span></div>
+      <p class="nota-solo-impresion" style="font-size:11.5px;color:var(--muted);margin-bottom:12px;">${NOTAS_AYUDA.libroDiario}</p>
       <div class="grid-3" style="max-width:640px;margin-bottom:14px;">
         <div class="field" style="margin-bottom:0;">
           <label>Del día</label>
@@ -12158,15 +12158,15 @@ async function renderBalanzaCuerpo() {
   contenido.innerHTML = `
     <div class="card">
       <div class="card-head">
-        <h3>Balanza de Comprobación — ${escHtml(b.name)}</h3>
+        <div style="display:flex;align-items:center;gap:8px;"><h3 style="margin-bottom:0;">Balanza de Comprobación — ${escHtml(b.name)}</h3>${infoTipRicoHtml(`<span style="display:block;">${NOTAS_AYUDA.balanza1}</span>${esFin ? `<span style="display:block;margin-top:6px;">${NOTAS_AYUDA.balanza2}</span>` : ''}`)}</div>
         <div style="display:flex;align-items:center;gap:10px;">
           <span class="hint">${MESES_LARGO[Number(STATE.currentMonth.slice(5,7))-1]} ${STATE.currentMonth.slice(0,4)}</span>
           <button class="btn btn-ghost btn-sm" id="balanzaExcelBtn">Excel</button>
           ${printControlHtml({ selectId: 'balanzaPdfOrientacion', buttonId: 'balanzaPdfBtn', label: 'Imprimir / Exportar', orientacionInicial: 'landscape' })}
         </div>
       </div>
-      <p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;">Partida doble completa: Cargos y Abonos reconstruidos de Pólizas, Facturas de Proveedores/Clientes, y movimientos de Bancos/Efectivo. Trabaja con los nombres y tipos ya existentes en tu catálogo — sin códigos de cuenta todavía.</p>
-      ${esFin ? `<p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;">Balanza financiera: además del libro contable incluye, como cuentas aparte, las partidas del Estado de Resultados que no viven en él — <strong>Ventas del periodo</strong>, <strong>sobrante o faltante de caja</strong>, <strong>gastos capturados en Ventas</strong>, <strong>gastos y costos manuales</strong> y <strong>Resultados de ejercicios anteriores</strong> sin cierre. Con ellas cuadra exactamente cuando el Balance General cuadra; si no cuadra, usa "Ver origen de la diferencia".</p>` : ''}
+      <p class="nota-solo-impresion" style="font-size:11.5px;color:var(--muted);margin-bottom:12px;">${NOTAS_AYUDA.balanza1}</p>
+      ${esFin ? `<p class="nota-solo-impresion" style="font-size:11.5px;color:var(--muted);margin-bottom:12px;">${NOTAS_AYUDA.balanza2}</p>` : ''}
       <div class="balanza-viewport-exterior">
       <div class="balanza-scroller-interior">
         <table class="tabla-contable">
@@ -21096,6 +21096,18 @@ const textoLedger = (t) => t ? escHtml(t) : '<span style="color:var(--muted);">�
 // Ayuda en un icono «ⓘ»: el texto aparece al pasar el ratón, al enfocar con el teclado o al tocar (celular). Texto siempre escapado.
 const infoTipHtml = (texto) => `<span class="info-tip" tabindex="0" role="button" aria-label="Información"><span aria-hidden="true">ⓘ</span><span class="info-tip-texto" role="tooltip">${escHtml(texto)}</span></span>`;
 // Celda «Tercero»: el tercero real (o «—»). En celular, si no hay tercero o es una póliza, se añade el tipo para no perder el origen.
+// Notas de ayuda (texto FIJO del código; nunca datos del usuario). Una sola fuente: se muestran en el «ⓘ» de pantalla y, tal como siempre, en la impresión.
+const NOTAS_AYUDA = {
+  balance: "Todas las cuentas provienen del mismo motor contable consolidado que usan Libro Diario, Auxiliares y Balanza — da clic en cualquier renglón con ícono de apertura para ver su Auxiliar completo. La Utilidad acumulada viene del Estado de Resultados.",
+  balanza1: "Partida doble completa: Cargos y Abonos reconstruidos de Pólizas, Facturas de Proveedores/Clientes, y movimientos de Bancos/Efectivo. Trabaja con los nombres y tipos ya existentes en tu catálogo — sin códigos de cuenta todavía.",
+  balanza2: "Balanza financiera: además del libro contable incluye, como cuentas aparte, las partidas del Estado de Resultados que no viven en él — <strong>Ventas del periodo</strong>, <strong>sobrante o faltante de caja</strong>, <strong>gastos capturados en Ventas</strong>, <strong>gastos y costos manuales</strong> y <strong>Resultados de ejercicios anteriores</strong> sin cierre. Con ellas cuadra exactamente cuando el Balance General cuadra; si no cuadra, usa \"Ver origen de la diferencia\".",
+  polizasLineas: "Cada línea puede afectar una cuenta contable (Catálogo de cuentas) o directamente una cuenta bancaria / caja de efectivo real — en ese caso el cargo/abono también se refleja en el saldo de Bancos o Efectivo.",
+  polizasExcel: "El Excel de pólizas debe tener columnas: Fecha, Concepto, Subcuenta, Descripción, Cargo, Abono — las filas con la misma Fecha y Concepto se agrupan en una sola póliza.",
+  libroDiario: "Reúne Pólizas de Diario, Facturas de Proveedores y Clientes, y movimientos de Bancos/Efectivo — cada uno convertido al mismo formato contable, en orden cronológico. Útil para entregar a auditoría o revisar todo un periodo de un vistazo.",
+  posicionNeta: "Posición neta = Efectivo + Bancos − Proveedores por pagar − obligaciones fiscales ya <strong>exigibles</strong> hoy (Retenciones ya retenidas, IVA por pagar, ISR provisional por pagar). Lo que todavía está \"Pendiente de cobro/pago\" no se resta aquí, porque todavía no es una obligación exigible — se restaría dos veces si se contara en ambos estados.",
+};
+// Igual que infoTipHtml pero el texto puede llevar <strong> (SOLO textos fijos de NOTAS_AYUDA).
+const infoTipRicoHtml = (htmlFijo) => `<span class="info-tip" tabindex="0" role="button" aria-label="Información"><span aria-hidden="true">ⓘ</span><span class="info-tip-texto" role="tooltip">${htmlFijo}</span></span>`;
 // Mantiene el texto de un «ⓘ» dentro de la pantalla: si se saldría por la derecha, se desplaza hacia la izquierda
 function ajustarInfoTip(e) {
   const tip = e.target && e.target.closest ? e.target.closest('.info-tip') : null; if (!tip) return;
@@ -21617,7 +21629,7 @@ async function renderBalanceGeneralCuerpo() {
       <div class="kpi"><div class="label">¿Cuadra?</div><div class="value num ${cuadra?'green':'red'}">${cuadra ? '✓ Sí' : fmt(diferenciaCuadre)}</div></div>
     </div>
     <div class="card">
-      <div class="card-head"><h3>Balance General — ${escHtml(b.name)}</h3><span class="hint">${esHoy ? 'Al día de hoy · ' + todayStr() : 'Al cierre de ' + MESES_LARGO[Number(hastaYm.slice(5,7))-1] + ' ' + hastaYm.slice(0,4)}</span></div>
+      <div class="card-head"><div style="display:flex;align-items:center;gap:8px;"><h3 style="margin-bottom:0;">Balance General — ${escHtml(b.name)}</h3>${infoTipHtml(NOTAS_AYUDA.balance)}</div><span class="hint">${esHoy ? 'Al día de hoy · ' + todayStr() : 'Al cierre de ' + MESES_LARGO[Number(hastaYm.slice(5,7))-1] + ' ' + hastaYm.slice(0,4)}</span></div>
       <div class="table-wrap scroll-sticky tabla-contable-wrap">
       <table class="report-table">
         <tbody>
@@ -21645,7 +21657,7 @@ async function renderBalanceGeneralCuerpo() {
         </tbody>
       </table>
       </div>
-      <p style="font-size:11.5px;color:var(--muted);margin-top:12px;">Todas las cuentas provienen del mismo motor contable consolidado que usan Libro Diario, Auxiliares y Balanza — da clic en cualquier renglón con ícono de apertura para ver su Auxiliar completo. La Utilidad acumulada viene del Estado de Resultados.</p>
+      <p class="nota-solo-impresion" style="font-size:11.5px;color:var(--muted);margin-top:12px;">${NOTAS_AYUDA.balance}</p>
     </div>
   `;
   document.getElementById('balanceHastaMes').addEventListener('change', (e) => { STATE_balanceHastaYm = e.target.value; renderBalanceGeneral(); });
@@ -24513,7 +24525,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-10-27.1';
+const APP_VERSION = '2026-10-27.2';
 const RESPALDO_TABLAS = [['businesses', ['id']], ['fz_cuentas_mayor', ['id']], ['fz_subcuentas', ['id']], ['fz_polizas', ['id']], ['fz_polizas_lineas', ['id']], ['fz_proveedores_catalogo', ['id']], ['fz_proveedores', ['id']], ['fz_ventas', ['id']], ['fz_conceptos_venta', ['id']], ['fz_conceptos_sistema', ['id']], ['fz_conceptos', ['id']], ['fz_efectivo_monedas', ['id']], ['fz_efectivo_mov', ['id']], ['fz_bancos_cuentas', ['id']], ['fz_bancos_mov', ['id']], ['fz_pl_gastos', ['id']], ['fz_usuarios_autorizados', ['id']], ['fz_usuario_negocios', ['id']], ['fz_auditoria', ['id']], ['fz_adjuntos', ['id']], ['fz_pagos_aplicados', ['id']], ['fz_clientes', ['id']], ['fz_productos_servicios', ['id']], ['fz_folios_contador', ['business_id', 'tipo']], ['fz_facturas_clientes', ['id']], ['fz_facturas_clientes_lineas', ['id']], ['fz_cobros_aplicados', ['id']], ['fz_ordenes_venta', ['id']], ['fz_ordenes_venta_lineas', ['id']], ['fz_conciliaciones_bancarias', ['id']], ['fz_cierres_periodo', ['id']], ['fz_tc_cierre', ['id']], ['fz_tipos_cambio_cierre', ['id']], ['fz_cfdi', ['id']], ['fz_cfdi_bitacora', ['id']], ['fz_activos_fijos', ['id']], ['fz_depreciaciones_generadas', ['id']], ['fz_inpc_valores', ['id']], ['fz_recargos_tasas', ['id']], ['fz_pagos_impuestos', ['id']], ['fz_isr_datos_anuales', ['id']], ['fz_isr_conceptos', ['id']], ['fz_provisiones_fiscales', ['id']], ['fz_iva_realizaciones', ['id']], ['fz_aplicaciones_pago_fiscal', ['id']], ['fz_regimenes_fiscales_negocio', ['id']], ['fz_dias_inhabiles_fiscales', ['id']], ['fz_declaraciones_fiscales', ['id']], ['fz_reglas_vencimiento_impuesto', []], ['fz_calendario_fiscal_validacion', []], ['fz_catalogo_regimenes_fiscales', []], ['fz_papeles_trabajo', ['id']], ['fz_papel_conceptos', ['id']], ['fz_papel_concepto_fuentes', ['id']], ['fz_papel_concepto_accesorios', ['id']], ['fz_papel_historial', ['id']], ['fz_papel_soportes', ['id']], ['fz_mapeo_cuenta_concepto_fiscal', ['id']], ['fz_perdidas_fiscales', ['id']], ['fz_perdidas_fiscales_actualizaciones', ['id']], ['fz_perdidas_fiscales_aplicaciones', ['id']], ['fz_perdidas_fiscales_cierres', ['id']], ['fz_perdidas_fiscales_historial', ['id']], ['fz_perdidas_fiscales_soportes', ['id']], ['fz_ptu_eventos', ['id']], ['fz_ptu_historial', ['id']], ['fz_pagos_por_clasificar', ['id']], ['fz_iva_saldos_favor', ['id']], ['fz_iva_saldos_favor_movimientos', ['id']], ['fz_iva_saldos_favor_devoluciones', ['id']], ['fz_iva_saldo_favor_periodo_activo', ['id']]];
 const RESPALDO_BUCKETS = ['adjuntos', 'cfdi'], RESPALDO_MAX_ARCHIVOS_BYTES = 400 * 1024 * 1024, RESPALDO_AVISO_DIAS = 7;
 function respaldoEstado() { try { return JSON.parse(localStorage.getItem('finanzas_ultimo_respaldo') || 'null'); } catch (_) { return null; } }
@@ -25825,7 +25837,7 @@ async function renderFlujo() {
 
   el.innerHTML = `
     <div class="card">
-      <div class="card-head"><h3>Cash Position — ${escHtml(b.name)}</h3><span class="hint">Al día de hoy</span></div>
+      <div class="card-head"><div style="display:flex;align-items:center;gap:8px;"><h3 style="margin-bottom:0;">Cash Position — ${escHtml(b.name)}</h3>${infoTipRicoHtml(NOTAS_AYUDA.posicionNeta)}</div><span class="hint">Al día de hoy</span></div>
       <div class="table-wrap tabla-contable-wrap">
       <table>
         <tbody>
@@ -25838,7 +25850,7 @@ async function renderFlujo() {
         </tbody>
       </table>
       </div>
-      <p style="font-size:11px;color:var(--muted);margin-top:10px;">Posición neta = Efectivo + Bancos − Proveedores por pagar − obligaciones fiscales ya <strong>exigibles</strong> hoy (Retenciones ya retenidas, IVA por pagar, ISR provisional por pagar). Lo que todavía está "Pendiente de cobro/pago" no se resta aquí, porque todavía no es una obligación exigible — se restaría dos veces si se contara en ambos estados.</p>
+      <p class="nota-solo-impresion" style="font-size:11px;color:var(--muted);margin-top:10px;">${NOTAS_AYUDA.posicionNeta}</p>
     </div>
     <div class="card">
       <div class="card-head"><h3>Resumen del mes — ${STATE.currentMonth}</h3></div>
@@ -25944,14 +25956,14 @@ async function renderPolizas() {
     </div>
     <div class="card">
       <div class="card-head">
-        <h3>Pólizas de Diario</h3>
+        <div style="display:flex;align-items:center;gap:8px;"><h3 style="margin-bottom:0;">Pólizas de Diario</h3>${infoTipHtml(NOTAS_AYUDA.polizasLineas)}</div>
         <div style="display:flex;gap:8px;">
           <button class="btn btn-ghost btn-sm" id="openCuentasBtnPolizas">${iconoConfigurar()}Catálogo de cuentas</button>
-          <button class="btn btn-ghost btn-sm" id="importPolizasBtn">Importar pólizas (Excel)</button>
+          <span style="display:inline-flex;align-items:center;gap:6px;"><button class="btn btn-ghost btn-sm" id="importPolizasBtn">Importar pólizas (Excel)</button>${infoTipHtml(NOTAS_AYUDA.polizasExcel)}</span>
           <button class="btn btn-gold btn-sm" id="addPolizaBtn">+ Nueva póliza</button>
         </div>
       </div>
-      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Cada línea puede afectar una cuenta contable (Catálogo de cuentas) o directamente una cuenta bancaria / caja de efectivo real — en ese caso el cargo/abono también se refleja en el saldo de Bancos o Efectivo. El Excel de pólizas debe tener columnas: Fecha, Concepto, Subcuenta, Descripción, Cargo, Abono — las filas con la misma Fecha y Concepto se agrupan en una sola póliza.</p>
+      <p class="nota-solo-impresion" style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">${NOTAS_AYUDA.polizasLineas} ${NOTAS_AYUDA.polizasExcel}</p>
       <div class="grid-3" style="margin-bottom:12px;">
         <div class="field" style="margin-bottom:0;">
           <label>Buscar (concepto, número o importe)</label>
