@@ -884,6 +884,11 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   #modalProveedoresCat .mcp-foot .btn{width:100%;flex:1 1 100%;}
   #modalProveedoresCat.mcp-teclado .mcp-head p{display:none;}
 }
+/* Diarios y Pólizas (v2026-10-21.1): las líneas de cada documento (Cuenta · Concepto · Factura · Cargo · Abono) caben en celular */
+@media (max-width:640px){
+  .dp-lineas th,.dp-lineas td{white-space:normal;padding:6px 3px;font-size:11px;}
+  .dp-lineas .uuid-sub{display:none;}
+}
 </style>
 </head>
 <body>
@@ -2571,7 +2576,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
     <div id="movCuentaPorHijo" style="margin-bottom:12px;"></div>
     <div class="table-wrap scroll-sticky">
       <table>
-        <thead><tr><th>Fecha</th><th>Proveedor / Concepto</th><th>Descripción</th><th>Cargo</th><th>Abono</th><th>Saldo</th></tr></thead>
+        <thead><tr><th>Fecha</th><th>Proveedor / Cliente</th><th>Concepto o Descripción</th><th>Factura</th><th>Cargo</th><th>Abono</th><th>Saldo</th></tr></thead>
         <tbody id="movCuentaLista"></tbody>
       </table>
     </div>
@@ -3167,6 +3172,6 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 </div>
 
 <script src="config.js"></script>
-<script src="app.js?v=2026-10-19.6"></script>
+<script src="app.js?v=2026-10-21.1"></script>
 </body>
 </html>

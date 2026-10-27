@@ -11576,6 +11576,7 @@ async function renderAuxiliares() {
   const antes = movsCuenta.filter(f => f.fecha < start);
   const saldoInicialNeto = antes.reduce((s,f)=> s + (esDeudora ? (f.cargo-f.abono) : (f.abono-f.cargo)), 0);
   const delPeriodo = movsCuenta.filter(f => f.fecha >= start && f.fecha <= end);
+  await enriquecerFilasConDocumento(b.id, delPeriodo); // solo presentación: Concepto, Factura y UUID
   let saldoCorrido = saldoInicialNeto;
   const filasConSaldo = delPeriodo.map(f => {
     saldoCorrido += esDeudora ? (f.cargo-f.abono) : (f.abono-f.cargo);
@@ -11607,19 +11608,20 @@ async function renderAuxiliares() {
       <div class="card-head"><h3>${escHtml(cuenta?.nombre||'')}</h3><span class="hint">${escHtml(etiquetaPeriodo)} · Saldo inicial: ${fmt(Math.abs(saldoInicialNeto))} ${saldoInicialNeto>=0?(esDeudora?'Deudor':'Acreedor'):(esDeudora?'Acreedor':'Deudor')}</span></div>
       <div class="table-wrap scroll-sticky tabla-contable-wrap">
         <table class="tabla-contable">
-          <thead><tr><th>Fecha</th><th>Documento</th><th>Concepto/Origen</th><th>Debe</th><th>Haber</th><th>Saldo</th></tr></thead>
+          <thead><tr><th>Fecha</th><th>Documento</th><th>Concepto o descripción</th><th>Factura o Nota</th><th>Debe</th><th>Haber</th><th>Saldo</th></tr></thead>
           <tbody>
             ${filasConSaldo.length ? filasConSaldo.map((f,idx) => `<tr>
               <td>${fechaCorta(f.fecha)}</td>
-              <td>${escHtml(f.referencia||f.modulo)}</td>
-              <td class="wrap-text" style="max-width:220px;">${f.modulo}${f.detalle?' — '+escHtml(f.detalle):''}</td>
+              <td>${escHtml(documentoAux(f))}</td>
+              <td class="wrap-text" style="max-width:190px;">${escHtml(conceptoAux(f))}</td>
+              <td>${celdaFacturaHtml(f)}</td>
               <td class="num">${f.cargo?fmt(f.cargo):''}</td>
               <td class="num">${f.abono?fmt(f.abono):''}</td>
               <td class="num" style="font-weight:600;">${fmt(Math.abs(f.saldo))}</td>
               <td><button class="btn btn-ghost btn-sm aux-ver-documento" data-idx="${idx}" style="font-size:11px;padding:3px 8px;">Ver documento</button></td>
-            </tr>`).join('') : `<tr><td colspan="7" class="empty">Sin movimientos en este periodo.</td></tr>`}
+            </tr>`).join('') : `<tr><td colspan="8" class="empty">Sin movimientos en este periodo.</td></tr>`}
           </tbody>
-          <tfoot><tr class="total-row"><td colspan="3">TOTAL DEL PERIODO</td><td class="num">${fmt(totalDebe)}</td><td class="num">${fmt(totalHaber)}</td><td class="num">${fmt(Math.abs(saldoCorrido))}</td><td></td></tr></tfoot>
+          <tfoot><tr class="total-row"><td colspan="4">TOTAL DEL PERIODO</td><td class="num">${fmt(totalDebe)}</td><td class="num">${fmt(totalHaber)}</td><td class="num">${fmt(Math.abs(saldoCorrido))}</td><td></td></tr></tfoot>
         </table>
       </div>
     </div>
@@ -11639,8 +11641,8 @@ async function renderAuxiliares() {
   el.querySelectorAll('.aux-ver-documento').forEach(btn => btn.addEventListener('click', () => verDocumentoDesdeOrigen(filasConSaldo[Number(btn.dataset.idx)], b.id)));
   document.getElementById('auxExcelBtn').addEventListener('click', () => {
     const wb = XLSX.utils.book_new();
-    const rows = [{ Fecha:'', Documento:'', Concepto:'Saldo inicial', Debe:'', Haber:'', Saldo: Math.abs(saldoInicialNeto) }];
-    filasConSaldo.forEach(f => rows.push({ Fecha: f.fecha, Documento: f.referencia, Concepto: `${f.modulo}${f.detalle?' — '+f.detalle:''}`, Debe: f.cargo||'', Haber: f.abono||'', Saldo: Math.abs(f.saldo) }));
+    const rows = [{ Fecha:'', Documento:'', 'Concepto o descripción':'Saldo inicial', 'Factura o Nota':'', Debe:'', Haber:'', Saldo: Math.abs(saldoInicialNeto), UUID:'' }];
+    filasConSaldo.forEach(f => rows.push({ Fecha: f.fecha, Documento: documentoAux(f), 'Concepto o descripción': conceptoAux(f), 'Factura o Nota': f.colFactura ?? '', Debe: f.cargo||'', Haber: f.abono||'', Saldo: Math.abs(f.saldo), UUID: f.colUuid ?? '' }));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Auxiliar');
     XLSX.writeFile(wb, `Auxiliar - ${cuenta?.nombre} - ${b.name} - ${sufijoArchivo}.xlsx`);
   });
@@ -11648,9 +11650,10 @@ async function renderAuxiliares() {
     const { doc, margin, y } = iniciarPdfConEncabezado(b, `Auxiliar — ${cuenta?.nombre} — ${etiquetaPeriodo}`);
     doc.autoTable({
       startY: y, margin: { left: margin, right: margin },
-      head: [['Fecha','Documento','Concepto','Debe','Haber','Saldo']],
-      body: [['','','Saldo inicial','','',fmt(Math.abs(saldoInicialNeto))], ...filasConSaldo.map(f=>[fechaCorta(f.fecha), f.referencia||'', `${f.modulo}${f.detalle?' — '+f.detalle:''}`, f.cargo?fmt(f.cargo):'', f.abono?fmt(f.abono):'', fmt(Math.abs(f.saldo))])],
-      foot: [['','TOTAL','', fmt(totalDebe), fmt(totalHaber), fmt(Math.abs(saldoCorrido))]],
+      head: [['Fecha','Documento','Concepto o descripción','Factura o Nota','Debe','Haber','Saldo']],
+      body: [['','','Saldo inicial','','','',fmt(Math.abs(saldoInicialNeto))], ...filasConSaldo.map(f=>[fechaCorta(f.fecha), documentoAux(f), conceptoAux(f), textoFacturaPdf(f), f.cargo?fmt(f.cargo):'', f.abono?fmt(f.abono):'', fmt(Math.abs(f.saldo))])],
+      foot: [['','TOTAL','','', fmt(totalDebe), fmt(totalHaber), fmt(Math.abs(saldoCorrido))]],
+      columnStyles: { 0: { cellWidth: 52 }, 1: { cellWidth: 86 }, 2: { cellWidth: 176 }, 3: { cellWidth: 170 }, 4: { cellWidth: 72, halign: 'right' }, 5: { cellWidth: 72, halign: 'right' }, 6: { cellWidth: 72, halign: 'right' } },
       styles: { fontSize: 8 }, headStyles: { fillColor: [10,31,61] },
     });
     doc.save(`Auxiliar - ${cuenta?.nombre} - ${b.name} - ${sufijoArchivo}.pdf`);
@@ -11706,10 +11709,12 @@ async function renderDiariosPolizasVista() {
   ]);
 
   const grupos = {};
-  filas.filter(f => f.fecha >= desde && f.fecha <= hasta).forEach(f => {
+  const filasRango = filas.filter(f => f.fecha >= desde && f.fecha <= hasta);
+  await enriquecerFilasConDocumento(b.id, filasRango); // solo presentación: Concepto, Factura y UUID de cada línea
+  filasRango.forEach(f => {
     const key = f.tipoOrigen + ':' + f.id;
     if (!grupos[key]) grupos[key] = { modulo: f.modulo, tipoOrigen: f.tipoOrigen, id: f.id, fecha: f.fecha, referencia: f.referencia, detalle: f.detalle, cuentaId: f.cuentaId, monedaId: f.monedaId, lineas: [], cargo: 0, abono: 0 };
-    grupos[key].lineas.push({ cuenta: f.cuenta, cargo: f.cargo, abono: f.abono });
+    grupos[key].lineas.push({ cuenta: f.cuenta, cargo: f.cargo, abono: f.abono, concepto: conceptoLineaDiario(f), factura: f.colFactura ?? '', uuid: f.colUuid ?? '' });
     grupos[key].cargo += f.cargo;
     grupos[key].abono += f.abono;
   });
@@ -11748,10 +11753,10 @@ async function renderDiariosPolizasVista() {
         <span style="font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px;background:${d.generacion==='Automática'?'#eef2f8':'#fdf3e3'};color:${d.generacion==='Automática'?'var(--navy-3)':'var(--gold)'};height:fit-content;">${d.generacion}</span>
       </div>
       <div class="table-wrap" style="margin-bottom:8px;">
-        <table>
-          <thead><tr><th>Cuenta</th><th>Cargo</th><th>Abono</th></tr></thead>
-          <tbody>${d.lineas.map(l=>`<tr><td>${escHtml(l.cuenta)}</td><td class="num">${l.cargo?fmt(l.cargo):''}</td><td class="num">${l.abono?fmt(l.abono):''}</td></tr>`).join('')}</tbody>
-          <tfoot><tr class="total-row"><td>TOTAL</td><td class="num">${fmt(d.cargo)}</td><td class="num">${fmt(d.abono)}</td></tr></tfoot>
+        <table class="dp-lineas">
+          <thead><tr><th>Cuenta</th><th>Concepto o descripción</th><th>Factura o Nota</th><th>Cargo</th><th>Abono</th></tr></thead>
+          <tbody>${d.lineas.map(l=>`<tr><td>${escHtml(l.cuenta)}</td><td class="wrap-text">${escHtml(l.concepto || '')}</td><td>${celdaFacturaHtml({ colFactura: l.factura, colUuid: l.uuid })}</td><td class="num">${l.cargo?fmt(l.cargo):''}</td><td class="num">${l.abono?fmt(l.abono):''}</td></tr>`).join('')}</tbody>
+          <tfoot><tr class="total-row"><td colspan="3">TOTAL</td><td class="num">${fmt(d.cargo)}</td><td class="num">${fmt(d.abono)}</td></tr></tfoot>
         </table>
       </div>
       ${!cuadra && d.unLadoPorDiseno ? `<p style="font-size:12px;color:var(--muted);">Documento de un solo lado por diseño: ${d.tipoOrigen === 'venta_recibido' ? 'es lo vendido que espera su depósito; su contrapartida es el depósito en Bancos o Efectivo (cuenta "Ventas pendientes de depositar").' : (d.tipoOrigen === 'factura_proveedor' && !String(d.referencia || '').startsWith('Cr') ? 'es la propina por repartir; su contrapartida es la venta conciliada.' : 'es un pago en exceso a un proveedor y su crédito a favor; juntos se compensan a cero.')} No es un error.</p>` : !cuadra ? `<p style="font-size:12.5px;font-weight:700;color:var(--red);">Diferencia: ${fmt(Math.abs(d.diferencia))} — ${d.diferencia<0?'Abonos exceden Cargos':'Cargos exceden Abonos'} por ${fmt(Math.abs(d.diferencia))}</p>` : ''}
@@ -11794,9 +11799,9 @@ async function renderDiariosPolizasVista() {
     const wb = XLSX.utils.book_new();
     const filasXlsx = [];
     documentos.forEach(d => {
-      filasXlsx.push({ Fecha: d.fecha, Documento: d.referencia, Tercero: d.detalle, Generación: d.generacion, Cuenta: '', Cargo: '', Abono: '' });
-      d.lineas.forEach(l => filasXlsx.push({ Fecha:'', Documento:'', Tercero:'', Generación:'', Cuenta: l.cuenta, Cargo: l.cargo||'', Abono: l.abono||'' }));
-      filasXlsx.push({ Fecha:'', Documento:'', Tercero:'', Generación:'', Cuenta:'TOTAL', Cargo: d.cargo, Abono: d.abono });
+      filasXlsx.push({ Fecha: d.fecha, Documento: d.referencia, Tercero: d.detalle, Generación: d.generacion, Cuenta: '', 'Concepto o descripción': '', 'Factura o Nota': '', Cargo: '', Abono: '', UUID: '' });
+      d.lineas.forEach(l => filasXlsx.push({ Fecha:'', Documento:'', Tercero:'', Generación:'', Cuenta: l.cuenta, 'Concepto o descripción': l.concepto || '', 'Factura o Nota': l.factura || '', Cargo: l.cargo||'', Abono: l.abono||'', UUID: l.uuid || '' }));
+      filasXlsx.push({ Fecha:'', Documento:'', Tercero:'', Generación:'', Cuenta:'TOTAL', 'Concepto o descripción': '', 'Factura o Nota': '', Cargo: d.cargo, Abono: d.abono, UUID: '' });
     });
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filasXlsx), 'Diarios y Pólizas');
     XLSX.writeFile(wb, `Diarios y Pólizas - ${b.name} - ${desde} a ${hasta}.xlsx`);
@@ -11807,7 +11812,7 @@ async function renderDiariosPolizasVista() {
     documentos.forEach(d => {
       if (yPos > 700) { doc.addPage(); yPos = 40; }
       doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.text(`${fechaCorta(d.fecha)} — ${d.referencia} — ${d.detalle||''} (${d.generacion})`, margin, yPos);
-      doc.autoTable({ startY: yPos+6, margin:{left:margin,right:margin}, head:[['Cuenta','Cargo','Abono']], body: d.lineas.map(l=>[l.cuenta, l.cargo?fmt(l.cargo):'', l.abono?fmt(l.abono):'']), foot:[['TOTAL', fmt(d.cargo), fmt(d.abono)]], styles:{fontSize:8}, headStyles:{fillColor:[10,31,61]} });
+      doc.autoTable({ startY: yPos+6, margin:{left:margin,right:margin}, head:[['Cuenta','Concepto o descripción','Factura o Nota','Cargo','Abono']], body: d.lineas.map(l=>[l.cuenta, l.concepto || '', textoFacturaPdf({ colFactura: l.factura, colUuid: l.uuid }), l.cargo?fmt(l.cargo):'', l.abono?fmt(l.abono):'']), foot:[['TOTAL','','', fmt(d.cargo), fmt(d.abono)]], styles:{fontSize:8}, headStyles:{fillColor:[10,31,61]}, columnStyles:{ 0:{cellWidth:104}, 1:{cellWidth:122}, 2:{cellWidth:170}, 3:{cellWidth:84, halign:'right'}, 4:{cellWidth:84, halign:'right'} } });
       yPos = doc.lastAutoTable.finalY + 14;
     });
     doc.save(`Diarios y Pólizas - ${b.name} - ${desde} a ${hasta}.pdf`);
@@ -20002,7 +20007,7 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   (lineasPoliza||[]).forEach(l => {
     const p = polizaMap[l.poliza_id];
     if (!p) return;
-    const origen = { modulo: 'Póliza de Diario', tipoOrigen: 'poliza', id: p.id, fecha: p.fecha, referencia: `Póliza #${p.numero ?? ''}`, detalle: p.concepto || '' };
+    const origen = { modulo: 'Póliza de Diario', tipoOrigen: 'poliza', id: p.id, lineaId: l.id, fecha: p.fecha, referencia: `Póliza #${p.numero ?? ''}`, detalle: p.concepto || '' };
     if (l.cuenta_tipo === 'banco') push({ ...origen, cuenta: `Banco: ${nombreBanco(l.cuenta_ref_id)}` }, 'banco:'+l.cuenta_ref_id, 'activo', l.cargo, l.abono);
     else if (l.cuenta_tipo === 'efectivo') push({ ...origen, cuenta: `Efectivo: ${nombreMoneda(l.cuenta_ref_id)}` }, 'efectivo:'+l.cuenta_ref_id, 'activo', l.cargo, l.abono);
     else if (l.cuenta_tipo === 'proveedor' || l.cuenta_tipo === 'proveedor_provision') push({ ...origen, cuenta: 'Proveedores' }, 'proveedores', 'pasivo', l.cargo, l.abono);
@@ -20928,6 +20933,121 @@ async function getLibroDiario(businessId, startDate, endDate) {
 // getLibroPartidaDobleConOrigen — exactamente la misma fuente que Balance General. Devuelve la misma
 // forma que la función antigua getMovimientosCuenta (que solo veía pólizas y facturas de proveedor
 // y por eso ya no debe usarse): { filas, saldoInicial, saldoFinal, saldoInicialPorSubcuenta }.
+/* ============================================================
+   COLUMNAS DESCRIPTIVAS DE LOS MOVIMIENTOS: Proveedor · Concepto · Factura · UUID
+   SOLO PRESENTACIÓN. Completa cada fila del motor contable con datos de su documento de origen
+   (línea de póliza, factura, movimiento de banco o de efectivo). NUNCA toca cargo, abono, saldo,
+   fecha ni orden. Si una consulta falla, la fila conserva lo que ya traía y la pantalla sigue igual.
+   El UUID vive en su propio dato (cfdi_uuid / folio_fiscal) y se muestra APARTE: nunca se mezcla
+   con el número de factura.
+   ============================================================ */
+const UUID_SUB_STYLE = 'font-size:10px;color:var(--muted);font-family:ui-monospace,Consolas,monospace;white-space:normal;overflow-wrap:break-word;max-width:136px;line-height:1.25;'; // el UUID se parte en dos líneas por los guiones: la tabla no se ensancha
+const _unicosIds = (ids) => [...new Set((ids || []).filter(x => x !== null && x !== undefined && x !== '').map(String))];
+const _idsDe = (v) => Array.isArray(v) ? v : (v ? [v] : []);
+async function _traerPorIds(tabla, columnas, columnasBase, ids) {
+  const lista = _unicosIds(ids); const lotes = [];
+  for (let i = 0; i < lista.length; i += 100) lotes.push(lista.slice(i, i + 100));
+  const partes = await Promise.all(lotes.map(async (lote) => {
+    try {
+      let r = await sb.from(tabla).select(columnas).in('id', lote);
+      if (r.error && columnasBase) r = await sb.from(tabla).select(columnasBase).in('id', lote); // por si alguna columna opcional (UUID) no existiera todavía
+      return r.error ? [] : (r.data || []);
+    } catch (_) { return []; }
+  }));
+  return partes.flat();
+}
+async function enriquecerFilasConDocumento(businessId, filas) {
+  const lista = (filas || []).filter(f => f && f.tipoOrigen);
+  if (!lista.length) return filas;
+  try {
+    const de = (t) => lista.filter(f => f.tipoOrigen === t);
+    const [lineas, provs0, clis0, bancos, efectivos] = await Promise.all([
+      _traerPorIds('fz_polizas_lineas', 'id,proveedor,descripcion,referencia,proveedor_factura_id,cliente_factura_id', null, de('poliza').map(f => f.lineaId)),
+      _traerPorIds('fz_proveedores', 'id,proveedor,factura,cfdi_uuid,desglose', 'id,proveedor,factura,desglose', de('factura_proveedor').map(f => f.id)),
+      _traerPorIds('fz_facturas_clientes', 'id,folio,folio_fiscal', 'id,folio', de('factura_cliente').map(f => f.id)),
+      _traerPorIds('fz_bancos_mov', 'id,proveedor,concepto,descripcion,referencia,proveedor_factura_id,proveedor_factura_ids,cliente_factura_id,cliente_factura_ids', 'id,concepto,descripcion,referencia,proveedor_factura_id,proveedor_factura_ids', de('banco_mov').map(f => f.id)),
+      _traerPorIds('fz_efectivo_mov', 'id,proveedor,descripcion,factura,proveedor_factura_id,proveedor_factura_ids,cliente_factura_id,cliente_factura_ids', 'id,proveedor,descripcion,factura', de('efectivo_mov').map(f => f.id)),
+    ]);
+    const provMap = Object.fromEntries(provs0.map(x => [x.id, x])), cliMap = Object.fromEntries(clis0.map(x => [x.id, x]));
+    const lineaMap = Object.fromEntries(lineas.map(x => [x.id, x])), bancoMap = Object.fromEntries(bancos.map(x => [x.id, x])), efecMap = Object.fromEntries(efectivos.map(x => [x.id, x]));
+    // facturas vinculadas a líneas de póliza y a movimientos de banco/efectivo (segunda ronda, solo las que faltan)
+    const idsProvVinc = [], idsCliVinc = [];
+    lineas.forEach(l => { idsProvVinc.push(l.proveedor_factura_id); idsCliVinc.push(l.cliente_factura_id); });
+    [...bancos, ...efectivos].forEach(m => { idsProvVinc.push(m.proveedor_factura_id, ..._idsDe(m.proveedor_factura_ids)); idsCliVinc.push(m.cliente_factura_id, ..._idsDe(m.cliente_factura_ids)); });
+    const faltanProv = _unicosIds(idsProvVinc).filter(id => !provMap[id]), faltanCli = _unicosIds(idsCliVinc).filter(id => !cliMap[id]);
+    const [provs1, clis1] = await Promise.all([
+      faltanProv.length ? _traerPorIds('fz_proveedores', 'id,proveedor,factura,cfdi_uuid', 'id,proveedor,factura', faltanProv) : [],
+      faltanCli.length ? _traerPorIds('fz_facturas_clientes', 'id,folio,folio_fiscal', 'id,folio', faltanCli) : [],
+    ]);
+    provs1.forEach(x => { provMap[x.id] = x; }); clis1.forEach(x => { cliMap[x.id] = x; });
+    const vinculadas = (idsP, idsC) => {
+      const nums = [], uuids = [];
+      _unicosIds(idsP).forEach(id => { const p = provMap[id]; if (p) { if (p.factura) nums.push(String(p.factura)); if (p.cfdi_uuid) uuids.push(p.cfdi_uuid); } });
+      _unicosIds(idsC).forEach(id => { const c = cliMap[id]; if (c) { if (c.folio !== null && c.folio !== undefined && c.folio !== '') nums.push('Folio #' + c.folio); if (c.folio_fiscal) uuids.push(c.folio_fiscal); } });
+      return { numero: nums.join(', '), uuid: [...new Set(uuids)].join('\n') };
+    };
+    const conceptoDesglose = (F, f) => {
+      if (!F) return '';
+      const lins = desgloseLineas(F.desglose) || [];
+      const sub = String(f.clave || '').startsWith('sub:') ? String(f.clave).slice(4) : null;
+      const mismas = sub ? lins.filter(l => String(l.subcuenta_id) === sub) : [];
+      const una = mismas.length === 1 ? mismas[0] : mismas.find(l => Math.abs((Number(l.monto) || 0) - (Number(f.cargo) || 0)) < 0.01);
+      return String((una && una.descripcion) || '').trim();
+    };
+    lista.forEach(f => {
+      let prov = '', conc = '', fac = '', uu = '';
+      if (f.tipoOrigen === 'poliza') {
+        const l = lineaMap[f.lineaId];
+        const v = l ? vinculadas(l.proveedor_factura_id ? [l.proveedor_factura_id] : [], l.cliente_factura_id ? [l.cliente_factura_id] : []) : { numero: '', uuid: '' };
+        prov = (l && l.proveedor) || '';
+        conc = (l && l.descripcion) || f.detalle || '';
+        fac = (l && l.referencia) || v.numero || '';
+        uu = v.uuid;
+      } else if (f.tipoOrigen === 'factura_proveedor') {
+        const F = provMap[f.id];
+        prov = (F && F.proveedor) || f.detalle || '';
+        fac = (F && F.factura) || '';
+        uu = (F && F.cfdi_uuid) || '';
+        conc = conceptoDesglose(F, f) || 'Factura de proveedor';
+      } else if (f.tipoOrigen === 'factura_cliente') {
+        const C = cliMap[f.id];
+        prov = f.detalle || '';
+        fac = (C && C.folio !== null && C.folio !== undefined && C.folio !== '') ? 'Folio #' + C.folio : (f.referencia || '');
+        uu = (C && C.folio_fiscal) || '';
+        conc = 'Factura de cliente';
+      } else if (f.tipoOrigen === 'banco_mov' || f.tipoOrigen === 'efectivo_mov') {
+        const m = (f.tipoOrigen === 'banco_mov' ? bancoMap : efecMap)[f.id];
+        const idsP = m ? (_idsDe(m.proveedor_factura_ids).length ? _idsDe(m.proveedor_factura_ids) : _idsDe(m.proveedor_factura_id)) : [];
+        const idsC = m ? (_idsDe(m.cliente_factura_ids).length ? _idsDe(m.cliente_factura_ids) : _idsDe(m.cliente_factura_id)) : [];
+        const v = vinculadas(idsP, idsC);
+        prov = (m && m.proveedor) || '';
+        conc = (m && (m.concepto || m.descripcion)) || f.detalle || f.referencia || '';
+        fac = (m && m.factura) || v.numero || (m && m.referencia) || '';
+        uu = v.uuid;
+      } else {
+        conc = f.detalle || f.referencia || '';
+      }
+      f.colProveedor = prov; f.colConcepto = conc; f.colFactura = fac; f.colUuid = uu;
+    });
+  } catch (_) { /* presentación opcional: la pantalla conserva las columnas de siempre */ }
+  return filas;
+}
+// Factura (número) y, DEBAJO y aparte, el UUID del CFDI cuando exista.
+function celdaFacturaHtml(f) {
+  const num = f.colFactura ? escHtml(f.colFactura) : '';
+  const uu = f.colUuid ? String(f.colUuid).split('\n').map(u => `<div class="uuid-sub" style="${UUID_SUB_STYLE}" title="UUID del CFDI">${escHtml(u)}</div>`).join('') : '';
+  return num + uu;
+}
+const textoFacturaPdf = (f) => `${f.colFactura ?? ''}${f.colUuid ? (f.colFactura ? '\n' : '') + String(f.colUuid) : ''}`;
+function conceptoMostrado(f) { // Movimientos del Balance: el número de póliza va al inicio del concepto
+  const base = f.colConcepto ?? f.descripcion ?? '';
+  const pref = (f.tipoOrigen === 'poliza' && f.referencia) ? String(f.referencia) : '';
+  return pref && base ? pref + ' · ' + base : (pref || base);
+}
+const documentoAux = (f) => f.tipoOrigen === 'poliza' ? (f.referencia || f.modulo) : (f.modulo || f.referencia || '');
+const conceptoLineaDiario = (f) => [f.colProveedor, f.colConcepto].filter(Boolean).join(' — ');
+const conceptoAux = (f) => conceptoLineaDiario(f) || `${f.modulo}${f.detalle ? ' — ' + f.detalle : ''}`;
+
 async function getMovimientosCuentaMotor(businessId, subcuentaIds, startDate, endDate) {
   const hasta = endDate || todayStr();
   const { filas: todas } = await getLibroPartidaDobleConOrigen(businessId, hasta);
@@ -20951,9 +21071,11 @@ async function getMovimientosCuentaMotor(businessId, subcuentaIds, startDate, en
   todas.filter(f => claves.has(f.clave) && f.fecha <= hasta).forEach(f => {
     const id = f.clave.slice(4);
     if (startDate && f.fecha < startDate) { saldoInicialPorSubcuenta[id] += f.cargo - f.abono; return; }
-    filas.push({ fecha: f.fecha, subcuentaId: id, proveedor: referenciaDe(f) || '—', descripcion: f.detalle || referenciaDe(f) || '—', cargo: f.cargo, abono: f.abono, origen: origenDe(f) });
+    filas.push({ fecha: f.fecha, subcuentaId: id, proveedor: referenciaDe(f) || '—', descripcion: f.detalle || referenciaDe(f) || '—', cargo: f.cargo, abono: f.abono, origen: origenDe(f), tipoOrigen: f.tipoOrigen, referencia: f.referencia, _f: f });
   });
   filas.sort((a, b) => a.fecha.localeCompare(b.fecha));
+  await enriquecerFilasConDocumento(businessId, filas.map(r => r._f)); // solo presentación: Proveedor, Concepto, Factura y UUID
+  filas.forEach(r => { r.colProveedor = r._f.colProveedor; r.colConcepto = r._f.colConcepto; r.colFactura = r._f.colFactura; r.colUuid = r._f.colUuid; delete r._f; });
   const saldoInicial = Object.values(saldoInicialPorSubcuenta).reduce((s, x) => s + x, 0);
   let saldo = saldoInicial;
   filas.forEach(f => { saldo += f.cargo - f.abono; f.saldo = saldo; });
@@ -20968,7 +21090,7 @@ async function abrirModalMovimientosCuenta(nombre, subcuentaIds, businessId, nom
   const buscar = async () => {
     const desde = document.getElementById('movCuentaDesde').value || null;
     const hasta = document.getElementById('movCuentaHasta').value || todayStr();
-    document.getElementById('movCuentaLista').innerHTML = `<tr><td colspan="6" class="empty">Calculando…</td></tr>`;
+    document.getElementById('movCuentaLista').innerHTML = `<tr><td colspan="7" class="empty">Calculando…</td></tr>`;
     const { filas, saldoInicial, saldoFinal, saldoInicialPorSubcuenta } = await getMovimientosCuentaMotor(businessId, subcuentaIds, desde, hasta);
     ultimoResultado = { filas, saldoInicial, saldoFinal, desde, hasta, saldoInicialPorSubcuenta };
     document.getElementById('movCuentaResumen').innerHTML = `
@@ -20992,8 +21114,9 @@ async function abrirModalMovimientosCuenta(nombre, subcuentaIds, businessId, nom
         totalCargo += f.cargo; totalAbono += f.abono;
         return `<tr>
           <td>${fechaCorta(f.fecha)}</td>
-          <td>${escHtml(f.proveedor)}</td>
-          <td>${escHtml(f.descripcion)}</td>
+          <td>${escHtml(f.colProveedor ?? f.proveedor)}</td>
+          <td>${escHtml(conceptoMostrado(f))}</td>
+          <td>${celdaFacturaHtml(f)}</td>
           <td class="num">${f.cargo?fmt(f.cargo):''}</td>
           <td class="num">${f.abono?fmt(f.abono):''}</td>
           <td class="num">${fmt(saldoCorrido)}</td>
@@ -21001,15 +21124,15 @@ async function abrirModalMovimientosCuenta(nombre, subcuentaIds, businessId, nom
       }).join('');
       totalCargoGeneral += totalCargo; totalAbonoGeneral += totalAbono;
       filasHtml += `
-        <tr style="background:#eef2f8;"><td colspan="6" style="font-weight:700;">${nombresPorId[id]||'(cuenta)'} — Saldo inicial: ${fmt(saldoIni)}</td></tr>
+        <tr style="background:#eef2f8;"><td colspan="7" style="font-weight:700;">${nombresPorId[id]||'(cuenta)'} — Saldo inicial: ${fmt(saldoIni)}</td></tr>
         ${filasRender}
-        <tr style="font-style:italic;color:var(--muted);"><td colspan="3">Total</td><td class="num">${fmt(totalCargo)}</td><td class="num">${fmt(totalAbono)}</td><td class="num" style="font-weight:700;">${fmt(saldoCorrido)}</td></tr>
+        <tr style="font-style:italic;color:var(--muted);"><td colspan="4">Total</td><td class="num">${fmt(totalCargo)}</td><td class="num">${fmt(totalAbono)}</td><td class="num" style="font-weight:700;">${fmt(saldoCorrido)}</td></tr>
       `;
     });
     if (subcuentaIds.length > 1) {
-      filasHtml += `<tr class="total-row"><td colspan="3">Total ${escHtml(nombre)}</td><td class="num">${fmt(totalCargoGeneral)}</td><td class="num">${fmt(totalAbonoGeneral)}</td><td class="num">${fmt(saldoFinal)}</td></tr>`;
+      filasHtml += `<tr class="total-row"><td colspan="4">Total ${escHtml(nombre)}</td><td class="num">${fmt(totalCargoGeneral)}</td><td class="num">${fmt(totalAbonoGeneral)}</td><td class="num">${fmt(saldoFinal)}</td></tr>`;
     }
-    document.getElementById('movCuentaLista').innerHTML = filasHtml || `<tr><td colspan="6" class="empty">No hay movimientos en este rango.</td></tr>`;
+    document.getElementById('movCuentaLista').innerHTML = filasHtml || `<tr><td colspan="7" class="empty">No hay movimientos en este rango.</td></tr>`;
   };
   document.getElementById('movCuentaBuscar').onclick = buscar;
   document.getElementById('movCuentaExcel').onclick = () => {
@@ -21021,18 +21144,18 @@ async function abrirModalMovimientosCuenta(nombre, subcuentaIds, businessId, nom
       const filasDeEsta = filas.filter(f => f.subcuentaId === id);
       const saldoIni = saldoInicialPorSubcuenta[id] || 0;
       if (!filasDeEsta.length && Math.abs(saldoIni) < 0.004 && subcuentaIds.length > 1) return;
-      filasExcel.push({ 'Fecha/Cuenta': `${nombresPorId[id]||'(cuenta)'} — Saldo inicial: ${fmt(saldoIni)}`, 'Proveedor / Concepto': '', 'Descripción': '', 'Cargo': '', 'Abono': '', 'Saldo': '' });
+      filasExcel.push({ 'Fecha/Cuenta': `${nombresPorId[id]||'(cuenta)'} — Saldo inicial: ${fmt(saldoIni)}`, 'Proveedor / Cliente': '', 'Concepto o Descripción': '', 'Factura': '', 'Cargo': '', 'Abono': '', 'Saldo': '', 'UUID': '' });
       let saldoCorrido = saldoIni, totalCargo = 0, totalAbono = 0;
       filasDeEsta.forEach(f => {
         saldoCorrido += f.cargo - f.abono;
         totalCargo += f.cargo; totalAbono += f.abono;
-        filasExcel.push({ 'Fecha/Cuenta': f.fecha, 'Proveedor / Concepto': f.proveedor, 'Descripción': f.descripcion, 'Cargo': f.cargo||0, 'Abono': f.abono||0, 'Saldo': saldoCorrido });
+        filasExcel.push({ 'Fecha/Cuenta': f.fecha, 'Proveedor / Cliente': f.colProveedor ?? f.proveedor, 'Concepto o Descripción': conceptoMostrado(f), 'Factura': f.colFactura ?? '', 'Cargo': f.cargo||0, 'Abono': f.abono||0, 'Saldo': saldoCorrido, 'UUID': f.colUuid ?? '' });
       });
       totalCargoGeneral += totalCargo; totalAbonoGeneral += totalAbono;
-      filasExcel.push({ 'Fecha/Cuenta': 'Total', 'Proveedor / Concepto': '', 'Descripción': '', 'Cargo': totalCargo, 'Abono': totalAbono, 'Saldo': saldoCorrido });
+      filasExcel.push({ 'Fecha/Cuenta': 'Total', 'Proveedor / Cliente': '', 'Concepto o Descripción': '', 'Factura': '', 'Cargo': totalCargo, 'Abono': totalAbono, 'Saldo': saldoCorrido, 'UUID': '' });
     });
     if (subcuentaIds.length > 1) {
-      filasExcel.push({ 'Fecha/Cuenta': `Total ${nombre}`, 'Proveedor / Concepto': '', 'Descripción': '', 'Cargo': totalCargoGeneral, 'Abono': totalAbonoGeneral, 'Saldo': saldoFinal });
+      filasExcel.push({ 'Fecha/Cuenta': `Total ${nombre}`, 'Proveedor / Cliente': '', 'Concepto o Descripción': '', 'Factura': '', 'Cargo': totalCargoGeneral, 'Abono': totalAbonoGeneral, 'Saldo': saldoFinal, 'UUID': '' });
     }
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.json_to_sheet(filasExcel);
@@ -21061,33 +21184,34 @@ async function abrirModalMovimientosCuenta(nombre, subcuentaIds, businessId, nom
       const saldoIni = saldoInicialPorSubcuenta[id] || 0;
       if (!filasDeEsta.length && Math.abs(saldoIni) < 0.004 && subcuentaIds.length > 1) return;
       filasEncabezado.push(body.length);
-      body.push([`${nombresPorId[id]||'(cuenta)'} — Saldo inicial: ${fmt(saldoIni)}`, '', '', '', '', '']);
+      body.push([`${nombresPorId[id]||'(cuenta)'} — Saldo inicial: ${fmt(saldoIni)}`, '', '', '', '', '', '']);
       let saldoCorrido = saldoIni, totalCargo = 0, totalAbono = 0;
       filasDeEsta.forEach(f => {
         saldoCorrido += f.cargo - f.abono;
         totalCargo += f.cargo; totalAbono += f.abono;
-        body.push([fechaCorta(f.fecha), f.proveedor, f.descripcion, f.cargo?fmt(f.cargo):'', f.abono?fmt(f.abono):'', fmt(saldoCorrido)]);
+        body.push([fechaCorta(f.fecha), f.colProveedor ?? f.proveedor, conceptoMostrado(f), textoFacturaPdf(f), f.cargo?fmt(f.cargo):'', f.abono?fmt(f.abono):'', fmt(saldoCorrido)]);
       });
       totalCargoGeneral += totalCargo; totalAbonoGeneral += totalAbono;
       filasSubtotal.push(body.length);
-      body.push(['Total', '', '', fmt(totalCargo), fmt(totalAbono), fmt(saldoCorrido)]);
+      body.push(['Total', '', '', '', fmt(totalCargo), fmt(totalAbono), fmt(saldoCorrido)]);
     });
     if (subcuentaIds.length > 1) {
       filasSubtotal.push(body.length);
-      body.push([`Total ${nombre}`, '', '', fmt(totalCargoGeneral), fmt(totalAbonoGeneral), fmt(saldoFinal)]);
+      body.push([`Total ${nombre}`, '', '', '', fmt(totalCargoGeneral), fmt(totalAbonoGeneral), fmt(saldoFinal)]);
     }
 
     doc.autoTable({
       startY: 90, margin: { left: margin, right: margin },
-      head: [['Fecha / Cuenta', 'Proveedor / Concepto', 'Descripción', 'Cargo', 'Abono', 'Saldo']],
+      head: [['Fecha / Cuenta', 'Proveedor / Cliente', 'Concepto o Descripción', 'Factura', 'Cargo', 'Abono', 'Saldo']],
       body,
       styles: { fontSize: 8 }, headStyles: { fillColor: [10,31,61] },
+      columnStyles: { 0: { cellWidth: 72 }, 1: { cellWidth: 100 }, 2: { cellWidth: 160 }, 3: { cellWidth: 168 }, 4: { cellWidth: 66, halign: 'right' }, 5: { cellWidth: 66, halign: 'right' }, 6: { cellWidth: 72, halign: 'right' } },
       didParseCell: (data) => {
         if (data.section !== 'body') return;
         if (filasEncabezado.includes(data.row.index)) {
           data.cell.styles.fillColor = [238,242,248];
           data.cell.styles.fontStyle = 'bold';
-          if (data.column.index === 0) data.cell.colSpan = 6;
+          if (data.column.index === 0) data.cell.colSpan = 7;
           else data.cell.text = [];
         } else if (filasSubtotal.includes(data.row.index)) {
           data.cell.styles.fontStyle = 'italic';
@@ -24217,7 +24341,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-10-19.6';
+const APP_VERSION = '2026-10-21.1';
 const RESPALDO_TABLAS = [['businesses', ['id']], ['fz_cuentas_mayor', ['id']], ['fz_subcuentas', ['id']], ['fz_polizas', ['id']], ['fz_polizas_lineas', ['id']], ['fz_proveedores_catalogo', ['id']], ['fz_proveedores', ['id']], ['fz_ventas', ['id']], ['fz_conceptos_venta', ['id']], ['fz_conceptos_sistema', ['id']], ['fz_conceptos', ['id']], ['fz_efectivo_monedas', ['id']], ['fz_efectivo_mov', ['id']], ['fz_bancos_cuentas', ['id']], ['fz_bancos_mov', ['id']], ['fz_pl_gastos', ['id']], ['fz_usuarios_autorizados', ['id']], ['fz_usuario_negocios', ['id']], ['fz_auditoria', ['id']], ['fz_adjuntos', ['id']], ['fz_pagos_aplicados', ['id']], ['fz_clientes', ['id']], ['fz_productos_servicios', ['id']], ['fz_folios_contador', ['business_id', 'tipo']], ['fz_facturas_clientes', ['id']], ['fz_facturas_clientes_lineas', ['id']], ['fz_cobros_aplicados', ['id']], ['fz_ordenes_venta', ['id']], ['fz_ordenes_venta_lineas', ['id']], ['fz_conciliaciones_bancarias', ['id']], ['fz_cierres_periodo', ['id']], ['fz_tc_cierre', ['id']], ['fz_tipos_cambio_cierre', ['id']], ['fz_cfdi', ['id']], ['fz_cfdi_bitacora', ['id']], ['fz_activos_fijos', ['id']], ['fz_depreciaciones_generadas', ['id']], ['fz_inpc_valores', ['id']], ['fz_recargos_tasas', ['id']], ['fz_pagos_impuestos', ['id']], ['fz_isr_datos_anuales', ['id']], ['fz_isr_conceptos', ['id']], ['fz_provisiones_fiscales', ['id']], ['fz_iva_realizaciones', ['id']], ['fz_aplicaciones_pago_fiscal', ['id']], ['fz_regimenes_fiscales_negocio', ['id']], ['fz_dias_inhabiles_fiscales', ['id']], ['fz_declaraciones_fiscales', ['id']], ['fz_reglas_vencimiento_impuesto', []], ['fz_calendario_fiscal_validacion', []], ['fz_catalogo_regimenes_fiscales', []], ['fz_papeles_trabajo', ['id']], ['fz_papel_conceptos', ['id']], ['fz_papel_concepto_fuentes', ['id']], ['fz_papel_concepto_accesorios', ['id']], ['fz_papel_historial', ['id']], ['fz_papel_soportes', ['id']], ['fz_mapeo_cuenta_concepto_fiscal', ['id']], ['fz_perdidas_fiscales', ['id']], ['fz_perdidas_fiscales_actualizaciones', ['id']], ['fz_perdidas_fiscales_aplicaciones', ['id']], ['fz_perdidas_fiscales_cierres', ['id']], ['fz_perdidas_fiscales_historial', ['id']], ['fz_perdidas_fiscales_soportes', ['id']], ['fz_ptu_eventos', ['id']], ['fz_ptu_historial', ['id']], ['fz_pagos_por_clasificar', ['id']], ['fz_iva_saldos_favor', ['id']], ['fz_iva_saldos_favor_movimientos', ['id']], ['fz_iva_saldos_favor_devoluciones', ['id']], ['fz_iva_saldo_favor_periodo_activo', ['id']]];
 const RESPALDO_BUCKETS = ['adjuntos', 'cfdi'], RESPALDO_MAX_ARCHIVOS_BYTES = 400 * 1024 * 1024, RESPALDO_AVISO_DIAS = 7;
 function respaldoEstado() { try { return JSON.parse(localStorage.getItem('finanzas_ultimo_respaldo') || 'null'); } catch (_) { return null; } }
@@ -25752,6 +25876,16 @@ async function abrirModalPolizaSoloLectura(poliza) {
   ]);
   const nombreSubcuenta = Object.fromEntries((subcuentasData||[]).map(s => [s.id, s.nombre]));
   const totalCargo = (lineas||[]).reduce((s,l)=>s+(Number(l.cargo)||0),0);
+  // Factura o Nota y UUID de cada línea (solo presentación; si la consulta falla, quedan vacíos)
+  const [provsV, clisV] = await Promise.all([
+    _traerPorIds('fz_proveedores', 'id,factura,cfdi_uuid', 'id,factura', (lineas||[]).map(l => l.proveedor_factura_id)),
+    _traerPorIds('fz_facturas_clientes', 'id,folio,folio_fiscal', 'id,folio', (lineas||[]).map(l => l.cliente_factura_id)),
+  ]);
+  const provMapV = Object.fromEntries(provsV.map(x => [x.id, x])), cliMapV = Object.fromEntries(clisV.map(x => [x.id, x]));
+  const facturaLineaV = (l) => {
+    const p = provMapV[l.proveedor_factura_id], c = cliMapV[l.cliente_factura_id];
+    return { colFactura: l.referencia || (p && p.factura) || (c && c.folio !== null && c.folio !== undefined && c.folio !== '' ? 'Folio #' + c.folio : ''), colUuid: (p && p.cfdi_uuid) || (c && c.folio_fiscal) || '' };
+  };
   wrap.innerHTML = `
     <div class="card" style="background:#fbfcfe;border:1.5px solid var(--line);margin-bottom:16px;position:relative;">
       <button class="poliza-solo-lectura-cerrar" title="Cerrar" style="position:absolute;top:10px;right:14px;background:none;border:none;font-size:20px;color:var(--muted);cursor:pointer;line-height:1;">✕</button>
@@ -25764,9 +25898,9 @@ async function abrirModalPolizaSoloLectura(poliza) {
       <p style="font-size:12.5px;color:var(--muted);margin-bottom:10px;">${escHtml(poliza.concepto || '')}</p>
       <div class="table-wrap">
         <table class="tabla-operativa">
-          <thead><tr><th>Cuenta</th><th class="num">Cargo</th><th class="num">Abono</th></tr></thead>
+          <thead><tr><th>Cuenta</th><th>Concepto o descripción</th><th>Factura o Nota</th><th class="num">Cargo</th><th class="num">Abono</th></tr></thead>
           <tbody>
-            ${(lineas||[]).map(l => `<tr><td>${escHtml(nombreSubcuenta[l.subcuenta_id] || '—')}</td><td class="num">${Number(l.cargo)?fmt(l.cargo):''}</td><td class="num">${Number(l.abono)?fmt(l.abono):''}</td></tr>`).join('')}
+            ${(lineas||[]).map(l => `<tr><td>${escHtml(nombreSubcuenta[l.subcuenta_id] || '—')}</td><td class="wrap-text">${escHtml(l.descripcion || poliza.concepto || '')}</td><td>${celdaFacturaHtml(facturaLineaV(l))}</td><td class="num">${Number(l.cargo)?fmt(l.cargo):''}</td><td class="num">${Number(l.abono)?fmt(l.abono):''}</td></tr>`).join('')}
           </tbody>
         </table>
       </div>
@@ -25935,7 +26069,7 @@ function polizaCardHtmlBorrador(borrador) {
       <button class="poliza-cerrar-x" title="Cerrar" style="position:absolute;top:10px;right:14px;background:none;border:none;font-size:20px;color:var(--muted);cursor:pointer;line-height:1;">✕</button>
       <div class="card-head" style="margin-bottom:10px;">
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-          <strong style="color:var(--navy-1);">${borrador.esNueva ? 'Nueva póliza' : 'Póliza #' + (p.numero ?? '—')}</strong>
+          <strong style="color:var(--navy-1);">${borrador.esNueva ? `Nueva póliza · No. ${escHtml(String(p.numero ?? '—'))} <span style="font-weight:400;font-size:11.5px;color:var(--muted);">(provisional; se confirma al guardar)</span>` : 'Póliza #' + (p.numero ?? '—')}</strong>
           <input class="cell poliza-cell" type="date" value="${p.fecha}" data-field="fecha" style="width:auto;">
           <input class="cell poliza-cell" type="text" placeholder="Concepto de la póliza" value="${escAttr(p.concepto || '')}" data-field="concepto" enterkeyhint="next" style="min-width:220px;">
         </div>
