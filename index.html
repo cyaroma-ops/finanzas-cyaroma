@@ -424,6 +424,9 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 .cfdi-acciones>summary::-webkit-details-marker{display:none;}
 .cfdi-acc-menu{position:absolute;right:0;top:calc(100% + 4px);z-index:8;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 6px 20px rgba(10,31,61,.14);padding:6px;display:flex;flex-direction:column;gap:4px;min-width:230px;}
 .cfdi-acc-menu .btn{width:100%;text-align:left;justify-content:flex-start;}
+/* CFDI (XML): sin el margen inferior de 60 px, la tabla llega hasta el borde de la pantalla (2026-11-04.5) */
+.content:has(#sec-cfdi.active){padding-bottom:14px;}
+
 @media (max-width:760px){
   .cfdi-sticky{position:static;margin:0 0 8px;padding:0;}
   .cfdi-carga-wrap{margin-left:0;width:100%;}
@@ -3236,6 +3239,6 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 </div>
 
 <script src="config.js"></script>
-<script src="app.js?v=2026-11-04.4"></script>
+<script src="app.js?v=2026-11-04.5"></script>
 </body>
 </html>

@@ -24690,7 +24690,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-04.4';
+const APP_VERSION = '2026-11-04.5';
 const RESPALDO_TABLAS = [['businesses', ['id']], ['fz_cuentas_mayor', ['id']], ['fz_subcuentas', ['id']], ['fz_polizas', ['id']], ['fz_polizas_lineas', ['id']], ['fz_proveedores_catalogo', ['id']], ['fz_proveedores', ['id']], ['fz_ventas', ['id']], ['fz_conceptos_venta', ['id']], ['fz_conceptos_sistema', ['id']], ['fz_conceptos', ['id']], ['fz_efectivo_monedas', ['id']], ['fz_efectivo_mov', ['id']], ['fz_bancos_cuentas', ['id']], ['fz_bancos_mov', ['id']], ['fz_pl_gastos', ['id']], ['fz_usuarios_autorizados', ['id']], ['fz_usuario_negocios', ['id']], ['fz_auditoria', ['id']], ['fz_adjuntos', ['id']], ['fz_pagos_aplicados', ['id']], ['fz_clientes', ['id']], ['fz_productos_servicios', ['id']], ['fz_folios_contador', ['business_id', 'tipo']], ['fz_facturas_clientes', ['id']], ['fz_facturas_clientes_lineas', ['id']], ['fz_cobros_aplicados', ['id']], ['fz_ordenes_venta', ['id']], ['fz_ordenes_venta_lineas', ['id']], ['fz_conciliaciones_bancarias', ['id']], ['fz_cierres_periodo', ['id']], ['fz_tc_cierre', ['id']], ['fz_tipos_cambio_cierre', ['id']], ['fz_cfdi', ['id']], ['fz_cfdi_bitacora', ['id']], ['fz_activos_fijos', ['id']], ['fz_depreciaciones_generadas', ['id']], ['fz_inpc_valores', ['id']], ['fz_recargos_tasas', ['id']], ['fz_pagos_impuestos', ['id']], ['fz_isr_datos_anuales', ['id']], ['fz_isr_conceptos', ['id']], ['fz_provisiones_fiscales', ['id']], ['fz_iva_realizaciones', ['id']], ['fz_aplicaciones_pago_fiscal', ['id']], ['fz_regimenes_fiscales_negocio', ['id']], ['fz_dias_inhabiles_fiscales', ['id']], ['fz_declaraciones_fiscales', ['id']], ['fz_reglas_vencimiento_impuesto', []], ['fz_calendario_fiscal_validacion', []], ['fz_catalogo_regimenes_fiscales', []], ['fz_papeles_trabajo', ['id']], ['fz_papel_conceptos', ['id']], ['fz_papel_concepto_fuentes', ['id']], ['fz_papel_concepto_accesorios', ['id']], ['fz_papel_historial', ['id']], ['fz_papel_soportes', ['id']], ['fz_mapeo_cuenta_concepto_fiscal', ['id']], ['fz_perdidas_fiscales', ['id']], ['fz_perdidas_fiscales_actualizaciones', ['id']], ['fz_perdidas_fiscales_aplicaciones', ['id']], ['fz_perdidas_fiscales_cierres', ['id']], ['fz_perdidas_fiscales_historial', ['id']], ['fz_perdidas_fiscales_soportes', ['id']], ['fz_ptu_eventos', ['id']], ['fz_ptu_historial', ['id']], ['fz_pagos_por_clasificar', ['id']], ['fz_iva_saldos_favor', ['id']], ['fz_iva_saldos_favor_movimientos', ['id']], ['fz_iva_saldos_favor_devoluciones', ['id']], ['fz_iva_saldo_favor_periodo_activo', ['id']]];
 const RESPALDO_BUCKETS = ['adjuntos', 'cfdi'], RESPALDO_MAX_ARCHIVOS_BYTES = 400 * 1024 * 1024, RESPALDO_AVISO_DIAS = 7;
 function respaldoEstado() { try { return JSON.parse(localStorage.getItem('finanzas_ultimo_respaldo') || 'null'); } catch (_) { return null; } }
@@ -25067,6 +25067,19 @@ function ajustarCabeceraFijaCfdi(el) {
   const fija = !!tb && getComputedStyle(tb).position === 'sticky';
   cab.style.top = (fija ? Math.round(tb.getBoundingClientRect().height) : 0) + 'px';
   if (!window.__cfdiCabResize) { window.__cfdiCabResize = true; window.addEventListener('resize', () => { const e = document.getElementById('sec-cfdi'); if (e) ajustarCabeceraFijaCfdi(e); }); }
+  ajustarAlturaTablaCfdi(el);
+}
+// La tabla de comprobantes ocupa TODO el alto que queda libre hasta el borde de la pantalla (sin crear barra de desplazamiento de página).
+// Si hay pocos CFDI la tabla mide lo que necesita (max-height solo es un tope). En celular y al imprimir no cambia (la impresión ya la libera con !important).
+function ajustarAlturaTablaCfdi(el) {
+  const wrap = el.querySelector('.table-wrap.scroll-sticky'); if (!wrap) return;
+  wrap.style.maxHeight = '';
+  if (window.innerWidth <= 760) return;
+  const card = wrap.closest('.card'), cont = document.querySelector('.content');
+  const px = (v) => parseFloat(v) || 0, cs = getComputedStyle(card), cc = cont ? getComputedStyle(cont) : null;
+  const abajo = px(cs.paddingBottom) + px(cs.borderBottomWidth) + px(cs.marginBottom) + (cc ? px(cc.paddingBottom) : 0);
+  const arriba = wrap.getBoundingClientRect().top + window.scrollY;
+  wrap.style.maxHeight = Math.max(260, Math.floor(window.innerHeight - arriba - abajo)) + 'px';
 }
 function pintarCfdi(el, b) {
   const todos = STATE_cfdi.datos, f = STATE_cfdi, q = f.q.trim().toLowerCase();
