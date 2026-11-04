@@ -13665,102 +13665,12 @@ function openImportExcelModal(tipo, businessId, onDone, extra) {
       } else if (tipo === 'bancos_mov') {
         const cuentaId = extra;
         if (!cuentaId) { toast('Selecciona primero una cuenta bancaria.', 'error'); return; }
-        const [cuentasBancoQ, monedasQ] = await Promise.all([
-          sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
-          sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
-        ]);
-        const cuentasBanco = cuentasBancoQ.data || [], monedasEfvo = monedasQ.data || [];
-        const buscarDestino = (nombreDestino) => {
-          if (!nombreDestino) return null;
-          const n = normalizarEncabezado(nombreDestino);
-          const banco = cuentasBanco.find(c => normalizarEncabezado(c.nombre) === n && c.id !== cuentaId);
-          if (banco) return { tipo: 'banco', id: banco.id };
-          const moneda = monedasEfvo.find(m => normalizarEncabezado(m.nombre) === n);
-          if (moneda) return { tipo: 'efectivo', id: moneda.id };
-          return null;
-        };
-        const payload = [], legsDestino = [], filasSinDestino = [];
-        rows.forEach(r => {
-          const esTraspaso = normalizarEncabezado(String(buscarColumna(r, ['tipo']) || '')).includes('traspaso');
-          const cargos = Number(buscarColumna(r, ['cargos', 'cargo'])) || 0;
-          const depositos = Number(buscarColumna(r, ['depositos', 'depósitos', 'abono', 'abonos'])) || 0;
-          if (!cargos && !depositos) return;
-          const traspasoId = esTraspaso ? uid() : null;
-          const destino = esTraspaso ? buscarDestino(buscarColumna(r, ['cuenta destino', 'destino', 'cuentadestino'])) : null;
-          if (esTraspaso && cargos && !destino) filasSinDestino.push(buscarColumna(r, ['fecha']) || '(fecha sin leer)');
-          payload.push({
-            business_id: businessId, cuenta_id: cuentaId,
-            fecha: parseFechaExcel(buscarColumna(r, ['fecha'])),
-            descripcion: String(buscarColumna(r, ['descripcion', 'descripción']) || '').trim() || null,
-            concepto: String(buscarColumna(r, ['concepto']) || '').trim() || null,
-            referencia: String(buscarColumna(r, ['referencia']) || '').trim() || null,
-            depositos, cargos,
-            tipo_salida: esTraspaso ? 'traspaso' : 'otro',
-            tipo_entrada: esTraspaso ? 'traspaso' : 'otro',
-            traspaso_id: traspasoId,
-          });
-          if (esTraspaso && cargos && destino) {
-            const leg = { business_id: businessId, fecha: parseFechaExcel(buscarColumna(r, ['fecha'])), descripcion: String(buscarColumna(r, ['descripcion', 'descripción']) || '').trim() || null, cargos: 0, depositos: cargos, tipo_salida: 'traspaso', tipo_entrada: 'traspaso', traspaso_id: traspasoId };
-            legsDestino.push(destino.tipo === 'banco' ? { tabla: 'fz_bancos_mov', row: { ...leg, cuenta_id: destino.id, concepto: 'Traspaso' } } : { tabla: 'fz_efectivo_mov', row: { ...leg, moneda_id: destino.id, proveedor: 'Traspaso' } });
-          }
-        });
-        if (!payload.length) { toast('No se encontraron filas válidas (revisa las columnas Depósitos/Cargos).', 'error'); return; }
-        if (await importacionBloqueadaPorCierre(businessId, [...payload, ...legsDestino.map(l => l.row)].map(x => x.fecha))) return; // periodo cerrado
-        const { error } = await sb.from('fz_bancos_mov').insert(payload);
-        if (error) { toast('Error al importar: ' + error.message, 'error'); return; }
-        for (const leg of legsDestino) await sb.from(leg.tabla).insert(leg.row);
-        toast(`${payload.length} movimientos importados${legsDestino.length ? ` (${legsDestino.length} traspaso(s) reflejados también en su cuenta destino)` : ''}.`);
-        if (filasSinDestino.length) toast(`${filasSinDestino.length} fila(s) marcadas "Traspaso" no tenían una "Cuenta destino" reconocible — se guardaron sin la otra mitad del traspaso.`, 'error');
+        if (!(await importarMovimientosBancoEfectivo('fz_bancos_mov', rows, businessId, cuentaId))) return;
 
       } else if (tipo === 'efectivo_mov') {
         const monedaId = extra;
         if (!monedaId) { toast('Selecciona primero una caja de efectivo.', 'error'); return; }
-        const [cuentasBancoQ, monedasQ] = await Promise.all([
-          sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
-          sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
-        ]);
-        const cuentasBanco = cuentasBancoQ.data || [], monedasEfvo = monedasQ.data || [];
-        const buscarDestino = (nombreDestino) => {
-          if (!nombreDestino) return null;
-          const n = normalizarEncabezado(nombreDestino);
-          const banco = cuentasBanco.find(c => normalizarEncabezado(c.nombre) === n);
-          if (banco) return { tipo: 'banco', id: banco.id };
-          const moneda = monedasEfvo.find(m => normalizarEncabezado(m.nombre) === n && m.id !== monedaId);
-          if (moneda) return { tipo: 'efectivo', id: moneda.id };
-          return null;
-        };
-        const payload = [], legsDestino = [], filasSinDestino = [];
-        rows.forEach(r => {
-          const esTraspaso = normalizarEncabezado(String(buscarColumna(r, ['tipo']) || '')).includes('traspaso');
-          const cargos = Number(buscarColumna(r, ['cargos', 'cargo'])) || 0;
-          const depositos = Number(buscarColumna(r, ['depositos', 'depósitos', 'abono', 'abonos'])) || 0;
-          if (!cargos && !depositos) return;
-          const traspasoId = esTraspaso ? uid() : null;
-          const destino = esTraspaso ? buscarDestino(buscarColumna(r, ['cuenta destino', 'destino', 'cuentadestino'])) : null;
-          if (esTraspaso && cargos && !destino) filasSinDestino.push(buscarColumna(r, ['fecha']) || '(fecha sin leer)');
-          payload.push({
-            business_id: businessId, moneda_id: monedaId,
-            fecha: parseFechaExcel(buscarColumna(r, ['fecha'])),
-            proveedor: esTraspaso ? 'Traspaso' : (String(buscarColumna(r, ['proveedor', 'concepto']) || '').trim() || null),
-            descripcion: String(buscarColumna(r, ['descripcion', 'descripción']) || '').trim() || null,
-            factura: String(buscarColumna(r, ['factura', 'referencia']) || '').trim() || null,
-            depositos, cargos,
-            tipo_salida: esTraspaso ? 'traspaso' : 'otro',
-            tipo_entrada: esTraspaso ? 'traspaso' : 'otro',
-            traspaso_id: traspasoId,
-          });
-          if (esTraspaso && cargos && destino) {
-            const leg = { business_id: businessId, fecha: parseFechaExcel(buscarColumna(r, ['fecha'])), descripcion: String(buscarColumna(r, ['descripcion', 'descripción']) || '').trim() || null, cargos: 0, depositos: cargos, tipo_salida: 'traspaso', tipo_entrada: 'traspaso', traspaso_id: traspasoId };
-            legsDestino.push(destino.tipo === 'banco' ? { tabla: 'fz_bancos_mov', row: { ...leg, cuenta_id: destino.id, concepto: 'Traspaso' } } : { tabla: 'fz_efectivo_mov', row: { ...leg, moneda_id: destino.id, proveedor: 'Traspaso' } });
-          }
-        });
-        if (!payload.length) { toast('No se encontraron filas válidas (revisa las columnas Depósitos/Cargos).', 'error'); return; }
-        if (await importacionBloqueadaPorCierre(businessId, [...payload, ...legsDestino.map(l => l.row)].map(x => x.fecha))) return; // periodo cerrado
-        const { error } = await sb.from('fz_efectivo_mov').insert(payload);
-        if (error) { toast('Error al importar: ' + error.message, 'error'); return; }
-        for (const leg of legsDestino) await sb.from(leg.tabla).insert(leg.row);
-        toast(`${payload.length} movimientos importados${legsDestino.length ? ` (${legsDestino.length} traspaso(s) reflejados también en su cuenta destino)` : ''}.`);
-        if (filasSinDestino.length) toast(`${filasSinDestino.length} fila(s) marcadas "Traspaso" no tenían una "Cuenta destino" reconocible — se guardaron sin la otra mitad del traspaso.`, 'error');
+        if (!(await importarMovimientosBancoEfectivo('fz_efectivo_mov', rows, businessId, monedaId))) return;
 
       } else if (tipo === 'ventas') {
         const [conceptosVentaQ, conceptosQ, conceptosSistemaQ] = await Promise.all([
@@ -14038,22 +13948,199 @@ async function revertirPagoAFacturas(idsAfectados, montoMovimiento, businessId, 
   }
 }
 
+/* ============================================================================================
+   TRASPASOS — UNA operación = DOS patas: un cargo (salida) y un abono (entrada), ligadas por traspaso_id.
+   Crear, actualizar, borrar y reparar pasan SIEMPRE por estas funciones, para que nunca queden 1, 3 o más patas.
+   ============================================================================================ */
+const TABLAS_TRASPASO = ['fz_bancos_mov', 'fz_efectivo_mov'];
+const ladoDePata = (f) => (Number(f.cargos) > 0 ? 'salida' : 'entrada');
+const montoDePata = (f) => (Number(f.cargos) > 0 ? Number(f.cargos) : (Number(f.depositos) || 0));
+const cuentaDePata = (p) => (p.tabla === 'fz_bancos_mov' ? p.fila.cuenta_id : p.fila.moneda_id);
+const ordenPatas = (a, b) => String(a.fila.created_at || '').localeCompare(String(b.fila.created_at || '')) || String(a.fila.id).localeCompare(String(b.fila.id));
+
+// Todas las patas de una operación (en Bancos y en Efectivo), de la más antigua a la más nueva.
+async function patasDeTraspaso(traspasoId) {
+  if (!traspasoId) return [];
+  const rs = await Promise.all(TABLAS_TRASPASO.map(t => sb.from(t).select('*').eq('traspaso_id', traspasoId)));
+  const patas = [];
+  rs.forEach((r, i) => (r.data || []).forEach(fila => patas.push({ tabla: TABLAS_TRASPASO[i], fila })));
+  return patas.sort(ordenPatas);
+}
+
+// ok = exactamente 2 patas (una salida y una entrada) · conExceso = hay patas REPETIDAS (misma cuenta, mismo lado y mismo monto) y al quitarlas quedan 2
+// incompleta = queda 1 sola pata · revisar = no se puede ordenar sola (montos distintos, dos del mismo lado…)
+function analizarOperacionTraspaso(patas) {
+  const ps = [...patas].sort(ordenPatas);
+  const clave = (p) => p.tabla + ':' + cuentaDePata(p) + ':' + ladoDePata(p.fila);
+  const primeras = new Map(), repetidas = [];
+  ps.forEach(p => { const k = clave(p); if (!primeras.has(k)) primeras.set(k, p); else repetidas.push(p); });
+  const sobrantes = repetidas.filter(r => Math.abs(montoDePata(r.fila) - montoDePata(primeras.get(clave(r)).fila)) < 0.005);
+  const dudosas = repetidas.filter(r => !sobrantes.includes(r));
+  const quedan = ps.filter(p => !sobrantes.includes(p));
+  const lados = new Set(quedan.map(p => ladoDePata(p.fila)));
+  let estado;
+  if (ps.length === 2 && quedan.length === 2 && lados.size === 2) estado = 'ok';
+  else if (sobrantes.length && !dudosas.length && quedan.length === 2 && lados.size === 2) estado = 'conExceso';
+  else if (ps.length === 1 || (quedan.length === 1 && !dudosas.length)) estado = 'incompleta';
+  else estado = 'revisar';
+  return { estado, total: ps.length, sobrantes, quedan, dudosas };
+}
+
+// Deja la operación con 2 patas eliminando SOLO las repetidas (se conserva la más antigua). Respeta los periodos cerrados.
+async function repararTraspaso(traspasoId, businessId) {
+  const patas = await patasDeTraspaso(traspasoId);
+  const an = analizarOperacionTraspaso(patas);
+  if (an.estado === 'ok') return { ok: true, eliminadas: 0, mensaje: 'La operación ya tenía sus 2 movimientos.' };
+  if (an.estado !== 'conExceso') return { ok: false, eliminadas: 0, mensaje: 'Esta operación no se puede reparar sola: revísala a mano.' };
+  for (const p of an.sobrantes) {
+    if (await bloqueadoPorCierre(p.fila.business_id, p.fila.fecha)) return { ok: false, eliminadas: 0, mensaje: 'El periodo de un movimiento repetido está cerrado: no se tocó nada.' };
+  }
+  let eliminadas = 0;
+  for (const p of an.sobrantes) {
+    const { error } = await sb.from(p.tabla).delete().eq('id', p.fila.id);
+    if (error) return { ok: false, eliminadas, mensaje: 'Error al eliminar un movimiento repetido: ' + error.message };
+    eliminadas++;
+  }
+  const ref = an.quedan[0].fila;
+  registrarAuditoria(businessId || ref.business_id, 'eliminar', an.quedan.some(p => p.tabla === 'fz_bancos_mov') ? 'Bancos' : 'Efectivo',
+    `Reparó la operación de traspaso del ${ref.fecha} · ${fmt(montoDePata(ref))}: eliminó ${eliminadas} movimiento(s) repetido(s) y quedó con 2`);
+  return { ok: true, eliminadas, mensaje: `Operación reparada: se eliminó ${eliminadas} movimiento(s) repetido(s) y quedó con 2.` };
+}
+
+// Crea la OTRA pata si no existe; si ya existe la ACTUALIZA (nunca agrega una más).
+// `fila` = payload completo de la otra pata (con traspaso_id y su cuenta/moneda). `previa` = {fecha, monto} de ESTA pata antes de editarla (o null).
+async function asegurarPataPareja(tabla, fila, idEstaPata, previa) {
+  const todas = await patasDeTraspaso(fila.traspaso_id);
+  const otras = todas.filter(p => p.fila.id !== idEstaPata);
+  if (!otras.length) {
+    const { error } = await sb.from(tabla).insert(fila);
+    return error ? { ok: false, error, accion: 'creada' } : { ok: true, accion: 'creada', sobrantes: 0 };
+  }
+  const campoCuenta = tabla === 'fz_bancos_mov' ? 'cuenta_id' : 'moneda_id';
+  const existente = otras.find(p => p.tabla === tabla && cuentaDePata(p) === fila[campoCuenta]) || otras[0];
+  const montoNuevo = montoDePata(fila);
+  const cambios = {};
+  if (existente.fila.tipo_salida !== 'traspaso') cambios.tipo_salida = 'traspaso';
+  if (existente.fila.tipo_entrada !== 'traspaso') cambios.tipo_entrada = 'traspaso';
+  if (previa && previa.fecha && previa.fecha !== fila.fecha) cambios.fecha = fila.fecha;
+  // El monto solo se propaga si las dos patas valían lo mismo (mismo tipo de moneda): un traspaso entre divisas conserva cada importe.
+  if (previa && Math.abs((previa.monto || 0) - montoNuevo) > 0.004 && Math.abs((previa.monto || 0) - montoDePata(existente.fila)) < 0.005) {
+    if (ladoDePata(existente.fila) === 'salida') cambios.cargos = montoNuevo; else cambios.depositos = montoNuevo;
+  }
+  const mismaCuenta = existente.tabla === tabla && cuentaDePata(existente) === fila[campoCuenta];
+  if (!mismaCuenta && existente.tabla === tabla) cambios[campoCuenta] = fila[campoCuenta];
+  let r;
+  if (!mismaCuenta && existente.tabla !== tabla) {
+    // La otra cuenta cambió de Banco a Efectivo (o al revés): se mueve la pata conservando sus importes.
+    const { error: eDel } = await sb.from(existente.tabla).delete().eq('id', existente.fila.id);
+    if (eDel) return { ok: false, error: eDel, accion: 'actualizada' };
+    const { error } = await sb.from(tabla).insert({ ...fila, cargos: existente.fila.cargos, depositos: existente.fila.depositos });
+    r = error ? { ok: false, error, accion: 'actualizada' } : { ok: true, accion: 'actualizada' };
+  } else if (Object.keys(cambios).length) {
+    const { error } = await sb.from(existente.tabla).update(cambios).eq('id', existente.fila.id);
+    r = error ? { ok: false, error, accion: 'actualizada' } : { ok: true, accion: 'actualizada' };
+  } else r = { ok: true, accion: 'sin_cambios' };
+  r.sobrantes = otras.length - 1; // si hay más de una otra pata, no se borra nada solo: se avisa para repararla
+  return r;
+}
+
+// Importación de movimientos de Banco / Efectivo desde Excel.
+//  · Una fila marcada «traspaso» con cuenta destino reconocible nace con su pareja (en retiros Y en depósitos). Sin cuenta destino se guarda SIN CLASIFICAR (no se inventa un traspaso a medias).
+//  · No duplica: lo que el archivo trae y ya existe (misma cuenta, fecha, monto y descripción) se omite; si el archivo trae N iguales y ya hay M, se agregan N−M.
+async function importarMovimientosBancoEfectivo(tabla, rows, businessId, cuentaRefId) {
+  const esBanco = tabla === 'fz_bancos_mov';
+  const campoCuenta = esBanco ? 'cuenta_id' : 'moneda_id';
+  const [cuentasBancoQ, monedasQ] = await Promise.all([
+    sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true),
+    sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true),
+  ]);
+  const cuentasBanco = cuentasBancoQ.data || [], monedasEfvo = monedasQ.data || [];
+  const buscarDestino = (nombreDestino) => {
+    if (!nombreDestino) return null;
+    const n = normalizarEncabezado(nombreDestino);
+    const banco = cuentasBanco.find(c => normalizarEncabezado(c.nombre) === n && !(esBanco && c.id === cuentaRefId));
+    if (banco) return { tipo: 'banco', id: banco.id };
+    const moneda = monedasEfvo.find(m => normalizarEncabezado(m.nombre) === n && !(!esBanco && m.id === cuentaRefId));
+    if (moneda) return { tipo: 'efectivo', id: moneda.id };
+    return null;
+  };
+  const payload = [], legs = [], filasSinDestino = [];
+  rows.forEach(r => {
+    const marcaTraspaso = normalizarEncabezado(String(buscarColumna(r, ['tipo']) || '')).includes('traspaso');
+    const cargos = Number(buscarColumna(r, ['cargos', 'cargo'])) || 0;
+    const depositos = Number(buscarColumna(r, ['depositos', 'depósitos', 'abono', 'abonos'])) || 0;
+    if (!cargos && !depositos) return;
+    const fecha = parseFechaExcel(buscarColumna(r, ['fecha']));
+    const destino = marcaTraspaso ? buscarDestino(buscarColumna(r, ['cuenta destino', 'destino', 'cuentadestino'])) : null;
+    if (marcaTraspaso && !destino) filasSinDestino.push(fecha || '(fecha sin leer)');
+    const esTraspaso = marcaTraspaso && !!destino;
+    const traspasoId = esTraspaso ? uid() : null;
+    const descripcion = String(buscarColumna(r, ['descripcion', 'descripción']) || '').trim() || null;
+    const marcas = { tipo_salida: esTraspaso ? 'traspaso' : 'otro', tipo_entrada: esTraspaso ? 'traspaso' : 'otro', traspaso_id: traspasoId };
+    payload.push(esBanco
+      ? { business_id: businessId, cuenta_id: cuentaRefId, fecha, descripcion, concepto: String(buscarColumna(r, ['concepto']) || '').trim() || null,
+          referencia: String(buscarColumna(r, ['referencia']) || '').trim() || null, depositos, cargos, ...marcas }
+      : { business_id: businessId, moneda_id: cuentaRefId, fecha, proveedor: esTraspaso ? 'Traspaso' : (String(buscarColumna(r, ['proveedor', 'concepto']) || '').trim() || null),
+          descripcion, factura: String(buscarColumna(r, ['factura', 'referencia']) || '').trim() || null, depositos, cargos, ...marcas });
+    if (esTraspaso) {
+      const esSalida = cargos > 0, monto = esSalida ? cargos : depositos;
+      const leg = { business_id: businessId, fecha, descripcion, cargos: esSalida ? 0 : monto, depositos: esSalida ? monto : 0, tipo_salida: 'traspaso', tipo_entrada: 'traspaso', traspaso_id: traspasoId };
+      legs.push({ idx: payload.length - 1, ...(destino.tipo === 'banco'
+        ? { tabla: 'fz_bancos_mov', row: { ...leg, cuenta_id: destino.id, concepto: 'Traspaso' } }
+        : { tabla: 'fz_efectivo_mov', row: { ...leg, moneda_id: destino.id, proveedor: 'Traspaso' } }) });
+    }
+  });
+  if (!payload.length) { toast('No se encontraron filas válidas (revisa las columnas Depósitos/Cargos).', 'error'); return false; }
+  // Sin duplicar lo ya importado (se cuentan los iguales: N en el archivo y M ya guardados → se agregan N−M).
+  const omitir = new Set();
+  const fechas = payload.map(p => p.fecha).filter(Boolean).sort();
+  if (fechas.length) {
+    const { data: existentes } = await fetchTodasLasPaginas(() => sb.from(tabla).select('id,fecha,descripcion,depositos,cargos')
+      .eq('business_id', businessId).eq(campoCuenta, cuentaRefId).gte('fecha', fechas[0]).lte('fecha', fechas[fechas.length - 1]).order('id'));
+    const firma = (f, d, dep, car) => `${f}|${(Number(dep) || 0).toFixed(2)}|${(Number(car) || 0).toFixed(2)}|${String(d || '').trim().toLowerCase().replace(/\s+/g, ' ')}`;
+    const yaHay = new Map();
+    (existentes || []).forEach(e => { const k = firma(e.fecha, e.descripcion, e.depositos, e.cargos); yaHay.set(k, (yaHay.get(k) || 0) + 1); });
+    payload.forEach((p, i) => { const k = firma(p.fecha, p.descripcion, p.depositos, p.cargos); if ((yaHay.get(k) || 0) > 0) { yaHay.set(k, yaHay.get(k) - 1); omitir.add(i); } });
+  }
+  const nuevos = payload.filter((_, i) => !omitir.has(i));
+  const legsNuevas = legs.filter(l => !omitir.has(l.idx)).map(({ idx, ...resto }) => resto);
+  if (!nuevos.length) { toast(`Las ${payload.length} filas del archivo ya estaban importadas: no se agregó nada.`); return true; }
+  if (await importacionBloqueadaPorCierre(businessId, [...nuevos, ...legsNuevas.map(l => l.row)].map(x => x.fecha))) return false; // periodo cerrado
+  const { error } = await sb.from(tabla).insert(nuevos);
+  if (error) { toast('Error al importar: ' + error.message, 'error'); return false; }
+  let legsFallidas = 0;
+  for (const leg of legsNuevas) { const { error: e2 } = await sb.from(leg.tabla).insert(leg.row); if (e2) legsFallidas++; }
+  toast(`${nuevos.length} movimientos importados${omitir.size ? ` · ${omitir.size} ya existían y se omitieron` : ''}${legsNuevas.length ? ` (${legsNuevas.length - legsFallidas} traspaso(s) con su otra mitad)` : ''}.`);
+  if (filasSinDestino.length) toast(`${filasSinDestino.length} fila(s) marcadas "Traspaso" no tenían una "Cuenta destino" reconocible: se guardaron SIN CLASIFICAR. Clasifícalas desde Bancos/Efectivo.`, 'error');
+  if (legsFallidas) toast(`${legsFallidas} traspaso(s) no pudieron crear su otra mitad: revísalos en Revisión de consistencia.`, 'error');
+  return true;
+}
+
 async function confirmarYEliminarMovimiento(table, row, onDone) {
   if (await bloqueadoPorCierre(row.business_id, row.fecha)) return;
   const idsAfectados = facturaIdsDe(row);
   const idsAfectadosCliente = facturaIdsClienteDe(row);
 
-  // Traspasos: cada operación vive en 2 filas (una por cuenta), ligadas por traspaso_id. Borrar
-  // solo una deja la otra huérfana — igual que el bug que ya diagnosticamos en Balance General.
+  // Traspasos: UNA operación = DOS patas (cargo y abono) ligadas por traspaso_id. Se borra SIEMPRE la operación completa.
   let parejaTraspaso = null;
   if ((row.tipo_salida === 'traspaso' || row.tipo_entrada === 'traspaso') && row.traspaso_id) {
-    const [enBanco, enEfectivo] = await Promise.all([
-      sb.from('fz_bancos_mov').select('*').eq('traspaso_id', row.traspaso_id).neq('id', row.id).limit(1).maybeSingle(),
-      sb.from('fz_efectivo_mov').select('*').eq('traspaso_id', row.traspaso_id).neq('id', row.id).limit(1).maybeSingle(),
-    ]);
-    const pareja = enBanco.data ? { tabla: 'fz_bancos_mov', fila: enBanco.data } : (enEfectivo.data ? { tabla: 'fz_efectivo_mov', fila: enEfectivo.data } : null);
-    if (pareja) {
-      const ok = confirm(`Este movimiento es parte de un traspaso — su otra mitad (${fmt(Number(pareja.fila.cargos)||Number(pareja.fila.depositos)||0)}, ${pareja.fila.fecha}) se eliminará junto con este. ¿Continuar?`);
+    const todasPatas = await patasDeTraspaso(row.traspaso_id);
+    const otrasPatas = todasPatas.filter(p => p.fila.id !== row.id);
+    if (otrasPatas.length >= 2) {
+      // Más de dos movimientos con el mismo identificador (datos con repetidos): NO se borra a ciegas, porque borrar «uno» se llevaría otros.
+      const an = analizarOperacionTraspaso(todasPatas);
+      if (an.estado === 'conExceso') {
+        const ok = confirm(`Esta operación de traspaso tiene ${todasPatas.length} movimientos y debería tener 2 (un cargo y un abono). ${an.sobrantes.length} está(n) repetido(s): misma cuenta, mismo lado y mismo monto.\n\n¿Repararla ahora? Se eliminará SOLO el repetido (no este movimiento) y la operación quedará con 2 movimientos. Después podrás eliminarla completa si quieres.`);
+        if (ok) { const rr = await repararTraspaso(row.traspaso_id, row.business_id); toast(rr.mensaje, rr.ok ? undefined : 'error'); onDone(); }
+      } else {
+        alert(`Esta operación de traspaso tiene ${todasPatas.length} movimientos y no se puede determinar sola cuál sobra. No se eliminó nada. Revísala en «Revisión de consistencia».`);
+      }
+      return;
+    }
+    if (otrasPatas.length === 1) {
+      const pareja = otrasPatas[0];
+      if (await bloqueadoPorCierre(pareja.fila.business_id, pareja.fila.fecha)) return; // periodo cerrado de la otra mitad: no se borra ninguna
+      const ok = confirm(`Este movimiento es parte de un traspaso — su otra mitad (${fmt(montoDePata(pareja.fila))}, ${pareja.fila.fecha}) se eliminará junto con este. ¿Continuar?`);
       if (!ok) return;
       parejaTraspaso = pareja;
     }
@@ -15238,11 +15325,17 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     else tipoInicial = 'otro';
   }
   document.getElementById('movTipoSalida').value = tipoInicial;
+  const actualizarRotuloTraspaso = () => {
+    const lbl = document.getElementById('movTraspasoDestinoLabel'); if (!lbl) return;
+    const esDep = (Number(document.getElementById('movDepositos').value) || 0) > (Number(document.getElementById('movCargos').value) || 0);
+    lbl.textContent = esDep ? '¿De qué cuenta viene este dinero?' : '¿A qué cuenta va este dinero?';
+  };
   const actualizarOpcionesTipo = () => {
     const esDeposito = (Number(document.getElementById('movDepositos').value) || 0) > (Number(document.getElementById('movCargos').value) || 0);
     const sel = document.getElementById('movTipoSalida');
     const valorActual = sel.value;
     document.getElementById('movTipoLabel').textContent = esDeposito ? 'Tipo de entrada' : 'Tipo de salida';
+    actualizarRotuloTraspaso();
     sel.innerHTML = esDeposito
       ? `<option value="otro">Sin clasificar</option><option value="cliente">Cobro de cliente</option><option value="traspaso_banco">Traspaso desde banco</option><option value="traspaso_efectivo">Traspaso desde caja de efectivo</option>`
       : `<option value="otro">Sin clasificar</option><option value="gasto">Gasto</option><option value="proveedor">Pago a proveedor</option><option value="impuesto">Pago de impuestos</option><option value="traspaso_banco">Traspaso a banco</option><option value="traspaso_efectivo">Traspaso a caja de efectivo</option>`;
@@ -15380,7 +15473,15 @@ async function openMovimientoModal(contexto, movimientoExistente) {
         if (sobraAviso > 0.009 && !confirm(`El cobro (${fmt(depositos)}) es mayor que lo pendiente de las facturas elegidas (${detalleAviso}) por ${fmt(sobraAviso)}.\n\nEse excedente quedará registrado como CRÉDITO A FAVOR DEL CLIENTE y podrás aplicarlo después a sus facturas pendientes (Revisión de consistencia).\n\n¿Guardar así?`)) return;
       }
     }
-    let legDestino = null, traspasoIdNuevo = null;
+    let legDestino = null, traspasoIdNuevo = null, patasAEliminarTras = [];
+    const patasPreviasMov = movimientoExistente?.traspaso_id ? (await patasDeTraspaso(movimientoExistente.traspaso_id)).filter(p => p.fila.id !== movimientoExistente.id) : [];
+    for (const p of patasPreviasMov) { if (await bloqueadoPorCierre(contexto.businessId, p.fila.fecha)) return; } // periodo cerrado de la otra mitad
+    if (!esTraspaso && patasPreviasMov.length) {
+      if (patasPreviasMov.length > 1) { alert(`Este movimiento es parte de una operación de traspaso con ${patasPreviasMov.length + 1} movimientos (debería tener 2). Repárala primero en «Revisión de consistencia». No se guardó nada.`); return; }
+      const pp = patasPreviasMov[0];
+      if (!confirm(`Este movimiento era parte de un traspaso. Al cambiar su clasificación, su otra mitad (${fmt(montoDePata(pp.fila))}, ${pp.fila.fecha}) se eliminará. ¿Continuar?`)) return;
+      patasAEliminarTras = patasPreviasMov;
+    }
     if (esTraspaso) {
       const destinoId = document.getElementById('movTraspasoDestino').value;
       if (!destinoId) { toast('Elige la cuenta destino del traspaso.', 'error'); return; }
@@ -15440,9 +15541,15 @@ async function openMovimientoModal(contexto, movimientoExistente) {
       STATE_movArchivosPendientes = [];
     }
     if (legDestino) {
-      const { error: errLeg } = await sb.from(legDestino.tabla).insert({ ...legDestino.row, ...legDestino.extra });
-      if (errLeg) toast('El movimiento se guardó, pero hubo un error creando la otra mitad del traspaso: ' + errLeg.message, 'error');
-      else toast('Traspaso guardado y reflejado en la cuenta destino.');
+      const previaPata = movimientoExistente ? { fecha: movimientoExistente.fecha, monto: montoDePata(movimientoExistente) } : null;
+      const resLeg = await asegurarPataPareja(legDestino.tabla, { ...legDestino.row, ...legDestino.extra }, nuevoMov.id, previaPata);
+      if (!resLeg.ok) toast('El movimiento se guardó, pero hubo un error con la otra mitad del traspaso: ' + ((resLeg.error && resLeg.error.message) || ''), 'error');
+      else if (resLeg.accion === 'creada') toast('Traspaso guardado y reflejado en la cuenta destino.');
+      else toast('Traspaso actualizado.' + (resLeg.sobrantes ? ` Aviso: la operación tiene ${resLeg.sobrantes} movimiento(s) de más; repárala en «Revisión de consistencia».` : ''));
+    }
+    if (patasAEliminarTras.length) {
+      for (const p of patasAEliminarTras) await sb.from(p.tabla).delete().eq('id', p.fila.id);
+      registrarAuditoria(contexto.businessId, 'eliminar', contexto.tipo === 'efectivo' ? 'Efectivo' : 'Bancos', `Movimiento ${fecha} dejó de ser traspaso: se eliminó también su otra mitad (${fmt(montoDePata(patasAEliminarTras[0].fila))}, ${patasAEliminarTras[0].fila.fecha})`);
     }
 
     // Al editar, siempre revisamos ambos lados (aunque no haya nada nuevo que aplicar) para
@@ -15735,29 +15842,21 @@ function wireSalidaCellHandlers(container, table, onChange, traspasoCtx, factura
     const monto = Number(origenRow.cargos) > 0 ? Number(origenRow.cargos) : Number(origenRow.depositos) || 0;
     if (!monto) { toast('Este movimiento no tiene monto en cargos o depósitos.', 'error'); return; }
     const esSalida = Number(origenRow.cargos) > 0;
-    const traspasoId = uid();
+    const traspasoId = origenRow.traspaso_id || uid(); // si ya era traspaso se conserva su identificador (y se ACTUALIZA su pareja)
     const destinoTipo = sel.dataset.tipo;
     const origenLabel = traspasoCtx?.origenNombre || 'otra cuenta';
     const destinoPayload = {
-      business_id: origenRow.business_id, fecha: origenRow.fecha, tipo_salida: 'traspaso', traspaso_id: traspasoId,
+      business_id: origenRow.business_id, fecha: origenRow.fecha, tipo_salida: 'traspaso', tipo_entrada: 'traspaso', traspaso_id: traspasoId,
       cargos: esSalida ? 0 : monto, depositos: esSalida ? monto : 0,
+      descripcion: `Traspaso desde ${origenLabel}`,
     };
-    let destErr;
-    if (destinoTipo === 'banco') {
-      destinoPayload.cuenta_id = sel.value;
-      destinoPayload.descripcion = `Traspaso desde ${origenLabel}`;
-      destinoPayload.concepto = 'Traspaso';
-      const { error } = await sb.from('fz_bancos_mov').insert(destinoPayload);
-      destErr = error;
-    } else {
-      destinoPayload.moneda_id = sel.value;
-      destinoPayload.proveedor = 'Traspaso';
-      destinoPayload.descripcion = `Traspaso desde ${origenLabel}`;
-      const { error } = await sb.from('fz_efectivo_mov').insert(destinoPayload);
-      destErr = error;
-    }
-    if (destErr) { toast('Error al crear el traspaso: ' + destErr.message, 'error'); return; }
-    await sb.from(table).update({ tipo_salida: 'traspaso', traspaso_id: traspasoId }).eq('id', sel.dataset.id);
+    let tablaDestino;
+    if (destinoTipo === 'banco') { destinoPayload.cuenta_id = sel.value; destinoPayload.concepto = 'Traspaso'; tablaDestino = 'fz_bancos_mov'; }
+    else { destinoPayload.moneda_id = sel.value; destinoPayload.proveedor = 'Traspaso'; tablaDestino = 'fz_efectivo_mov'; }
+    const resPareja = await asegurarPataPareja(tablaDestino, destinoPayload, origenRow.id, null);
+    if (!resPareja.ok) { toast('Error al crear el traspaso: ' + ((resPareja.error && resPareja.error.message) || ''), 'error'); return; }
+    const { error: errMarca } = await sb.from(table).update({ tipo_salida: 'traspaso', tipo_entrada: 'traspaso', traspaso_id: traspasoId }).eq('id', sel.dataset.id);
+    if (errMarca) { toast('Se creó la otra mitad, pero no se pudo marcar este movimiento: ' + errMarca.message + '. Revísalo en «Revisión de consistencia».', 'error'); onChange(); return; }
     toast('Traspaso vinculado correctamente.');
     onChange();
   }));
@@ -24526,7 +24625,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-10-27.3';
+const APP_VERSION = '2026-11-04.1';
 const RESPALDO_TABLAS = [['businesses', ['id']], ['fz_cuentas_mayor', ['id']], ['fz_subcuentas', ['id']], ['fz_polizas', ['id']], ['fz_polizas_lineas', ['id']], ['fz_proveedores_catalogo', ['id']], ['fz_proveedores', ['id']], ['fz_ventas', ['id']], ['fz_conceptos_venta', ['id']], ['fz_conceptos_sistema', ['id']], ['fz_conceptos', ['id']], ['fz_efectivo_monedas', ['id']], ['fz_efectivo_mov', ['id']], ['fz_bancos_cuentas', ['id']], ['fz_bancos_mov', ['id']], ['fz_pl_gastos', ['id']], ['fz_usuarios_autorizados', ['id']], ['fz_usuario_negocios', ['id']], ['fz_auditoria', ['id']], ['fz_adjuntos', ['id']], ['fz_pagos_aplicados', ['id']], ['fz_clientes', ['id']], ['fz_productos_servicios', ['id']], ['fz_folios_contador', ['business_id', 'tipo']], ['fz_facturas_clientes', ['id']], ['fz_facturas_clientes_lineas', ['id']], ['fz_cobros_aplicados', ['id']], ['fz_ordenes_venta', ['id']], ['fz_ordenes_venta_lineas', ['id']], ['fz_conciliaciones_bancarias', ['id']], ['fz_cierres_periodo', ['id']], ['fz_tc_cierre', ['id']], ['fz_tipos_cambio_cierre', ['id']], ['fz_cfdi', ['id']], ['fz_cfdi_bitacora', ['id']], ['fz_activos_fijos', ['id']], ['fz_depreciaciones_generadas', ['id']], ['fz_inpc_valores', ['id']], ['fz_recargos_tasas', ['id']], ['fz_pagos_impuestos', ['id']], ['fz_isr_datos_anuales', ['id']], ['fz_isr_conceptos', ['id']], ['fz_provisiones_fiscales', ['id']], ['fz_iva_realizaciones', ['id']], ['fz_aplicaciones_pago_fiscal', ['id']], ['fz_regimenes_fiscales_negocio', ['id']], ['fz_dias_inhabiles_fiscales', ['id']], ['fz_declaraciones_fiscales', ['id']], ['fz_reglas_vencimiento_impuesto', []], ['fz_calendario_fiscal_validacion', []], ['fz_catalogo_regimenes_fiscales', []], ['fz_papeles_trabajo', ['id']], ['fz_papel_conceptos', ['id']], ['fz_papel_concepto_fuentes', ['id']], ['fz_papel_concepto_accesorios', ['id']], ['fz_papel_historial', ['id']], ['fz_papel_soportes', ['id']], ['fz_mapeo_cuenta_concepto_fiscal', ['id']], ['fz_perdidas_fiscales', ['id']], ['fz_perdidas_fiscales_actualizaciones', ['id']], ['fz_perdidas_fiscales_aplicaciones', ['id']], ['fz_perdidas_fiscales_cierres', ['id']], ['fz_perdidas_fiscales_historial', ['id']], ['fz_perdidas_fiscales_soportes', ['id']], ['fz_ptu_eventos', ['id']], ['fz_ptu_historial', ['id']], ['fz_pagos_por_clasificar', ['id']], ['fz_iva_saldos_favor', ['id']], ['fz_iva_saldos_favor_movimientos', ['id']], ['fz_iva_saldos_favor_devoluciones', ['id']], ['fz_iva_saldo_favor_periodo_activo', ['id']]];
 const RESPALDO_BUCKETS = ['adjuntos', 'cfdi'], RESPALDO_MAX_ARCHIVOS_BYTES = 400 * 1024 * 1024, RESPALDO_AVISO_DIAS = 7;
 function respaldoEstado() { try { return JSON.parse(localStorage.getItem('finanzas_ultimo_respaldo') || 'null'); } catch (_) { return null; } }
@@ -26693,7 +26792,7 @@ async function cargarContextoRevision(b) {
     pag('fz_ventas'), loadConceptos(b.id), loadConceptosVenta(b.id), loadConceptosSistema(b.id),
     pag('fz_proveedores'), pag('fz_bancos_mov'), pag('fz_efectivo_mov'), pag('fz_pagos_aplicados'),
     pag('fz_polizas'), pag('fz_polizas_lineas', 'id,poliza_id,cargo,abono,cuenta_tipo,proveedor_factura_id'), pag('fz_efectivo_monedas'),
-    pag('fz_cobros_aplicados'), pag('fz_facturas_clientes', 'id,folio,numero_factura,total,cliente_id,fecha,importe_pagado,estatus,moneda'), pag('fz_clientes'), pag('fz_bancos_cuentas', 'id,moneda,saldo_inicial'), // todos los clientes, activos o no: un crédito de un cliente dado de baja también debe mostrar su nombre
+    pag('fz_cobros_aplicados'), pag('fz_facturas_clientes', 'id,folio,numero_factura,total,cliente_id,fecha,importe_pagado,estatus,moneda'), pag('fz_clientes'), pag('fz_bancos_cuentas', 'id,nombre,moneda,saldo_inicial'), // todos los clientes, activos o no: un crédito de un cliente dado de baja también debe mostrar su nombre
   ]);
   const porCat = {
     efectivo: conceptos.filter(c => c.categoria === 'efectivo'), tarjetas: conceptos.filter(c => c.categoria === 'tarjetas'),
@@ -27964,9 +28063,52 @@ function revTcCierre(ctx) {
   return { ...base, items, ...(sinFuente ? { nota: `${sinFuente} tipo(s) de cambio sin fuente registrada: anótala en ${(tcCierre && tcCierre.modo === 'global') ? 'Parámetros fiscales' : 'Configuración'} → Tipos de cambio de cierre (la autoridad puede preguntar de dónde salió).` } : {}) };
 }
 
+function revTraspasosCompletos(ctx) {
+  const patas = [
+    ...ctx.bancosMov.filter(m => m.traspaso_id).map(fila => ({ tabla: 'fz_bancos_mov', fila })),
+    ...ctx.efectivoMov.filter(m => m.traspaso_id).map(fila => ({ tabla: 'fz_efectivo_mov', fila })),
+  ];
+  const grupos = new Map();
+  patas.forEach(p => { const k = p.fila.traspaso_id; if (!grupos.has(k)) grupos.set(k, []); grupos.get(k).push(p); });
+  const nomBanco = (id) => ((ctx.bancosCuentas || []).find(c => c.id === id) || {}).nombre || 'Banco';
+  const nomCaja = (id) => ((ctx.monedas || []).find(m => m.id === id) || {}).nombre || 'Caja';
+  const cuenta = (p) => (p.tabla === 'fz_bancos_mov' ? 'Banco: ' + nomBanco(p.fila.cuenta_id) : 'Efectivo: ' + nomCaja(p.fila.moneda_id));
+  const items = [], reparables = [];
+  grupos.forEach((ps, id) => {
+    const an = analizarOperacionTraspaso(ps);
+    if (an.estado === 'ok') return;
+    const f0 = [...ps].sort(ordenPatas)[0].fila;
+    const monto = revRedondeo(montoDePata(f0));
+    const cuentas = [...new Set(ps.map(cuenta))].join(' ↔ ');
+    if (an.estado === 'conExceso') {
+      reparables.push({ id, businessId: f0.business_id });
+      items.push({ fecha: f0.fecha, monto, texto: `${fechaCorta(f0.fecha)} · ${cuentas}: la operación tiene ${ps.length} movimientos y debería tener 2 (${an.sobrantes.length} repetido(s) de ${fmt(monto)})` });
+    } else if (an.estado === 'incompleta') {
+      items.push({ fecha: f0.fecha, monto, texto: `${fechaCorta(f0.fecha)} · ${cuenta(ps[0])}: ${fmt(monto)} marcado como traspaso SIN su otra mitad. Ábrelo en Bancos/Efectivo, elige la cuenta contraria y guarda: se crea la que falta` });
+    } else {
+      items.push({ fecha: f0.fecha, monto, texto: `${fechaCorta(f0.fecha)} · ${cuentas}: ${ps.length} movimientos de un mismo traspaso que no se pueden ordenar solos; revísalos a mano` });
+    }
+  });
+  items.sort((a, z) => String(a.fecha).localeCompare(String(z.fecha)));
+  const r = { id: 'traspasos_completos', titulo: 'Traspasos con una sola pata o con más de dos',
+    ayuda: 'Un traspaso es UNA operación con DOS movimientos: un cargo en una cuenta y un abono en otra. Si queda una sola mitad o hay una de más, «Traspasos entre cuentas» no termina en cero en la Balanza y el Balance reparte mal el dinero entre cuentas (el Total Activo no cambia).',
+    items: items.map(({ texto, monto }) => ({ texto, monto })),
+    nota: 'Al eliminar un traspaso desde Bancos o Efectivo se eliminan sus dos movimientos juntos.' };
+  if (reparables.length) r.accion = {
+    etiqueta: `Reparar ${reparables.length} traspaso${reparables.length === 1 ? '' : 's'} con movimientos repetidos`,
+    confirmar: `Se eliminará ÚNICAMENTE el movimiento repetido (misma cuenta, mismo lado y mismo monto) de ${reparables.length} operación(es), conservando el original, para que cada una quede con 2 movimientos. No se toca ningún otro dato, y se respetan los periodos cerrados.`,
+    ejecutar: async () => {
+      let ops = 0, quitados = 0, sinReparar = 0;
+      for (const rp of reparables) { const rr = await repararTraspaso(rp.id, rp.businessId); if (rr.ok) { ops++; quitados += rr.eliminadas; } else sinReparar++; }
+      return `Se repararon ${ops} traspaso(s): ${quitados} movimiento(s) repetido(s) eliminado(s).${sinReparar ? ` ${sinReparar} no se pudieron reparar (periodo cerrado o dudas): revísalos a mano.` : ''}`;
+    },
+  };
+  return r;
+}
+
 async function ejecutarRevisionConsistencia(b) {
   const ctx = await cargarContextoRevision(b);
-  const checks = [revVentasCategorias, revPropinas, revPropinasSinMarca, revPropinasDuplicadas, revDepositosVentas, revPagosProveedor, revPagosReubicables, revGruposConFaltante, revCreditosDuplicados, revFacturasPagoIncoherente, revDescuadreLibro, revVinculosPagoFactura, revCreditosClientes, revVinculosCobroFactura, revDevolucionesCliente, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar, revTcCierre, revCfdiClasificados];
+  const checks = [revVentasCategorias, revPropinas, revPropinasSinMarca, revPropinasDuplicadas, revDepositosVentas, revPagosProveedor, revPagosReubicables, revGruposConFaltante, revCreditosDuplicados, revFacturasPagoIncoherente, revDescuadreLibro, revVinculosPagoFactura, revCreditosClientes, revVinculosCobroFactura, revDevolucionesCliente, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar, revTcCierre, revCfdiClasificados, revTraspasosCompletos];
   const out = [];
   for (const fn of checks) {
     try { const r = fn(ctx); if (r) out.push(r); }
