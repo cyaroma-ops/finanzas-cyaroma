@@ -13953,6 +13953,35 @@ async function revertirPagoAFacturas(idsAfectados, montoMovimiento, businessId, 
    Crear, actualizar, borrar y reparar pasan SIEMPRE por estas funciones, para que nunca queden 1, 3 o más patas.
    ============================================================================================ */
 const TABLAS_TRASPASO = ['fz_bancos_mov', 'fz_efectivo_mov'];
+// ---- B.2: número de operación (TR-000123) y funciones de la base de datos (etapa B) ------------------------------------------------
+// TODO con detección: si la migración B1 aún no se corrió en Supabase, la app se comporta exactamente como antes y NUNCA bloquea un guardado.
+let OPERACION_DISPONIBLE = null; // null = sin comprobar · true/false = ¿existe la columna operacion_folio?
+async function operacionFolioDisponible() {
+  if (OPERACION_DISPONIBLE !== null) return OPERACION_DISPONIBLE;
+  try { const { error } = await sb.from('fz_bancos_mov').select('operacion_folio').limit(1); OPERACION_DISPONIBLE = !error; } catch (_) { OPERACION_DISPONIBLE = false; }
+  return OPERACION_DISPONIBLE;
+}
+let RPC_FOLIO_OK = null, RPC_ELIMINAR_OK = null; // null = sin comprobar
+const rpcNoExiste = (err) => !!err && (err.code === 'PGRST202' || err.code === '42883' || /could not find the function|function .* does not exist/i.test(err.message || ''));
+// Pide el siguiente número de operación del negocio. Devuelve 'TR-000123' o null (sin migración / sin permiso / error): quien llama sigue sin número.
+async function pedirFolioTraspaso(businessId) {
+  if (RPC_FOLIO_OK === false || !(await operacionFolioDisponible())) return null;
+  try {
+    const { data, error } = await sb.rpc('fn_siguiente_folio_traspaso', { p_business_id: businessId });
+    if (error) { if (rpcNoExiste(error)) RPC_FOLIO_OK = false; return null; }
+    RPC_FOLIO_OK = true; return data || null;
+  } catch (_) { return null; }
+}
+const folioOperacionHtml = (m) => (m && m.traspaso_id && m.operacion_folio)
+  ? `<span style="display:block;font-size:10.5px;color:var(--muted);" title="Número de operación: sus dos movimientos comparten este número">${escHtml(m.operacion_folio)}</span>` : '';
+// Mensajes claros para lo que ahora rechaza la base de datos
+function mensajeErrorTraspaso(err) {
+  const m = String((err && err.message) || err || '');
+  if ((err && err.code === '23514') || /solo puede tener 2 movimientos/i.test(m)) return 'Esa operación de traspaso ya tiene sus 2 movimientos (un cargo y un abono): no se puede agregar otro.';
+  if ((err && err.code === '23505') && /traspaso_unico/i.test(m)) return 'Esa cuenta ya tiene un movimiento de este traspaso.';
+  return m;
+}
+
 const ladoDePata = (f) => (Number(f.cargos) > 0 ? 'salida' : 'entrada');
 const montoDePata = (f) => (Number(f.cargos) > 0 ? Number(f.cargos) : (Number(f.depositos) || 0));
 const cuentaDePata = (p) => (p.tabla === 'fz_bancos_mov' ? p.fila.cuenta_id : p.fila.moneda_id);
@@ -14106,6 +14135,12 @@ async function importarMovimientosBancoEfectivo(tabla, rows, businessId, cuentaR
   const legsNuevas = legs.filter(l => !omitir.has(l.idx)).map(({ idx, ...resto }) => resto);
   if (!nuevos.length) { toast(`Las ${payload.length} filas del archivo ya estaban importadas: no se agregó nada.`); return true; }
   if (await importacionBloqueadaPorCierre(businessId, [...nuevos, ...legsNuevas.map(l => l.row)].map(x => x.fecha))) return false; // periodo cerrado
+  if (await operacionFolioDisponible()) { // número de operación: uno por traspaso nuevo; los dos movimientos comparten el mismo
+    const folios = new Map();
+    for (const f of nuevos) { if (f.traspaso_id && !folios.has(f.traspaso_id)) folios.set(f.traspaso_id, await pedirFolioTraspaso(businessId)); }
+    nuevos.forEach(f => { const fo = f.traspaso_id && folios.get(f.traspaso_id); if (fo) f.operacion_folio = fo; });
+    legsNuevas.forEach(l => { const fo = folios.get(l.row.traspaso_id); if (fo) l.row.operacion_folio = fo; });
+  }
   const { error } = await sb.from(tabla).insert(nuevos);
   if (error) { toast('Error al importar: ' + error.message, 'error'); return false; }
   let legsFallidas = 0;
@@ -14140,7 +14175,7 @@ async function confirmarYEliminarMovimiento(table, row, onDone) {
     if (otrasPatas.length === 1) {
       const pareja = otrasPatas[0];
       if (await bloqueadoPorCierre(pareja.fila.business_id, pareja.fila.fecha)) return; // periodo cerrado de la otra mitad: no se borra ninguna
-      const ok = confirm(`Este movimiento es parte de un traspaso — su otra mitad (${fmt(montoDePata(pareja.fila))}, ${pareja.fila.fecha}) se eliminará junto con este. ¿Continuar?`);
+      const ok = confirm(`Este movimiento es parte ${row.operacion_folio ? 'del traspaso ' + row.operacion_folio : 'de un traspaso'} — su otra mitad (${fmt(montoDePata(pareja.fila))}, ${pareja.fila.fecha}) se eliminará junto con este. ¿Continuar?`);
       if (!ok) return;
       parejaTraspaso = pareja;
     }
@@ -14193,13 +14228,24 @@ async function confirmarYEliminarMovimiento(table, row, onDone) {
     if (!ok) return;
     await revertirPagoFiscalPorOrigen(table, row.id);
   }
-  await sb.from(table).delete().eq('id', row.id);
-  if (parejaTraspaso) {
-    await sb.from(parejaTraspaso.tabla).delete().eq('id', parejaTraspaso.fila.id);
+  // Traspaso: la base de datos borra la operación COMPLETA (los 2 movimientos) en una sola transacción. Si esa función aún no existe (B1 sin correr), se borra como antes.
+  let borradoPorOperacion = false;
+  if (row.traspaso_id && (row.tipo_salida === 'traspaso' || row.tipo_entrada === 'traspaso') && RPC_ELIMINAR_OK !== false) {
+    const { data: nOp, error: eOp } = await sb.rpc('fn_eliminar_traspaso', { p_traspaso_id: row.traspaso_id });
+    if (!eOp && !(Number(nOp) >= 1)) { RPC_ELIMINAR_OK = true; toast('No se eliminó ningún movimiento (¿no tienes permiso sobre este negocio?). No se borró nada.', 'error'); return; }
+    if (!eOp) { RPC_ELIMINAR_OK = true; borradoPorOperacion = true; if (Number(nOp) < (parejaTraspaso ? 2 : 1)) toast('Aviso: se eliminaron ' + Number(nOp) + ' movimiento(s); revisa la operación en Bancos/Efectivo.', 'error'); }
+    else if (rpcNoExiste(eOp)) { RPC_ELIMINAR_OK = false; }
+    else { toast('No se pudo eliminar el traspaso (no se borró nada): ' + mensajeErrorTraspaso(eOp), 'error'); return; }
+  }
+  if (!borradoPorOperacion) {
+    await sb.from(table).delete().eq('id', row.id);
+    if (parejaTraspaso) {
+      await sb.from(parejaTraspaso.tabla).delete().eq('id', parejaTraspaso.fila.id);
+    }
   }
   const modulo = table === 'fz_bancos_mov' ? 'Bancos' : 'Efectivo';
   const monto = Number(row.cargos) > 0 ? Number(row.cargos) : Number(row.depositos) || 0;
-  registrarAuditoria(row.business_id, 'eliminar', modulo, `Movimiento ${row.fecha} · ${row.descripcion||row.proveedor||''} · ${fmt(monto)}${idsAfectados.length?' (revirtió '+idsAfectados.length+' factura(s) de proveedor)':''}${idsAfectadosCliente.length?' (revirtió '+idsAfectadosCliente.length+' factura(s) de cliente)':''}${creditoLigado?' (eliminó crédito a favor por '+fmt(-creditoLigado.importe)+' generado por este mismo movimiento)':''}${parejaTraspaso?' (eliminó también la otra mitad del traspaso)':''}`);
+  registrarAuditoria(row.business_id, 'eliminar', modulo, `Movimiento ${row.fecha} · ${row.descripcion||row.proveedor||''} · ${fmt(monto)}${row.operacion_folio ? ' · operación ' + row.operacion_folio : ''}${idsAfectados.length?' (revirtió '+idsAfectados.length+' factura(s) de proveedor)':''}${idsAfectadosCliente.length?' (revirtió '+idsAfectadosCliente.length+' factura(s) de cliente)':''}${creditoLigado?' (eliminó crédito a favor por '+fmt(-creditoLigado.importe)+' generado por este mismo movimiento)':''}${parejaTraspaso?' (eliminó también la otra mitad del traspaso)':''}`);
   onDone();
 }
 
@@ -15362,6 +15408,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     document.getElementById('movIvaWrap').style.display = (val === 'gasto' && esFiscalContableMov) ? '' : 'none';
     document.getElementById('movTraspasoDestinoWrap').style.display = (val === 'traspaso_banco' || val === 'traspaso_efectivo') ? 'block' : 'none';
       { const av = document.getElementById('movTraspasoAviso'); if (av) av.style.display = (traspasoSinPareja && (val === 'traspaso_banco' || val === 'traspaso_efectivo')) ? 'block' : 'none'; }
+      { const of = document.getElementById('movOperacionFolio'); if (of) { const ver = !!(movimientoExistente && movimientoExistente.operacion_folio && (val === 'traspaso_banco' || val === 'traspaso_efectivo')); of.style.display = ver ? 'block' : 'none'; of.textContent = ver ? 'Operación ' + movimientoExistente.operacion_folio + ' · sus dos movimientos comparten este número.' : ''; } }
     if (val === 'traspaso_banco' || val === 'traspaso_efectivo') actualizarOpcionesDestinoTraspaso();
   };
   document.getElementById('movTipoSalida').onchange = actualizarVisibilidadDetalle;
@@ -15477,7 +15524,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
         if (sobraAviso > 0.009 && !confirm(`El cobro (${fmt(depositos)}) es mayor que lo pendiente de las facturas elegidas (${detalleAviso}) por ${fmt(sobraAviso)}.\n\nEse excedente quedará registrado como CRÉDITO A FAVOR DEL CLIENTE y podrás aplicarlo después a sus facturas pendientes (Revisión de consistencia).\n\n¿Guardar así?`)) return;
       }
     }
-    let legDestino = null, traspasoIdNuevo = null, patasAEliminarTras = [];
+    let legDestino = null, traspasoIdNuevo = null, patasAEliminarTras = [], folioOperacionNuevo = null;
     const patasPreviasMov = movimientoExistente?.traspaso_id ? (await patasDeTraspaso(movimientoExistente.traspaso_id)).filter(p => p.fila.id !== movimientoExistente.id) : [];
     for (const p of patasPreviasMov) { if (await bloqueadoPorCierre(contexto.businessId, p.fila.fecha)) return; } // periodo cerrado de la otra mitad
     if (!esTraspaso && patasPreviasMov.length) {
@@ -15490,6 +15537,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
       const destinoId = document.getElementById('movTraspasoDestino').value;
       if (!destinoId) { toast('Elige la cuenta destino del traspaso.', 'error'); return; }
       traspasoIdNuevo = movimientoExistente?.traspaso_id || uid();
+      folioOperacionNuevo = movimientoExistente?.traspaso_id ? (movimientoExistente.operacion_folio || null) : await pedirFolioTraspaso(contexto.businessId); // nuevo → pide número; existente → conserva el suyo
       const esSalida = cargos > 0;
       const monto = esSalida ? cargos : depositos;
       const legPayload = {
@@ -15497,6 +15545,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
         cargos: esSalida ? 0 : monto, depositos: esSalida ? monto : 0,
         descripcion: `Traspaso ${esSalida ? 'a' : 'desde'} ${origenCorto}`,
       };
+      if (folioOperacionNuevo) legPayload.operacion_folio = folioOperacionNuevo;
       legDestino = tipoElegido === 'traspaso_banco'
         ? { tabla: 'fz_bancos_mov', row: legPayload, extra: { cuenta_id: destinoId, concepto: 'Traspaso' } }
         : { tabla: 'fz_efectivo_mov', row: legPayload, extra: { moneda_id: destinoId, proveedor: 'Traspaso' } };
@@ -15519,6 +15568,8 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     if (montoCuentaOverride !== null) { payload.tipo_cambio_historico = tcHistoricoMov; payload.equivalente_mxn_historico = equivalenteMxnMov; }
     payload.subcuenta_id = tipoElegido === 'gasto' ? (document.getElementById('movSubcuenta').value || null) : null;
     payload.traspaso_id = esTraspaso ? traspasoIdNuevo : null;
+    if (esTraspaso && folioOperacionNuevo) payload.operacion_folio = folioOperacionNuevo;
+    else if (!esTraspaso && OPERACION_DISPONIBLE === true) payload.operacion_folio = null; // dejó de ser traspaso: ya no lleva número de operación
     if (tipoElegido === 'gasto' && esFiscalContableMov) {
       payload.aplica_iva = document.getElementById('movAplicaIva').checked;
       payload.subtotal = payload.aplica_iva ? (leerMonto(document.getElementById('movSubtotal').value) || 0) : null;
@@ -15547,7 +15598,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     if (legDestino) {
       const previaPata = movimientoExistente ? { fecha: movimientoExistente.fecha, monto: montoDePata(movimientoExistente) } : null;
       const resLeg = await asegurarPataPareja(legDestino.tabla, { ...legDestino.row, ...legDestino.extra }, nuevoMov.id, previaPata);
-      if (!resLeg.ok) toast('El movimiento se guardó, pero hubo un error con la otra mitad del traspaso: ' + ((resLeg.error && resLeg.error.message) || ''), 'error');
+      if (!resLeg.ok) toast('El movimiento se guardó, pero hubo un error con la otra mitad del traspaso: ' + mensajeErrorTraspaso(resLeg.error), 'error');
       else if (resLeg.accion === 'creada') toast('Traspaso guardado y reflejado en la cuenta destino.');
       else toast('Traspaso actualizado.' + (resLeg.sobrantes ? ` Aviso: la operación tiene ${resLeg.sobrantes} movimiento(s) de más; repárala en «Revisión de consistencia».` : ''));
     }
@@ -15890,6 +15941,7 @@ function wireSalidaCellHandlers(container, table, onChange, traspasoCtx, factura
     if (!monto) { toast('Este movimiento no tiene monto en cargos o depósitos.', 'error'); return; }
     const esSalida = Number(origenRow.cargos) > 0;
     const traspasoId = origenRow.traspaso_id || uid(); // si ya era traspaso se conserva su identificador (y se ACTUALIZA su pareja)
+    const folioOp = origenRow.traspaso_id ? (origenRow.operacion_folio || null) : await pedirFolioTraspaso(origenRow.business_id);
     const destinoTipo = sel.dataset.tipo;
     const origenLabel = traspasoCtx?.origenNombre || 'otra cuenta';
     const destinoPayload = {
@@ -15897,12 +15949,13 @@ function wireSalidaCellHandlers(container, table, onChange, traspasoCtx, factura
       cargos: esSalida ? 0 : monto, depositos: esSalida ? monto : 0,
       descripcion: `Traspaso desde ${origenLabel}`,
     };
+    if (folioOp) destinoPayload.operacion_folio = folioOp;
     let tablaDestino;
     if (destinoTipo === 'banco') { destinoPayload.cuenta_id = sel.value; destinoPayload.concepto = 'Traspaso'; tablaDestino = 'fz_bancos_mov'; }
     else { destinoPayload.moneda_id = sel.value; destinoPayload.proveedor = 'Traspaso'; tablaDestino = 'fz_efectivo_mov'; }
     const resPareja = await asegurarPataPareja(tablaDestino, destinoPayload, origenRow.id, null);
-    if (!resPareja.ok) { toast('Error al crear el traspaso: ' + ((resPareja.error && resPareja.error.message) || ''), 'error'); return; }
-    const { error: errMarca } = await sb.from(table).update({ tipo_salida: 'traspaso', tipo_entrada: 'traspaso', traspaso_id: traspasoId }).eq('id', sel.dataset.id);
+    if (!resPareja.ok) { toast('Error al crear el traspaso: ' + mensajeErrorTraspaso(resPareja.error), 'error'); return; }
+    const { error: errMarca } = await sb.from(table).update({ tipo_salida: 'traspaso', tipo_entrada: 'traspaso', traspaso_id: traspasoId, ...(folioOp ? { operacion_folio: folioOp } : {}) }).eq('id', sel.dataset.id);
     if (errMarca) { toast('Se creó la otra mitad, pero no se pudo marcar este movimiento: ' + errMarca.message + '. Revísalo en «Revisión de consistencia».', 'error'); onChange(); return; }
     toast('Traspaso vinculado correctamente.');
     onChange();
@@ -16106,7 +16159,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
     return `<tr${estiloFila}>
       <td data-rol="principal">${fechaCorta(r.fecha)}</td>
       <td data-rol="importe" class="ledger-movimiento-resumen" style="font-weight:600;">${resumenMovil}</td>
-      <td class="ledger-input-detalle">${escHtml(tipoPolizaDerivado(r))}${marcaTraspasoHtml(infoTraspaso)}</td>
+      <td class="ledger-input-detalle">${escHtml(tipoPolizaDerivado(r))}${marcaTraspasoHtml(infoTraspaso)}${folioOperacionHtml(r)}</td>
       <td data-rol="secundario">${celdaTerceroLedger(r, r.proveedor, false)}</td>
       <td data-rol="estado" class="ledger-saldo-movil"><span class="ledger-saldo-label">Saldo</span> ${fmtNum(saldo)}</td>
       <td data-rol="meta" class="ledger-input-detalle">${textoLedger(r.descripcion)}</td>
@@ -16339,7 +16392,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     return `<tr${estiloFila}>
       <td data-rol="principal">${fechaCorta(m.fecha)}${conciliadoIcono}</td>
       <td data-rol="importe" class="ledger-movimiento-resumen" style="font-weight:600;">${resumenMovil}</td>
-      <td class="ledger-input-detalle">${escHtml(tipoPolizaDerivado(m))}${marcaTraspasoHtml(infoTraspaso)}</td>
+      <td class="ledger-input-detalle">${escHtml(tipoPolizaDerivado(m))}${marcaTraspasoHtml(infoTraspaso)}${folioOperacionHtml(m)}</td>
       <td data-rol="secundario">${celdaTerceroLedger(m, m.proveedor, false)}</td>
       <td data-rol="estado" class="ledger-saldo-movil"><span class="ledger-saldo-label">Saldo</span> ${escHtml(pfxBanco)} ${fmt(saldo)}</td>
       <td class="ledger-input-detalle">${textoLedger(m.concepto || m.descripcion)}</td>
@@ -24595,10 +24648,10 @@ async function busquedaServidor(b, parsed, D) {
   const seguro = async (nombre, fn) => { try { await fn(); } catch (e) { out.fallos.push(nombre); } };
   const nCuenta = Object.fromEntries((D.cuentas || []).map(c => [c.id, c.nombre])), nMoneda = Object.fromEntries((D.monedas || []).map(c => [c.id, c.nombre]));
   await Promise.all([
-    seguro('Bancos', async () => { const { data, error } = await aplicar(sb.from('fz_bancos_mov').select('id,cuenta_id,fecha,descripcion,concepto,referencia,proveedor,cargos,depositos').eq('business_id', b.id), ['descripcion', 'concepto', 'referencia', 'proveedor'], ['cargos', 'depositos'], [], 'fecha').order('fecha', { ascending: false }).limit(BUSQ_LIMITE_SERVIDOR); if (error) throw error;
-      out.bancos = (data || []).map(m => busquedaItem('bancos', m.id, m.descripcion || m.concepto || m.proveedor || 'Movimiento', `${nCuenta[m.cuenta_id] || 'Banco'} · ${fechaCorta(m.fecha)}${m.referencia ? ' · ' + m.referencia : ''}`, Number(m.depositos) > 0 ? Number(m.depositos) : -(Number(m.cargos) || 0), 'MXN', m.fecha, [m.descripcion, m.concepto, m.referencia, m.proveedor], [m.cargos, m.depositos], [m.referencia], () => abrirOrigenDesdeDetalle({ tipo: 'bancos', id: m.id, cuentaId: m.cuenta_id, fecha: m.fecha }, b.id))); }),
-    seguro('Efectivo', async () => { const { data, error } = await aplicar(sb.from('fz_efectivo_mov').select('id,moneda_id,fecha,descripcion,proveedor,factura,cargos,depositos').eq('business_id', b.id), ['descripcion', 'proveedor', 'factura'], ['cargos', 'depositos'], [], 'fecha').order('fecha', { ascending: false }).limit(BUSQ_LIMITE_SERVIDOR); if (error) throw error;
-      out.efectivo = (data || []).map(m => busquedaItem('efectivo', m.id, m.descripcion || m.proveedor || 'Movimiento de efectivo', `${nMoneda[m.moneda_id] || 'Efectivo'} · ${fechaCorta(m.fecha)}${m.factura ? ' · ' + m.factura : ''}`, Number(m.depositos) > 0 ? Number(m.depositos) : -(Number(m.cargos) || 0), 'MXN', m.fecha, [m.descripcion, m.proveedor, m.factura], [m.cargos, m.depositos], [m.factura], () => abrirOrigenDesdeDetalle({ tipo: 'efectivo', id: m.id, monedaId: m.moneda_id, fecha: m.fecha }, b.id))); }),
+    seguro('Bancos', async () => { const { data, error } = await aplicar(sb.from('fz_bancos_mov').select('id,cuenta_id,fecha,descripcion,concepto,referencia,proveedor,cargos,depositos' + (OPERACION_DISPONIBLE ? ',operacion_folio' : '')).eq('business_id', b.id), ['descripcion', 'concepto', 'referencia', 'proveedor'].concat(OPERACION_DISPONIBLE ? ['operacion_folio'] : []), ['cargos', 'depositos'], [], 'fecha').order('fecha', { ascending: false }).limit(BUSQ_LIMITE_SERVIDOR); if (error) throw error;
+      out.bancos = (data || []).map(m => busquedaItem('bancos', m.id, m.descripcion || m.concepto || m.proveedor || 'Movimiento', `${nCuenta[m.cuenta_id] || 'Banco'} · ${fechaCorta(m.fecha)}${m.referencia ? ' · ' + m.referencia : ''}${m.operacion_folio ? ' · ' + m.operacion_folio : ''}`, Number(m.depositos) > 0 ? Number(m.depositos) : -(Number(m.cargos) || 0), 'MXN', m.fecha, [m.descripcion, m.concepto, m.referencia, m.proveedor, m.operacion_folio], [m.cargos, m.depositos], [m.referencia, m.operacion_folio], () => abrirOrigenDesdeDetalle({ tipo: 'bancos', id: m.id, cuentaId: m.cuenta_id, fecha: m.fecha }, b.id))); }),
+    seguro('Efectivo', async () => { const { data, error } = await aplicar(sb.from('fz_efectivo_mov').select('id,moneda_id,fecha,descripcion,proveedor,factura,cargos,depositos' + (OPERACION_DISPONIBLE ? ',operacion_folio' : '')).eq('business_id', b.id), ['descripcion', 'proveedor', 'factura'].concat(OPERACION_DISPONIBLE ? ['operacion_folio'] : []), ['cargos', 'depositos'], [], 'fecha').order('fecha', { ascending: false }).limit(BUSQ_LIMITE_SERVIDOR); if (error) throw error;
+      out.efectivo = (data || []).map(m => busquedaItem('efectivo', m.id, m.descripcion || m.proveedor || 'Movimiento de efectivo', `${nMoneda[m.moneda_id] || 'Efectivo'} · ${fechaCorta(m.fecha)}${m.factura ? ' · ' + m.factura : ''}${m.operacion_folio ? ' · ' + m.operacion_folio : ''}`, Number(m.depositos) > 0 ? Number(m.depositos) : -(Number(m.cargos) || 0), 'MXN', m.fecha, [m.descripcion, m.proveedor, m.factura, m.operacion_folio], [m.cargos, m.depositos], [m.factura, m.operacion_folio], () => abrirOrigenDesdeDetalle({ tipo: 'efectivo', id: m.id, monedaId: m.moneda_id, fecha: m.fecha }, b.id))); }),
     seguro('Pólizas', async () => {
       const cab = aplicar(sb.from('fz_polizas').select('id,numero,fecha,concepto').eq('business_id', b.id), ['concepto'], [], ['numero'], 'fecha').order('fecha', { ascending: false }).limit(BUSQ_LIMITE_SERVIDOR);
       const lin = hayFecha ? null : aplicar(sb.from('fz_polizas_lineas').select('poliza_id,descripcion,referencia,proveedor,cargo,abono').eq('business_id', b.id), ['descripcion', 'referencia', 'proveedor'], ['cargo', 'abono'], [], null).limit(40);
@@ -24629,6 +24682,7 @@ function inyectarEstilosBusqueda() {
   document.head.appendChild(st);
 }
 async function abrirBuscadorUniversal(consultaInicial) {
+  await operacionFolioDisponible();
   const b = biz(); if (!b) { toast('Elige un negocio para poder buscar.', 'error'); return; }
   inyectarEstilosBusqueda(); const E = STATE_busq;
   if (!E.bg) {
@@ -24690,7 +24744,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-04.5';
+const APP_VERSION = '2026-11-04.6';
 const RESPALDO_TABLAS = [['businesses', ['id']], ['fz_cuentas_mayor', ['id']], ['fz_subcuentas', ['id']], ['fz_polizas', ['id']], ['fz_polizas_lineas', ['id']], ['fz_proveedores_catalogo', ['id']], ['fz_proveedores', ['id']], ['fz_ventas', ['id']], ['fz_conceptos_venta', ['id']], ['fz_conceptos_sistema', ['id']], ['fz_conceptos', ['id']], ['fz_efectivo_monedas', ['id']], ['fz_efectivo_mov', ['id']], ['fz_bancos_cuentas', ['id']], ['fz_bancos_mov', ['id']], ['fz_pl_gastos', ['id']], ['fz_usuarios_autorizados', ['id']], ['fz_usuario_negocios', ['id']], ['fz_auditoria', ['id']], ['fz_adjuntos', ['id']], ['fz_pagos_aplicados', ['id']], ['fz_clientes', ['id']], ['fz_productos_servicios', ['id']], ['fz_folios_contador', ['business_id', 'tipo']], ['fz_facturas_clientes', ['id']], ['fz_facturas_clientes_lineas', ['id']], ['fz_cobros_aplicados', ['id']], ['fz_ordenes_venta', ['id']], ['fz_ordenes_venta_lineas', ['id']], ['fz_conciliaciones_bancarias', ['id']], ['fz_cierres_periodo', ['id']], ['fz_tc_cierre', ['id']], ['fz_tipos_cambio_cierre', ['id']], ['fz_cfdi', ['id']], ['fz_cfdi_bitacora', ['id']], ['fz_activos_fijos', ['id']], ['fz_depreciaciones_generadas', ['id']], ['fz_inpc_valores', ['id']], ['fz_recargos_tasas', ['id']], ['fz_pagos_impuestos', ['id']], ['fz_isr_datos_anuales', ['id']], ['fz_isr_conceptos', ['id']], ['fz_provisiones_fiscales', ['id']], ['fz_iva_realizaciones', ['id']], ['fz_aplicaciones_pago_fiscal', ['id']], ['fz_regimenes_fiscales_negocio', ['id']], ['fz_dias_inhabiles_fiscales', ['id']], ['fz_declaraciones_fiscales', ['id']], ['fz_reglas_vencimiento_impuesto', []], ['fz_calendario_fiscal_validacion', []], ['fz_catalogo_regimenes_fiscales', []], ['fz_papeles_trabajo', ['id']], ['fz_papel_conceptos', ['id']], ['fz_papel_concepto_fuentes', ['id']], ['fz_papel_concepto_accesorios', ['id']], ['fz_papel_historial', ['id']], ['fz_papel_soportes', ['id']], ['fz_mapeo_cuenta_concepto_fiscal', ['id']], ['fz_perdidas_fiscales', ['id']], ['fz_perdidas_fiscales_actualizaciones', ['id']], ['fz_perdidas_fiscales_aplicaciones', ['id']], ['fz_perdidas_fiscales_cierres', ['id']], ['fz_perdidas_fiscales_historial', ['id']], ['fz_perdidas_fiscales_soportes', ['id']], ['fz_ptu_eventos', ['id']], ['fz_ptu_historial', ['id']], ['fz_pagos_por_clasificar', ['id']], ['fz_iva_saldos_favor', ['id']], ['fz_iva_saldos_favor_movimientos', ['id']], ['fz_iva_saldos_favor_devoluciones', ['id']], ['fz_iva_saldo_favor_periodo_activo', ['id']]];
 const RESPALDO_BUCKETS = ['adjuntos', 'cfdi'], RESPALDO_MAX_ARCHIVOS_BYTES = 400 * 1024 * 1024, RESPALDO_AVISO_DIAS = 7;
 function respaldoEstado() { try { return JSON.parse(localStorage.getItem('finanzas_ultimo_respaldo') || 'null'); } catch (_) { return null; } }
