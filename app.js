@@ -15007,6 +15007,8 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     }
     if (destinoRealExistente && Array.from(destSel.options).some(o => o.value === destinoRealExistente)) {
       destSel.value = destinoRealExistente;
+    } else if (traspasoSinPareja && !destinoRealExistente && (tipoVal === 'traspaso_banco' || tipoVal === 'traspaso_efectivo')) {
+      destSel.insertAdjacentHTML('afterbegin', '<option value="">— elige la cuenta —</option>'); destSel.value = '';
     }
   };
 
@@ -15310,6 +15312,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   let tipoInicial = movimientoExistente
     ? (movimientoExistente.tipo_entrada === 'cliente' ? 'cliente' : (movimientoExistente.tipo_salida || 'otro'))
     : 'otro';
+  let traspasoSinPareja = false; // traspaso marcado pero sin su otra mitad: se pide la cuenta (no se muestra como «Sin clasificar»)
   let destinoRealExistente = null; // cuenta_id o moneda_id de la OTRA pierna, para preseleccionar el destino correcto al reabrir
   if (tipoInicial === 'traspaso' && movimientoExistente?.traspaso_id) {
     // El valor guardado siempre es el genérico 'traspaso' — el menú solo tiene 'traspaso_banco'/
@@ -15322,7 +15325,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     ]);
     if (otraEnBanco.data) { tipoInicial = 'traspaso_banco'; destinoRealExistente = otraEnBanco.data.cuenta_id; }
     else if (otraEnEfectivo.data) { tipoInicial = 'traspaso_efectivo'; destinoRealExistente = otraEnEfectivo.data.moneda_id; }
-    else tipoInicial = 'otro';
+    else { tipoInicial = 'traspaso_banco'; traspasoSinPareja = true; }
   }
   document.getElementById('movTipoSalida').value = tipoInicial;
   const actualizarRotuloTraspaso = () => {
@@ -15358,6 +15361,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     document.getElementById('movFacturasClienteWrap').style.display = val === 'cliente' ? 'block' : 'none';
     document.getElementById('movIvaWrap').style.display = (val === 'gasto' && esFiscalContableMov) ? '' : 'none';
     document.getElementById('movTraspasoDestinoWrap').style.display = (val === 'traspaso_banco' || val === 'traspaso_efectivo') ? 'block' : 'none';
+      { const av = document.getElementById('movTraspasoAviso'); if (av) av.style.display = (traspasoSinPareja && (val === 'traspaso_banco' || val === 'traspaso_efectivo')) ? 'block' : 'none'; }
     if (val === 'traspaso_banco' || val === 'traspaso_efectivo') actualizarOpcionesDestinoTraspaso();
   };
   document.getElementById('movTipoSalida').onchange = actualizarVisibilidadDetalle;
@@ -15725,6 +15729,49 @@ function sinClasificarBannerHtml(count, total) {
     <span style="color:var(--muted);"> — suman ${fmt(total)}. Están resaltados en la tabla de abajo (fondo color crema) — dales clic en "⋯ → Editar" para clasificarlos.</span>
   </div>`;
 }
+
+// ---- A.2: marcas visibles en Bancos y Efectivo --------------------------------------------------------------------------------------------
+// Estado de cada traspaso que aparece en los renglones mostrados (una consulta por lotes a las dos tablas): ok / incompleta / conExceso / revisar.
+async function estadoTraspasosDeFilas(filas) {
+  const ids = [...new Set((filas || []).filter(f => f.traspaso_id).map(f => f.traspaso_id))];
+  const mapa = new Map();
+  if (!ids.length) return mapa;
+  const grupos = new Map();
+  for (let i = 0; i < ids.length; i += 80) {
+    const trozo = ids.slice(i, i + 80);
+    const rs = await Promise.all(TABLAS_TRASPASO.map(t => sb.from(t).select('*').in('traspaso_id', trozo)));
+    rs.forEach((r, k) => (r.data || []).forEach(fila => { const g = grupos.get(fila.traspaso_id) || []; g.push({ tabla: TABLAS_TRASPASO[k], fila }); grupos.set(fila.traspaso_id, g); }));
+  }
+  ids.forEach(id => mapa.set(id, analizarOperacionTraspaso(grupos.get(id) || [])));
+  return mapa;
+}
+// Un depósito que nadie clasificó: la Balanza lo abona a «Sin clasificar (revisar)» (cuenta de gastos).
+const depositoSinClasificar = (m) => !m.auto && (m.tipo_entrada || 'otro') === 'otro' && (Number(m.depositos) || 0) > 0 && !((Number(m.cargos) || 0) > 0);
+function marcaTraspasoHtml(info) {
+  if (!info || info.estado === 'ok') return '';
+  const txt = info.estado === 'incompleta' ? 'sin su otra mitad' : (info.estado === 'conExceso' ? 'con repetidos' : 'por revisar');
+  const tip = info.estado === 'incompleta'
+    ? 'Este traspaso no tiene su otra mitad. Ábrelo con ⋯ → Editar, elige la cuenta contraria y guarda.'
+    : 'Esta operación de traspaso tiene más movimientos de los que debería (un cargo y un abono). Repárala en Revisión de consistencia.';
+  // En una segunda línea que se AJUSTA al ancho de la columna (no la ensancha: la tabla no debe empujar el menú «⋯» fuera de la vista).
+  return `<span style="display:block;max-width:112px;white-space:normal;line-height:1.25;font-size:11.5px;color:var(--red);font-weight:700;" title="${escAttr(tip)}">⚠ ${txt}</span>`;
+}
+function bannersLedgerExtraHtml(nDep, totalDep, nTras) {
+  let h = '';
+  if (nDep) h += `<div class="card" style="background:#fff8ec;border:1px solid #f0d99a;margin-bottom:12px;padding:12px 16px;">
+    <strong style="color:#8a6d1f;">${nDep} depósito(s) sin clasificar este mes</strong>
+    <span style="color:var(--muted);"> — suman ${fmt(totalDep)}. Están resaltados en la tabla de abajo (fondo color crema) — dales clic en "⋯ → Editar" para clasificarlos. Mientras tanto la Balanza los abona a «Sin clasificar (revisar)».</span>
+  </div>`;
+  if (nTras) h += `<div class="card" style="background:#fdeeee;border:1px solid #f0b4b4;margin-bottom:12px;padding:12px 16px;">
+    <strong style="color:var(--red);">${nTras} traspaso(s) incompleto(s) o con movimientos de más este mes</strong>
+    <span style="color:var(--muted);"> — están marcados con ⚠ en la tabla. Complétalos con "⋯ → Editar" (elige la cuenta contraria) o repáralos en </span><button class="btn btn-ghost btn-sm" data-ir-revision="1">Revisión de consistencia</button>
+  </div>`;
+  return h;
+}
+if (!window.__irRevisionListener) {
+  window.__irRevisionListener = true;
+  document.addEventListener('click', (e) => { const b = e.target && e.target.closest && e.target.closest('[data-ir-revision]'); if (b) irASeccion('revision'); });
+}
 function facturaIdsDe(r) {
   if (Array.isArray(r.proveedor_factura_ids) && r.proveedor_factura_ids.length) return r.proveedor_factura_ids;
   if (r.proveedor_factura_id) return [r.proveedor_factura_id];
@@ -16025,6 +16072,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
   const { saldoApertura, rows: ledger } = ledgerRes;
   const traspasoCtx = { cuentasBanco: cuentasBancoQ.data || [], monedasEfectivo: monedasEfectivoQ.data || [], origenTipo: 'efectivo', origenId: moneda.id, origenNombre: 'la caja ' + moneda.nombre, origenCorto: 'Caja — ' + moneda.nombre };
   let saldo = saldoApertura;
+  const mapaTraspasos = await estadoTraspasosDeFilas(ledger.filter(r => !r.auto));
   const conteoAdjuntosEfvo = await contarAdjuntosPorRegistro('fz_efectivo_mov', ledger.filter(r => !r.auto).map(r => r.id));
   const facturaDe = await prepararFacturasLedger(ledger); // folio de la factura de cada renglón (solo presentación)
   const rowsHtml = ledger.map(r => {
@@ -16049,12 +16097,16 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
       </tr>`;
     }
     const sinClasificarFila = (r.tipo_salida || 'otro') === 'otro' && (Number(r.cargos)||0) > 0;
+    const depSinClas = depositoSinClasificar(r);
+    const infoTraspaso = r.traspaso_id ? mapaTraspasos.get(r.traspaso_id) : null;
+    const traspasoMal = !!infoTraspaso && infoTraspaso.estado !== 'ok';
+    const estiloFila = traspasoMal ? ' style="background:#fdeeee;"' : ((sinClasificarFila || depSinClas) ? ' style="background:#fff8ec;"' : '');
     // Las filas de Bancos/Efectivo son SOLO DE CONSULTA — la edición se hace exclusivamente vía
     // "… → Editar" (abre el mismo modal existente, sin cambios). Ya no hay <input> inline aquí.
-    return `<tr${sinClasificarFila ? ' style="background:#fff8ec;"' : ''}>
+    return `<tr${estiloFila}>
       <td data-rol="principal">${fechaCorta(r.fecha)}</td>
       <td data-rol="importe" class="ledger-movimiento-resumen" style="font-weight:600;">${resumenMovil}</td>
-      <td class="ledger-input-detalle">${escHtml(tipoPolizaDerivado(r))}</td>
+      <td class="ledger-input-detalle">${escHtml(tipoPolizaDerivado(r))}${marcaTraspasoHtml(infoTraspaso)}</td>
       <td data-rol="secundario">${celdaTerceroLedger(r, r.proveedor, false)}</td>
       <td data-rol="estado" class="ledger-saldo-movil"><span class="ledger-saldo-label">Saldo</span> ${fmtNum(saldo)}</td>
       <td data-rol="meta" class="ledger-input-detalle">${textoLedger(r.descripcion)}</td>
@@ -16064,7 +16116,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
       <td class="num ledger-input-detalle">${fmtNum(r.cargos)}</td>
       <td class="num ledger-input-detalle" style="font-weight:700;">${fmtNum(saldo)}</td>
       <td data-rol="acciones" style="position:relative;">
-        <button class="btn btn-ghost btn-sm mov-menu-btn" data-id="${r.id}" style="padding:5px 12px;">${sinClasificarFila?'⚠ ⋯':'⋯'}</button>
+        <button class="btn btn-ghost btn-sm mov-menu-btn" data-id="${r.id}" style="padding:5px 12px;">${(sinClasificarFila||depSinClas||traspasoMal)?'⚠ ⋯':'⋯'}</button>
         <div class="mov-menu-dropdown" data-menu="${r.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:120px;overflow:hidden;">
           <button class="mov-editar" data-id="${r.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Editar</button>
           <button class="mov-del" data-id="${r.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>
@@ -16077,6 +16129,9 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
   const totalDepositosMes = ledger.reduce((s,r)=>s+(Number(r.depositos)||0),0);
   const sinClasificar = ledger.filter(r => !r.auto && (r.tipo_salida || 'otro') === 'otro' && (Number(r.cargos)||0) > 0);
   const totalSinClasificar = sinClasificar.reduce((s,r)=>s+(Number(r.cargos)||0),0);
+  const depsSinClas = ledger.filter(depositoSinClasificar);
+  const totalDepsSinClas = depsSinClas.reduce((s,r)=>s+(Number(r.depositos)||0),0);
+  const nTraspasosMal = new Set(ledger.filter(r => !r.auto && r.traspaso_id && mapaTraspasos.get(r.traspaso_id) && mapaTraspasos.get(r.traspaso_id).estado !== 'ok').map(r => r.traspaso_id)).size;
   const datalistSubcuentas = `<datalist id="datalistGastoSubcuentas">${subcuentas.map(s => `<option value="${escAttr(rutaSubcuenta(s, subcuentas, mayores))}">`).join('')}</datalist>`;
   // Equivalente MXN de referencia — dato SECUNDARIO, solo para consolidación, nunca sustituye el
   // saldo real de la caja (que sigue siendo en su propia moneda, arriba).
@@ -16085,6 +16140,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
   box.innerHTML = `
     ${datalistSubcuentas}
     <div id="sinClasificarBannerEfvo">${sinClasificarBannerHtml(sinClasificar.length, totalSinClasificar)}</div>
+    ${bannersLedgerExtraHtml(depsSinClas.length, totalDepsSinClas, nTraspasosMal)}
     <div class="card-head" style="margin-top:14px;">
       <span class="hint">${escHtml(moneda.nombre)} · <span class="mf-badge-moneda">${escHtml(moneda.nombre)}</span> — ${STATE.currentMonth}: Saldo inicial ${fmtNum(saldoApertura)} · Entradas ${fmtNum(totalDepositosMes)} · Salidas ${fmtNum(totalCargosMes)} · <strong>Saldo final ${fmtNum(saldo)} ${escHtml(moneda.nombre)}</strong>${equivalenteMxnRef}</span>
       <div style="display:flex;gap:8px;">
@@ -16245,6 +16301,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
   const pfxBanco = prefijoMoneda(monedaCuentaBanco);
   const traspasoCtx = { cuentasBanco: cuentasBancoQ.data || [], monedasEfectivo: monedasEfectivoQ.data || [], origenTipo: 'banco', origenId: cuentaId, origenNombre: 'el banco ' + (cuentaArr?.nombre || ''), origenCorto: 'Banco — ' + (cuentaArr?.nombre || '') };
   let saldo = saldoApertura;
+  const mapaTraspasos = await estadoTraspasosDeFilas(ledger.filter(m => !m.auto));
   const conteoAdjuntosBanco = await contarAdjuntosPorRegistro('fz_bancos_mov', ledger.filter(m => !m.auto).map(m => m.id));
   // Referencia legible — reutiliza SIEMPRE dato ya guardado (referencia > concepto > descripción),
   // nunca inventa texto nuevo.
@@ -16273,12 +16330,16 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
       </tr>`;
     }
     const sinClasificarFila = (m.tipo_salida || 'otro') === 'otro' && (Number(m.cargos)||0) > 0;
+    const depSinClas = depositoSinClasificar(m);
+    const infoTraspaso = m.traspaso_id ? mapaTraspasos.get(m.traspaso_id) : null;
+    const traspasoMal = !!infoTraspaso && infoTraspaso.estado !== 'ok';
+    const estiloFila = traspasoMal ? ' style="background:#fdeeee;"' : ((sinClasificarFila || depSinClas) ? ' style="background:#fff8ec;"' : '');
     // Las filas de Bancos/Efectivo son SOLO DE CONSULTA — la edición se hace exclusivamente vía
     // "… → Editar" (abre el mismo modal existente, sin cambios). Ya no hay <input> inline aquí.
-    return `<tr${sinClasificarFila ? ' style="background:#fff8ec;"' : ''}>
+    return `<tr${estiloFila}>
       <td data-rol="principal">${fechaCorta(m.fecha)}${conciliadoIcono}</td>
       <td data-rol="importe" class="ledger-movimiento-resumen" style="font-weight:600;">${resumenMovil}</td>
-      <td class="ledger-input-detalle">${escHtml(tipoPolizaDerivado(m))}</td>
+      <td class="ledger-input-detalle">${escHtml(tipoPolizaDerivado(m))}${marcaTraspasoHtml(infoTraspaso)}</td>
       <td data-rol="secundario">${celdaTerceroLedger(m, m.proveedor, false)}</td>
       <td data-rol="estado" class="ledger-saldo-movil"><span class="ledger-saldo-label">Saldo</span> ${escHtml(pfxBanco)} ${fmt(saldo)}</td>
       <td class="ledger-input-detalle">${textoLedger(m.concepto || m.descripcion)}</td>
@@ -16289,7 +16350,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
       <td class="num ledger-input-detalle" style="font-weight:700;">${fmt(saldo)}</td>
       <td class="ledger-input-detalle" style="text-align:center;color:var(--green);" title="${m.conciliado ? 'Conciliado el ' + fechaCorta(m.fecha_conciliacion) : 'Pendiente de conciliar'}">${m.conciliado ? '✓' : ''}</td>
       <td data-rol="acciones" style="position:relative;">
-        <button class="btn btn-ghost btn-sm mov-menu-btn" data-id="${m.id}" style="padding:5px 12px;">${sinClasificarFila?'⚠ ⋯':'⋯'}</button>
+        <button class="btn btn-ghost btn-sm mov-menu-btn" data-id="${m.id}" style="padding:5px 12px;">${(sinClasificarFila||depSinClas||traspasoMal)?'⚠ ⋯':'⋯'}</button>
         <div class="mov-menu-dropdown" data-menu="${m.id}" style="display:none;position:absolute;right:8px;top:100%;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);z-index:20;min-width:120px;overflow:hidden;">
           <button class="mov-editar" data-id="${m.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;">Editar</button>
           <button class="mov-del" data-id="${m.id}" style="display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;cursor:pointer;font-size:13px;color:var(--red);border-top:1px solid var(--line);">Eliminar</button>
@@ -16302,11 +16363,15 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
   const totalCargosMes = ledger.reduce((s,m)=>s+(Number(m.cargos)||0),0);
   const sinClasificar = ledger.filter(m => !m.auto && (m.tipo_salida || 'otro') === 'otro' && (Number(m.cargos)||0) > 0);
   const totalSinClasificar = sinClasificar.reduce((s,m)=>s+(Number(m.cargos)||0),0);
+  const depsSinClas = ledger.filter(depositoSinClasificar);
+  const totalDepsSinClas = depsSinClas.reduce((s,m)=>s+(Number(m.depositos)||0),0);
+  const nTraspasosMal = new Set(ledger.filter(m => !m.auto && m.traspaso_id && mapaTraspasos.get(m.traspaso_id) && mapaTraspasos.get(m.traspaso_id).estado !== 'ok').map(m => m.traspaso_id)).size;
   const datalistSubcuentas = `<datalist id="datalistGastoSubcuentas">${subcuentas.map(s => `<option value="${escAttr(rutaSubcuenta(s, subcuentas, mayores))}">`).join('')}</datalist>`;
 
   box.innerHTML = `
     ${datalistSubcuentas}
     <div id="sinClasificarBannerBanco">${sinClasificarBannerHtml(sinClasificar.length, totalSinClasificar)}</div>
+    ${bannersLedgerExtraHtml(depsSinClas.length, totalDepsSinClas, nTraspasosMal)}
     <div class="card-head" style="margin-top:14px;">
       <span class="hint">${escHtml(cuentaArr?.nombre || '')} · <span class="mf-badge-moneda">${escHtml(monedaCuentaBanco)}</span> — ${STATE.currentMonth}: Saldo inicial ${escHtml(pfxBanco)} ${fmt(saldoApertura)} · Depósitos ${escHtml(pfxBanco)} ${fmt(totalDepositosMes)} · Retiros ${escHtml(pfxBanco)} ${fmt(totalCargosMes)} · <strong>Saldo final ${escHtml(pfxBanco)} ${fmt(saldo)}</strong></span>
       <div style="display:flex;gap:8px;">
@@ -24625,7 +24690,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-04.1';
+const APP_VERSION = '2026-11-04.2';
 const RESPALDO_TABLAS = [['businesses', ['id']], ['fz_cuentas_mayor', ['id']], ['fz_subcuentas', ['id']], ['fz_polizas', ['id']], ['fz_polizas_lineas', ['id']], ['fz_proveedores_catalogo', ['id']], ['fz_proveedores', ['id']], ['fz_ventas', ['id']], ['fz_conceptos_venta', ['id']], ['fz_conceptos_sistema', ['id']], ['fz_conceptos', ['id']], ['fz_efectivo_monedas', ['id']], ['fz_efectivo_mov', ['id']], ['fz_bancos_cuentas', ['id']], ['fz_bancos_mov', ['id']], ['fz_pl_gastos', ['id']], ['fz_usuarios_autorizados', ['id']], ['fz_usuario_negocios', ['id']], ['fz_auditoria', ['id']], ['fz_adjuntos', ['id']], ['fz_pagos_aplicados', ['id']], ['fz_clientes', ['id']], ['fz_productos_servicios', ['id']], ['fz_folios_contador', ['business_id', 'tipo']], ['fz_facturas_clientes', ['id']], ['fz_facturas_clientes_lineas', ['id']], ['fz_cobros_aplicados', ['id']], ['fz_ordenes_venta', ['id']], ['fz_ordenes_venta_lineas', ['id']], ['fz_conciliaciones_bancarias', ['id']], ['fz_cierres_periodo', ['id']], ['fz_tc_cierre', ['id']], ['fz_tipos_cambio_cierre', ['id']], ['fz_cfdi', ['id']], ['fz_cfdi_bitacora', ['id']], ['fz_activos_fijos', ['id']], ['fz_depreciaciones_generadas', ['id']], ['fz_inpc_valores', ['id']], ['fz_recargos_tasas', ['id']], ['fz_pagos_impuestos', ['id']], ['fz_isr_datos_anuales', ['id']], ['fz_isr_conceptos', ['id']], ['fz_provisiones_fiscales', ['id']], ['fz_iva_realizaciones', ['id']], ['fz_aplicaciones_pago_fiscal', ['id']], ['fz_regimenes_fiscales_negocio', ['id']], ['fz_dias_inhabiles_fiscales', ['id']], ['fz_declaraciones_fiscales', ['id']], ['fz_reglas_vencimiento_impuesto', []], ['fz_calendario_fiscal_validacion', []], ['fz_catalogo_regimenes_fiscales', []], ['fz_papeles_trabajo', ['id']], ['fz_papel_conceptos', ['id']], ['fz_papel_concepto_fuentes', ['id']], ['fz_papel_concepto_accesorios', ['id']], ['fz_papel_historial', ['id']], ['fz_papel_soportes', ['id']], ['fz_mapeo_cuenta_concepto_fiscal', ['id']], ['fz_perdidas_fiscales', ['id']], ['fz_perdidas_fiscales_actualizaciones', ['id']], ['fz_perdidas_fiscales_aplicaciones', ['id']], ['fz_perdidas_fiscales_cierres', ['id']], ['fz_perdidas_fiscales_historial', ['id']], ['fz_perdidas_fiscales_soportes', ['id']], ['fz_ptu_eventos', ['id']], ['fz_ptu_historial', ['id']], ['fz_pagos_por_clasificar', ['id']], ['fz_iva_saldos_favor', ['id']], ['fz_iva_saldos_favor_movimientos', ['id']], ['fz_iva_saldos_favor_devoluciones', ['id']], ['fz_iva_saldo_favor_periodo_activo', ['id']]];
 const RESPALDO_BUCKETS = ['adjuntos', 'cfdi'], RESPALDO_MAX_ARCHIVOS_BYTES = 400 * 1024 * 1024, RESPALDO_AVISO_DIAS = 7;
 function respaldoEstado() { try { return JSON.parse(localStorage.getItem('finanzas_ultimo_respaldo') || 'null'); } catch (_) { return null; } }
