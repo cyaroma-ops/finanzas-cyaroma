@@ -400,6 +400,38 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 .tag-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;}
 .tag{padding:6px 14px;border-radius:20px;font-size:12.5px;font-weight:600;background:#f0f3f8;color:var(--muted);cursor:pointer;border:1px solid transparent;}
 .tag.active{background:var(--navy-1);color:#fff;}
+/* CFDI (XML) — cabecera compacta y fija (2026-11-04.4) */
+.cfdi-sticky{position:sticky;top:0;z-index:6;background:var(--paper,#f4f6f9);padding:6px 0 8px;margin:-6px 0 8px;}
+.cfdi-barra{display:flex;flex-wrap:wrap;align-items:center;gap:5px 6px;}
+.cfdi-chip{display:inline-flex;align-items:baseline;gap:5px;padding:2px 9px;border:1px solid var(--line);border-radius:999px;background:#fff;font-size:11.5px;color:var(--muted);line-height:1.5;white-space:nowrap;}
+.cfdi-chip b{font-size:13px;color:var(--navy-1);}
+.cfdi-chip b.red{color:var(--red);}
+.cfdi-carga-wrap{margin-left:auto;display:inline-flex;align-items:center;gap:6px;}
+.cfdi-carga{display:inline-flex;align-items:center;gap:8px;border:1.5px dashed #c5cedc;border-radius:10px;padding:3px 11px;font-size:12px;color:var(--muted);cursor:pointer;background:#fff;line-height:1.5;white-space:nowrap;}
+.cfdi-carga:hover,.cfdi-carga:focus-visible{border-color:var(--gold,#bf8f2e);outline:none;}
+.cfdi-carga strong{color:var(--navy-1);}
+.cfdi-rfc{font-size:11px;color:var(--muted);padding-left:8px;border-left:1px solid var(--line);}
+.cfdi-filtros{display:flex;flex-wrap:wrap;align-items:center;gap:5px 7px;margin-top:6px;padding:5px 9px;background:#fff;border:1px solid var(--line);border-radius:10px;}
+.cfdi-lbl{font-size:12px;font-weight:700;color:var(--navy-1);display:none;}
+@media (min-width:1400px){ .cfdi-lbl{display:inline;} }
+.cfdi-seg{display:inline-flex;gap:2px;background:#f0f3f8;border-radius:999px;padding:2px;}
+.cfdi-seg .tag{padding:2px 8px;font-size:11.5px;white-space:nowrap;}
+.cfdi-filtros select.cell,.cfdi-filtros input.cell{width:auto;height:28px;margin:0;padding:1px 7px;font-size:12px;}
+.cfdi-buscar{flex:1 1 150px;min-width:140px;max-width:320px;}
+.cfdi-cuenta{margin-left:auto;white-space:nowrap;font-size:11.5px;}
+.cfdi-acciones{position:relative;}
+.cfdi-acciones>summary{list-style:none;cursor:pointer;user-select:none;}
+.cfdi-acciones>summary::-webkit-details-marker{display:none;}
+.cfdi-acc-menu{position:absolute;right:0;top:calc(100% + 4px);z-index:8;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 6px 20px rgba(10,31,61,.14);padding:6px;display:flex;flex-direction:column;gap:4px;min-width:230px;}
+.cfdi-acc-menu .btn{width:100%;text-align:left;justify-content:flex-start;}
+@media (max-width:760px){
+  .cfdi-sticky{position:static;margin:0 0 8px;padding:0;}
+  .cfdi-carga-wrap{margin-left:0;width:100%;}
+  .cfdi-carga{flex:1 1 0;min-width:0;white-space:normal;}
+  .cfdi-buscar{max-width:none;flex:1 1 100%;}
+  .cfdi-cuenta{margin-left:0;}
+}
+
 
 .empty{padding:36px;text-align:center;color:var(--muted);font-size:13.5px;}
 
@@ -3204,6 +3236,6 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 </div>
 
 <script src="config.js"></script>
-<script src="app.js?v=2026-11-04.3"></script>
+<script src="app.js?v=2026-11-04.4"></script>
 </body>
 </html>

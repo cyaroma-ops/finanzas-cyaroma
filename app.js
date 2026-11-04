@@ -24690,7 +24690,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-04.3';
+const APP_VERSION = '2026-11-04.4';
 const RESPALDO_TABLAS = [['businesses', ['id']], ['fz_cuentas_mayor', ['id']], ['fz_subcuentas', ['id']], ['fz_polizas', ['id']], ['fz_polizas_lineas', ['id']], ['fz_proveedores_catalogo', ['id']], ['fz_proveedores', ['id']], ['fz_ventas', ['id']], ['fz_conceptos_venta', ['id']], ['fz_conceptos_sistema', ['id']], ['fz_conceptos', ['id']], ['fz_efectivo_monedas', ['id']], ['fz_efectivo_mov', ['id']], ['fz_bancos_cuentas', ['id']], ['fz_bancos_mov', ['id']], ['fz_pl_gastos', ['id']], ['fz_usuarios_autorizados', ['id']], ['fz_usuario_negocios', ['id']], ['fz_auditoria', ['id']], ['fz_adjuntos', ['id']], ['fz_pagos_aplicados', ['id']], ['fz_clientes', ['id']], ['fz_productos_servicios', ['id']], ['fz_folios_contador', ['business_id', 'tipo']], ['fz_facturas_clientes', ['id']], ['fz_facturas_clientes_lineas', ['id']], ['fz_cobros_aplicados', ['id']], ['fz_ordenes_venta', ['id']], ['fz_ordenes_venta_lineas', ['id']], ['fz_conciliaciones_bancarias', ['id']], ['fz_cierres_periodo', ['id']], ['fz_tc_cierre', ['id']], ['fz_tipos_cambio_cierre', ['id']], ['fz_cfdi', ['id']], ['fz_cfdi_bitacora', ['id']], ['fz_activos_fijos', ['id']], ['fz_depreciaciones_generadas', ['id']], ['fz_inpc_valores', ['id']], ['fz_recargos_tasas', ['id']], ['fz_pagos_impuestos', ['id']], ['fz_isr_datos_anuales', ['id']], ['fz_isr_conceptos', ['id']], ['fz_provisiones_fiscales', ['id']], ['fz_iva_realizaciones', ['id']], ['fz_aplicaciones_pago_fiscal', ['id']], ['fz_regimenes_fiscales_negocio', ['id']], ['fz_dias_inhabiles_fiscales', ['id']], ['fz_declaraciones_fiscales', ['id']], ['fz_reglas_vencimiento_impuesto', []], ['fz_calendario_fiscal_validacion', []], ['fz_catalogo_regimenes_fiscales', []], ['fz_papeles_trabajo', ['id']], ['fz_papel_conceptos', ['id']], ['fz_papel_concepto_fuentes', ['id']], ['fz_papel_concepto_accesorios', ['id']], ['fz_papel_historial', ['id']], ['fz_papel_soportes', ['id']], ['fz_mapeo_cuenta_concepto_fiscal', ['id']], ['fz_perdidas_fiscales', ['id']], ['fz_perdidas_fiscales_actualizaciones', ['id']], ['fz_perdidas_fiscales_aplicaciones', ['id']], ['fz_perdidas_fiscales_cierres', ['id']], ['fz_perdidas_fiscales_historial', ['id']], ['fz_perdidas_fiscales_soportes', ['id']], ['fz_ptu_eventos', ['id']], ['fz_ptu_historial', ['id']], ['fz_pagos_por_clasificar', ['id']], ['fz_iva_saldos_favor', ['id']], ['fz_iva_saldos_favor_movimientos', ['id']], ['fz_iva_saldos_favor_devoluciones', ['id']], ['fz_iva_saldo_favor_periodo_activo', ['id']]];
 const RESPALDO_BUCKETS = ['adjuntos', 'cfdi'], RESPALDO_MAX_ARCHIVOS_BYTES = 400 * 1024 * 1024, RESPALDO_AVISO_DIAS = 7;
 function respaldoEstado() { try { return JSON.parse(localStorage.getItem('finanzas_ultimo_respaldo') || 'null'); } catch (_) { return null; } }
@@ -25061,6 +25061,13 @@ function cfdiEstadoHtml(c) {
   if (c.estatus_sat === 'cancelado') return caja(rojo, 'No clasificable (cancelado)');
   return caja(mut, cfdiEsClasificable(c) ? 'Por clasificar' : 'Por clasificar<br><span title="Por ahora se clasifican los CFDI de ingreso (recibidos = gastos, emitidos = ventas) y de egreso (notas de crédito)">(este tipo aún no se registra: puedes ignorarlo desde su detalle)</span>');
 }
+function ajustarCabeceraFijaCfdi(el) {
+  const cab = el.querySelector('#cfdiCabecera'); if (!cab) return;
+  const tb = document.querySelector('.topbar');
+  const fija = !!tb && getComputedStyle(tb).position === 'sticky';
+  cab.style.top = (fija ? Math.round(tb.getBoundingClientRect().height) : 0) + 'px';
+  if (!window.__cfdiCabResize) { window.__cfdiCabResize = true; window.addEventListener('resize', () => { const e = document.getElementById('sec-cfdi'); if (e) ajustarCabeceraFijaCfdi(e); }); }
+}
 function pintarCfdi(el, b) {
   const todos = STATE_cfdi.datos, f = STATE_cfdi, q = f.q.trim().toLowerCase();
   const coincideQ = (c) => !q || [c.uuid, c.nombre_emisor, c.nombre_receptor, c.rfc_emisor, c.rfc_receptor, c.serie, c.folio].some(v => String(v || '').toLowerCase().includes(q));
@@ -25090,30 +25097,33 @@ function pintarCfdi(el, b) {
   };
   const MAX = 500;
   const hayDatos = todos.length > 0;
-  const filtrosHtml = !hayDatos ? '' : `
-      <div style="display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;">
-        <div style="flex:1;min-width:280px;">${fila('dir', ['emitido', 'recibido'], 'Todos', v => v === 'emitido' ? 'Emitidos' : 'Recibidos', faceta('dir', c => c.direccion), true)}</div>
-        <input id="cfdiBuscar" class="cell" type="text" placeholder="Buscar RFC, nombre, UUID o folio" value="${revEsc(f.q)}" style="width:260px;">
-      </div>
-      ${fila('tipo', Object.keys(CFDI_TIPOS), 'Todos los tipos', v => `${CFDI_TIPOS[v]}`, faceta('tipo', FACETAS.tipo.valorDe))}
-      ${fila('sat', ['no_verificado', 'vigente', 'cancelado', 'en_proceso', 'no_encontrado'], 'Cualquier estatus SAT', v => CFDI_ESTATUS_SAT[v], faceta('sat', FACETAS.sat.valorDe))}
-      ${avisos.length ? `<div style="font-size:11.5px;color:var(--muted);margin:0 0 8px;">${avisos.map(revEsc).join('<br>')}</div>` : ''}`;
+  // Lista desplegable de una faceta: "Todos" + solo las opciones que tienen resultados (y la elegida), cada una con su conteo (misma regla de siempre).
+  const selFaceta = (campo, orden, textoTodos, etiqueta, conteos) => {
+    const total = Object.values(conteos).reduce((x, y) => x + y, 0);
+    const opciones = orden.filter(v => conteos[v] > 0 || f[campo] === v);
+    if (!opciones.length) return '';
+    return `<select class="cell cfdi-sel" data-faceta="${campo}" aria-label="${escAttr(textoTodos)}"><option value="todos"${f[campo] === 'todos' ? ' selected' : ''}>${escHtml(textoTodos)} (${total})</option>${opciones.map(v => `<option value="${escAttr(v)}"${f[campo] === v ? ' selected' : ''}>${escHtml(etiqueta(v))} (${conteos[v] || 0})</option>`).join('')}</select>`;
+  };
+  const cDir = faceta('dir', c => c.direccion), totalDir = Object.values(cDir).reduce((x, y) => x + y, 0);
+  const segDir = `<div class="cfdi-seg">${tag('dir', 'todos', `Todos (${totalDir})`)}${tag('dir', 'emitido', `Emitidos (${cDir.emitido || 0})`)}${tag('dir', 'recibido', `Recibidos (${cDir.recibido || 0})`)}</div>`;
+  const chip = (txt, valor, rojo) => `<span class="cfdi-chip"><span>${txt}</span><b class="num${rojo ? ' red' : ''}">${valor}</b></span>`;
+  const nCancelados = cnt(c => c.estatus_sat === 'cancelado');
   el.innerHTML = `
-    <div class="kpi-grid kpi-grid-mobile-compact" style="margin-bottom:14px;">
-      <div class="kpi"><div class="label">CFDI cargados</div><div class="value num">${todos.length}</div></div>
-      <div class="kpi"><div class="label">Emitidos</div><div class="value num">${cnt(c => c.direccion === 'emitido')}</div></div>
-      <div class="kpi"><div class="label">Recibidos</div><div class="value num">${cnt(c => c.direccion === 'recibido')}</div></div>
-      <div class="kpi"><div class="label">Por clasificar</div><div class="value num">${cnt(c => c.estado === 'por_clasificar')}</div></div>
-      <div class="kpi"><div class="label">Cancelados</div><div class="value num ${cnt(c => c.estatus_sat === 'cancelado') ? 'red' : ''}">${cnt(c => c.estatus_sat === 'cancelado')}</div></div>
-    </div>
-    <div class="card" style="margin-bottom:14px;">
-      <div class="card-head"><h3>Cargar XML del SAT</h3><span class="hint">RFC del negocio: <strong>${revEsc(String(b.rfc).toUpperCase())}</strong></span></div>
-      <div id="cfdiDrop" style="border:2px dashed var(--line);border-radius:10px;padding:22px;text-align:center;cursor:pointer;color:var(--muted);font-size:13px;">Arrastra aquí el <strong>ZIP</strong> o los <strong>XML</strong> descargados del SAT, o haz clic para elegirlos.<br><span style="font-size:11.5px;">Se detecta solo si cada CFDI es emitido o recibido. Antes de guardar verás un resumen; no se crea ninguna factura ni movimiento.</span></div>
-      <input type="file" id="cfdiArchivos" multiple accept=".xml,.zip,application/xml,text/xml,application/zip" style="display:none;">
+    <div class="cfdi-sticky" id="cfdiCabecera">
+      <div class="cfdi-barra">
+        ${chip('CFDI cargados', todos.length)}${chip('Emitidos', cnt(c => c.direccion === 'emitido'))}${chip('Recibidos', cnt(c => c.direccion === 'recibido'))}${chip('Por clasificar', cnt(c => c.estado === 'por_clasificar'))}${chip('Cancelados', nCancelados, nCancelados > 0)}
+        <span class="cfdi-carga-wrap"><div id="cfdiDrop" class="cfdi-carga" role="button" tabindex="0" aria-label="Cargar XML del SAT"><span aria-hidden="true">⬆</span><span><strong>Cargar XML del SAT</strong> · ZIP o XML</span><span class="cfdi-rfc">RFC ${revEsc(String(b.rfc).toUpperCase())}</span></div>${infoTipHtml('Arrastra aquí el ZIP o los XML descargados del SAT, o haz clic para elegirlos. Se detecta solo si cada CFDI es emitido o recibido. Antes de guardar verás un resumen; no se crea ninguna factura ni movimiento.')}</span>
+        <input type="file" id="cfdiArchivos" multiple accept=".xml,.zip,application/xml,text/xml,application/zip" style="display:none;">
+      </div>
+      <div class="cfdi-filtros">
+        <span class="cfdi-lbl">Comprobantes</span>
+        ${hayDatos ? `${segDir}${selFaceta('tipo', Object.keys(CFDI_TIPOS), 'Todos los tipos', v => `${CFDI_TIPOS[v]}`, faceta('tipo', FACETAS.tipo.valorDe))}${selFaceta('sat', ['no_verificado', 'vigente', 'cancelado', 'en_proceso', 'no_encontrado'], 'Cualquier estatus SAT', v => CFDI_ESTATUS_SAT[v], faceta('sat', FACETAS.sat.valorDe))}<input id="cfdiBuscar" class="cell cfdi-buscar" type="text" placeholder="RFC, nombre, UUID o folio" title="Buscar por RFC, nombre, UUID o folio" aria-label="Buscar por RFC, nombre, UUID o folio" value="${revEsc(f.q)}">` : ''}
+        <span class="hint cfdi-cuenta">${visibles.length} de ${todos.length}</span>
+        <details class="cfdi-acciones"><summary class="btn btn-ghost btn-sm">Acciones ▾</summary><div class="cfdi-acc-menu"><button class="btn btn-ghost btn-sm" id="cfdiMetaBtn" title="Marca de golpe los CFDI cancelados con el archivo de metadata del SAT">Estatus con metadata del SAT</button>${visibles.length ? '<button class="btn btn-ghost btn-sm" id="cfdiZipLote" title="Descarga el XML y el PDF de cada comprobante que estás viendo (máximo 200)">Descargar XML + PDF (ZIP)</button>' : ''}</div></details>
+      </div>
+      ${avisos.length ? `<div style="font-size:11.5px;color:var(--muted);margin:6px 2px 0;">${avisos.map(revEsc).join('<br>')}</div>` : ''}
     </div>
     <div class="card">
-      <div class="card-head"><h3>Comprobantes</h3><div style="display:flex;gap:8px;align-items:center;"><span class="hint">${visibles.length} de ${todos.length}</span><button class="btn btn-ghost btn-sm" id="cfdiMetaBtn" title="Marca de golpe los CFDI cancelados con el archivo de metadata del SAT">Estatus con metadata del SAT</button>${visibles.length ? '<button class="btn btn-ghost btn-sm" id="cfdiZipLote" title="Descarga el XML y el PDF de cada comprobante que estás viendo (máximo 200)">Descargar XML + PDF (ZIP)</button>' : ''}</div></div>
-      ${filtrosHtml}
       <div class="table-wrap scroll-sticky"><table class="tabla-operativa"><thead><tr><th>Fecha</th><th>Dirección</th><th>Serie / Folio</th><th>Contraparte</th><th class="num">Total</th><th class="num">IVA</th><th>Estatus SAT</th><th></th></tr></thead><tbody>
         ${visibles.length ? visibles.slice(0, MAX).map(c => `<tr>
           <td style="white-space:nowrap;">${fechaCorta(c.fecha)}</td>
@@ -25127,6 +25137,10 @@ function pintarCfdi(el, b) {
         ${visibles.length > MAX ? `<tr><td colspan="8" style="color:var(--muted);">Se muestran ${MAX} de ${visibles.length}: afina los filtros o la búsqueda.</td></tr>` : ''}
       </tbody></table></div></div>`;
   el.querySelectorAll('[data-filtro]').forEach(t => t.addEventListener('click', () => { STATE_cfdi[t.dataset.filtro] = t.dataset.valor; pintarCfdi(el, b); }));
+  el.querySelectorAll('[data-faceta]').forEach(s => s.addEventListener('change', () => { STATE_cfdi[s.dataset.faceta] = s.value; pintarCfdi(el, b); }));
+  ajustarCabeceraFijaCfdi(el);
+  el.querySelectorAll('.cfdi-acc-menu button').forEach(x => x.addEventListener('click', () => { const d = x.closest('details'); if (d) d.removeAttribute('open'); }));
+  if (!window.__cfdiAccCierra) { window.__cfdiAccCierra = true; document.addEventListener('click', (e) => { document.querySelectorAll('.cfdi-acciones[open]').forEach(d => { if (!d.contains(e.target)) d.removeAttribute('open'); }); }); }
   const buscar = el.querySelector('#cfdiBuscar'); if (buscar) buscar.addEventListener('input', () => { STATE_cfdi.q = buscar.value; clearTimeout(buscar._t); buscar._t = setTimeout(() => { pintarCfdi(el, b); const n = el.querySelector('#cfdiBuscar'); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }, 250); });
   el.querySelectorAll('.cfdi-ver').forEach(x => x.addEventListener('click', () => abrirCfdiDetalle(x.dataset.id)));
   el.querySelectorAll('.cfdi-estatus').forEach(x => x.addEventListener('click', () => abrirCfdiEstatus(x.dataset.id)));
@@ -25137,6 +25151,7 @@ function pintarCfdi(el, b) {
   el.querySelectorAll('.cfdi-reabrir').forEach(x => x.addEventListener('click', () => cfdiReabrirClasificacion(x.dataset.id)));
   const drop = el.querySelector('#cfdiDrop'), input = el.querySelector('#cfdiArchivos');
   drop.addEventListener('click', () => input.click());
+  drop.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); input.click(); } });
   input.addEventListener('change', () => { if (input.files.length) cfdiCargarArchivos([...input.files], b); input.value = ''; });
   drop.addEventListener('dragover', (ev) => { ev.preventDefault(); drop.style.background = '#fdf6e8'; });
   drop.addEventListener('dragleave', () => { drop.style.background = ''; });
