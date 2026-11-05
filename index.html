@@ -424,6 +424,102 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 .cfdi-acciones>summary::-webkit-details-marker{display:none;}
 .cfdi-acc-menu{position:absolute;right:0;top:calc(100% + 4px);z-index:8;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 6px 20px rgba(10,31,61,.14);padding:6px;display:flex;flex-direction:column;gap:4px;min-width:230px;}
 .cfdi-acc-menu .btn{width:100%;text-align:left;justify-content:flex-start;}
+/* ===== Ventana «Movimiento» (Bancos/Efectivo) — tarjetas, dos columnas y Resumen (2026-11-05.2). Todo con #movWorkspace: Pólizas y Proveedores no cambian ===== */
+#movWorkspace .mov-cap-grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,3fr);gap:22px;align-items:stretch;min-height:100%;}
+#movWorkspace .mov-col-izq,#movWorkspace .mov-col-der{display:flex;flex-direction:column;gap:16px;min-width:0;}
+#movWorkspace .mov-card{box-sizing:border-box;border:1px solid var(--line);border-radius:14px;padding:20px 22px;background:#fff;}
+#movWorkspace .mov-col-der .mov-card{flex:1 1 auto;}
+#movWorkspace .mov-card-soporte{flex:1 1 auto;display:flex;flex-direction:column;}
+#movWorkspace .mov-card-titulo{margin:0 0 14px;font-size:11.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);}
+#movWorkspace .mov-card .field{margin-bottom:0;}
+#movWorkspace .mov-datos-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:14px;}
+#movWorkspace .mov-datos-grid>.field{grid-column:span 2;}
+#movWorkspace .mov-datos-grid>#movDescField{grid-column:1/-1;}
+#movWorkspace .mov-datos-grid:has(#movReferenciaWrap:not([style*="none"])):has(#movConceptoWrap:not([style*="none"]))>#movDescField{grid-column:span 4;}
+#movWorkspace .mov-imp-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;}
+#movWorkspace #movCargos,#movWorkspace #movDepositos{height:58px;font-size:22px;font-weight:700;text-align:right;}
+#movWorkspace #movCargos.mov-imp-cero,#movWorkspace #movDepositos.mov-imp-cero{background:#f3f5f9;color:var(--muted);font-weight:600;}
+#movWorkspace #movCargos.mov-imp-activo,#movWorkspace #movDepositos.mov-imp-activo{background:#fff9ea;border-color:#d9be7e;}
+#movWorkspace .mov-clasif-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;}
+#movWorkspace .mov-clasif-grid>#movIvaWrap,#movWorkspace .mov-clasif-grid>#movFacturasWrap,#movWorkspace .mov-clasif-grid>#movFacturasClienteWrap{grid-column:1/-1;margin-bottom:0;}
+#movWorkspace .mov-card-cab{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;}
+#movWorkspace .mov-card-cab .mov-card-titulo{margin:0;}
+#movWorkspace .mov-chips{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;}
+#movWorkspace .mov-chip{padding:3px 10px;border-radius:999px;background:#eaeff6;font-size:12px;font-weight:700;color:var(--navy-1);}
+#movWorkspace .mov-chip-ok{background:#e1f2e8;color:#11603a;}
+#movWorkspace .mov-chip-warn{background:#fbe3b0;color:#6b4300;}
+#movWorkspace .mov-par{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:10px;align-items:center;}
+#movWorkspace .mov-mini{box-sizing:border-box;border:1px solid #d9dfe9;border-radius:12px;padding:12px 14px;background:#fafbfd;min-width:0;}
+#movWorkspace .mov-mini-actual{border:2px solid var(--navy-1);background:#fff;}
+#movWorkspace .mov-mini-falta{border:2px dashed #c4902a;background:#fffbf1;}
+#movWorkspace .mov-mini p{margin:0;}
+#movWorkspace .mov-mini-rot{margin-bottom:4px!important;font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--muted);}
+#movWorkspace .mov-mini-cuenta{font-size:14.5px;font-weight:600;color:var(--navy-1);overflow-wrap:anywhere;}
+#movWorkspace .mov-mini-monto{margin-top:2px!important;font-size:18px;font-weight:700;color:var(--navy-1);}
+#movWorkspace .mov-mini-fecha{margin-top:2px!important;font-size:12.5px;color:var(--muted);}
+#movWorkspace .mov-aviso{display:flex;gap:10px;align-items:flex-start;margin-bottom:14px;padding:12px 14px;border-radius:12px;background:#fff6e5;border:1.5px solid #e0b04f;color:#4a3000;font-size:13.5px;line-height:1.5;}
+#movWorkspace .mov-aviso svg{flex:none;margin-top:1px;}
+#movWorkspace .mov-lista{margin:0;display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:13.5px;}
+#movWorkspace .mov-lista dt{color:var(--muted);font-weight:600;}
+#movWorkspace .mov-lista dd{margin:0;color:var(--navy-1);}
+#movWorkspace .mov-soporte-nota{margin:10px 0 0;font-size:12.5px;color:var(--muted);}
+#movWorkspace .mov-card-soporte .doc-adjunto-bloque{flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:8px;border:2px dashed #b7c1d1;border-radius:12px;background:#f7f9fc;padding:20px 18px;min-height:200px;text-align:center;}
+#movWorkspace .mov-card-soporte .doc-adjunto-bloque.doc-adjunto-dragover{background:#fdf6e8;border-color:var(--gold);}
+#movWorkspace .mov-card-soporte .doc-adjunto-label{display:none;}
+#movWorkspace .mov-card-soporte .doc-adjunto-lista{width:100%;text-align:left;}
+#movWorkspace .mov-card-soporte .doc-adjunto-agregar{display:inline-block;padding:11px 18px;border:1.5px solid #cbd3e0;border-radius:10px;background:#fff;text-decoration:none;font-weight:600;color:var(--navy-1);}
+#movWorkspace .mov-card-soporte .doc-adjunto-hint{display:block;font-size:12px;margin:0;}
+#movWorkspace .mov-card-soporte #movAdjuntoCell:has(.adjuntos-abrir-btn){flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;border:1.5px solid #d9dfe9;border-radius:12px;background:#f7f9fc;padding:20px 18px;min-height:200px;}
+#movWorkspace .mov-card-soporte #movAdjuntoWrap{flex:1;display:flex;flex-direction:column;}
+#movWorkspace .mov-card-soporte #movAdjuntoWrap>div{flex:1;display:flex;flex-direction:column;}
+#movWorkspace #movAdjuntoCell .adjuntos-abrir-btn{font-size:13.5px!important;padding:11px 20px!important;}
+/* Con documento abierto (visor a la izquierda) y en celular: una sola columna compacta; el Resumen baja debajo del formulario */
+#movWorkspace.doc-workspace-split .doc-workspace-panel-captura{min-height:0;overflow-y:auto;}
+#movWorkspace.doc-workspace-split .mov-cap-grid,#movWorkspace .mov-cap-grid.mov-cap-1col{display:flex;flex-direction:column;gap:8px;min-height:0;}
+#movWorkspace.doc-workspace-split .mov-col-izq,#movWorkspace.doc-workspace-split .mov-col-der{display:contents;}
+#movWorkspace.doc-workspace-split #movCardDatos{order:1;}#movWorkspace.doc-workspace-split #movCardImportes{order:2;}#movWorkspace.doc-workspace-split #movCardClasif{order:3;}#movWorkspace.doc-workspace-split #movCardResumen{order:4;}#movWorkspace.doc-workspace-split #movCardSoporte{order:5;}
+#movWorkspace.doc-workspace-split .mov-card{padding:12px 16px;flex:0 0 auto;}
+#movWorkspace.doc-workspace-split .mov-card-titulo{margin-bottom:8px;}
+#movWorkspace.doc-workspace-split .mov-datos-grid,#movWorkspace.doc-workspace-split .mov-imp-grid,#movWorkspace.doc-workspace-split .mov-clasif-grid{gap:10px 12px;}
+#movWorkspace.doc-workspace-split .mov-card-resumen .mov-mini{padding:8px 12px;}
+#movWorkspace.doc-workspace-split #movCargos,#movWorkspace.doc-workspace-split #movDepositos{height:44px;font-size:19px;}
+#movWorkspace.doc-workspace-split .mov-card-soporte .doc-adjunto-bloque{min-height:0;padding:6px 8px;gap:4px;border:1px solid var(--line);background:#fff;align-items:stretch;text-align:left;}
+#movWorkspace.doc-workspace-split #movCardSoporte .mov-card-titulo{display:none;}
+#movWorkspace.doc-workspace-split .mov-card-soporte .doc-adjunto-agregar{padding:4px 0;border:none;background:none;text-decoration:underline;font-weight:500;}
+#movWorkspace.doc-workspace-split .mov-card-resumen .mov-mini-monto,#movWorkspace.doc-workspace-split .mov-card-resumen .mov-mini-fecha{display:inline-block;margin-top:0!important;}
+#movWorkspace.doc-workspace-split .mov-card-resumen .mov-mini-fecha{margin-left:8px;}
+#movWorkspace.doc-workspace-split .mov-card-resumen .mov-mini-monto{font-size:16px;}
+#movWorkspace.doc-workspace-split .mov-card-soporte .doc-adjunto-hint,#movWorkspace.doc-workspace-split .mov-soporte-nota{display:none;}
+@media (max-width:880px){
+#movWorkspace .mov-cap-grid{display:flex;flex-direction:column;gap:12px;min-height:0;}
+#movWorkspace .mov-col-izq,#movWorkspace .mov-col-der{display:contents;}
+#movWorkspace #movCardDatos{order:1;}#movWorkspace #movCardImportes{order:2;}#movWorkspace #movCardClasif{order:3;}#movWorkspace #movCardResumen{order:4;}#movWorkspace #movCardSoporte{order:5;}
+#movWorkspace .mov-card{padding:14px 16px;flex:0 0 auto;}
+#movWorkspace .mov-datos-grid,#movWorkspace .mov-imp-grid,#movWorkspace .mov-clasif-grid{grid-template-columns:1fr;}
+#movWorkspace .mov-datos-grid>.field,#movWorkspace .mov-datos-grid>#movDescField,#movWorkspace .mov-datos-grid:has(#movReferenciaWrap:not([style*="none"])):has(#movConceptoWrap:not([style*="none"]))>#movDescField{grid-column:1/-1;}
+#movWorkspace .mov-par{grid-template-columns:1fr;}#movWorkspace .mov-par>svg{display:none;}
+}
+
+/* ===== Selector de mes propio (2026-11-05.2): solo se usa donde el navegador no trae uno ===== */
+.selmes-btn{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:space-between;gap:10px;min-width:150px;text-align:left;cursor:pointer;background:#fff;color:var(--navy-1);}
+.field .selmes-btn{display:flex;width:100%;padding:13px 15px;border:1.5px solid var(--line);border-radius:10px;font:500 14.5px 'Inter',system-ui,sans-serif;}
+.selmes-btn.month-picker{font:600 13px 'Inter',system-ui,sans-serif;cursor:pointer;}
+.selmes-btn:disabled{opacity:.55;cursor:not-allowed;}
+.selmes-vacio{color:var(--muted);}
+.selmes-pop{position:fixed;z-index:2147483000;width:264px;box-sizing:border-box;background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:0 14px 40px rgba(15,39,68,.22);padding:12px;font-family:'Inter',system-ui,sans-serif;}
+.selmes-cab{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;color:var(--navy-1);}
+.selmes-cab strong{font-size:15px;}
+.selmes-nav{width:36px;height:36px;border:1px solid var(--line);border-radius:9px;background:#fff;font-size:18px;line-height:1;cursor:pointer;color:var(--navy-1);}
+.selmes-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;}
+.selmes-mes{height:40px;border:1px solid transparent;border-radius:9px;background:#f4f6fa;font:600 13.5px 'Inter',system-ui,sans-serif;cursor:pointer;color:var(--navy-1);}
+.selmes-mes:hover{background:#e9eef6;}
+.selmes-hoy{border-color:#c4902a;}
+.selmes-sel{background:var(--navy-1);color:#fff;}
+.selmes-sel:hover{background:var(--navy-1);}
+.selmes-pie{display:flex;justify-content:space-between;margin-top:10px;}
+.selmes-acc{border:none;background:none;font:600 13px 'Inter',system-ui,sans-serif;color:var(--navy-1);cursor:pointer;text-decoration:underline;padding:6px 4px;}
+.selmes-btn:focus-visible,.selmes-pop button:focus-visible{outline:3px solid rgba(184,137,43,.45);outline-offset:2px;}
+
 /* CFDI (XML): sin el margen inferior de 60 px, la tabla llega hasta el borde de la pantalla (2026-11-04.5) */
 .content:has(#sec-cfdi.active){padding-bottom:14px;}
 
@@ -3015,41 +3111,40 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
     <h3 id="modalMovimientoTitulo">Agregar movimiento</h3>
     <div class="doc-workspace" id="movWorkspace">
     <div class="doc-workspace-panel-captura">
-    <div class="grid-2">
-      <div class="field">
-        <label>Fecha</label>
-        <input type="date" id="movFecha">
-      </div>
-      <div class="field" id="movReferenciaWrap" style="display:none;">
-        <label>Referencia</label>
-        <input type="text" id="movReferencia" placeholder="Opcional">
-      </div>
-    </div>
-    <div class="grid-2">
-      <div class="field">
-        <label id="movLabel1">Tercero / Concepto</label>
-        <input type="text" id="movCampo1" placeholder="Ej. Distribuidora de Bebidas">
-      </div>
-      <div class="field" id="movConceptoWrap" style="display:none;">
-        <label>Concepto</label>
-        <input type="text" id="movConcepto" placeholder="Opcional">
-      </div>
-    </div>
-    <div class="field">
-      <label>Descripción</label>
-      <input type="text" id="movDescripcion" placeholder="Opcional">
-    </div>
-    <div class="grid-2">
-      <div class="field">
-        <label>Cargos (sale)</label>
-        <input type="number" step="0.01" id="movCargos" value="0">
-      </div>
-      <div class="field">
-        <label>Depósitos (entra)</label>
-        <input type="number" step="0.01" id="movDepositos" value="0">
-      </div>
-    </div>
-    <div class="field">
+<div class="mov-cap-grid" id="movCapGrid">
+<div class="mov-col-izq">
+<section class="mov-card mov-card-soporte" id="movCardSoporte">
+<h4 class="mov-card-titulo">Soporte</h4>
+<div class="field" id="movAdjuntoWrap" style="display:none;"><div id="movAdjuntoCell"></div></div>
+<p class="mov-soporte-nota" id="movSoporteNota"></p>
+</section>
+<section class="mov-card mov-card-resumen" id="movCardResumen">
+<div class="mov-card-cab"><h4 class="mov-card-titulo" id="movResumenTitulo">Resumen del movimiento</h4><div class="mov-chips" id="movResumenChips"></div></div>
+<div id="movResumenCuerpo"></div>
+</section>
+</div>
+<div class="mov-col-der">
+<section class="mov-card" id="movCardDatos">
+<h4 class="mov-card-titulo">Datos del movimiento</h4>
+<div class="mov-datos-grid">
+<div class="field"><label>Fecha</label><input type="date" id="movFecha"></div>
+<div class="field" id="movReferenciaWrap" style="display:none;"><label>Referencia</label><input type="text" id="movReferencia" placeholder="Opcional"></div>
+<div class="field"><label id="movLabel1">Tercero / Concepto</label><input type="text" id="movCampo1" placeholder="Ej. Distribuidora de Bebidas"></div>
+<div class="field" id="movConceptoWrap" style="display:none;"><label>Concepto</label><input type="text" id="movConcepto" placeholder="Opcional"></div>
+<div class="field" id="movDescField"><label>Descripción</label><input type="text" id="movDescripcion" placeholder="Opcional"></div>
+</div>
+</section>
+<section class="mov-card" id="movCardImportes">
+<h4 class="mov-card-titulo">Importes</h4>
+<div class="mov-imp-grid">
+<div class="field"><label>Cargos (sale)</label><input type="number" step="0.01" id="movCargos" value="0"></div>
+<div class="field"><label>Depósitos (entra)</label><input type="number" step="0.01" id="movDepositos" value="0"></div>
+</div>
+</section>
+<section class="mov-card" id="movCardClasif">
+<h4 class="mov-card-titulo">Clasificación</h4>
+<div class="mov-clasif-grid">
+<div class="field">
       <label id="movTipoLabel">Tipo de salida</label>
       <select id="movTipoSalida">
         <option value="otro">Sin clasificar</option>
@@ -3063,7 +3158,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
     <div class="field" id="movTraspasoDestinoWrap" style="display:none;">
       <label id="movTraspasoDestinoLabel">Cuenta destino</label>
       <select id="movTraspasoDestino"></select>
-      <p id="movTraspasoAviso" style="display:none;margin:6px 0 0;font-size:12px;color:var(--red);">Esta operación no tiene su otra mitad. Elige la cuenta y guarda: se creará.</p>
+      <p id="movTraspasoAviso" style="display:none;margin:6px 0 0;font-size:12px;color:var(--red);">Este traspaso está incompleto. Elige la cuenta y guarda: se creará el movimiento que falta.</p>
       <p id="movOperacionFolio" style="display:none;margin:6px 0 0;font-size:12px;color:var(--muted);"></p>
     </div>
     <div class="field" id="movSubcuentaWrap" style="display:none;">
@@ -3130,12 +3225,12 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
       </div>
       <div id="movFacturasClienteList" style="max-height:220px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;"></div>
     </div>
-    <div class="field" id="movAdjuntoWrap" style="display:none;">
-      <label>Documento soporte</label>
-      <div id="movAdjuntoCell"></div>
     </div>
-    </div>
-    <div class="doc-workspace-panel-doc" id="movPanelDoc" style="display:none;">
+</section>
+</div>
+</div>
+</div>
+<div class="doc-workspace-panel-doc" id="movPanelDoc" style="display:none;">
       <div class="doc-viewer-toolbar">
         <strong id="movPanelDocNombre">Documento</strong>
         <button type="button" class="doc-toggle-viewer" id="movTogglePanelDoc">Ocultar</button>
@@ -3240,6 +3335,6 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 </div>
 
 <script src="config.js"></script>
-<script src="app.js?v=2026-11-05.1"></script>
+<script src="app.js?v=2026-11-05.2"></script>
 </body>
 </html>

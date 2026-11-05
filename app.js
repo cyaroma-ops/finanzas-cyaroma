@@ -825,7 +825,10 @@ async function boot() {
   setupMfaControls();
 
   document.getElementById('monthPicker').addEventListener('change', (e) => {
-    STATE.currentMonth = e.target.value;
+    const ymOk = normalizarMes(e.target.value);
+    if (!ymOk) { toast('Mes no válido: escríbelo como año-mes, por ejemplo 2026-11.', 'error'); e.target.value = STATE.currentMonth; return; }
+    if (e.target.value !== ymOk) e.target.value = ymOk;
+    STATE.currentMonth = ymOk;
     STATE_plRangoDesde = ''; STATE_plRangoHasta = '';
     renderCurrentSection();
   });
@@ -14153,9 +14156,9 @@ async function importarMovimientosBancoEfectivo(tabla, rows, businessId, cuentaR
   if (error) { toast('Error al importar: ' + error.message, 'error'); return false; }
   let legsFallidas = 0;
   for (const leg of legsNuevas) { const { error: e2 } = await sb.from(leg.tabla).insert(leg.row); if (e2) legsFallidas++; }
-  toast(`${nuevos.length} movimientos importados${omitir.size ? ` · ${omitir.size} ya existían y se omitieron` : ''}${legsNuevas.length ? ` (${legsNuevas.length - legsFallidas} traspaso(s) con su otra mitad)` : ''}.`);
+  toast(`${nuevos.length} movimientos importados${omitir.size ? ` · ${omitir.size} ya existían y se omitieron` : ''}${legsNuevas.length ? ` (${legsNuevas.length - legsFallidas} traspaso(s) con sus dos movimientos)` : ''}.`);
   if (filasSinDestino.length) toast(`${filasSinDestino.length} fila(s) marcadas "Traspaso" no tenían una "Cuenta destino" reconocible: se guardaron SIN CLASIFICAR. Clasifícalas desde Bancos/Efectivo.`, 'error');
-  if (legsFallidas) toast(`${legsFallidas} traspaso(s) no pudieron crear su otra mitad: revísalos en Revisión de consistencia.`, 'error');
+  if (legsFallidas) toast(`${legsFallidas} traspaso(s) quedaron incompletos (no se pudo crear el movimiento que falta): revísalos en Revisión de consistencia.`, 'error');
   return true;
 }
 
@@ -14253,7 +14256,7 @@ async function confirmarYEliminarMovimiento(table, row, onDone) {
   }
   const modulo = table === 'fz_bancos_mov' ? 'Bancos' : 'Efectivo';
   const monto = Number(row.cargos) > 0 ? Number(row.cargos) : Number(row.depositos) || 0;
-  registrarAuditoria(row.business_id, 'eliminar', modulo, `Movimiento ${row.fecha} · ${row.descripcion||row.proveedor||''} · ${fmt(monto)}${row.operacion_folio ? ' · operación ' + row.operacion_folio : ''}${idsAfectados.length?' (revirtió '+idsAfectados.length+' factura(s) de proveedor)':''}${idsAfectadosCliente.length?' (revirtió '+idsAfectadosCliente.length+' factura(s) de cliente)':''}${creditoLigado?' (eliminó crédito a favor por '+fmt(-creditoLigado.importe)+' generado por este mismo movimiento)':''}${parejaTraspaso?' (eliminó también la otra mitad del traspaso)':''}`);
+  registrarAuditoria(row.business_id, 'eliminar', modulo, `Movimiento ${row.fecha} · ${row.descripcion||row.proveedor||''} · ${fmt(monto)}${row.operacion_folio ? ' · operación ' + row.operacion_folio : ''}${idsAfectados.length?' (revirtió '+idsAfectados.length+' factura(s) de proveedor)':''}${idsAfectadosCliente.length?' (revirtió '+idsAfectadosCliente.length+' factura(s) de cliente)':''}${creditoLigado?' (eliminó crédito a favor por '+fmt(-creditoLigado.importe)+' generado por este mismo movimiento)':''}${parejaTraspaso?' (eliminó también el otro movimiento del traspaso)':''}`);
   onDone();
 }
 
@@ -15008,6 +15011,12 @@ function renderMovAdjuntoPendiente() {
   habilitarDragDropAdjunto(box.querySelector('.doc-adjunto-bloque'), agregarArchivos);
   if (window.innerWidth > 880) actualizarPanelDocumentoEmbebido(IDS_PANEL_DOC_MOV, pendientes);
 }
+// Los cambios de la ventana «Movimiento» se escuchan UNA sola vez (delegado en la ventana) y refrescan su Resumen y los importes.
+function iniciarVistaMovimientoUnaVez() {
+  if (window.__movVistaIniciada) return; const ws = document.getElementById('movWorkspace'); if (!ws) return; window.__movVistaIniciada = true;
+  const f = () => { if (typeof window.__movRefrescarVista === 'function') window.__movRefrescarVista(); };
+  ws.addEventListener('input', f); ws.addEventListener('change', f);
+}
 async function openMovimientoModal(contexto, movimientoExistente) {
   const modal = document.getElementById('modalMovimiento');
   document.getElementById('modalMovimientoTitulo').textContent = movimientoExistente ? 'Editar movimiento' : 'Agregar movimiento';
@@ -15423,6 +15432,53 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   document.getElementById('movTipoSalida').oninput = actualizarVisibilidadDetalle;
   actualizarVisibilidadDetalle();
 
+  // ---- Ventana «Movimiento»: importes que se resaltan/atenúan y tarjeta «Resumen» (2026-11-05.2). Solo lectura de lo que ya está en pantalla.
+  const FLECHA_SVG = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#5b6475" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>';
+  const AVISO_SVG = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#6b4300" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l10 18H2L12 3z"/><path d="M12 10v5"/><path d="M12 18.5v.01"/></svg>';
+  const movRefrescarVista = () => {
+    const g = (id) => document.getElementById(id);
+    if (!g('movCardResumen') || !g('movCargos')) return;
+    const car = Number(g('movCargos').value) || 0, dep = Number(g('movDepositos').value) || 0;
+    g('movCargos').classList.toggle('mov-imp-cero', car <= 0); g('movCargos').classList.toggle('mov-imp-activo', car > 0);
+    g('movDepositos').classList.toggle('mov-imp-cero', dep <= 0); g('movDepositos').classList.toggle('mov-imp-activo', dep > 0);
+    const val = g('movTipoSalida').value, esTras = (val === 'traspaso_banco' || val === 'traspaso_efectivo');
+    const esDep = dep > car, monto = esDep ? dep : car, fecha = g('movFecha').value;
+    const cuentaActual = (contexto.tipo === 'efectivo' ? 'Caja · ' : '') + ((cuentaInfo && cuentaInfo.nombre) || '');
+    const selD = g('movTraspasoDestino');
+    const destNombre = (esTras && selD && selD.value && selD.selectedIndex >= 0) ? selD.options[selD.selectedIndex].textContent : '';
+    const destTxt = destNombre ? ((val === 'traspaso_efectivo' ? 'Caja · ' : '') + destNombre) : '';
+    const chips = []; let cuerpo = '';
+    const mini = (rot, cuenta, esActual, falta) => `<div class="mov-mini${esActual ? ' mov-mini-actual' : ''}${falta ? ' mov-mini-falta' : ''}"><p class="mov-mini-rot">${rot}</p><p class="mov-mini-cuenta">${escHtml(cuenta)}</p><p class="mov-mini-monto">${monto > 0 ? fmt(monto) : '—'}</p><p class="mov-mini-fecha">${fecha ? fechaCorta(fecha) : ''}</p></div>`;
+    if (esTras) {
+      g('movResumenTitulo').textContent = 'Resumen del traspaso';
+      if (movimientoExistente && movimientoExistente.operacion_folio) chips.push(`<span class="mov-chip">Operación ${escHtml(movimientoExistente.operacion_folio)}</span>`);
+      if (movimientoExistente && movimientoExistente.traspaso_id) chips.push(traspasoSinPareja ? '<span class="mov-chip mov-chip-warn">Incompleto</span>' : '<span class="mov-chip mov-chip-ok">Completo</span>');
+      else chips.push('<span class="mov-chip">Se creará con sus dos movimientos</span>');
+      const faltaOtra = traspasoSinPareja && !destTxt;
+      const rotActual = (esDep ? 'DEPÓSITO' : 'SALIDA') + ' · ESTE MOVIMIENTO';
+      const rotOtra = (esDep ? 'SALIDA' : 'DEPÓSITO') + (faltaOtra ? ' · FALTA' : (traspasoSinPareja ? ' · SE CREARÁ AL GUARDAR' : ''));
+      const otra = faltaOtra ? 'Por elegir' : (destTxt || 'Por elegir');
+      const aviso = faltaOtra ? `<div class="mov-aviso">${AVISO_SVG}<p style="margin:0;"><strong>Falta ${esDep ? 'la salida' : 'el depósito'} de este traspaso.</strong> ${esDep ? 'Este depósito' : 'Esta salida'} de ${fmt(monto)} (${fecha ? fechaCorta(fecha) : 'sin fecha'}) no tiene ${esDep ? 'su salida' : 'su depósito'}. Elige la cuenta ${esDep ? 'de origen' : 'destino'} y guarda: se creará ${esDep ? 'la salida' : 'el depósito'} que falta.</p></div>` : '';
+      const salida = esDep ? mini(rotOtra, otra, false, faltaOtra) : mini(rotActual, cuentaActual, true, false);
+      const deposito = esDep ? mini(rotActual, cuentaActual, true, false) : mini(rotOtra, otra, false, faltaOtra);
+      cuerpo = aviso + `<div class="mov-par">${salida}${FLECHA_SVG}${deposito}</div>`;
+      const av = g('movTraspasoAviso');
+      if (av && traspasoSinPareja) av.textContent = esDep ? `Este depósito de ${fmt(monto)} (${fecha ? fechaCorta(fecha) : 'sin fecha'}) no tiene su salida. Elige la cuenta de origen y guarda: se creará la salida que falta.` : `Esta salida de ${fmt(monto)} (${fecha ? fechaCorta(fecha) : 'sin fecha'}) no tiene su depósito. Elige la cuenta destino y guarda: se creará el depósito que falta.`;
+    } else {
+      g('movResumenTitulo').textContent = 'Resumen del movimiento';
+      const selT = g('movTipoSalida'), tipoTxt = (selT.selectedIndex >= 0 && selT.options[selT.selectedIndex]) ? selT.options[selT.selectedIndex].textContent : '';
+      const selS = g('movSubcuenta'), sub = (val === 'gasto' && selS && selS.value && selS.selectedIndex >= 0) ? selS.options[selS.selectedIndex].textContent : '';
+      const filas = [['Movimiento', monto > 0 ? `${esDep ? 'Depósito' : 'Salida'} de ${fmt(monto)} · ${cuentaActual} · ${fecha ? fechaCorta(fecha) : 'sin fecha'}` : 'Captura el importe para ver el resumen']];
+      if (tipoTxt) filas.push(['Clasificación', tipoTxt + (sub ? ' · ' + sub : '')]);
+      if (movimientoExistente && movimientoExistente.created_at) filas.push(['Capturado', fechaCorta(String(movimientoExistente.created_at).slice(0, 10))]);
+      cuerpo = `<dl class="mov-lista">${filas.map(([k, v]) => `<dt>${escHtml(k)}</dt><dd>${escHtml(v)}</dd>`).join('')}</dl>`;
+    }
+    g('movResumenChips').innerHTML = chips.join(''); g('movResumenCuerpo').innerHTML = cuerpo;
+    const nota = g('movSoporteNota'); if (nota) nota.textContent = movimientoExistente ? 'Los documentos de un movimiento ya guardado se abren y se administran desde su ventana de adjuntos.' : '';
+  };
+  window.__movRefrescarVista = movRefrescarVista; iniciarVistaMovimientoUnaVez();
+  movRefrescarVista();
+
   document.getElementById('movAplicaIva').checked = movimientoExistente ? !!movimientoExistente.aplica_iva : false;
   document.getElementById('movIvaCampos').style.display = document.getElementById('movAplicaIva').checked ? '' : 'none';
   document.getElementById('movSubtotal').value = fmtInputVal(movimientoExistente?.subtotal ?? movimientoExistente?.cargos ?? 0);
@@ -15606,13 +15662,13 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     if (legDestino) {
       const previaPata = movimientoExistente ? { fecha: movimientoExistente.fecha, monto: montoDePata(movimientoExistente) } : null;
       const resLeg = await asegurarPataPareja(legDestino.tabla, { ...legDestino.row, ...legDestino.extra }, nuevoMov.id, previaPata);
-      if (!resLeg.ok) toast('El movimiento se guardó, pero hubo un error con la otra mitad del traspaso: ' + mensajeErrorTraspaso(resLeg.error), 'error');
+      if (!resLeg.ok) toast('El movimiento se guardó, pero hubo un error con el otro movimiento del traspaso: ' + mensajeErrorTraspaso(resLeg.error), 'error');
       else if (resLeg.accion === 'creada') toast('Traspaso guardado y reflejado en la cuenta destino.');
       else toast('Traspaso actualizado.' + (resLeg.sobrantes ? ` Aviso: la operación tiene ${resLeg.sobrantes} movimiento(s) de más; repárala en «Revisión de consistencia».` : ''));
     }
     if (patasAEliminarTras.length) {
       for (const p of patasAEliminarTras) await sb.from(p.tabla).delete().eq('id', p.fila.id);
-      registrarAuditoria(contexto.businessId, 'eliminar', contexto.tipo === 'efectivo' ? 'Efectivo' : 'Bancos', `Movimiento ${fecha} dejó de ser traspaso: se eliminó también su otra mitad (${fmt(montoDePata(patasAEliminarTras[0].fila))}, ${patasAEliminarTras[0].fila.fecha})`);
+      registrarAuditoria(contexto.businessId, 'eliminar', contexto.tipo === 'efectivo' ? 'Efectivo' : 'Bancos', `Movimiento ${fecha} dejó de ser traspaso: se eliminó también el otro movimiento del traspaso (${fmt(montoDePata(patasAEliminarTras[0].fila))}, ${patasAEliminarTras[0].fila.fecha})`);
     }
 
     // Al editar, siempre revisamos ambos lados (aunque no haya nada nuevo que aplicar) para
@@ -15806,12 +15862,15 @@ async function estadoTraspasosDeFilas(filas) {
 }
 // Un depósito que nadie clasificó: la Balanza lo abona a «Sin clasificar (revisar)» (cuenta de gastos).
 const depositoSinClasificar = (m) => !m.auto && (m.tipo_entrada || 'otro') === 'otro' && (Number(m.depositos) || 0) > 0 && !((Number(m.cargos) || 0) > 0);
-function marcaTraspasoHtml(info) {
+function marcaTraspasoHtml(info, fila) {
   if (!info || info.estado === 'ok') return '';
-  const txt = info.estado === 'incompleta' ? 'sin su otra mitad' : (info.estado === 'conExceso' ? 'con repetidos' : 'por revisar');
+  const esSalida = !!fila && Number(fila.cargos || 0) > 0;   // este renglón es la SALIDA (cargo) o el DEPÓSITO
+  const falta = esSalida ? 'su depósito' : 'su salida';
+  const txt = info.estado === 'incompleta' ? (fila ? 'falta ' + falta : 'traspaso incompleto') : (info.estado === 'conExceso' ? 'con repetidos' : 'por revisar');
   const tip = info.estado === 'incompleta'
-    ? 'Este traspaso no tiene su otra mitad. Ábrelo con ⋯ → Editar, elige la cuenta contraria y guarda.'
-    : 'Esta operación de traspaso tiene más movimientos de los que debería (un cargo y un abono). Repárala en Revisión de consistencia.';
+    ? (fila ? `${esSalida ? 'Esta salida' : 'Este depósito'} (${fechaCorta(fila.fecha)}) es parte de un traspaso, pero falta ${falta}. Ábrelo con ⋯ → Editar, elige la cuenta ${esSalida ? 'destino' : 'de origen'} y guarda: se crea ${esSalida ? 'el depósito' : 'la salida'} que falta.`
+      : 'Este traspaso está incompleto. Ábrelo con ⋯ → Editar, elige la cuenta contraria y guarda.')
+    : 'Esta operación de traspaso tiene más movimientos de los que debería (una salida y un depósito). Repárala en Revisión de consistencia.';
   // En una segunda línea que se AJUSTA al ancho de la columna (no la ensancha: la tabla no debe empujar el menú «⋯» fuera de la vista).
   return `<span style="display:block;max-width:112px;white-space:normal;line-height:1.25;font-size:11.5px;color:var(--red);font-weight:700;" title="${escAttr(tip)}">⚠ ${txt}</span>`;
 }
@@ -15964,7 +16023,7 @@ function wireSalidaCellHandlers(container, table, onChange, traspasoCtx, factura
     const resPareja = await asegurarPataPareja(tablaDestino, destinoPayload, origenRow.id, null);
     if (!resPareja.ok) { toast('Error al crear el traspaso: ' + mensajeErrorTraspaso(resPareja.error), 'error'); return; }
     const { error: errMarca } = await sb.from(table).update({ tipo_salida: 'traspaso', tipo_entrada: 'traspaso', traspaso_id: traspasoId, ...(folioOp ? { operacion_folio: folioOp } : {}) }).eq('id', sel.dataset.id);
-    if (errMarca) { toast('Se creó la otra mitad, pero no se pudo marcar este movimiento: ' + errMarca.message + '. Revísalo en «Revisión de consistencia».', 'error'); onChange(); return; }
+    if (errMarca) { toast('Se creó el otro movimiento del traspaso, pero no se pudo marcar este: ' + errMarca.message + '. Revísalo en «Revisión de consistencia».', 'error'); onChange(); return; }
     toast('Traspaso vinculado correctamente.');
     onChange();
   }));
@@ -16167,7 +16226,7 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
     return `<tr${estiloFila}>
       <td data-rol="principal">${fechaCorta(r.fecha)}</td>
       <td data-rol="importe" class="ledger-movimiento-resumen" style="font-weight:600;">${resumenMovil}</td>
-      <td class="ledger-input-detalle">${escHtml(tipoPolizaDerivado(r))}${marcaTraspasoHtml(infoTraspaso)}${folioOperacionHtml(r)}</td>
+      <td class="ledger-input-detalle">${escHtml(tipoPolizaDerivado(r))}${marcaTraspasoHtml(infoTraspaso, r)}${folioOperacionHtml(r)}</td>
       <td data-rol="secundario">${celdaTerceroLedger(r, r.proveedor, false)}</td>
       <td data-rol="estado" class="ledger-saldo-movil"><span class="ledger-saldo-label">Saldo</span> ${fmtNum(saldo)}</td>
       <td data-rol="meta" class="ledger-input-detalle">${textoLedger(r.descripcion)}</td>
@@ -16400,7 +16459,7 @@ async function renderBancoLedger(cuentaId, businessId, conceptosTarjetas) {
     return `<tr${estiloFila}>
       <td data-rol="principal">${fechaCorta(m.fecha)}${conciliadoIcono}</td>
       <td data-rol="importe" class="ledger-movimiento-resumen" style="font-weight:600;">${resumenMovil}</td>
-      <td class="ledger-input-detalle">${escHtml(tipoPolizaDerivado(m))}${marcaTraspasoHtml(infoTraspaso)}${folioOperacionHtml(m)}</td>
+      <td class="ledger-input-detalle">${escHtml(tipoPolizaDerivado(m))}${marcaTraspasoHtml(infoTraspaso, m)}${folioOperacionHtml(m)}</td>
       <td data-rol="secundario">${celdaTerceroLedger(m, m.proveedor, false)}</td>
       <td data-rol="estado" class="ledger-saldo-movil"><span class="ledger-saldo-label">Saldo</span> ${escHtml(pfxBanco)} ${fmt(saldo)}</td>
       <td class="ledger-input-detalle">${textoLedger(m.concepto || m.descripcion)}</td>
@@ -24752,7 +24811,97 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-05.1';
+const APP_VERSION = '2026-11-05.2';
+// ===== Selector de mes propio (2026-11-05.2) ============================================================================
+// Chrome/Edge dibujan un selector nativo de mes. Firefox (y Safari de escritorio) no: muestran un campo de texto donde se
+// puede escribir «11-2026» y la app recibiría un valor inválido. Donde el navegador NO trae selector se cambia por un botón
+// «Noviembre 2026» con una cuadrícula de meses. El <input type="month"> real se conserva (oculto) como dueño del valor AAAA-MM,
+// así que ninguna pantalla cambia. Donde sí es nativo no se toca nada (a menos que window.FORZAR_SELECTOR_MES, solo para pruebas).
+const MESES_ES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+function normalizarMes(v) {   // acepta 2026-11, 2026-1, 11-2026, 11/2026 → '2026-11'; si no es válido, ''
+  const s = String(v == null ? '' : v).trim(); let y, m, r;
+  if ((r = s.match(/^(\d{4})[-\/](\d{1,2})$/))) { y = +r[1]; m = +r[2]; } else if ((r = s.match(/^(\d{1,2})[-\/](\d{4})$/))) { m = +r[1]; y = +r[2]; } else return '';
+  if (m < 1 || m > 12 || y < 1990 || y > 2100) return '';
+  return y + '-' + String(m).padStart(2, '0');
+}
+(function iniciarSelectorMes() {
+  const sonda = document.createElement('input'); sonda.setAttribute('type', 'month');
+  const nativo = sonda.type === 'month';
+  // Protección general (también en Chrome): si algo deja un mes mal escrito, se corrige o se vacía ANTES de que lo lea cualquier pantalla.
+  document.addEventListener('change', (e) => {
+    const t = e.target; if (!t || t.tagName !== 'INPUT' || t.getAttribute('type') !== 'month' || t.dataset.selMes === '1') return;
+    const v = t.value; if (!v || /^\d{4}-\d{2}$/.test(v)) return;
+    const n = normalizarMes(v); t.value = n;
+  }, true);
+  if (nativo && !window.FORZAR_SELECTOR_MES) return;
+  const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+  let pop = null, activo = null;
+  const etiqueta = (v) => { const n = normalizarMes(v); if (!n) return ''; const [y, m] = n.split('-'); return MESES_ES[+m - 1] + ' ' + y; };
+  const cerrar = (devolverFoco) => { if (pop) { pop.remove(); pop = null; } if (activo && devolverFoco) { try { activo.btn.focus(); } catch (_) {} } activo = null; };
+  const poner = (inp, ym) => { inp.value = ym; inp.dispatchEvent(new Event('input', { bubbles: true })); inp.dispatchEvent(new Event('change', { bubbles: true })); };
+  const abrir = (ctx) => {
+    cerrar(false); activo = ctx; const { inp, btn } = ctx;
+    const hoy = new Date(), hoyYm = hoy.getFullYear() + '-' + String(hoy.getMonth() + 1).padStart(2, '0');
+    let anio = +(normalizarMes(inp.value) || hoyYm).slice(0, 4);
+    pop = document.createElement('div'); pop.className = 'selmes-pop'; pop.setAttribute('role', 'dialog'); pop.setAttribute('aria-label', 'Elegir mes');
+    const pintar = () => {
+      const sel = normalizarMes(inp.value); pop.textContent = '';
+      const cab = document.createElement('div'); cab.className = 'selmes-cab';
+      const mk = (txt, aria, fn, cls) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = txt; if (aria) b.setAttribute('aria-label', aria); if (cls) b.className = cls; b.addEventListener('click', fn); return b; };
+      const lbl = document.createElement('strong'); lbl.textContent = String(anio); lbl.setAttribute('aria-live', 'polite');
+      cab.append(mk('‹', 'Año anterior', () => { anio--; pintar(); }, 'selmes-nav'), lbl, mk('›', 'Año siguiente', () => { anio++; pintar(); }, 'selmes-nav'));
+      const grid = document.createElement('div'); grid.className = 'selmes-grid';
+      MESES_ES.forEach((n, i) => { const ym = anio + '-' + String(i + 1).padStart(2, '0'); const b = mk(n.slice(0, 3), n + ' ' + anio, () => { poner(inp, ym); cerrar(true); }, 'selmes-mes' + (ym === sel ? ' selmes-sel' : '') + (ym === hoyYm ? ' selmes-hoy' : '')); b.dataset.ym = ym; grid.append(b); });
+      const pie = document.createElement('div'); pie.className = 'selmes-pie';
+      pie.append(mk('Este mes', null, () => { poner(inp, hoyYm); cerrar(true); }, 'selmes-acc'));
+      if (!inp.required) pie.append(mk('Borrar', null, () => { poner(inp, ''); cerrar(true); }, 'selmes-acc'));
+      pop.append(cab, grid, pie);
+    };
+    pintar(); document.body.append(pop);
+    const r = btn.getBoundingClientRect(), w = 264;
+    let left = Math.min(Math.max(8, r.left), window.innerWidth - w - 8), top = r.bottom + 6;
+    if (top + 300 > window.innerHeight && r.top > 306) top = r.top - 306;
+    pop.style.left = left + 'px'; pop.style.top = top + 'px';
+    const prim = pop.querySelector('.selmes-sel') || pop.querySelector('.selmes-hoy') || pop.querySelector('.selmes-mes'); if (prim) prim.focus();
+  };
+  document.addEventListener('mousedown', (e) => { if (pop && !pop.contains(e.target) && !(activo && activo.btn.contains(e.target))) cerrar(false); }, true);
+  document.addEventListener('keydown', (e) => {
+    if (!pop) return;
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cerrar(true); return; }
+    const m = e.target && e.target.classList && e.target.classList.contains('selmes-mes') ? e.target : null;
+    if (m && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+      e.preventDefault(); const bs = [...pop.querySelectorAll('.selmes-mes')], i = bs.indexOf(m);
+      const d = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -3, ArrowDown: 3 }[e.key]; const j = Math.min(11, Math.max(0, i + d)); bs[j].focus();
+    }
+  }, true);
+  window.addEventListener('resize', () => cerrar(false)); window.addEventListener('scroll', (e) => { if (pop && !pop.contains(e.target)) cerrar(false); }, true);
+  const mejorar = (inp) => {
+    if (inp.dataset.selMes === '1') return; inp.dataset.selMes = '1';
+    const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'selmes-btn ' + (inp.className || ''); btn.setAttribute('aria-haspopup', 'dialog');
+    const rot = (inp.id && document.querySelector('label[for="' + inp.id + '"]')) || (inp.closest('.field') && inp.closest('.field').querySelector('label'));
+    const nombre = rot ? rot.textContent.trim() : 'Mes'; const txt = document.createElement('span');
+    const ico = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); ico.setAttribute('width', '16'); ico.setAttribute('height', '16'); ico.setAttribute('viewBox', '0 0 24 24'); ico.setAttribute('fill', 'none'); ico.setAttribute('stroke', 'currentColor'); ico.setAttribute('stroke-width', '1.8'); ico.setAttribute('aria-hidden', 'true');
+    const p1 = document.createElementNS('http://www.w3.org/2000/svg', 'rect'); [['x', '3'], ['y', '5'], ['width', '18'], ['height', '16'], ['rx', '2']].forEach(([k, v]) => p1.setAttribute(k, v));
+    const p2 = document.createElementNS('http://www.w3.org/2000/svg', 'path'); p2.setAttribute('d', 'M3 10h18M8 3v4M16 3v4'); ico.append(p1, p2); btn.append(txt, ico);
+    const w = inp.style.width; if (w) btn.style.width = w; if (inp.style.maxWidth) btn.style.maxWidth = inp.style.maxWidth;
+    const refrescar = () => { const e = etiqueta(desc.get.call(inp)); txt.textContent = e || 'Elegir mes'; txt.className = e ? '' : 'selmes-vacio'; btn.setAttribute('aria-label', nombre + ': ' + (e || 'sin elegir')); btn.disabled = inp.disabled; };
+    Object.defineProperty(inp, 'value', { get() { return desc.get.call(inp); }, set(v) { desc.set.call(inp, v); refrescar(); }, configurable: true });
+    const ctx = { inp, btn }; btn.addEventListener('click', () => { if (pop && activo === ctx) cerrar(true); else abrir(ctx); });
+    // La app muestra u oculta el campo con inp.style.display según la pantalla. El campo real SIEMPRE queda oculto: esas órdenes se pasan al botón.
+    btn.style.display = inp.style.display === 'none' ? 'none' : '';
+    const estiloReal = inp.style;
+    const estiloProxy = new Proxy(estiloReal, {
+      set(obj, prop, valor) { if (prop === 'display') { btn.style.display = (valor === 'none') ? 'none' : ''; return true; } obj[prop] = valor; return true; },
+      get(obj, prop) { const v = obj[prop]; return typeof v === 'function' ? v.bind(obj) : v; }
+    });
+    Object.defineProperty(inp, 'style', { get() { return estiloProxy; }, configurable: true });
+    inp.insertAdjacentElement('afterend', btn); estiloReal.display = 'none'; refrescar();
+  };
+  const escanear = (n) => { if (!n || n.nodeType !== 1) return; if (n.matches && n.matches('input[type="month"]')) mejorar(n); if (n.querySelectorAll) n.querySelectorAll('input[type="month"]').forEach(mejorar); };
+  escanear(document.body);
+  new MutationObserver((ms) => ms.forEach(m => m.addedNodes.forEach(escanear))).observe(document.body, { childList: true, subtree: true });
+})();
+
 const RESPALDO_TABLAS = [['businesses', ['id']], ['fz_cuentas_mayor', ['id']], ['fz_subcuentas', ['id']], ['fz_polizas', ['id']], ['fz_polizas_lineas', ['id']], ['fz_proveedores_catalogo', ['id']], ['fz_proveedores', ['id']], ['fz_ventas', ['id']], ['fz_conceptos_venta', ['id']], ['fz_conceptos_sistema', ['id']], ['fz_conceptos', ['id']], ['fz_efectivo_monedas', ['id']], ['fz_efectivo_mov', ['id']], ['fz_bancos_cuentas', ['id']], ['fz_bancos_mov', ['id']], ['fz_pl_gastos', ['id']], ['fz_usuarios_autorizados', ['id']], ['fz_usuario_negocios', ['id']], ['fz_auditoria', ['id']], ['fz_adjuntos', ['id']], ['fz_pagos_aplicados', ['id']], ['fz_clientes', ['id']], ['fz_productos_servicios', ['id']], ['fz_folios_contador', ['business_id', 'tipo']], ['fz_facturas_clientes', ['id']], ['fz_facturas_clientes_lineas', ['id']], ['fz_cobros_aplicados', ['id']], ['fz_ordenes_venta', ['id']], ['fz_ordenes_venta_lineas', ['id']], ['fz_conciliaciones_bancarias', ['id']], ['fz_cierres_periodo', ['id']], ['fz_tc_cierre', ['id']], ['fz_tipos_cambio_cierre', ['id']], ['fz_cfdi', ['id']], ['fz_cfdi_bitacora', ['id']], ['fz_activos_fijos', ['id']], ['fz_depreciaciones_generadas', ['id']], ['fz_inpc_valores', ['id']], ['fz_recargos_tasas', ['id']], ['fz_pagos_impuestos', ['id']], ['fz_isr_datos_anuales', ['id']], ['fz_isr_conceptos', ['id']], ['fz_provisiones_fiscales', ['id']], ['fz_iva_realizaciones', ['id']], ['fz_aplicaciones_pago_fiscal', ['id']], ['fz_regimenes_fiscales_negocio', ['id']], ['fz_dias_inhabiles_fiscales', ['id']], ['fz_declaraciones_fiscales', ['id']], ['fz_reglas_vencimiento_impuesto', []], ['fz_calendario_fiscal_validacion', []], ['fz_catalogo_regimenes_fiscales', []], ['fz_papeles_trabajo', ['id']], ['fz_papel_conceptos', ['id']], ['fz_papel_concepto_fuentes', ['id']], ['fz_papel_concepto_accesorios', ['id']], ['fz_papel_historial', ['id']], ['fz_papel_soportes', ['id']], ['fz_mapeo_cuenta_concepto_fiscal', ['id']], ['fz_perdidas_fiscales', ['id']], ['fz_perdidas_fiscales_actualizaciones', ['id']], ['fz_perdidas_fiscales_aplicaciones', ['id']], ['fz_perdidas_fiscales_cierres', ['id']], ['fz_perdidas_fiscales_historial', ['id']], ['fz_perdidas_fiscales_soportes', ['id']], ['fz_ptu_eventos', ['id']], ['fz_ptu_historial', ['id']], ['fz_pagos_por_clasificar', ['id']], ['fz_iva_saldos_favor', ['id']], ['fz_iva_saldos_favor_movimientos', ['id']], ['fz_iva_saldos_favor_devoluciones', ['id']], ['fz_iva_saldo_favor_periodo_activo', ['id']]];
 const RESPALDO_BUCKETS = ['adjuntos', 'cfdi'], RESPALDO_MAX_ARCHIVOS_BYTES = 400 * 1024 * 1024, RESPALDO_AVISO_DIAS = 7;
 function respaldoEstado() { try { return JSON.parse(localStorage.getItem('finanzas_ultimo_respaldo') || 'null'); } catch (_) { return null; } }
@@ -28240,14 +28389,14 @@ function revTraspasosCompletos(ctx) {
       reparables.push({ id, businessId: f0.business_id });
       items.push({ fecha: f0.fecha, monto, texto: `${fechaCorta(f0.fecha)} · ${cuentas}: la operación tiene ${ps.length} movimientos y debería tener 2 (${an.sobrantes.length} repetido(s) de ${fmt(monto)})` });
     } else if (an.estado === 'incompleta') {
-      items.push({ fecha: f0.fecha, monto, texto: `${fechaCorta(f0.fecha)} · ${cuenta(ps[0])}: ${fmt(monto)} marcado como traspaso SIN su otra mitad. Ábrelo en Bancos/Efectivo, elige la cuenta contraria y guarda: se crea la que falta` });
+      { const esSal = Number(f0.cargos || 0) > 0; items.push({ fecha: f0.fecha, monto, texto: `${fechaCorta(f0.fecha)} · ${cuenta(ps[0])}: ${esSal ? 'salida' : 'depósito'} de ${fmt(monto)} de un traspaso INCOMPLETO: falta su ${esSal ? 'depósito' : 'salida'}. Ábrelo en Bancos/Efectivo, elige la cuenta ${esSal ? 'destino' : 'de origen'} y guarda: se crea ${esSal ? 'el depósito' : 'la salida'} que falta` }); }
     } else {
       items.push({ fecha: f0.fecha, monto, texto: `${fechaCorta(f0.fecha)} · ${cuentas}: ${ps.length} movimientos de un mismo traspaso que no se pueden ordenar solos; revísalos a mano` });
     }
   });
   items.sort((a, z) => String(a.fecha).localeCompare(String(z.fecha)));
-  const r = { id: 'traspasos_completos', titulo: 'Traspasos con una sola pata o con más de dos',
-    ayuda: 'Un traspaso es UNA operación con DOS movimientos: un cargo en una cuenta y un abono en otra. Si queda una sola mitad o hay una de más, «Traspasos entre cuentas» no termina en cero en la Balanza y el Balance reparte mal el dinero entre cuentas (el Total Activo no cambia).',
+  const r = { id: 'traspasos_completos', titulo: 'Traspasos incompletos o con movimientos repetidos',
+    ayuda: 'Un traspaso es UNA operación con DOS movimientos: una salida en una cuenta y un depósito en otra. Si falta uno de los dos movimientos o hay uno de más, «Traspasos entre cuentas» no termina en cero en la Balanza y el Balance reparte mal el dinero entre cuentas (el Total Activo no cambia).',
     items: items.map(({ texto, monto }) => ({ texto, monto })),
     nota: 'Al eliminar un traspaso desde Bancos o Efectivo se eliminan sus dos movimientos juntos.' };
   if (reparables.length) r.accion = {
