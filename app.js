@@ -833,7 +833,11 @@ async function boot() {
     renderCurrentSection();
   });
 
+  await navArranque();
+
   renderCurrentSection();
+
+  navActivar();
   setTimeout(() => respaldoAvisoAlEntrar(), 1500);   // aviso de respaldo atrasado (solo administradores)
 }
 
@@ -16099,7 +16103,7 @@ async function renderEfectivo() {
   const totalBancos = bancosConSaldo.filter(c => c.activo !== false).reduce((s, c) => s + c.saldo, 0);
   const totalGeneral = totalMonedas + totalBancos;
 
-  if (!STATE_monedaAbierta && monedasConSaldo.length) STATE_monedaAbierta = monedasConSaldo[0].id;
+  navResolverCuenta('efectivo', monedasConSaldo); if (!STATE_monedaAbierta && monedasConSaldo.length) STATE_monedaAbierta = monedasConSaldo[0].id; navSincronizarRender();
 
   el.innerHTML = `
     <div class="card">
@@ -16346,7 +16350,7 @@ async function renderBancos() {
   cuentasConSaldo.filter(c=>c.activo!==false).forEach(c => { totalesPorMoneda[c.moneda] = (totalesPorMoneda[c.moneda]||0) + c.saldo; });
   const monedasConSaldo = Object.keys(totalesPorMoneda);
 
-  if (!STATE_bancoCuentaAbierta && cuentasConSaldo.length) STATE_bancoCuentaAbierta = cuentasConSaldo[0].id;
+  navResolverCuenta('banco', cuentasConSaldo); if (!STATE_bancoCuentaAbierta && cuentasConSaldo.length) STATE_bancoCuentaAbierta = cuentasConSaldo[0].id; navSincronizarRender();
 
   el.innerHTML = `
     <div class="kpi-grid">
@@ -22722,6 +22726,7 @@ function detalleSubcuentaHtml(filas, colspan) {
 
 async function irASeccion(nombreSeccion) {
   STATE.currentSection = nombreSeccion;
+  setTimeout(() => navSincronizar(false), 0);
   localStorage.setItem('finanzas_ultima_seccion', nombreSeccion);
   marcarNavActivo(nombreSeccion);
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
@@ -24811,7 +24816,129 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-05.2';
+const APP_VERSION = '2026-11-05.3';
+// ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
+// /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
+// por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
+const NAV = { permitido: false, activo: false, aplicando: false, rutaInicial: '', nombres: { banco: {}, efectivo: {} }, cuentaPendiente: null };
+(function navCapturaInicial() {
+  try {
+    const guardada = sessionStorage.getItem('finanzas_ruta');   // la deja 404.html cuando se abre una dirección profunda
+    let ruta = location.pathname + location.search;
+    if (guardada) { sessionStorage.removeItem('finanzas_ruta'); ruta = guardada; history.replaceState(null, '', guardada); }
+    const ruta0 = ruta.split('?')[0];
+    NAV.permitido = ruta0 === '/' || ruta0 === '/index.html' || !/\.[a-z0-9]{2,5}$/i.test(ruta0);
+    NAV.rutaInicial = (ruta0 === '/' || ruta0 === '/index.html') ? '' : ruta;
+  } catch (_) { NAV.permitido = false; }
+})();
+const navSlug = (s) => String(s == null ? '' : s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/&/g, ' y ').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+function navSlugsNegocios() { const m = new Map(), usados = {}; (STATE.businesses || []).forEach(b => { let s = navSlug(b.name) || 'negocio'; if (usados[s]) s += '-' + String(b.id).slice(0, 6); usados[s] = 1; m.set(b.id, s); }); return m; }
+const navSlugSeccion = (clave) => { const m = SECTION_META[clave]; return m ? navSlug(m.title) : ''; };
+function navClaveDeSlug(slug) { for (const k of Object.keys(SECTION_META)) if (navSlugSeccion(k) === slug) return k; return ''; }
+function navSlugCuenta(tipo, id) { const n = NAV.nombres[tipo] || {}, s = navSlug(n[id] || ''); const dup = Object.keys(n).filter(k => k !== id && navSlug(n[k]) === s).length; return dup ? s + '-' + String(id).slice(0, 6) : s; }
+// Subvistas por pantalla (lo que ya guarda la app en sus variables). Se recalcula tras cada paso porque algunas dependen de la anterior.
+function navSubs(sec) {
+  const e = (get, set, ok, alterno) => ({ get, set, ok, alterno: alterno || {} });
+  const mesAnual = ['mes', 'anual'];
+  switch (sec) {
+    case 'proveedores': return [e(() => STATE_provVista, v => { STATE_provVista = v; }, ['directorio', 'facturas', 'detalle'], { detalle: 'directorio' })];
+    case 'clientes': return [e(() => STATE_clientesVista, v => { STATE_clientesVista = v; }, ['directorio', 'facturas', 'ordenes', 'detalle'], { detalle: 'directorio' })];
+    case 'impuestos': { const r = [e(() => STATE_impuestosTab, v => { STATE_impuestosTab = v; }, ['resumen', 'iva', 'isr', 'retenciones', 'pagos'])];
+      if (STATE_impuestosTab === 'isr') r.push(e(() => STATE_isrVista, v => { STATE_isrVista = v; }, mesAnual)); else if (STATE_impuestosTab === 'iva') r.push(e(() => STATE_ivaFiscalVista, v => { STATE_ivaFiscalVista = v; }, mesAnual)); return r; }
+    case 'ivafiscal': return [e(() => STATE_ivaFiscalVista, v => { STATE_ivaFiscalVista = v; }, mesAnual)];
+    case 'isrprovisional': return [e(() => STATE_isrVista, v => { STATE_isrVista = v; }, mesAnual)];
+    case 'papelestrabajo': return [e(() => STATE_papelesTab, v => { STATE_papelesTab = v; }, ['resumen', 'isrpm', 'iva', 'perdidas', 'retisr', 'retiva'])];
+    case 'cedulasmaestras': return [e(() => STATE_cedulasMaestrasTab, v => { STATE_cedulasMaestrasTab = v; }, ['perdidas', 'ptu'])];
+    case 'parametrosfiscales': return [e(() => STATE_parametrosFiscalesTab, v => { STATE_parametrosFiscalesTab = v; }, ['recargos', 'tiposcambio'])];
+    case 'fuentesfiscales': return [e(() => STATE_fuentesFiscalesTab, v => { STATE_fuentesFiscalesTab = v; }, ['isr_pm'])];
+    case 'diariospolizas': return [e(() => STATE_diariosPolizasTab, v => { STATE_diariosPolizasTab = v; }, ['diarios', 'librodiario'])];
+    case 'pl': { const r = [e(() => STATE_plVista, v => { STATE_plVista = v; }, ['mensual', 'acumulado', 'anual'])];
+      if (STATE_plVista === 'anual') r.push(e(() => STATE_plAnualModo, v => { STATE_plAnualModo = v; }, ['detalle', 'ejecutivo'])); return r; }
+    default: return [];
+  }
+}
+function navUrlActual() {
+  const sec = STATE.currentSection, meta = SECTION_META[sec]; if (!meta) return null;
+  const partes = [];
+  if (meta.needsBiz) { const b = biz(); if (!b) return null; partes.push(navSlugsNegocios().get(b.id)); }
+  partes.push(navSlugSeccion(sec));
+  if (sec === 'bancos' || sec === 'efectivo') {
+    const tipo = sec === 'bancos' ? 'banco' : 'efectivo', id = sec === 'bancos' ? STATE_bancoCuentaAbierta : STATE_monedaAbierta;
+    if (id && (NAV.nombres[tipo] || {})[id]) partes.push(navSlugCuenta(tipo, id));
+  } else navSubs(sec).forEach(d => { const v = d.get(); if (d.ok.includes(v)) partes.push(navSlug(v)); });
+  let url = '/' + partes.join('/');
+  if (meta.showMonth && /^\d{4}-\d{2}$/.test(STATE.currentMonth || '')) url += '?mes=' + STATE.currentMonth;
+  return url;
+}
+function navParse(pathname, search) {
+  const segs = pathname.split('/').filter(Boolean).map(s => { try { return navSlug(decodeURIComponent(s)); } catch (_) { return navSlug(s); } });
+  if (!segs.length || (segs.length === 1 && segs[0] === 'index-html')) return { vacia: true };
+  const slugs = navSlugsNegocios(), idDeSlug = (s) => { for (const [id, sl] of slugs) if (sl === s) return id; return null; };
+  let i = 0, negocioId = null;
+  if (segs.length > 1 && idDeSlug(segs[0]) && navClaveDeSlug(segs[1])) { negocioId = idDeSlug(segs[0]); i = 1; }
+  else if (!navClaveDeSlug(segs[0])) return { error: (segs.length > 1 && navClaveDeSlug(segs[1])) ? 'negocio' : 'pantalla' };
+  const sec = navClaveDeSlug(segs[i]); if (!sec) return { error: 'pantalla' };
+  const mes = new URLSearchParams(search || '').get('mes');
+  return { sec, negocioId, extra: segs.slice(i + 1), mes: mes ? normalizarMes(mes) : '' };
+}
+function navAplicarEstado(p) {   // deja STATE y las variables de subvista listos; NO dibuja
+  if (p.negocioId && p.negocioId !== STATE.currentBusinessId) { STATE.currentBusinessId = p.negocioId; try { localStorage.setItem('finanzas_ultimo_negocio', p.negocioId); } catch (_) {} const s = document.getElementById('bizSelect'); if (s) s.value = p.negocioId; }
+  STATE.currentSection = p.sec;
+  p.extra.forEach((seg, k) => {
+    if (p.sec === 'bancos' || p.sec === 'efectivo') { NAV.cuentaPendiente = { tipo: p.sec === 'bancos' ? 'banco' : 'efectivo', slug: seg }; return; }
+    const d = navSubs(p.sec)[k]; if (!d) return; const ok = d.ok.find(x => navSlug(x) === seg); if (ok) d.set(d.alterno[ok] || ok);
+  });
+  if (p.mes && p.mes !== STATE.currentMonth) { STATE.currentMonth = p.mes; const mp = document.getElementById('monthPicker'); if (mp) mp.value = p.mes; STATE_plRangoDesde = ''; STATE_plRangoHasta = ''; }
+}
+function navResolverCuenta(tipo, lista) {   // lo llaman Bancos/Efectivo al cargar sus cuentas: guarda los nombres y abre la cuenta pedida en la dirección
+  NAV.nombres[tipo] = Object.fromEntries((lista || []).map(c => [c.id, c.nombre]));
+  const p = NAV.cuentaPendiente; if (!p || p.tipo !== tipo) return; NAV.cuentaPendiente = null;
+  const c = (lista || []).find(x => navSlugCuenta(tipo, x.id) === p.slug);
+  if (c) { if (tipo === 'banco') STATE_bancoCuentaAbierta = c.id; else STATE_monedaAbierta = c.id; }
+}
+function navSincronizar(reemplazar) {   // si la dirección ya no coincide con el estado: nueva entrada de historial (o reemplazo si solo cambió el mes o lo decidió la pantalla)
+  if (!NAV.activo || NAV.aplicando) return;
+  const u = navUrlActual(); if (!u) return;
+  const act = location.pathname + location.search; if (u === act) return;
+  const sinMes = (s) => s.replace(/([?&])mes=[^&]*&?/, '$1').replace(/[?&]$/, '');
+  if (reemplazar || sinMes(u) === sinMes(act)) history.replaceState(null, '', u); else history.pushState(null, '', u);
+}
+const navSincronizarRender = () => setTimeout(() => navSincronizar(true), 0);
+async function navMostrar(sec) {
+  STATE.currentSection = sec; try { localStorage.setItem('finanzas_ultima_seccion', sec); } catch (_) {}
+  marcarNavActivo(sec); document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  const el = document.getElementById('sec-' + sec); if (el) el.classList.add('active');
+  updateTopbar(); await renderCurrentSection();
+}
+async function navRestaurar() {   // Regresar / Adelante
+  NAV.aplicando = true;
+  try {
+    const p = navParse(location.pathname, location.search);
+    if (p.error) toast('No reconocí esa dirección; te dejé en la pantalla anterior.', 'error');
+    else if (!p.vacia) { navAplicarEstado(p); await navMostrar(STATE.currentSection); }
+  } catch (e) { console.error('navegación:', e); }
+  finally { NAV.aplicando = false; }
+  setTimeout(() => navSincronizar(true), 0);
+}
+async function navArranque() {   // al entrar: si la dirección pedía una pantalla, se deja lista ANTES del primer dibujo
+  if (!NAV.permitido || !NAV.rutaInicial) return;
+  const [path, qs] = NAV.rutaInicial.split('?'); NAV.rutaInicial = '';
+  const p = navParse(path, qs ? '?' + qs : '');
+  if (p.error) { setTimeout(() => toast('No reconocí esa dirección (o ese negocio no está en tu lista); te llevé a tu pantalla de siempre.', 'error'), 700); return; }
+  if (p.vacia) return;
+  navAplicarEstado(p);
+  marcarNavActivo(STATE.currentSection); document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  const el = document.getElementById('sec-' + STATE.currentSection); if (el) el.classList.add('active');
+  updateTopbar();
+}
+function navActivar() {
+  if (!NAV.permitido || NAV.activo) return; NAV.activo = true;
+  document.addEventListener('click', () => setTimeout(() => navSincronizar(false), 0), true);
+  document.addEventListener('change', () => setTimeout(() => navSincronizar(false), 0), true);
+  window.addEventListener('popstate', () => { navRestaurar(); });
+  setTimeout(() => navSincronizar(true), 0);
+}
+
 // ===== Selector de mes propio (2026-11-05.2) ============================================================================
 // Chrome/Edge dibujan un selector nativo de mes. Firefox (y Safari de escritorio) no: muestran un campo de texto donde se
 // puede escribir «11-2026» y la app recibiría un valor inválido. Donde el navegador NO trae selector se cambia por un botón

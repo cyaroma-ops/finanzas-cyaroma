@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex">
+<title>Finanzas</title>
+<script>
+(function () {
+  var ruta = location.pathname + location.search;
+  // Un ARCHIVO que no existe (por ejemplo /schema.sql) sigue mostrando un 404 simple: no se confunde con la app.
+  if (/\.[a-z0-9]{2,5}$/i.test(location.pathname)) { document.addEventListener('DOMContentLoaded', function () { document.body.textContent = '404 · Archivo no encontrado'; }); return; }
+  try { sessionStorage.setItem('finanzas_ruta', ruta); } catch (e) {}
+  location.replace('/');
+})();
+</script>
+</head>
+<body></body>
+</html>
