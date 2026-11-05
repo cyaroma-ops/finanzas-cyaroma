@@ -13975,6 +13975,14 @@ async function pedirFolioTraspaso(businessId) {
 const folioOperacionHtml = (m) => (m && m.traspaso_id && m.operacion_folio)
   ? `<span style="display:block;font-size:10.5px;color:var(--muted);" title="Número de operación: sus dos movimientos comparten este número">${escHtml(m.operacion_folio)}</span>` : '';
 // Mensajes claros para lo que ahora rechaza la base de datos
+// Texto claro de un traspaso de dos movimientos (confirmaciones de borrado y de cambio de clasificación): «la salida de $X (fecha) y el depósito de $Y (fecha)».
+function descripcionTraspasoDosMovs(filaA, filaB) {
+  const esSalida = (f) => Number(f.cargos || 0) > 0;
+  const d = (f) => `${esSalida(f) ? 'la salida' : 'el depósito'} de ${fmt(montoDePata(f))} (${f.fecha})`;
+  if (esSalida(filaA) === esSalida(filaB)) return `un movimiento de ${fmt(montoDePata(filaA))} (${filaA.fecha}) y otro de ${fmt(montoDePata(filaB))} (${filaB.fecha})`;
+  const sal = esSalida(filaA) ? filaA : filaB, dep = sal === filaA ? filaB : filaA;
+  return `${d(sal)} y ${d(dep)}`;
+}
 function mensajeErrorTraspaso(err) {
   const m = String((err && err.message) || err || '');
   if ((err && err.code === '23514') || /solo puede tener 2 movimientos/i.test(m)) return 'Esa operación de traspaso ya tiene sus 2 movimientos (un cargo y un abono): no se puede agregar otro.';
@@ -14175,7 +14183,7 @@ async function confirmarYEliminarMovimiento(table, row, onDone) {
     if (otrasPatas.length === 1) {
       const pareja = otrasPatas[0];
       if (await bloqueadoPorCierre(pareja.fila.business_id, pareja.fila.fecha)) return; // periodo cerrado de la otra mitad: no se borra ninguna
-      const ok = confirm(`Este movimiento es parte ${row.operacion_folio ? 'del traspaso ' + row.operacion_folio : 'de un traspaso'} — su otra mitad (${fmt(montoDePata(pareja.fila))}, ${pareja.fila.fecha}) se eliminará junto con este. ¿Continuar?`);
+      const ok = confirm(`Este traspaso${row.operacion_folio ? ' (' + row.operacion_folio + ')' : ''} tiene dos movimientos: ${descripcionTraspasoDosMovs(row, pareja.fila)}.\n\nAl eliminar este, se eliminan los dos. ¿Continuar?`);
       if (!ok) return;
       parejaTraspaso = pareja;
     }
@@ -15530,7 +15538,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     if (!esTraspaso && patasPreviasMov.length) {
       if (patasPreviasMov.length > 1) { alert(`Este movimiento es parte de una operación de traspaso con ${patasPreviasMov.length + 1} movimientos (debería tener 2). Repárala primero en «Revisión de consistencia». No se guardó nada.`); return; }
       const pp = patasPreviasMov[0];
-      if (!confirm(`Este movimiento era parte de un traspaso. Al cambiar su clasificación, su otra mitad (${fmt(montoDePata(pp.fila))}, ${pp.fila.fecha}) se eliminará. ¿Continuar?`)) return;
+      if (!confirm(`Este movimiento forma parte del traspaso${movimientoExistente.operacion_folio ? ' ' + movimientoExistente.operacion_folio : ''}: ${descripcionTraspasoDosMovs(movimientoExistente, pp.fila)}.\n\nAl cambiar su clasificación, el traspaso se deshace: este movimiento se conserva con su nueva clasificación y el otro se elimina. ¿Continuar?`)) return;
       patasAEliminarTras = patasPreviasMov;
     }
     if (esTraspaso) {
@@ -24744,7 +24752,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-04.6';
+const APP_VERSION = '2026-11-05.1';
 const RESPALDO_TABLAS = [['businesses', ['id']], ['fz_cuentas_mayor', ['id']], ['fz_subcuentas', ['id']], ['fz_polizas', ['id']], ['fz_polizas_lineas', ['id']], ['fz_proveedores_catalogo', ['id']], ['fz_proveedores', ['id']], ['fz_ventas', ['id']], ['fz_conceptos_venta', ['id']], ['fz_conceptos_sistema', ['id']], ['fz_conceptos', ['id']], ['fz_efectivo_monedas', ['id']], ['fz_efectivo_mov', ['id']], ['fz_bancos_cuentas', ['id']], ['fz_bancos_mov', ['id']], ['fz_pl_gastos', ['id']], ['fz_usuarios_autorizados', ['id']], ['fz_usuario_negocios', ['id']], ['fz_auditoria', ['id']], ['fz_adjuntos', ['id']], ['fz_pagos_aplicados', ['id']], ['fz_clientes', ['id']], ['fz_productos_servicios', ['id']], ['fz_folios_contador', ['business_id', 'tipo']], ['fz_facturas_clientes', ['id']], ['fz_facturas_clientes_lineas', ['id']], ['fz_cobros_aplicados', ['id']], ['fz_ordenes_venta', ['id']], ['fz_ordenes_venta_lineas', ['id']], ['fz_conciliaciones_bancarias', ['id']], ['fz_cierres_periodo', ['id']], ['fz_tc_cierre', ['id']], ['fz_tipos_cambio_cierre', ['id']], ['fz_cfdi', ['id']], ['fz_cfdi_bitacora', ['id']], ['fz_activos_fijos', ['id']], ['fz_depreciaciones_generadas', ['id']], ['fz_inpc_valores', ['id']], ['fz_recargos_tasas', ['id']], ['fz_pagos_impuestos', ['id']], ['fz_isr_datos_anuales', ['id']], ['fz_isr_conceptos', ['id']], ['fz_provisiones_fiscales', ['id']], ['fz_iva_realizaciones', ['id']], ['fz_aplicaciones_pago_fiscal', ['id']], ['fz_regimenes_fiscales_negocio', ['id']], ['fz_dias_inhabiles_fiscales', ['id']], ['fz_declaraciones_fiscales', ['id']], ['fz_reglas_vencimiento_impuesto', []], ['fz_calendario_fiscal_validacion', []], ['fz_catalogo_regimenes_fiscales', []], ['fz_papeles_trabajo', ['id']], ['fz_papel_conceptos', ['id']], ['fz_papel_concepto_fuentes', ['id']], ['fz_papel_concepto_accesorios', ['id']], ['fz_papel_historial', ['id']], ['fz_papel_soportes', ['id']], ['fz_mapeo_cuenta_concepto_fiscal', ['id']], ['fz_perdidas_fiscales', ['id']], ['fz_perdidas_fiscales_actualizaciones', ['id']], ['fz_perdidas_fiscales_aplicaciones', ['id']], ['fz_perdidas_fiscales_cierres', ['id']], ['fz_perdidas_fiscales_historial', ['id']], ['fz_perdidas_fiscales_soportes', ['id']], ['fz_ptu_eventos', ['id']], ['fz_ptu_historial', ['id']], ['fz_pagos_por_clasificar', ['id']], ['fz_iva_saldos_favor', ['id']], ['fz_iva_saldos_favor_movimientos', ['id']], ['fz_iva_saldos_favor_devoluciones', ['id']], ['fz_iva_saldo_favor_periodo_activo', ['id']]];
 const RESPALDO_BUCKETS = ['adjuntos', 'cfdi'], RESPALDO_MAX_ARCHIVOS_BYTES = 400 * 1024 * 1024, RESPALDO_AVISO_DIAS = 7;
 function respaldoEstado() { try { return JSON.parse(localStorage.getItem('finanzas_ultimo_respaldo') || 'null'); } catch (_) { return null; } }
