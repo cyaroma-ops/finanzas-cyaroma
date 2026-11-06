@@ -86,19 +86,59 @@ const fmtTC = (n) => (Number(n) || 0).toLocaleString('es-MX', { minimumFractionD
 const fechaCorta = (iso) => { if (!iso) return ''; const [y,m,d] = iso.split('-'); return d && m && y ? `${d}/${m}/${y}` : iso; };
 const fmtInputVal = (n) => (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtCoef = (n) => (Number(n) || 0).toFixed(4);
-const leerMonto = (v) => Number(String(v).replace(/,/g, '')) || 0;
-function wireInputsMoneda(container) {
-  container.querySelectorAll('.num-fmt').forEach(el => {
-    el.addEventListener('focus', function () {
-      const v = leerMonto(this.value);
-      this.value = v === 0 ? '' : v;
-      this.select();
-    });
-    el.addEventListener('blur', function () {
-      this.value = fmtInputVal(leerMonto(this.value));
-    });
-  });
+// Lee un importe tecleado o pegado. Miles con coma y decimales con punto (2,588.45); pero también entiende la coma decimal que muchos teclados
+// usan (2588,45 → 2588.45, 1.234,56 → 1234.56) y NO la confunde con miles: antes «2588,45» se leía como 258,845.00.
+const leerMonto = (v) => {
+  let s = String(v == null ? '' : v).trim().replace(/[^\d.,\-]/g, ''); if (!s) return 0;
+  const neg = s.charAt(0) === '-'; s = s.replace(/-/g, '');
+  const ic = s.lastIndexOf(','), ip = s.lastIndexOf('.');
+  if (ic > -1 && ip > -1) s = ic > ip ? s.replace(/\./g, '').replace(/,(?=[^,]*,)/g, '').replace(',', '.') : s.replace(/,/g, '');   // gana el separador que va al final
+  else if (ic > -1) { const cola = s.length - ic - 1; s = (s.indexOf(',') === ic && ((cola >= 1 && cola <= 2) || /^0+$/.test(s.slice(0, ic)))) ? s.replace(',', '.') : s.replace(/,/g, ''); }   // una sola coma con 1-2 decimales (o tras un 0) es decimal
+  else if ((s.match(/\./g) || []).length > 1) s = /^\d{1,3}(\.\d{3})+$/.test(s) ? s.replace(/\./g, '') : '';
+  const n = Number(s); return Number.isFinite(n) && n !== 0 ? (neg ? -n : n) : 0;
+};
+function wireInputsMoneda(container) { /* el formato de importes lo hace el módulo global de importes (impMejorar) */ }
+// ===== Importes con formato de miles (2026-11-05.5) =================================================================
+// Siempre se ve y se escribe 2,588.45 (miles con coma, decimales con punto), sin importar el idioma del navegador. La coma del teclado es decimal.
+// Solo se aplica a los campos que ya se leen con leerMonto (los de tipo de cambio y porcentaje se dejan como están, para no redondearlos).
+const IMPORTES_IDS = new Set(['afCosto', 'afOtrosCostos', 'afValorRescate', 'apfMontoTotal', 'cobroMonto', 'concSaldoBanco', 'elegirFacturaCobroMonto', 'elegirFacturaPagoMonto', 'fpDesgloseImporte', 'fpDesgloseIva', 'fpDesgloseMonto', 'fpImporte', 'fpSubtotal', 'movCargos', 'movDepositos', 'movSubtotal', 'newDesgloseImporte', 'newDesgloseIva', 'newDesgloseMonto', 'newProductoPrecio', 'pfActImporteAjustado', 'pfApImporte', 'pfCierreDefinitiva', 'pfMontoOriginal', 'pfSaldoInicialImporte', 'piDeclImporte', 'piImporteDeclarado', 'pisrPerdImporte', 'ppAjusteNuevoValor', 'ppConceptoValor', 'reglaMontoMax', 'reglaMontoMin', 'traspasoMonto', 'traspasoMontoDestino']);
+const impEsCampo = (el) => !!el && el.tagName === 'INPUT' && el.type === 'text' && (el.classList.contains('num-fmt') || IMPORTES_IDS.has(el.id));
+const impDescValor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+const impPonerCrudo = (el, v) => impDescValor.set.call(el, v);
+const impAgrupar = (txt) => { const neg = txt.charAt(0) === '-'; let [ent, dec] = txt.replace('-', '').split('.'); ent = ent.replace(/^0+(?=\d)/, ''); return (neg ? '-' : '') + ent.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (dec !== undefined ? '.' + dec : ''); };
+const impPresentar = (el, v, forzar) => {   // cómo se ve un valor «en reposo»: 2,588.45
+  const s = String(v == null ? '' : v); if (s.trim() === '') return ''; if ((!forzar && document.activeElement === el) || !/^[\s$\-\d.,]+$/.test(s)) return s;
+  const n = leerMonto(s); return el.classList.contains('num-fmt') ? fmtInputVal(n) : n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+};
+function impMejorar(el) {   // las escrituras del código (campo.value = 2588.45) también salen con formato
+  if (!impEsCampo(el) || el.dataset.impOk === '1') return; el.dataset.impOk = '1';
+  Object.defineProperty(el, 'value', { configurable: true, get() { return impDescValor.get.call(el); }, set(v) { impPonerCrudo(el, impPresentar(el, v)); } });
+  const actual = impDescValor.get.call(el); if (actual) impPonerCrudo(el, impPresentar(el, actual));
 }
+document.addEventListener('focusin', (e) => {
+  const el = e.target; if (!impEsCampo(el)) return; impMejorar(el);
+  const n = leerMonto(el.value); impPonerCrudo(el, n === 0 ? '' : impAgrupar(impDescValor.get.call(el).replace(/,/g, '').replace(/^\s+|\s+$/g, '') || String(n))); try { el.select(); } catch (_) {}
+}, true);
+document.addEventListener('input', (e) => {
+  const el = e.target; if (!impEsCampo(el) || document.activeElement !== el) return;
+  let v = impDescValor.get.call(el), pos = el.selectionStart == null ? v.length : el.selectionStart;
+  if (e.inputType === 'insertText' && e.data === ',') v = v.slice(0, pos - 1) + '.' + v.slice(pos);   // la coma tecleada es decimal: los miles los pone la app
+  else if (e.inputType && /paste|drop/i.test(e.inputType)) { const n = leerMonto(v); v = /^[\s$\-\d.,]+$/.test(v) ? String(Math.round(n * 1e6) / 1e6) : v; pos = v.length; }
+  const sig = (v.slice(0, pos).match(/[\d.]/g) || []).length;
+  let t = v.replace(/[^\d.\-]/g, ''); t = (t.charAt(0) === '-' ? '-' : '') + t.replace(/-/g, ''); const p1 = t.indexOf('.'); if (p1 > -1) t = t.slice(0, p1 + 1) + t.slice(p1 + 1).replace(/\./g, '');
+  const sal = impAgrupar(t); if (sal === impDescValor.get.call(el)) return; impPonerCrudo(el, sal);
+  let c = 0, k = 0; if (sig > 0) { for (; k < sal.length && c < sig; k++) if (/[\d.]/.test(sal.charAt(k))) c++; }
+  try { el.setSelectionRange(k, k); } catch (_) {}
+}, true);
+document.addEventListener('focusout', (e) => {
+  const el = e.target; if (!impEsCampo(el)) return; const crudo = impDescValor.get.call(el);
+  if (crudo.trim() === '') { if (el.classList.contains('num-fmt') && !el.dataset.impVacio) impPonerCrudo(el, fmtInputVal(0)); return; }   // como siempre: un importe vacío vuelve a 0.00 (salvo los montos opcionales)
+  impPonerCrudo(el, impPresentar(el, crudo, true));
+}, true);
+(function impArranque() {
+  const esc = (n) => { if (!n || n.nodeType !== 1) return; if (n.matches && n.matches('input')) impMejorar(n); if (n.querySelectorAll) n.querySelectorAll('input.num-fmt, input[inputmode="decimal"]').forEach(impMejorar); };
+  esc(document.body); new MutationObserver((ms) => ms.forEach(m => m.addedNodes.forEach(esc))).observe(document.body, { childList: true, subtree: true });
+})();
 const monthBounds = (ym) => {
   const [y, m] = ym.split('-').map(Number);
   const start = `${ym}-01`;
@@ -14207,7 +14247,7 @@ async function reglasImpAccion(accion, id) {
 }
 function reglasImpLeerForm() {
   const g = (id) => document.getElementById(id); const [origen, cuentaSel] = g('reglaAplica').value.split(':'), [cOrigen, cId] = g('reglaContra').value.split(':');
-  const modo = g('reglaMontoModo').value, num = (v) => (v === '' || v === null) ? null : Number(v);
+  const modo = g('reglaMontoModo').value, num = (v) => (String(v == null ? '' : v).trim() === '') ? null : leerMonto(v);
   return { nombre: g('reglaNombre').value.trim(), origen, cuenta_id: cuentaSel === '*' ? null : cuentaSel, contiene: g('reglaContiene').value.trim(), signo: g('reglaSigno').value, monto_modo: modo,
     monto_min: modo === 'cualquiera' ? null : num(g('reglaMontoMin').value), monto_max: modo === 'rango' ? num(g('reglaMontoMax').value) : null, accion: 'traspaso', contrapartida_origen: cOrigen, contrapartida_id: cId, activa: g('reglaActiva').checked };
 }
@@ -15378,7 +15418,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   const actualizarResumenMovFacturas = () => {
     const marcadas = Array.from(document.querySelectorAll('.mov-factura-check:checked'));
     const totalSeleccionado = marcadas.reduce((s,c)=>s+(Number(c.dataset.importe)||0),0);
-    const montoMovimiento = Number(document.getElementById('movCargos').value) || 0;
+    const montoMovimiento = leerMonto(document.getElementById('movCargos').value) || 0;
     const diferencia = montoMovimiento - totalSeleccionado;
     const cuadra = Math.abs(diferencia) < 0.01;
     const monedas = [...new Set(marcadas.map(c => (mapaFacturaProvMov[c.value]?.moneda || 'MXN')))];
@@ -15419,8 +15459,8 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   const sugerirNetoProveedor = () => {
     if (movimientoExistente) return;
     const campo = document.getElementById('movCargos');
-    if ((Number(campo.value) || 0) > 0 && campo.dataset.auto !== '1') return;
-    if ((Number(document.getElementById('movDepositos').value) || 0) > 0) return;
+    if ((leerMonto(campo.value) || 0) > 0 && campo.dataset.auto !== '1') return;
+    if ((leerMonto(document.getElementById('movDepositos').value) || 0) > 0) return;
     const marcadas = Array.from(document.querySelectorAll('.mov-factura-check:checked'));
     if (!marcadas.length) { if (campo.dataset.auto === '1') { campo.value = campo.dataset.antes ?? ''; campo.dataset.auto = ''; } return; }
     if (!marcadas.every(c => (mapaFacturaProvMov[c.value]?.moneda || 'MXN') === 'MXN')) return;
@@ -15527,7 +15567,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     const totalCreditosMarcados = marcadasCred.reduce((s,c)=>s+(-(Number(c.dataset.importe)||0)),0);
     const creditoAplicable = Math.min(totalCreditosMarcados, totalFacturasMarcadas); // un crédito no baja el total por debajo de cero
     const totalSeleccionado = Math.round((totalFacturasMarcadas - creditoAplicable) * 100) / 100;
-    const montoMovimiento = Number(document.getElementById('movDepositos').value) || 0;
+    const montoMovimiento = leerMonto(document.getElementById('movDepositos').value) || 0;
     const diferencia = montoMovimiento - totalSeleccionado;
     const cuadra = Math.abs(diferencia) < 0.01;
     // El Tercero se hereda del cliente cobrado — no se captura a mano. Si el depósito cubre
@@ -15573,8 +15613,8 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   const sugerirNetoCliente = () => {
     if (movimientoExistente) return;
     const campo = document.getElementById('movDepositos');
-    if ((Number(campo.value) || 0) > 0 && campo.dataset.auto !== '1') return;
-    if ((Number(document.getElementById('movCargos').value) || 0) > 0) return;
+    if ((leerMonto(campo.value) || 0) > 0 && campo.dataset.auto !== '1') return;
+    if ((leerMonto(document.getElementById('movCargos').value) || 0) > 0) return;
     const marcadas = Array.from(document.querySelectorAll('.mov-factura-cliente-check:checked'));
     if (!marcadas.length) { if (campo.dataset.auto === '1') { campo.value = campo.dataset.antes ?? ''; campo.dataset.auto = ''; } return; }
     if (!marcadas.every(c => (mapaFacturaClienteMov[c.value]?.moneda || 'MXN') === 'MXN')) return;
@@ -15610,11 +15650,11 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   document.getElementById('movTipoSalida').value = tipoInicial;
   const actualizarRotuloTraspaso = () => {
     const lbl = document.getElementById('movTraspasoDestinoLabel'); if (!lbl) return;
-    const esDep = (Number(document.getElementById('movDepositos').value) || 0) > (Number(document.getElementById('movCargos').value) || 0);
+    const esDep = (leerMonto(document.getElementById('movDepositos').value) || 0) > (leerMonto(document.getElementById('movCargos').value) || 0);
     lbl.textContent = esDep ? '¿De qué cuenta viene este dinero?' : '¿A qué cuenta va este dinero?';
   };
   const actualizarOpcionesTipo = () => {
-    const esDeposito = (Number(document.getElementById('movDepositos').value) || 0) > (Number(document.getElementById('movCargos').value) || 0);
+    const esDeposito = (leerMonto(document.getElementById('movDepositos').value) || 0) > (leerMonto(document.getElementById('movCargos').value) || 0);
     const sel = document.getElementById('movTipoSalida');
     const valorActual = sel.value;
     document.getElementById('movTipoLabel').textContent = esDeposito ? 'Tipo de entrada' : 'Tipo de salida';
@@ -15655,7 +15695,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   const movRefrescarVista = () => {
     const g = (id) => document.getElementById(id);
     if (!g('movCardResumen') || !g('movCargos')) return;
-    const car = Number(g('movCargos').value) || 0, dep = Number(g('movDepositos').value) || 0;
+    const car = leerMonto(g('movCargos').value) || 0, dep = leerMonto(g('movDepositos').value) || 0;
     g('movCargos').classList.toggle('mov-imp-cero', car <= 0); g('movCargos').classList.toggle('mov-imp-activo', car > 0);
     g('movDepositos').classList.toggle('mov-imp-cero', dep <= 0); g('movDepositos').classList.toggle('mov-imp-activo', dep > 0);
     const val = g('movTipoSalida').value, esTras = (val === 'traspaso_banco' || val === 'traspaso_efectivo');
@@ -15743,8 +15783,8 @@ async function openMovimientoModal(contexto, movimientoExistente) {
     const validacionFecha = validarFechaOperativa(fecha);
     if (!validacionFecha.valido) { toast(validacionFecha.mensaje, 'error'); return; }
     if (await bloqueadoPorCierre(contexto.businessId, fecha)) return;
-    const cargos = Number(document.getElementById('movCargos').value) || 0;
-    const depositos = Number(document.getElementById('movDepositos').value) || 0;
+    const cargos = leerMonto(document.getElementById('movCargos').value) || 0;
+    const depositos = leerMonto(document.getElementById('movDepositos').value) || 0;
     const descripcion = document.getElementById('movDescripcion').value || null;
     const tipoElegido = document.getElementById('movTipoSalida').value;
     if (!cargos && !depositos) { toast('Escribe un monto en Cargos o Depósitos.', 'error'); return; }
@@ -15963,7 +16003,7 @@ async function openTraspasoModal(businessId, onDone) {
     const dSel = document.getElementById('traspasoDestino');
     const tcOrigen = Number(oSel.selectedOptions[0]?.dataset.tc) || 1;
     const tcDestino = Number(dSel.selectedOptions[0]?.dataset.tc) || 1;
-    const montoOrigen = Number(document.getElementById('traspasoMonto').value) || 0;
+    const montoOrigen = leerMonto(document.getElementById('traspasoMonto').value) || 0;
     document.getElementById('traspasoMontoDestino').value = montoOrigen ? (montoOrigen * (tcOrigen / tcDestino)).toFixed(2) : '';
   };
   document.getElementById('traspasoMontoDestino').oninput = () => { destinoTocadoManualmente = true; };
@@ -15987,8 +16027,8 @@ async function openTraspasoModal(businessId, onDone) {
     const origen = document.getElementById('traspasoOrigen').value;
     const destino = document.getElementById('traspasoDestino').value;
     const fecha = document.getElementById('traspasoFecha').value;
-    const montoOrigen = Number(document.getElementById('traspasoMonto').value) || 0;
-    const montoDestino = Number(document.getElementById('traspasoMontoDestino').value) || montoOrigen;
+    const montoOrigen = leerMonto(document.getElementById('traspasoMonto').value) || 0;
+    const montoDestino = leerMonto(document.getElementById('traspasoMontoDestino').value) || montoOrigen;
     const descripcion = document.getElementById('traspasoDescripcion').value || 'Traspaso entre cuentas';
     if (origen.startsWith('nuevo:') || destino.startsWith('nuevo:')) { toast('Termina de crear la cuenta/caja nueva antes de guardar.', 'error'); return; }
     if (origen === destino) { toast('Elige cuentas distintas.', 'error'); return; }
@@ -25029,7 +25069,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-05.4';
+const APP_VERSION = '2026-11-05.5';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
