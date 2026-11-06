@@ -424,6 +424,15 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 .cfdi-acciones>summary::-webkit-details-marker{display:none;}
 .cfdi-acc-menu{position:absolute;right:0;top:calc(100% + 4px);z-index:8;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 6px 20px rgba(10,31,61,.14);padding:6px;display:flex;flex-direction:column;gap:4px;min-width:230px;}
 .cfdi-acc-menu .btn{width:100%;text-align:left;justify-content:flex-start;}
+/* ===== Reglas de importación (2026-11-05.4) ===== */
+.rg-aviso{padding:12px 14px;border-radius:12px;background:#fff6e5;border:1.5px solid #e0b04f;color:#4a3000;font-size:13.5px;line-height:1.5;margin-bottom:14px;}
+.rg-chip{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:700;background:#e1f2e8;color:#11603a;}
+.rg-chip-off{background:#eceff4;color:#5b6475;}
+.rg-fila-off td{opacity:.6;}
+.rg-acciones{display:flex;gap:6px;flex-wrap:wrap;}
+#modalReglasConfirm td,#modalReglasConfirm th{padding:8px 10px;font-size:13px;}
+#modalReglasConfirm tr.rg-sin-destino td{background:#fff6f6;}
+
 /* ===== Ventana «Movimiento» (Bancos/Efectivo) — tarjetas, dos columnas y Resumen (2026-11-05.2). Todo con #movWorkspace: Pólizas y Proveedores no cambian ===== */
 #movWorkspace .mov-cap-grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,3fr);gap:22px;align-items:stretch;min-height:100%;}
 #movWorkspace .mov-col-izq,#movWorkspace .mov-col-der{display:flex;flex-direction:column;gap:16px;min-width:0;}
@@ -1188,6 +1197,10 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18"/><path d="M4 21V9l8-6 8 6v12"/><path d="M9 21V12h6v9"/></svg>
           Bancos
         </div>
+<div class="nav-item" data-section="recurrentes">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+Transacciones recurrentes
+</div>
         <div class="nav-item" data-section="proveedores">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7H4a2 2 0 00-2 2v9a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"/></svg>
           Proveedores
@@ -1309,7 +1322,8 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
         <section class="section" id="sec-proveedores"></section>
         <section class="section" id="sec-clientes"></section>
         <section class="section" id="sec-cfdi"></section>
-        <section class="section" id="sec-activosfijos"></section>
+        <section class="section" id="sec-recurrentes"></section>
+<section class="section" id="sec-activosfijos"></section>
         <section class="section" id="sec-pagosclasificar"></section>
         <section class="section" id="sec-saldosfavoriva"></section>
         <section class="section" id="sec-balanza"></section>
@@ -1381,6 +1395,52 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   </div>
 </div>
 
+<!-- Modal: regla de importación (crear / editar) -->
+<div class="modal-bg" id="modalRegla">
+<div class="modal" style="max-width:660px;">
+<h3 id="reglaTitulo">Nueva regla de importación</h3>
+<div class="field"><label>Nombre de la regla</label><input type="text" id="reglaNombre" maxlength="120" placeholder="Ej. Depósitos del TPV de HSBC"></div>
+<div class="grid-2">
+<div class="field"><label>Se aplica al importar en</label><select id="reglaAplica"></select></div>
+<div class="field"><label>Si el movimiento es</label><select id="reglaSigno"><option value="deposito">Un depósito (entra)</option><option value="cargo">Un cargo (sale)</option><option value="ambos">Cualquiera de los dos</option></select></div>
+</div>
+<div class="field"><label>y su descripción, concepto o referencia contiene</label><input type="text" id="reglaContiene" maxlength="200" placeholder="Ej. ABONO TPV VTAS CR AFILIACION">
+<div style="font-size:12px;color:var(--muted);margin-top:4px;">No distingue mayúsculas ni acentos. Mínimo 4 caracteres, para que la regla no coincida con demasiado.</div></div>
+<div class="grid-2">
+<div class="field"><label>Monto</label><select id="reglaMontoModo"><option value="cualquiera">Cualquier monto</option><option value="exacto">Un monto exacto</option><option value="rango">Entre dos montos</option></select></div>
+<div class="field" id="reglaMontoWrap" style="display:none;"><label id="reglaMontoLabel">Monto</label>
+<div style="display:flex;gap:8px;"><input type="number" step="0.01" min="0" id="reglaMontoMin" placeholder="Mínimo"><input type="number" step="0.01" min="0" id="reglaMontoMax" placeholder="Máximo"></div></div>
+</div>
+<div class="field"><label id="reglaContraLabel">Proponer registrarlo como traspaso</label><select id="reglaContra"></select>
+<div style="font-size:12px;color:var(--muted);margin-top:4px;" id="reglaContraHint"></div></div>
+<label style="display:flex;gap:8px;align-items:center;font-size:13.5px;margin:4px 0 10px;"><input type="checkbox" id="reglaActiva" checked> Regla activa</label>
+<div style="font-size:12.5px;color:var(--muted);margin-bottom:6px;">Al importar, las filas que coincidan se te mostrarán para confirmar. <strong>Nada se guarda sin tu confirmación.</strong></div>
+<div class="modal-actions">
+<button class="btn btn-ghost" id="reglaCancelar">Cancelar</button>
+<button class="btn btn-ghost" id="reglaProbar">Probar regla</button>
+<button class="btn btn-gold" id="reglaGuardar">Guardar</button>
+</div>
+</div>
+</div>
+<!-- Modal: confirmar lo que las reglas proponen al importar (también muestra el resultado de «Probar regla») -->
+<div class="modal-bg" id="modalReglasConfirm">
+<div class="modal" style="max-width:1000px;width:94vw;">
+<h3 id="rgcTitulo">Confirmar reglas de importación</h3>
+<p id="rgcSub" style="font-size:13px;color:var(--muted);margin:0 0 12px;"></p>
+<div class="table-wrap" style="max-height:52vh;overflow:auto;">
+<table>
+<thead><tr><th style="width:34px;"><input type="checkbox" id="rgcTodos" checked aria-label="Seleccionar todas las filas"></th><th>Fecha</th><th>Descripción</th><th style="text-align:right;">Monto</th><th>Regla</th><th>Se registrará como</th></tr></thead>
+<tbody id="rgcCuerpo"></tbody>
+</table>
+</div>
+<p id="rgcResumen" style="font-size:13px;margin:10px 0 0;font-weight:600;"></p>
+<div class="modal-actions">
+<button class="btn btn-ghost" id="rgcCancelar">Cancelar importación</button>
+<button class="btn btn-ghost" id="rgcSin">Importar sin aplicar reglas</button>
+<button class="btn btn-gold" id="rgcAplicar">Confirmar y importar</button>
+</div>
+</div>
+</div>
 <!-- Modal: editar perfil del negocio (nombre comercial + razón social) -->
 <div class="modal-bg" id="modalEditBiz">
   <div class="modal" style="width:min(680px,94vw);max-height:88vh;overflow-y:auto;">
@@ -3335,6 +3395,6 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-05.3"></script>
+<script src="/app.js?v=2026-11-05.4"></script>
 </body>
 </html>

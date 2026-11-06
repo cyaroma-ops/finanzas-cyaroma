@@ -1179,7 +1179,7 @@ const SECTION_META = {
   dashboard: { title: 'Dashboard', sub: 'Vista consolidada de todos los negocios', showMonth: true, needsBiz: false },
   ventas: { title: 'Ventas', sub: '', showMonth: true, needsBiz: true },
   efectivo: { title: 'Efectivo & Divisas', sub: '', showMonth: true, needsBiz: true },
-  bancos: { title: 'Bancos', sub: '', showMonth: true, needsBiz: true },
+  bancos: { title: 'Bancos', sub: '', showMonth: true, needsBiz: true }, recurrentes: { title: 'Transacciones recurrentes', sub: 'Reglas de importación para Bancos y Efectivo', showMonth: false, needsBiz: true },
   proveedores: { title: 'Proveedores', sub: '', showMonth: false, needsBiz: true },
   clientes: { title: 'Clientes', sub: '', showMonth: false, needsBiz: true },
   cfdi: { title: 'CFDI (XML)', sub: 'Carga los XML descargados del SAT, diferencia emitidos de recibidos y registra su estatus', showMonth: false, needsBiz: true },
@@ -1386,6 +1386,7 @@ async function renderCurrentSection() {
   if (s === 'fuentesfiscales') return renderFuentesFiscales();
   if (s === 'diasinhabiles') return renderDiasInhabiles();
   if (s === 'pagosimpuestos') return renderPagosImpuestos();
+  if (s === 'recurrentes') return renderRecurrentes();
   if (s === 'isrprovisional') return renderIsrProvisional();
   if (s === 'pl') return renderPL();
   if (s === 'flujo') return renderFlujo();
@@ -14091,6 +14092,187 @@ async function asegurarPataPareja(tabla, fila, idEstaPata, previa) {
 // Importación de movimientos de Banco / Efectivo desde Excel.
 //  · Una fila marcada «traspaso» con cuenta destino reconocible nace con su pareja (en retiros Y en depósitos). Sin cuenta destino se guarda SIN CLASIFICAR (no se inventa un traspaso a medias).
 //  · No duplica: lo que el archivo trae y ya existe (misma cuenta, fecha, monto y descripción) se omite; si el archivo trae N iguales y ya hay M, se agregan N−M.
+/* ============================================================================================================
+   REGLAS DE IMPORTACIÓN (2026-11-05.4) — «cuando importe un Excel de Bancos/Efectivo y una fila coincida, propón registrarla como traspaso».
+   Aditivo: sin reglas (o sin la tabla) la importación es la de siempre. Con coincidencias SIEMPRE se pide confirmación antes de guardar.
+   ============================================================================================================ */
+let STATE_reglasImpDisponible = true, STATE_reglaEditando = null, STATE_reglasImpLista = [], STATE_reglasImpCuentas = { bancos: [], monedas: [] };
+const reglasImpTablaFaltante = (e) => !!e && (e.code === '42P01' || e.code === 'PGRST205' || /does not exist|schema cache|Could not find the table/i.test(String(e.message || '')));
+const reglaNorm = (t) => String(t == null ? '' : t).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+function reglaCoincide(regla, fila) {   // fila: { texto, cargos, depositos }
+  const k = reglaNorm(regla.contiene); if (k.length < 4 || !reglaNorm(fila.texto).includes(k)) return false;
+  const car = Number(fila.cargos) || 0, dep = Number(fila.depositos) || 0, monto = dep > 0 ? dep : car;
+  if (!(monto > 0) || (car > 0 && dep > 0)) return false;
+  if (regla.signo === 'deposito' && !(dep > 0)) return false;
+  if (regla.signo === 'cargo' && !(car > 0)) return false;
+  const mn = (regla.monto_min === null || regla.monto_min === undefined || regla.monto_min === '') ? null : Number(regla.monto_min);
+  const mx = (regla.monto_max === null || regla.monto_max === undefined || regla.monto_max === '') ? null : Number(regla.monto_max);
+  if (regla.monto_modo === 'exacto') return mn !== null && Math.abs(monto - mn) < 0.005;
+  if (regla.monto_modo === 'rango') { if (mn !== null && monto < mn - 0.005) return false; if (mx !== null && monto > mx + 0.005) return false; }
+  return true;
+}
+const reglaQueCoincide = (reglas, fila) => (reglas || []).find(r => reglaCoincide(r, fila)) || null;
+async function cargarReglasImportacion(businessId, origen, cuentaRefId) {
+  try {
+    const { data, error } = await sb.from('fz_reglas_importacion').select('*').eq('business_id', businessId).eq('origen', origen).eq('activa', true).order('orden').order('created_at');
+    if (error) { if (!reglasImpTablaFaltante(error)) toast('No se pudieron leer las reglas de importación; se importa sin ellas: ' + error.message, 'error'); return []; }
+    return (data || []).filter(r => !r.cuenta_id || r.cuenta_id === cuentaRefId);
+  } catch (_) { return []; }
+}
+function confirmarReglasImportacion(items, opts) {   // → Promise: arreglo con los índices aceptados · [] = importar sin reglas · null = cancelar todo
+  opts = opts || {};
+  return new Promise((resolve) => {
+    const m = document.getElementById('modalReglasConfirm'), cuerpo = document.getElementById('rgcCuerpo'), chkTodos = document.getElementById('rgcTodos');
+    document.getElementById('rgcTitulo').textContent = opts.titulo || 'Confirmar reglas de importación';
+    document.getElementById('rgcSub').textContent = opts.subtitulo || 'Estas filas coinciden con una regla. Nada se guarda hasta que confirmes.';
+    const mostrar = items.slice(0, 300);
+    cuerpo.innerHTML = mostrar.map(x => `<tr class="${x.destNombre ? '' : 'rg-sin-destino'}"><td>${(!opts.soloVer && x.destNombre) ? `<input type="checkbox" class="rgc-chk" data-i="${x.i}" checked aria-label="Aplicar la regla a esta fila">` : ''}</td><td>${escHtml(fechaCorta(x.fecha))}</td><td>${escHtml(x.descripcion || '')}</td><td style="text-align:right;">${fmt(x.monto)}</td><td>${escHtml(x.reglaNombre)}</td><td>${x.destNombre ? escHtml((x.esSalida ? 'Traspaso hacia ' : 'Traspaso desde ') + x.destNombre) : '<span style="color:var(--red);">La cuenta de la regla ya no está activa: se importa sin clasificar</span>'}</td></tr>`).join('') || '<tr><td colspan="6" style="padding:16px;color:var(--muted);">Ninguna fila coincide.</td></tr>';
+    const chks = () => [...cuerpo.querySelectorAll('.rgc-chk')];
+    const resumen = () => {
+      if (opts.soloVer) { const tot = items.reduce((s, x) => s + (Number(x.monto) || 0), 0); document.getElementById('rgcResumen').textContent = `${items.length} movimiento(s) habrían coincidido · total ${fmt(tot)}${items.length > mostrar.length ? ` · se muestran los primeros ${mostrar.length}` : ''}. No se guardó nada.`; return; }
+      const sel = chks().filter(c => c.checked), tot = sel.reduce((s, c) => { const x = items.find(y => String(y.i) === c.dataset.i); return s + (x ? Number(x.monto) || 0 : 0); }, 0);
+      document.getElementById('rgcResumen').textContent = `${sel.length} de ${chks().length} fila(s) seleccionada(s) para registrar como traspaso · ${fmt(tot)}. Las demás filas del archivo se importan normalmente.`;
+      document.getElementById('rgcAplicar').disabled = sel.length === 0;
+    };
+    chkTodos.checked = true; chkTodos.style.visibility = opts.soloVer ? 'hidden' : 'visible';
+    chkTodos.onchange = () => { chks().forEach(c => { c.checked = chkTodos.checked; }); resumen(); };
+    cuerpo.onchange = () => { chkTodos.checked = chks().every(c => c.checked); resumen(); };
+    const cerrar = (v) => { m.classList.remove('show'); document.removeEventListener('keydown', onKey, true); resolve(v); };
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cerrar(opts.soloVer ? undefined : null); } };
+    document.addEventListener('keydown', onKey, true);
+    const bC = document.getElementById('rgcCancelar'), bS = document.getElementById('rgcSin'), bA = document.getElementById('rgcAplicar');
+    bC.textContent = opts.soloVer ? 'Cerrar' : 'Cancelar importación'; bS.style.display = bA.style.display = opts.soloVer ? 'none' : '';
+    bC.onclick = () => cerrar(opts.soloVer ? undefined : null); bS.onclick = () => cerrar([]);
+    bA.onclick = () => cerrar(chks().filter(c => c.checked).map(c => Number(c.dataset.i)));
+    resumen(); m.classList.add('show'); if (!opts.soloVer) bA.focus();
+  });
+}
+/* ---------- Pantalla «Transacciones recurrentes» → Reglas de importación ---------- */
+async function reglasImpCuentas(businessId) {
+  const [b, e] = await Promise.all([sb.from('fz_bancos_cuentas').select('id,nombre,activo').eq('business_id', businessId).order('nombre'), sb.from('fz_efectivo_monedas').select('id,nombre,activo').eq('business_id', businessId).order('nombre')]);
+  return { bancos: (b.data || []).filter(x => x.activo !== false), monedas: (e.data || []).filter(x => x.activo !== false) };
+}
+const reglasImpNombreCuenta = (origen, id) => { const l = origen === 'banco' ? STATE_reglasImpCuentas.bancos : STATE_reglasImpCuentas.monedas; const c = l.find(x => x.id === id); return c ? ((origen === 'efectivo' ? 'Caja · ' : 'Banco · ') + c.nombre) : '(cuenta no disponible)'; };
+const reglasImpMontoTxt = (r) => r.monto_modo === 'exacto' ? `monto exacto ${fmt(r.monto_min)}` : r.monto_modo === 'rango' ? `monto ${r.monto_min !== null && r.monto_min !== undefined ? 'desde ' + fmt(r.monto_min) : ''}${r.monto_min !== null && r.monto_min !== undefined && r.monto_max ? ' ' : ''}${r.monto_max ? 'hasta ' + fmt(r.monto_max) : ''}` : 'cualquier monto';
+const reglasImpSignoTxt = (s) => s === 'deposito' ? 'depósito' : s === 'cargo' ? 'cargo' : 'depósito o cargo';
+const reglasImpAplicaTxt = (r) => r.cuenta_id ? reglasImpNombreCuenta(r.origen, r.cuenta_id) : (r.origen === 'banco' ? 'Banco · cualquier cuenta' : 'Caja · cualquier caja');
+const reglasImpAccionTxt = (r) => (r.signo === 'deposito' ? 'Traspaso desde ' : r.signo === 'cargo' ? 'Traspaso hacia ' : 'Traspaso con ') + reglasImpNombreCuenta(r.contrapartida_origen, r.contrapartida_id);
+const reglasImpResumen = (r) => `en ${reglasImpAplicaTxt(r)} · ${reglasImpSignoTxt(r.signo)} que contiene «${r.contiene}» · ${reglasImpMontoTxt(r)} → ${reglasImpAccionTxt(r)}${r.activa ? '' : ' · DESACTIVADA'}`;
+function reglasImpDiff(a, b) {
+  const campos = [['Nombre', r => r.nombre], ['Aplica en', reglasImpAplicaTxt], ['Tipo de movimiento', r => reglasImpSignoTxt(r.signo)], ['Texto', r => '«' + r.contiene + '»'], ['Monto', reglasImpMontoTxt], ['Traspaso', reglasImpAccionTxt], ['Estado', r => r.activa ? 'activa' : 'desactivada']];
+  return campos.map(([n, f]) => [n, f(a), f(b)]).filter(([, x, y]) => x !== y).map(([n, x, y]) => `${n}: ${x} → ${y}`).join(' · ');
+}
+async function renderRecurrentes() {
+  const el = document.getElementById('sec-recurrentes'), b = biz();
+  if (!b) { el.innerHTML = '<div class="empty">Selecciona un negocio.</div>'; return; }
+  el.innerHTML = '<div class="empty">Cargando…</div>';
+  const [cuentas, q] = await Promise.all([reglasImpCuentas(b.id), sb.from('fz_reglas_importacion').select('*').eq('business_id', b.id).order('orden').order('created_at')]);
+  STATE_reglasImpCuentas = cuentas;
+  const cab = `<div class="card-head" style="margin-bottom:6px;"><h3>Transacciones recurrentes</h3></div>
+    <div style="display:flex;gap:8px;margin:6px 0 14px;flex-wrap:wrap;"><div class="tag active">Reglas de importación</div><div class="tag" style="opacity:.55;cursor:default;" title="Llegará en una próxima versión">Programadas · próximamente</div></div>`;
+  if (q.error) {
+    STATE_reglasImpDisponible = !reglasImpTablaFaltante(q.error);
+    el.innerHTML = cab + (STATE_reglasImpDisponible ? `<div class="empty">Error al leer las reglas: ${escHtml(q.error.message)}</div>` : '<div class="rg-aviso"><strong>Falta preparar la base de datos para las reglas.</strong> Ejecuta el archivo <code>R1_reglas_importacion.sql</code> en Supabase (SQL Editor). Mientras tanto, la importación de Excel funciona exactamente como siempre.</div>');
+    return;
+  }
+  STATE_reglasImpDisponible = true; STATE_reglasImpLista = q.data || [];
+  const filas = STATE_reglasImpLista.map(r => `<tr class="${r.activa ? '' : 'rg-fila-off'}">
+    <td><strong>${escHtml(r.nombre)}</strong></td><td>${escHtml(reglasImpAplicaTxt(r))}</td>
+    <td>${escHtml(reglasImpSignoTxt(r.signo))} que contiene «${escHtml(r.contiene)}»<br><span style="color:var(--muted);font-size:12px;">${escHtml(reglasImpMontoTxt(r))}</span></td>
+    <td>${escHtml(reglasImpAccionTxt(r))}</td><td><span class="rg-chip ${r.activa ? '' : 'rg-chip-off'}">${r.activa ? 'Activa' : 'Desactivada'}</span></td>
+    <td><div class="rg-acciones"><button class="btn btn-ghost btn-sm" data-rg="editar" data-id="${escAttr(r.id)}">Editar</button><button class="btn btn-ghost btn-sm" data-rg="probar" data-id="${escAttr(r.id)}">Probar</button><button class="btn btn-ghost btn-sm" data-rg="alternar" data-id="${escAttr(r.id)}">${r.activa ? 'Desactivar' : 'Activar'}</button><button class="btn btn-ghost btn-sm" style="color:var(--red);" data-rg="eliminar" data-id="${escAttr(r.id)}">Eliminar</button></div></td></tr>`).join('');
+  el.innerHTML = cab + `<p style="font-size:13px;color:var(--muted);max-width:760px;margin:0 0 12px;">Cuando importes un Excel en Bancos o Efectivo y una fila coincida con una regla, te proponemos registrarla como <strong>traspaso</strong> (con sus dos movimientos y su número de operación). <strong>Siempre te pedimos confirmación antes de guardar.</strong> Cada cambio en las reglas queda en Auditoría.</p>
+    <div style="margin-bottom:12px;"><button class="btn btn-gold btn-sm" id="rgNueva">+ Nueva regla</button></div>
+    ${STATE_reglasImpLista.length ? `<div class="table-wrap"><table><thead><tr><th>Regla</th><th>Aplica en</th><th>Condición</th><th>Propone</th><th>Estado</th><th></th></tr></thead><tbody>${filas}</tbody></table></div>` : '<div class="empty">Todavía no hay reglas. Crea la primera con «+ Nueva regla» (por ejemplo, los depósitos de tu TPV).</div>'}`;
+  document.getElementById('rgNueva').onclick = () => abrirReglaEditor(null);
+  el.querySelectorAll('[data-rg]').forEach(btn => { btn.onclick = () => reglasImpAccion(btn.dataset.rg, btn.dataset.id); });
+}
+async function reglasImpAccion(accion, id) {
+  const b = biz(), r = STATE_reglasImpLista.find(x => x.id === id); if (!b || !r) return;
+  if (accion === 'editar') return abrirReglaEditor(r);
+  if (accion === 'probar') return reglasImpProbar(r);
+  if (accion === 'alternar') {
+    const { error } = await sb.from('fz_reglas_importacion').update({ activa: !r.activa, actualizado_por: STATE.user?.email || null }).eq('id', r.id);
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    await registrarAuditoria(b.id, 'editar', 'Reglas de importación', `Regla «${r.nombre}» ${r.activa ? 'DESACTIVADA' : 'ACTIVADA'} (${reglasImpResumen(r)})`);
+    toast(r.activa ? 'Regla desactivada.' : 'Regla activada.'); return renderRecurrentes();
+  }
+  if (accion === 'eliminar') {
+    if (!confirm(`¿Eliminar la regla «${r.nombre}»?\n\nLos movimientos ya importados no cambian. Esta acción queda en Auditoría.`)) return;
+    const { error } = await sb.from('fz_reglas_importacion').delete().eq('id', r.id);
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    await registrarAuditoria(b.id, 'eliminar', 'Reglas de importación', `Regla «${r.nombre}» ELIMINADA (${reglasImpResumen(r)})`);
+    toast('Regla eliminada.'); return renderRecurrentes();
+  }
+}
+function reglasImpLeerForm() {
+  const g = (id) => document.getElementById(id); const [origen, cuentaSel] = g('reglaAplica').value.split(':'), [cOrigen, cId] = g('reglaContra').value.split(':');
+  const modo = g('reglaMontoModo').value, num = (v) => (v === '' || v === null) ? null : Number(v);
+  return { nombre: g('reglaNombre').value.trim(), origen, cuenta_id: cuentaSel === '*' ? null : cuentaSel, contiene: g('reglaContiene').value.trim(), signo: g('reglaSigno').value, monto_modo: modo,
+    monto_min: modo === 'cualquiera' ? null : num(g('reglaMontoMin').value), monto_max: modo === 'rango' ? num(g('reglaMontoMax').value) : null, accion: 'traspaso', contrapartida_origen: cOrigen, contrapartida_id: cId, activa: g('reglaActiva').checked };
+}
+function reglasImpValidar(r) {
+  if (!r.nombre) return 'Escribe un nombre para la regla.';
+  if (reglaNorm(r.contiene).length < 4) return 'El texto a buscar debe tener al menos 4 caracteres.';
+  if (!r.contrapartida_id) return 'Elige la otra cuenta del traspaso.';
+  if (r.cuenta_id && r.cuenta_id === r.contrapartida_id && r.origen === r.contrapartida_origen) return 'La cuenta del traspaso no puede ser la misma en la que se aplica la regla.';
+  if (r.monto_modo === 'exacto' && !(r.monto_min > 0)) return 'Escribe el monto exacto.';
+  if (r.monto_modo === 'rango' && r.monto_min === null && r.monto_max === null) return 'Escribe al menos un monto (mínimo o máximo).';
+  if (r.monto_modo === 'rango' && r.monto_min !== null && r.monto_max !== null && r.monto_min > r.monto_max) return 'El monto mínimo no puede ser mayor que el máximo.';
+  return '';
+}
+function reglasImpActualizarForm() {
+  const g = (id) => document.getElementById(id), modo = g('reglaMontoModo').value, signo = g('reglaSigno').value;
+  g('reglaMontoWrap').style.display = modo === 'cualquiera' ? 'none' : ''; g('reglaMontoMax').style.display = modo === 'rango' ? '' : 'none';
+  g('reglaMontoMin').placeholder = modo === 'exacto' ? 'Monto exacto' : 'Mínimo'; g('reglaMontoLabel').textContent = modo === 'exacto' ? 'Monto exacto' : 'Monto entre';
+  g('reglaContraLabel').textContent = signo === 'deposito' ? 'Proponer registrarlo como traspaso desde…' : signo === 'cargo' ? 'Proponer registrarlo como traspaso hacia…' : 'Proponer registrarlo como traspaso con…';
+  g('reglaContraHint').textContent = signo === 'deposito' ? 'El depósito se registra como entrada del traspaso; la salida se crea en la cuenta que elijas.' : signo === 'cargo' ? 'El cargo se registra como salida del traspaso; el depósito se crea en la cuenta que elijas.' : 'Si es depósito: traspaso desde esa cuenta. Si es cargo: traspaso hacia esa cuenta.';
+}
+function abrirReglaEditor(r) {
+  const b = biz(), g = (id) => document.getElementById(id), c = STATE_reglasImpCuentas; STATE_reglaEditando = r;
+  const optAplica = ['<option value="banco:*">Bancos · cualquier cuenta</option>', ...c.bancos.map(x => `<option value="banco:${escAttr(x.id)}">Banco · ${escHtml(x.nombre)}</option>`), '<option value="efectivo:*">Efectivo · cualquier caja</option>', ...c.monedas.map(x => `<option value="efectivo:${escAttr(x.id)}">Caja · ${escHtml(x.nombre)}</option>`)];
+  const optContra = [...c.bancos.map(x => `<option value="banco:${escAttr(x.id)}">Banco · ${escHtml(x.nombre)}</option>`), ...c.monedas.map(x => `<option value="efectivo:${escAttr(x.id)}">Caja · ${escHtml(x.nombre)}</option>`)];
+  g('reglaAplica').innerHTML = optAplica.join(''); g('reglaContra').innerHTML = optContra.join('');
+  g('reglaTitulo').textContent = r ? 'Editar regla de importación' : 'Nueva regla de importación';
+  g('reglaNombre').value = r ? r.nombre : ''; g('reglaContiene').value = r ? r.contiene : '';
+  g('reglaAplica').value = r ? `${r.origen}:${r.cuenta_id || '*'}` : 'banco:*'; g('reglaSigno').value = r ? r.signo : 'deposito';
+  g('reglaMontoModo').value = r ? r.monto_modo : 'cualquiera'; g('reglaMontoMin').value = r && r.monto_min !== null ? r.monto_min : ''; g('reglaMontoMax').value = r && r.monto_max !== null ? r.monto_max : '';
+  if (r) g('reglaContra').value = `${r.contrapartida_origen}:${r.contrapartida_id}`; g('reglaActiva').checked = r ? !!r.activa : true;
+  g('reglaMontoModo').onchange = g('reglaSigno').onchange = reglasImpActualizarForm; reglasImpActualizarForm();
+  g('reglaCancelar').onclick = () => g('modalRegla').classList.remove('show');
+  g('reglaProbar').onclick = async () => { const nueva = reglasImpLeerForm(), err = reglasImpValidar(nueva); if (err) { toast(err, 'error'); return; } await reglasImpProbar({ ...nueva, id: r ? r.id : null }); };
+  g('reglaGuardar').onclick = async () => {
+    const nueva = reglasImpLeerForm(), err = reglasImpValidar(nueva); if (err) { toast(err, 'error'); return; }
+    const btn = g('reglaGuardar'); btn.disabled = true;
+    try {
+      if (r) {
+        const { error } = await sb.from('fz_reglas_importacion').update({ ...nueva, actualizado_por: STATE.user?.email || null }).eq('id', r.id);
+        if (error) { toast('Error: ' + error.message, 'error'); return; }
+        await registrarAuditoria(b.id, 'editar', 'Reglas de importación', `Regla «${r.nombre}» modificada — ${reglasImpDiff(r, nueva) || 'sin cambios de contenido'}`);
+      } else {
+        const orden = STATE_reglasImpLista.reduce((m, x) => Math.max(m, Number(x.orden) || 0), 0) + 1;
+        const { error } = await sb.from('fz_reglas_importacion').insert({ ...nueva, business_id: b.id, orden, creado_por: STATE.user?.email || null });
+        if (error) { toast('Error: ' + error.message, 'error'); return; }
+        await registrarAuditoria(b.id, 'crear', 'Reglas de importación', `Regla «${nueva.nombre}» CREADA (${reglasImpResumen(nueva)})`);
+      }
+      g('modalRegla').classList.remove('show'); toast('Regla guardada.'); await renderRecurrentes();
+    } finally { btn.disabled = false; }
+  };
+  g('modalRegla').classList.add('show'); g('reglaNombre').focus();
+}
+async function reglasImpProbar(regla) {   // solo lectura: cuántos movimientos YA importados (últimos 12 meses, aún sin traspaso) habrían coincidido
+  const b = biz(); if (!b) return;
+  const tabla = regla.origen === 'banco' ? 'fz_bancos_mov' : 'fz_efectivo_mov', campo = regla.origen === 'banco' ? 'cuenta_id' : 'moneda_id';
+  const desde = new Date(); desde.setFullYear(desde.getFullYear() - 1); const d0 = desde.toISOString().slice(0, 10);
+  toast('Probando la regla…');
+  const { data, error } = await fetchTodasLasPaginas(() => { let q = sb.from(tabla).select('*').eq('business_id', b.id).gte('fecha', d0); if (regla.cuenta_id) q = q.eq(campo, regla.cuenta_id); return q.order('id'); });
+  if (error) { toast('Error al probar: ' + error.message, 'error'); return; }
+  const destNombre = reglasImpNombreCuenta(regla.contrapartida_origen, regla.contrapartida_id);
+  const items = (data || []).filter(m => !m.traspaso_id && reglaCoincide(regla, { texto: [m.descripcion, m.concepto, m.referencia, m.proveedor, m.factura].filter(Boolean).join(' '), cargos: m.cargos, depositos: m.depositos }))
+    .map((m, i) => ({ i, fecha: m.fecha, descripcion: m.descripcion || m.proveedor || '', monto: Math.max(Number(m.cargos) || 0, Number(m.depositos) || 0), esSalida: (Number(m.cargos) || 0) > 0, reglaNombre: regla.nombre, destNombre }));
+  await confirmarReglasImportacion(items, { soloVer: true, titulo: `Prueba de la regla «${regla.nombre}»`, subtitulo: 'Así habría coincidido con tus movimientos de los últimos 12 meses que todavía no son traspaso. Es solo una consulta: no se cambia nada.' });
+}
+
 async function importarMovimientosBancoEfectivo(tabla, rows, businessId, cuentaRefId) {
   const esBanco = tabla === 'fz_bancos_mov';
   const campoCuenta = esBanco ? 'cuenta_id' : 'moneda_id';
@@ -14146,6 +14328,32 @@ async function importarMovimientosBancoEfectivo(tabla, rows, businessId, cuentaR
     (existentes || []).forEach(e => { const k = firma(e.fecha, e.descripcion, e.depositos, e.cargos); yaHay.set(k, (yaHay.get(k) || 0) + 1); });
     payload.forEach((p, i) => { const k = firma(p.fecha, p.descripcion, p.depositos, p.cargos); if ((yaHay.get(k) || 0) > 0) { yaHay.set(k, yaHay.get(k) - 1); omitir.add(i); } });
   }
+  // ---- Reglas de importación (2026-11-05.4): lo que una regla propone se CONFIRMA antes de guardar; sin reglas o sin coincidencias, nada cambia.
+  let aplicadasPorRegla = [];
+  const nombreCuentaActual = ((esBanco ? cuentasBanco : monedasEfvo).find(c => c.id === cuentaRefId) || {}).nombre || '';
+  const reglasImp = await cargarReglasImportacion(businessId, esBanco ? 'banco' : 'efectivo', cuentaRefId);
+  if (reglasImp.length) {
+    const cand = [];
+    payload.forEach((p, i) => {
+      if (omitir.has(i) || p.traspaso_id) return;
+      const regla = reglaQueCoincide(reglasImp, { texto: [p.descripcion, p.concepto, p.referencia, p.proveedor, p.factura].filter(Boolean).join(' '), cargos: p.cargos, depositos: p.depositos });
+      if (!regla) return;
+      const d = regla.contrapartida_origen === 'banco' ? cuentasBanco.find(c => c.id === regla.contrapartida_id && !(esBanco && c.id === cuentaRefId)) : monedasEfvo.find(m => m.id === regla.contrapartida_id && !(!esBanco && m.id === cuentaRefId));
+      cand.push({ i, regla, dest: d ? { tipo: regla.contrapartida_origen, id: d.id, nombre: d.nombre } : null });
+    });
+    if (cand.length) {
+      const decision = await confirmarReglasImportacion(cand.map(c => ({ i: c.i, fecha: payload[c.i].fecha, descripcion: payload[c.i].descripcion, monto: Math.max(Number(payload[c.i].cargos) || 0, Number(payload[c.i].depositos) || 0), esSalida: (Number(payload[c.i].cargos) || 0) > 0, reglaNombre: c.regla.nombre, destNombre: c.dest ? ((c.dest.tipo === 'efectivo' ? 'Caja · ' : 'Banco · ') + c.dest.nombre) : '' })));
+      if (decision === null) { toast('Importación cancelada: no se guardó nada.'); return false; }
+      for (const c of cand) {
+        if (!c.dest || !decision.includes(c.i)) continue;
+        const p = payload[c.i], traspasoId = uid(); Object.assign(p, { tipo_salida: 'traspaso', tipo_entrada: 'traspaso', traspaso_id: traspasoId }); if (!esBanco) p.proveedor = 'Traspaso';
+        const esSalida = (Number(p.cargos) || 0) > 0, monto = esSalida ? p.cargos : p.depositos;
+        const leg = { business_id: businessId, fecha: p.fecha, descripcion: p.descripcion, cargos: esSalida ? 0 : monto, depositos: esSalida ? monto : 0, tipo_salida: 'traspaso', tipo_entrada: 'traspaso', traspaso_id: traspasoId };
+        legs.push({ idx: c.i, ...(c.dest.tipo === 'banco' ? { tabla: 'fz_bancos_mov', row: { ...leg, cuenta_id: c.dest.id, concepto: 'Traspaso' } } : { tabla: 'fz_efectivo_mov', row: { ...leg, moneda_id: c.dest.id, proveedor: 'Traspaso' } }) });
+        aplicadasPorRegla.push({ regla: c.regla.nombre, fecha: p.fecha, monto, esSalida, dest: (c.dest.tipo === 'efectivo' ? 'Caja · ' : 'Banco · ') + c.dest.nombre });
+      }
+    }
+  }
   const nuevos = payload.filter((_, i) => !omitir.has(i));
   const legsNuevas = legs.filter(l => !omitir.has(l.idx)).map(({ idx, ...resto }) => resto);
   if (!nuevos.length) { toast(`Las ${payload.length} filas del archivo ya estaban importadas: no se agregó nada.`); return true; }
@@ -14160,7 +14368,12 @@ async function importarMovimientosBancoEfectivo(tabla, rows, businessId, cuentaR
   if (error) { toast('Error al importar: ' + error.message, 'error'); return false; }
   let legsFallidas = 0;
   for (const leg of legsNuevas) { const { error: e2 } = await sb.from(leg.tabla).insert(leg.row); if (e2) legsFallidas++; }
-  toast(`${nuevos.length} movimientos importados${omitir.size ? ` · ${omitir.size} ya existían y se omitieron` : ''}${legsNuevas.length ? ` (${legsNuevas.length - legsFallidas} traspaso(s) con sus dos movimientos)` : ''}.`);
+  if (aplicadasPorRegla.length) {   // Auditoría: qué regla convirtió qué filas en traspaso, y quién lo confirmó (el usuario queda en la bitácora)
+    const porRegla = {}; aplicadasPorRegla.forEach(a => { const k = a.regla; porRegla[k] = porRegla[k] || { n: 0, t: 0 }; porRegla[k].n++; porRegla[k].t += a.monto; });
+    const detalle = aplicadasPorRegla.slice(0, 8).map(a => `${fechaCorta(a.fecha)} ${fmt(a.monto)} ${a.esSalida ? 'hacia' : 'desde'} ${a.dest}`).join('; ') + (aplicadasPorRegla.length > 8 ? `; … y ${aplicadasPorRegla.length - 8} más` : '');
+    await registrarAuditoria(businessId, 'crear', 'Reglas de importación', `Importación en ${esBanco ? 'Banco' : 'Caja'} · ${nombreCuentaActual}: ${aplicadasPorRegla.length} movimiento(s) registrados como traspaso por regla, confirmados por el usuario — ${Object.entries(porRegla).map(([k, v]) => `«${k}» ×${v.n} (${fmt(v.t)})`).join(', ')}. Detalle: ${detalle}`);
+  }
+  toast(`${nuevos.length} movimientos importados${omitir.size ? ` · ${omitir.size} ya existían y se omitieron` : ''}${legsNuevas.length ? ` (${legsNuevas.length - legsFallidas} traspaso(s) con sus dos movimientos)` : ''}${aplicadasPorRegla.length ? ` · ${aplicadasPorRegla.length} registrado(s) por regla` : ''}.`);
   if (filasSinDestino.length) toast(`${filasSinDestino.length} fila(s) marcadas "Traspaso" no tenían una "Cuenta destino" reconocible: se guardaron SIN CLASIFICAR. Clasifícalas desde Bancos/Efectivo.`, 'error');
   if (legsFallidas) toast(`${legsFallidas} traspaso(s) quedaron incompletos (no se pudo crear el movimiento que falta): revísalos en Revisión de consistencia.`, 'error');
   return true;
@@ -24816,7 +25029,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-05.3';
+const APP_VERSION = '2026-11-05.4';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
