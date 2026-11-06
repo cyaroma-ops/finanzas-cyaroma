@@ -429,6 +429,15 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 .rg-chip{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:700;background:#e1f2e8;color:#11603a;}
 .rg-chip-off{background:#eceff4;color:#5b6475;}
 .rg-fila-off td{opacity:.6;}
+/* ===== Transacciones programadas (2026-11-05.6) ===== */
+.pg-chip-pausa{background:#fbe3b0;color:#6b4300;}
+.pg-chip-espera{background:#e3ecfb;color:#1d3f7a;}
+.pg-det{display:block;font-size:12px;color:var(--muted);margin-top:3px;max-width:230px;}
+#modalProg .modal{max-height:94vh;overflow-y:auto;}
+#modalProg td input{width:100%;text-align:right;padding:8px 10px;border:1.5px solid var(--line);border-radius:8px;font-size:14px;background:#fff;}
+#modalProg td input:focus{outline:none;border-color:var(--navy-1);}
+.pg-ok{color:#11603a;}.pg-mal{color:var(--red);}
+
 .rg-acciones{display:flex;gap:6px;flex-wrap:wrap;}
 #modalReglasConfirm td,#modalReglasConfirm th{padding:8px 10px;font-size:13px;}
 #modalReglasConfirm tr.rg-sin-destino td{background:#fff6f6;}
@@ -1439,6 +1448,47 @@ Transacciones recurrentes
 <button class="btn btn-ghost" id="rgcSin">Importar sin aplicar reglas</button>
 <button class="btn btn-gold" id="rgcAplicar">Confirmar y importar</button>
 </div>
+</div>
+</div>
+<!-- Modal: programar una póliza (crear / editar) -->
+<div class="modal-bg" id="modalProg">
+<div class="modal" style="max-width:780px;">
+<h3 id="progTitulo">Programar póliza</h3>
+<div class="field"><label>Nombre de la programada</label><input type="text" id="progNombre" maxlength="120" placeholder="Ej. Renta del local"></div>
+<div class="field"><label id="progModeloLabel">Póliza que sirve de modelo</label><select id="progModelo"></select><div id="progModeloTxt" style="font-size:13px;color:var(--muted);display:none;"></div></div>
+<div class="field"><label>Concepto de cada póliza que se cree</label><input type="text" id="progConcepto" maxlength="200" placeholder="Ej. Renta mensual"></div>
+<div class="table-wrap" style="max-height:230px;overflow:auto;margin-bottom:6px;"><table>
+<thead><tr><th>Cuenta</th><th style="text-align:right;width:150px;">Cargo</th><th style="text-align:right;width:150px;">Abono</th></tr></thead>
+<tbody id="progLineas"></tbody>
+<tfoot><tr><td style="font-weight:700;">Totales</td><td id="progTotCargo" style="text-align:right;font-weight:700;"></td><td id="progTotAbono" style="text-align:right;font-weight:700;"></td></tr></tfoot>
+</table></div>
+<div id="progCuadre" style="font-size:12.5px;margin-bottom:12px;"></div>
+<div class="grid-2">
+<div class="field"><label>Se repite</label><select id="progCada"><option value="1">Cada mes</option><option value="2">Cada 2 meses</option><option value="3">Cada 3 meses</option><option value="4">Cada 4 meses</option><option value="6">Cada 6 meses</option><option value="12">Cada año</option></select></div>
+<div class="field"><label>El día del mes</label><input type="number" id="progDia" min="1" max="31" step="1"><div style="font-size:12px;color:var(--muted);margin-top:4px;">Si el mes tiene menos días (por ejemplo el 31 en febrero), se usa el último día del mes.</div></div>
+</div>
+<div class="grid-2">
+<div class="field"><label>Fecha de inicio</label><input type="date" id="progInicio"></div>
+<div class="field"><label>Fecha de término (opcional)</label><input type="date" id="progFin"><div style="font-size:12px;color:var(--muted);margin-top:4px;">En blanco = sigue sin fin. Al llegar a esta fecha se pausa sola.</div></div>
+</div>
+<div id="progVista" style="font-size:13px;padding:10px 12px;background:#f4f6fa;border-radius:10px;margin-bottom:8px;"></div>
+<div style="font-size:12.5px;color:var(--muted);margin-bottom:6px;">Cada póliza se crea como una póliza normal (editable) con la fecha que le tocaba. Cambiar montos o fechas aquí solo afecta lo que se cree DESPUÉS; todo queda en Auditoría.</div>
+<div class="modal-actions">
+<button class="btn btn-ghost" id="progCancelar">Cancelar</button>
+<button class="btn btn-gold" id="progGuardar">Guardar</button>
+</div>
+</div>
+</div>
+<!-- Modal: historial de una programada -->
+<div class="modal-bg" id="modalProgHist">
+<div class="modal" style="max-width:780px;">
+<h3 id="phTitulo">Historial</h3>
+<p id="phSub" style="font-size:13px;color:var(--muted);margin:0 0 12px;"></p>
+<div class="table-wrap" style="max-height:50vh;overflow:auto;"><table>
+<thead><tr><th>Fecha programada</th><th>Resultado</th><th>Póliza</th><th>Detalle</th></tr></thead>
+<tbody id="phCuerpo"></tbody>
+</table></div>
+<div class="modal-actions"><button class="btn btn-ghost" id="phCerrar">Cerrar</button></div>
 </div>
 </div>
 <!-- Modal: editar perfil del negocio (nombre comercial + razón social) -->
@@ -3395,6 +3445,6 @@ Transacciones recurrentes
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-05.5"></script>
+<script src="/app.js?v=2026-11-05.6"></script>
 </body>
 </html>

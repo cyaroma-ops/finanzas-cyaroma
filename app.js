@@ -878,7 +878,8 @@ async function boot() {
   renderCurrentSection();
 
   navActivar();
-  setTimeout(() => respaldoAvisoAlEntrar(), 1500);   // aviso de respaldo atrasado (solo administradores)
+  setTimeout(() => respaldoAvisoAlEntrar(), 1500);
+  setTimeout(() => progEjecutarTodas(), 3500);   // aviso de respaldo atrasado (solo administradores)
 }
 
 /* ---------- USUARIOS AUTORIZADOS ---------- */
@@ -1219,7 +1220,7 @@ const SECTION_META = {
   dashboard: { title: 'Dashboard', sub: 'Vista consolidada de todos los negocios', showMonth: true, needsBiz: false },
   ventas: { title: 'Ventas', sub: '', showMonth: true, needsBiz: true },
   efectivo: { title: 'Efectivo & Divisas', sub: '', showMonth: true, needsBiz: true },
-  bancos: { title: 'Bancos', sub: '', showMonth: true, needsBiz: true }, recurrentes: { title: 'Transacciones recurrentes', sub: 'Reglas de importación para Bancos y Efectivo', showMonth: false, needsBiz: true },
+  bancos: { title: 'Bancos', sub: '', showMonth: true, needsBiz: true }, recurrentes: { title: 'Transacciones recurrentes', sub: 'Reglas de importación y pólizas programadas', showMonth: false, needsBiz: true },
   proveedores: { title: 'Proveedores', sub: '', showMonth: false, needsBiz: true },
   clientes: { title: 'Clientes', sub: '', showMonth: false, needsBiz: true },
   cfdi: { title: 'CFDI (XML)', sub: 'Carga los XML descargados del SAT, diferencia emitidos de recibidos y registra su estatus', showMonth: false, needsBiz: true },
@@ -14202,14 +14203,276 @@ function reglasImpDiff(a, b) {
   const campos = [['Nombre', r => r.nombre], ['Aplica en', reglasImpAplicaTxt], ['Tipo de movimiento', r => reglasImpSignoTxt(r.signo)], ['Texto', r => '«' + r.contiene + '»'], ['Monto', reglasImpMontoTxt], ['Traspaso', reglasImpAccionTxt], ['Estado', r => r.activa ? 'activa' : 'desactivada']];
   return campos.map(([n, f]) => [n, f(a), f(b)]).filter(([, x, y]) => x !== y).map(([n, x, y]) => `${n}: ${x} → ${y}`).join(' · ');
 }
+/* ============================================================================================================
+   TRANSACCIONES PROGRAMADAS (2026-11-05.6) — versión 2: PÓLIZAS.
+   Una programada es una póliza modelo + un calendario (cada N meses, el día X, desde… hasta…). Al iniciar sesión la app crea las que ya
+   tocaron, CADA UNA con su fecha programada. La clave única (programada + fecha) impide duplicados; lo que borres a mano no se regenera.
+   ============================================================================================================ */
+let STATE_recurrentesTab = 'reglas', STATE_progLista = [], STATE_progEjecutadas = false, STATE_progEditando = null, STATE_progCat = null;
+const progDiasDelMes = (y, m0) => new Date(Date.UTC(y, m0 + 1, 0)).getUTCDate();
+const progFechaDelMes = (y, m0, dia) => `${y}-${String(m0 + 1).padStart(2, '0')}-${String(Math.min(dia, progDiasDelMes(y, m0))).padStart(2, '0')}`;
+function progFechaK(p, k) { const [y0, m0] = p.fecha_inicio.slice(0, 7).split('-').map(Number), t = (y0 * 12 + (m0 - 1)) + k * p.cada_meses; return progFechaDelMes(Math.floor(t / 12), t % 12, p.dia_mes); }
+function progFechas(p, tope) {   // fechas del calendario entre el inicio y «tope», sin pasar de la fecha de término ni de «generar_desde»
+  const out = [], desde = p.generar_desde || p.fecha_inicio, limite = (p.fecha_fin && p.fecha_fin < tope) ? p.fecha_fin : tope;
+  for (let k = 0; k < 1200; k++) { const f = progFechaK(p, k); if (f > limite) break; if (f >= p.fecha_inicio && f >= desde) out.push(f); }
+  return out;
+}
+function progListar(p, n) { const out = []; for (let k = 0; k < 1200 && out.length < n; k++) { const f = progFechaK(p, k); if (p.fecha_fin && f > p.fecha_fin) break; if (f >= p.fecha_inicio) out.push(f); } return out; }
+function progProxima(p, hoy) { for (let k = 0; k < 1200; k++) { const f = progFechaK(p, k); if (p.fecha_fin && f > p.fecha_fin) return ''; if (f >= p.fecha_inicio && f > hoy && f >= (p.generar_desde || p.fecha_inicio)) return f; } return ''; }
+const progSumaMeses = (iso, n) => { const [y, m, d] = iso.split('-').map(Number), t = y * 12 + (m - 1) + n; return progFechaDelMes(Math.floor(t / 12), t % 12, d); };
+const progTotal = (p) => ((p.plantilla && p.plantilla.lineas) || []).reduce((s, l) => s + (Number(l.cargo) || 0), 0);
+const progCadaTxt = (n) => n === 1 ? 'Cada mes' : n === 12 ? 'Cada año' : `Cada ${n} meses`;
+function progEstado(p, hoy) {
+  if (p.estatus === 'pausada') return { txt: 'Pausada', cls: 'pg-chip-pausa', det: p.motivo_pausa || '' };
+  if (p.fecha_inicio > hoy) return { txt: 'Aún no inicia', cls: 'pg-chip-espera', det: `Empieza el ${fechaCorta(p.fecha_inicio)}` };
+  return { txt: 'Activa', cls: '', det: '' };
+}
+// ---- crear la póliza de una ocurrencia: IGUAL que una póliza hecha a mano (cabecera con su número y sus líneas)
+async function progCrearPoliza(p, fecha) {
+  const pl = p.plantilla || {}, lineas = pl.lineas || [];
+  const { data: existentes } = await sb.from('fz_polizas').select('numero').eq('business_id', p.business_id);
+  let numero = (existentes || []).reduce((mx, x) => Math.max(mx, x.numero || 0), 0) + 1, cab = null;
+  for (let intento = 0; intento < 4 && !cab; intento++) {
+    const r = await sb.from('fz_polizas').insert({ business_id: p.business_id, numero, fecha, concepto: pl.concepto || p.nombre }).select().single();
+    if (!r.error && r.data) { cab = r.data; break; }
+    if (r.error && /duplicate|unique|23505/i.test(String(r.error.message || '') + String(r.error.code || ''))) { numero++; continue; }
+    return { ok: false, msg: (r.error && r.error.message) || 'no se pudo crear la póliza' };
+  }
+  if (!cab) return { ok: false, msg: 'no se pudo asignar el número de póliza' };
+  const filas = lineas.map((l, i) => ({ business_id: p.business_id, poliza_id: cab.id, subcuenta_id: l.subcuenta_id || null, cuenta_tipo: l.cuenta_tipo || 'subcuenta', cuenta_ref_id: l.cuenta_ref_id || null, cargo: Number(l.cargo) || 0, abono: Number(l.abono) || 0, descripcion: l.descripcion || null, referencia: l.referencia || null, orden: i }));
+  const { error } = await sb.from('fz_polizas_lineas').insert(filas);
+  if (error) { await sb.from('fz_polizas').delete().eq('id', cab.id); return { ok: false, msg: 'líneas: ' + error.message }; }
+  return { ok: true, id: cab.id, numero };
+}
+// ---- motor: crea lo que ya tocó (una vez por sesión y negocio; también a mano con «Crear las pendientes ahora»)
+async function progEjecutarNegocio(businessId) {
+  const res = { creadas: 0, bloqueadas: 0, errores: 0, pausadas: 0 };
+  let progs = [];
+  try { const q = await sb.from('fz_programadas').select('*').eq('business_id', businessId).eq('tipo', 'poliza').eq('estatus', 'activa'); if (q.error) return res; progs = q.data || []; } catch (_) { return res; }
+  const hoy = todayStr();
+  for (const p of progs) {
+    const fechas = progFechas(p, hoy), previas = {};
+    if (fechas.length) { const o = await sb.from('fz_programadas_ocurrencias').select('*').eq('programada_id', p.id); (o.data || []).forEach(r => { previas[r.fecha_programada] = r; }); }
+    const marca = (id, campos) => sb.from('fz_programadas_ocurrencias').update(campos).eq('id', id);
+    for (const f of fechas) {
+      let fila = previas[f];
+      if (fila && fila.estado === 'creada') continue;                                                                   // ya se creó (aunque la hayas borrado después: no se repite)
+      if (fila && fila.estado === 'pendiente' && (Date.now() - new Date(fila.updated_at).getTime()) < 120000) continue; // otra sesión la está creando ahora mismo
+      if (!fila) {
+        const ins = await sb.from('fz_programadas_ocurrencias').insert({ programada_id: p.id, business_id: businessId, fecha_programada: f, estado: 'pendiente', creada_por: (STATE.user && STATE.user.email) || null }).select().single();
+        if (ins.error || !ins.data) continue;                                                                           // otra sesión la reclamó primero (clave única)
+        fila = ins.data;
+      } else await marca(fila.id, { estado: 'pendiente' });
+      if (await periodoEstaCerrado(businessId, f)) { await marca(fila.id, { estado: 'bloqueada_cierre', detalle: 'El periodo está cerrado' }); res.bloqueadas++; continue; }
+      const r = await progCrearPoliza(p, f);
+      if (r.ok) {
+        await marca(fila.id, { estado: 'creada', registro_tabla: 'fz_polizas', registro_id: r.id, detalle: `Póliza #${r.numero}` }); res.creadas++;
+        await registrarAuditoria(businessId, 'crear', 'Pólizas', `Póliza #${r.numero} (${f}) — ${(p.plantilla && p.plantilla.concepto) || p.nombre} · generada automáticamente por la programada «${p.nombre}» (le tocaba el ${fechaCorta(f)}) · ${fmt(progTotal(p))}`);
+      } else { await marca(fila.id, { estado: 'error', detalle: String(r.msg).slice(0, 300) }); res.errores++; }
+    }
+    if (p.fecha_fin && p.fecha_fin < hoy) {   // llegó su fecha de término: se pausa sola y queda dicho por qué
+      const motivo = `Llegó su fecha de término el ${fechaCorta(p.fecha_fin)}` + (res.bloqueadas ? ' (alguna póliza quedó sin crear por periodo cerrado)' : '');
+      const { error } = await sb.from('fz_programadas').update({ estatus: 'pausada', pausa_automatica: true, motivo_pausa: motivo, pausada_el: new Date().toISOString(), pausada_por: null }).eq('id', p.id);
+      if (!error) { res.pausadas++; await registrarAuditoria(businessId, 'editar', 'Transacciones programadas', `Programada «${p.nombre}» PAUSADA automáticamente: ${motivo}`); }
+    }
+  }
+  return res;
+}
+async function progEjecutarTodas(soloNegocio) {
+  if (!soloNegocio && STATE_progEjecutadas) return; STATE_progEjecutadas = true;
+  const ids = soloNegocio ? [soloNegocio] : (STATE.businesses || []).map(b => b.id), tot = { creadas: 0, bloqueadas: 0, errores: 0, pausadas: 0 };
+  for (const id of ids) { try { const r = await progEjecutarNegocio(id); Object.keys(tot).forEach(k => { tot[k] += r[k]; }); } catch (e) { console.warn('programadas:', e); } }
+  if (tot.creadas) toast(`Se crearon ${tot.creadas} póliza(s) programada(s).`);
+  if (tot.bloqueadas) toast(`${tot.bloqueadas} póliza(s) programada(s) NO se crearon porque su periodo está cerrado. Reabre el periodo y se crearán solas.`, 'error');
+  if (tot.errores) toast(`${tot.errores} póliza(s) programada(s) no se pudieron crear: míralo en el Historial de la programada.`, 'error');
+  if (tot.pausadas) toast(`${tot.pausadas} programada(s) llegaron a su fecha de término y se pausaron.`);
+  if ((tot.creadas || tot.pausadas) && (STATE.currentSection === 'polizas' || STATE.currentSection === 'recurrentes')) renderCurrentSection();
+  return tot;
+}
+// ---- pantalla
+const rcTabsHtml = (tab) => `<div style="display:flex;gap:8px;margin:6px 0 14px;flex-wrap:wrap;"><div class="tag ${tab === 'reglas' ? 'active' : ''}" data-rc-tab="reglas" style="cursor:pointer;">Reglas de importación</div><div class="tag ${tab === 'programadas' ? 'active' : ''}" data-rc-tab="programadas" style="cursor:pointer;">Programadas</div></div>`;
+async function progCatalogo(businessId) {
+  const [subcuentas, mayores, bq, mq] = await Promise.all([loadSubcuentas(businessId), loadCuentasMayor(businessId), sb.from('fz_bancos_cuentas').select('*').eq('business_id', businessId).eq('activo', true), sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).eq('activo', true)]);
+  return catalogoCuentasUnificado({ subcuentas, mayores, cuentasBanco: bq.data || [], monedasEfectivo: mq.data || [], facturasPendientes: [], facturasClientesPendientes: [], proveedoresCatalogo: [] });
+}
+async function renderProgramadas() {
+  const el = document.getElementById('sec-recurrentes'), b = biz(); if (!b) return;
+  el.onclick = (e) => { const t = e.target.closest('[data-rc-tab]'); if (t && t.dataset.rcTab !== STATE_recurrentesTab) { STATE_recurrentesTab = t.dataset.rcTab; renderRecurrentes(); } };
+  const cab = `<div class="card-head" style="margin-bottom:6px;"><h3>Transacciones recurrentes</h3></div>${rcTabsHtml('programadas')}`;
+  const q = await sb.from('fz_programadas').select('*').eq('business_id', b.id).order('created_at');
+  if (q.error) { el.innerHTML = cab + (reglasImpTablaFaltante(q.error) ? '<div class="rg-aviso"><strong>Falta preparar la base de datos para las programadas.</strong> Ejecuta el archivo <code>R2_programadas.sql</code> en Supabase (SQL Editor). Mientras tanto, todo lo demás funciona igual.</div>' : `<div class="empty">Error al leer las programadas: ${escHtml(q.error.message)}</div>`); return; }
+  STATE_progLista = q.data || []; STATE_progCat = await progCatalogo(b.id).catch(() => []);
+  const oq = await sb.from('fz_programadas_ocurrencias').select('programada_id,fecha_programada,estado').eq('business_id', b.id), hechas = {};
+  (oq.data || []).forEach(o => { if (o.estado === 'creada') (hechas[o.programada_id] = hechas[o.programada_id] || new Set()).add(o.fecha_programada); });
+  const hoy = todayStr();
+  const filas = STATE_progLista.map(p => {
+    const e = progEstado(p, hoy), prox = p.estatus === 'activa' ? progProxima(p, hoy) : '', pend = p.estatus === 'activa' ? progFechas(p, hoy).filter(f => !(hechas[p.id] && hechas[p.id].has(f))).length : 0;
+    return `<tr class="${p.estatus === 'pausada' ? 'rg-fila-off' : ''}"><td><strong>${escHtml(p.nombre)}</strong></td>
+    <td>Póliza · ${escHtml((p.plantilla && p.plantilla.concepto) || '')}<br><span style="color:var(--muted);font-size:12px;">${((p.plantilla && p.plantilla.lineas) || []).length} línea(s) · ${fmt(progTotal(p))}</span></td>
+    <td>${progCadaTxt(p.cada_meses)}<br><span style="color:var(--muted);font-size:12px;">el día ${p.dia_mes}${p.dia_mes > 28 ? ' (o el último del mes)' : ''}</span></td>
+    <td>${p.fecha_fin ? `Del ${fechaCorta(p.fecha_inicio)} al ${fechaCorta(p.fecha_fin)}` : `Desde ${fechaCorta(p.fecha_inicio)}<br><span style="color:var(--muted);font-size:12px;">sin fecha de término</span>`}</td>
+    <td><span class="rg-chip ${e.cls}">${e.txt}</span>${e.det ? `<span class="pg-det">${escHtml(e.det)}</span>` : ''}</td>
+    <td>${prox ? fechaCorta(prox) : '—'}${pend ? `<br><span style="color:var(--red);font-size:12px;">${pend} por crear</span>` : ''}</td>
+    <td><div class="rg-acciones"><button class="btn btn-ghost btn-sm" data-pg="editar" data-id="${escAttr(p.id)}">Editar</button><button class="btn btn-ghost btn-sm" data-pg="${p.estatus === 'activa' ? 'pausar' : 'reanudar'}" data-id="${escAttr(p.id)}">${p.estatus === 'activa' ? 'Pausar' : 'Reanudar'}</button><button class="btn btn-ghost btn-sm" data-pg="historial" data-id="${escAttr(p.id)}">Historial</button><button class="btn btn-ghost btn-sm" style="color:var(--red);" data-pg="eliminar" data-id="${escAttr(p.id)}">Eliminar</button></div></td></tr>`;
+  }).join('');
+  el.innerHTML = cab + `<p style="font-size:13px;color:var(--muted);max-width:780px;margin:0 0 12px;">Una <strong>póliza programada</strong> se crea sola, con la fecha que le toca, cada cierto tiempo (por ejemplo la renta, el día 1 de cada mes). Se crea como cualquier póliza: la puedes ver, editar o borrar, y lo que borres no se vuelve a crear. <strong>Cada cambio queda en Auditoría.</strong></p>
+    <div style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-gold btn-sm" id="pgNueva">+ Nueva programada</button><button class="btn btn-ghost btn-sm" id="pgAhora" title="Crea ahora lo que ya tocó y no se haya creado">Crear las pendientes ahora</button></div>
+    ${STATE_progLista.length ? `<div class="table-wrap"><table><thead><tr><th>Nombre</th><th>Qué crea</th><th>Se repite</th><th>Vigencia</th><th>Estado</th><th>Próxima</th><th></th></tr></thead><tbody>${filas}</tbody></table></div>` : '<div class="empty">Todavía no hay programadas. Crea la primera con «+ Nueva programada» o, desde Pólizas de Diario, con «Repetir…» en una póliza.</div>'}`;
+  document.getElementById('pgNueva').onclick = () => progAbrirEditor({});
+  document.getElementById('pgAhora').onclick = async () => { const t = await progEjecutarTodas(b.id); if (t && !t.creadas && !t.bloqueadas && !t.errores && !t.pausadas) toast('No había nada pendiente por crear.'); renderRecurrentes(); };
+  el.querySelectorAll('[data-pg]').forEach(btn => { btn.onclick = () => progAccion(btn.dataset.pg, btn.dataset.id); });
+}
+async function progAccion(accion, id) {
+  const b = biz(), p = STATE_progLista.find(x => x.id === id); if (!b || !p) return;
+  const yo = (STATE.user && STATE.user.email) || null, hoy = todayStr();
+  if (accion === 'editar') return progAbrirEditor({ prog: p });
+  if (accion === 'historial') return progAbrirHistorial(p);
+  if (accion === 'pausar') {
+    if (!confirm(`¿Pausar la programada «${p.nombre}»?\n\nMientras esté pausada no se crea nada. Al reanudarla, lo que le tocaba durante la pausa NO se crea después.`)) return;
+    const motivo = `La pausaste el ${fechaCorta(hoy)}`;
+    const { error } = await sb.from('fz_programadas').update({ estatus: 'pausada', pausa_automatica: false, motivo_pausa: motivo, pausada_el: new Date().toISOString(), pausada_por: yo, actualizado_por: yo }).eq('id', p.id);
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    await registrarAuditoria(b.id, 'editar', 'Transacciones programadas', `Programada «${p.nombre}» PAUSADA por el usuario (${motivo})`); toast('Programada pausada.'); return renderRecurrentes();
+  }
+  if (accion === 'reanudar') {
+    if (p.fecha_fin && p.fecha_fin < hoy) { toast(`Esta programada terminó el ${fechaCorta(p.fecha_fin)}. Edítala y cambia o quita la fecha de término para poder reanudarla.`, 'error'); return; }
+    const { error } = await sb.from('fz_programadas').update({ estatus: 'activa', pausa_automatica: false, motivo_pausa: null, pausada_el: null, pausada_por: null, generar_desde: hoy, actualizado_por: yo }).eq('id', p.id);
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    await registrarAuditoria(b.id, 'editar', 'Transacciones programadas', `Programada «${p.nombre}» REANUDADA: desde hoy (${fechaCorta(hoy)}); lo que cayó durante la pausa no se crea`); toast('Programada reanudada.'); await progEjecutarTodas(b.id); return renderRecurrentes();
+  }
+  if (accion === 'eliminar') {
+    if (!confirm(`¿Eliminar la programada «${p.nombre}»?\n\nLas pólizas que ya creó NO se borran. Se pierde su historial. Esta acción queda en Auditoría.`)) return;
+    const { error } = await sb.from('fz_programadas').delete().eq('id', p.id);
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    await registrarAuditoria(b.id, 'eliminar', 'Transacciones programadas', `Programada «${p.nombre}» ELIMINADA (${progCadaTxt(p.cada_meses)}, día ${p.dia_mes}, desde ${fechaCorta(p.fecha_inicio)}${p.fecha_fin ? ' hasta ' + fechaCorta(p.fecha_fin) : ''}, ${fmt(progTotal(p))})`); toast('Programada eliminada.'); return renderRecurrentes();
+  }
+}
+async function progAbrirHistorial(p) {
+  const g = (i) => document.getElementById(i);
+  const { data } = await sb.from('fz_programadas_ocurrencias').select('*').eq('programada_id', p.id).order('fecha_programada', { ascending: false });
+  const ids = (data || []).map(x => x.registro_id).filter(Boolean), nums = {};
+  if (ids.length) { const pz = await sb.from('fz_polizas').select('id,numero').in('id', ids); (pz.data || []).forEach(x => { nums[x.id] = x.numero; }); }
+  const ESTADO = { creada: 'Creada', pendiente: 'En proceso', bloqueada_cierre: 'No creada: periodo cerrado', error: 'Error' };
+  g('phTitulo').textContent = `Historial · ${p.nombre}`; g('phSub').textContent = `${(data || []).length} fecha(s) atendidas. Si borras una póliza creada, aquí aparece como «eliminada» y no se vuelve a crear.`;
+  g('phCuerpo').innerHTML = (data || []).map(x => `<tr><td>${fechaCorta(x.fecha_programada)}</td><td>${ESTADO[x.estado] || x.estado}</td><td>${x.registro_id ? (nums[x.registro_id] !== undefined ? '#' + nums[x.registro_id] : '<span style="color:var(--muted);">eliminada</span>') : '—'}</td><td>${escHtml(x.detalle || '')}</td></tr>`).join('') || '<tr><td colspan="4" style="padding:14px;color:var(--muted);">Todavía no se ha creado nada.</td></tr>';
+  g('phCerrar').onclick = () => g('modalProgHist').classList.remove('show'); g('modalProgHist').classList.add('show');
+}
+// ---- editor
+const progDiff = (a, b, et) => {
+  const c = [], f = fechaCorta, pl = (x) => (x.plantilla || {});
+  if (a.nombre !== b.nombre) c.push(`Nombre: «${a.nombre}» → «${b.nombre}»`);
+  if ((pl(a).concepto || '') !== (pl(b).concepto || '')) c.push(`Concepto: «${pl(a).concepto || ''}» → «${pl(b).concepto || ''}»`);
+  if (a.cada_meses !== b.cada_meses) c.push(`Frecuencia: ${progCadaTxt(a.cada_meses)} → ${progCadaTxt(b.cada_meses)}`);
+  if (a.dia_mes !== b.dia_mes) c.push(`Día del mes: ${a.dia_mes} → ${b.dia_mes}`);
+  if (a.fecha_inicio !== b.fecha_inicio) c.push(`Inicio: ${f(a.fecha_inicio)} → ${f(b.fecha_inicio)}`);
+  if ((a.fecha_fin || '') !== (b.fecha_fin || '')) c.push(`Término: ${a.fecha_fin ? f(a.fecha_fin) : 'sin fecha'} → ${b.fecha_fin ? f(b.fecha_fin) : 'sin fecha'}`);
+  const la = pl(a).lineas || [], lb = pl(b).lineas || [];
+  lb.forEach((l, i) => { const x = la[i]; if (!x) return; const d = []; if ((Number(x.cargo) || 0) !== (Number(l.cargo) || 0)) d.push(`cargo ${fmt(x.cargo)} → ${fmt(l.cargo)}`); if ((Number(x.abono) || 0) !== (Number(l.abono) || 0)) d.push(`abono ${fmt(x.abono)} → ${fmt(l.abono)}`); if (d.length) c.push(`«${l.etiqueta || et(l)}»: ${d.join(', ')}`); });
+  return c.join(' · ');
+};
+async function progAbrirEditor(opts) {
+  const b = biz(), g = (i) => document.getElementById(i); if (!b) return;
+  const prog = opts.prog || null; STATE_progEditando = prog;
+  const [polizas, lineasTodas, items] = await Promise.all([loadPolizas(b.id), loadTodasLasLineas(b.id), progCatalogo(b.id).catch(() => [])]); STATE_progCat = items;
+  const etiqueta = (l) => l.etiqueta || labelDeLineaPoliza(items, l) || 'Cuenta';
+  const SOPORTADAS = ['subcuenta', 'banco', 'efectivo'];
+  const lineasDe = (pid) => lineasTodas.filter(l => l.poliza_id === pid).sort((x, y) => (x.orden || 0) - (y.orden || 0));
+  const soportable = (pid) => { const ls = lineasDe(pid), c = ls.reduce((s, l) => s + (Number(l.cargo) || 0), 0), a = ls.reduce((s, l) => s + (Number(l.abono) || 0), 0); return ls.length >= 2 && ls.every(l => SOPORTADAS.includes(l.cuenta_tipo || 'subcuenta')) && c > 0 && Math.abs(c - a) < 0.01; };
+  let lineas = prog ? JSON.parse(JSON.stringify((prog.plantilla && prog.plantilla.lineas) || [])) : [];
+  g('progTitulo').textContent = prog ? 'Editar póliza programada' : 'Programar póliza';
+  const selM = g('progModelo'), txtM = g('progModeloTxt');
+  const cargarModelo = (pid) => {
+    const p = polizas.find(x => x.id === pid); if (!p) return;
+    lineas = lineasDe(pid).map((l, i) => ({ subcuenta_id: l.subcuenta_id || null, cuenta_tipo: l.cuenta_tipo || 'subcuenta', cuenta_ref_id: l.cuenta_ref_id || null, cargo: Number(l.cargo) || 0, abono: Number(l.abono) || 0, descripcion: l.descripcion || null, referencia: l.referencia || null, orden: i, etiqueta: labelDeLineaPoliza(items, l) || 'Cuenta' }));
+    g('progConcepto').value = p.concepto || ''; if (!g('progNombre').value.trim()) g('progNombre').value = p.concepto || '';
+    const dia = Number(p.fecha.slice(8, 10)) || 1; g('progDia').value = dia; g('progInicio').value = progSumaMeses(p.fecha, Number(g('progCada').value) || 1);
+    pintarLineas(); vista();
+  };
+  if (prog) { selM.style.display = 'none'; txtM.style.display = ''; txtM.textContent = (prog.plantilla && prog.plantilla.modelo_poliza_numero) ? `Creada a partir de la póliza #${prog.plantilla.modelo_poliza_numero}. Las cuentas no se cambian aquí; si necesitas otras cuentas, crea otra programada.` : 'Las cuentas no se cambian aquí; si necesitas otras cuentas, crea otra programada.'; }
+  else {
+    selM.style.display = ''; txtM.style.display = 'none';
+    const lista = polizas.slice().sort((x, y) => (y.fecha || '').localeCompare(x.fecha || '') || (y.numero || 0) - (x.numero || 0)).slice(0, 80);
+    selM.innerHTML = '<option value="">— Elige una póliza como modelo —</option>' + lista.map(p => { const ok = soportable(p.id), tot = lineasDe(p.id).reduce((s, l) => s + (Number(l.cargo) || 0), 0); return `<option value="${escAttr(p.id)}" ${ok ? '' : 'disabled'}>#${p.numero ?? '—'} · ${fechaCorta(p.fecha)} · ${escHtml((p.concepto || '(sin concepto)').slice(0, 50))} · ${fmt(tot)}${ok ? '' : ' (no se puede programar)'}</option>`; }).join('');
+    selM.onchange = () => { if (selM.value) cargarModelo(selM.value); };
+  }
+  const pintarLineas = () => {
+    g('progLineas').innerHTML = lineas.map((l, i) => `<tr><td>${escHtml(etiqueta(l))}</td><td><input type="text" inputmode="decimal" class="num-fmt" data-i="${i}" data-c="cargo" value="${escAttr(l.cargo)}"></td><td><input type="text" inputmode="decimal" class="num-fmt" data-i="${i}" data-c="abono" value="${escAttr(l.abono)}"></td></tr>`).join('') || '<tr><td colspan="3" style="padding:12px;color:var(--muted);">Elige una póliza como modelo.</td></tr>';
+    g('progLineas').querySelectorAll('input').forEach(inp => { inp.oninput = () => { lineas[Number(inp.dataset.i)][inp.dataset.c] = leerMonto(inp.value); vista(); }; });
+  };
+  const leer = () => ({ nombre: g('progNombre').value.trim(), plantilla: { concepto: g('progConcepto').value.trim(), modelo_poliza_id: (prog && prog.plantilla && prog.plantilla.modelo_poliza_id) || selM.value || null, modelo_poliza_numero: (prog && prog.plantilla && prog.plantilla.modelo_poliza_numero) || ((polizas.find(x => x.id === selM.value) || {}).numero ?? null), lineas }, cada_meses: Number(g('progCada').value) || 1, dia_mes: Number(g('progDia').value) || 0, fecha_inicio: g('progInicio').value, fecha_fin: g('progFin').value || null });
+  const vista = () => {
+    const c = lineas.reduce((s, l) => s + (Number(l.cargo) || 0), 0), a = lineas.reduce((s, l) => s + (Number(l.abono) || 0), 0), cuadra = lineas.length && c > 0 && Math.abs(c - a) < 0.01;
+    g('progTotCargo').textContent = fmt(c); g('progTotAbono').textContent = fmt(a);
+    g('progCuadre').innerHTML = !lineas.length ? '' : cuadra ? '<span class="pg-ok">✓ La póliza cuadra (cargos = abonos).</span>' : `<span class="pg-mal">La póliza NO cuadra: diferencia de ${fmt(c - a)}. Corrige los montos para poder guardar.</span>`;
+    const d = leer(); let txt = '';
+    if (d.fecha_inicio && d.dia_mes >= 1 && d.dia_mes <= 31) { const f = progListar({ ...d, generar_desde: null }, 3); txt = f.length ? `Se crearán: <strong>${f.map(fechaCorta).join(' · ')}</strong>${d.fecha_fin ? '.' : ' …'}` : 'Con esas fechas no se crearía ninguna póliza.'; if (d.fecha_inicio <= todayStr()) txt += ' <span style="color:var(--muted);">Las que ya pasaron se crean de inmediato al guardar, cada una con su fecha.</span>'; }
+    g('progVista').innerHTML = txt || 'Elige el día y la fecha de inicio para ver cuándo se creará.';
+  };
+  g('progNombre').value = prog ? prog.nombre : ''; g('progConcepto').value = prog ? ((prog.plantilla && prog.plantilla.concepto) || '') : '';
+  g('progCada').value = prog ? String(prog.cada_meses) : '1'; g('progDia').value = prog ? prog.dia_mes : ''; g('progInicio').value = prog ? prog.fecha_inicio : ''; g('progFin').value = prog && prog.fecha_fin ? prog.fecha_fin : '';
+  ['progNombre', 'progConcepto', 'progCada', 'progDia', 'progInicio', 'progFin'].forEach(i => { g(i).oninput = g(i).onchange = vista; });
+  pintarLineas(); vista();
+  if (!prog && opts.polizaId) { if (soportable(opts.polizaId)) { selM.value = opts.polizaId; cargarModelo(opts.polizaId); } else { toast('Esta póliza no se puede programar: debe cuadrar y usar solo cuentas del catálogo, bancos o efectivo (sin facturas ligadas).', 'error'); return; } }
+  g('progCancelar').onclick = () => g('modalProg').classList.remove('show');
+  g('progGuardar').onclick = async () => {
+    const d = leer(), c = lineas.reduce((s, l) => s + (Number(l.cargo) || 0), 0), a = lineas.reduce((s, l) => s + (Number(l.abono) || 0), 0), hoy = todayStr(), yo = (STATE.user && STATE.user.email) || null;
+    if (!d.nombre) return toast('Escribe un nombre para la programada.', 'error');
+    if (!lineas.length) return toast('Elige una póliza como modelo.', 'error');
+    if (!(c > 0) || Math.abs(c - a) >= 0.01) return toast('La póliza debe cuadrar (cargos = abonos) y tener importe.', 'error');
+    if (!(d.dia_mes >= 1 && d.dia_mes <= 31)) return toast('El día del mes debe estar entre 1 y 31.', 'error');
+    if (!d.fecha_inicio) return toast('Elige la fecha de inicio.', 'error');
+    if (d.fecha_fin && d.fecha_fin < d.fecha_inicio) return toast('La fecha de término no puede ser anterior a la de inicio.', 'error');
+    const btn = g('progGuardar'); btn.disabled = true;
+    try {
+      if (!prog) {
+        const fila = { business_id: b.id, tipo: 'poliza', nombre: d.nombre, plantilla: d.plantilla, cada_meses: d.cada_meses, dia_mes: d.dia_mes, fecha_inicio: d.fecha_inicio, fecha_fin: d.fecha_fin, generar_desde: d.fecha_inicio, estatus: 'activa', creado_por: yo };
+        const { error } = await sb.from('fz_programadas').insert(fila); if (error) { toast('Error: ' + error.message, 'error'); return; }
+        await registrarAuditoria(b.id, 'crear', 'Transacciones programadas', `Programada «${d.nombre}» CREADA: póliza «${d.plantilla.concepto}» ${fmt(c)} · ${progCadaTxt(d.cada_meses)}, el día ${d.dia_mes} · desde ${fechaCorta(d.fecha_inicio)}${d.fecha_fin ? ' hasta ' + fechaCorta(d.fecha_fin) : ' sin fecha de término'} · ${lineas.length} línea(s)`);
+      } else {
+        const upd = { nombre: d.nombre, plantilla: d.plantilla, cada_meses: d.cada_meses, dia_mes: d.dia_mes, fecha_inicio: d.fecha_inicio, fecha_fin: d.fecha_fin, actualizado_por: yo };
+        let nota = '';
+        if (prog.estatus === 'pausada' && prog.pausa_automatica && (!d.fecha_fin || d.fecha_fin >= hoy)) { Object.assign(upd, { estatus: 'activa', pausa_automatica: false, motivo_pausa: null, pausada_el: null, pausada_por: null, generar_desde: hoy }); nota = ' · REACTIVADA al ampliar o quitar la fecha de término'; }
+        const { error } = await sb.from('fz_programadas').update(upd).eq('id', prog.id); if (error) { toast('Error: ' + error.message, 'error'); return; }
+        await registrarAuditoria(b.id, 'editar', 'Transacciones programadas', `Programada «${prog.nombre}» modificada — ${progDiff(prog, { ...prog, ...upd }, etiqueta) || 'sin cambios de contenido'}${nota}. Aplica solo a lo que se cree DESPUÉS.`);
+      }
+      g('modalProg').classList.remove('show'); toast('Programada guardada.');
+      const t = await progEjecutarTodas(b.id); if (STATE.currentSection === 'recurrentes') await renderRecurrentes(); else if (STATE.currentSection === 'polizas') await renderPolizas();
+      if (!prog && STATE.currentSection === 'polizas') toast('Puedes verla y administrarla en Transacciones recurrentes → Programadas.');
+    } finally { btn.disabled = false; }
+  };
+  g('modalProg').classList.add('show'); g('progNombre').focus();
+}
+// ---- Auditoría de cambios en CUALQUIER póliza: qué cambió de fecha, concepto, cuentas y montos («antes → después»)
+function polizaCambiosTxt(b) {
+  try {
+    const o = JSON.parse(b.original), cambios = [], items = catalogoCuentasUnificado(b.catalogos), et = (l) => labelDeLineaPoliza(items, l) || 'línea';
+    if (o.poliza.fecha !== b.poliza.fecha) cambios.push(`Fecha: ${fechaCorta(o.poliza.fecha)} → ${fechaCorta(b.poliza.fecha)}`);
+    if ((o.poliza.concepto || '') !== (b.poliza.concepto || '')) cambios.push(`Concepto: «${o.poliza.concepto || ''}» → «${b.poliza.concepto || ''}»`);
+    const previas = new Map(o.lineas.map(l => [l.id, l]));
+    b.lineas.forEach(l => {
+      const a = previas.get(l.id); previas.delete(l.id);
+      if (!a) { cambios.push(`Línea agregada «${et(l)}» (cargo ${fmt(l.cargo)}, abono ${fmt(l.abono)})`); return; }
+      const d = [];
+      if ((Number(a.cargo) || 0) !== (Number(l.cargo) || 0)) d.push(`cargo ${fmt(a.cargo)} → ${fmt(l.cargo)}`);
+      if ((Number(a.abono) || 0) !== (Number(l.abono) || 0)) d.push(`abono ${fmt(a.abono)} → ${fmt(l.abono)}`);
+      if ((a.subcuenta_id || null) !== (l.subcuenta_id || null) || (a.cuenta_ref_id || null) !== (l.cuenta_ref_id || null)) d.push(`cuenta «${et(a)}» → «${et(l)}»`);
+      if (d.length) cambios.push(`«${et(l)}»: ${d.join(', ')}`);
+    });
+    previas.forEach(a => cambios.push(`Línea eliminada «${et(a)}» (cargo ${fmt(a.cargo)}, abono ${fmt(a.abono)})`));
+    return cambios.length ? ' · Cambios: ' + cambios.join('; ') : '';
+  } catch (_) { return ''; }
+}
+
 async function renderRecurrentes() {
   const el = document.getElementById('sec-recurrentes'), b = biz();
   if (!b) { el.innerHTML = '<div class="empty">Selecciona un negocio.</div>'; return; }
   el.innerHTML = '<div class="empty">Cargando…</div>';
+  el.onclick = (e) => { const t = e.target.closest('[data-rc-tab]'); if (t && t.dataset.rcTab !== STATE_recurrentesTab) { STATE_recurrentesTab = t.dataset.rcTab; renderRecurrentes(); } };
+  if (STATE_recurrentesTab === 'programadas') return renderProgramadas();
   const [cuentas, q] = await Promise.all([reglasImpCuentas(b.id), sb.from('fz_reglas_importacion').select('*').eq('business_id', b.id).order('orden').order('created_at')]);
   STATE_reglasImpCuentas = cuentas;
   const cab = `<div class="card-head" style="margin-bottom:6px;"><h3>Transacciones recurrentes</h3></div>
-    <div style="display:flex;gap:8px;margin:6px 0 14px;flex-wrap:wrap;"><div class="tag active">Reglas de importación</div><div class="tag" style="opacity:.55;cursor:default;" title="Llegará en una próxima versión">Programadas · próximamente</div></div>`;
+    ${rcTabsHtml('reglas')}`;
   if (q.error) {
     STATE_reglasImpDisponible = !reglasImpTablaFaltante(q.error);
     el.innerHTML = cab + (STATE_reglasImpDisponible ? `<div class="empty">Error al leer las reglas: ${escHtml(q.error.message)}</div>` : '<div class="rg-aviso"><strong>Falta preparar la base de datos para las reglas.</strong> Ejecuta el archivo <code>R1_reglas_importacion.sql</code> en Supabase (SQL Editor). Mientras tanto, la importación de Excel funciona exactamente como siempre.</div>');
@@ -25069,7 +25332,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-05.5';
+const APP_VERSION = '2026-11-05.6';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
@@ -25107,6 +25370,7 @@ function navSubs(sec) {
     case 'diariospolizas': return [e(() => STATE_diariosPolizasTab, v => { STATE_diariosPolizasTab = v; }, ['diarios', 'librodiario'])];
     case 'pl': { const r = [e(() => STATE_plVista, v => { STATE_plVista = v; }, ['mensual', 'acumulado', 'anual'])];
       if (STATE_plVista === 'anual') r.push(e(() => STATE_plAnualModo, v => { STATE_plAnualModo = v; }, ['detalle', 'ejecutivo'])); return r; }
+    case 'recurrentes': return [e(() => STATE_recurrentesTab, v => { STATE_recurrentesTab = v; }, ['reglas', 'programadas'])];
     default: return [];
   }
 }
@@ -26731,6 +26995,9 @@ async function renderPolizas() {
     });
     return out;
   };
+  const progPorPoliza = {};
+  try { const [oc, pg] = await Promise.all([sb.from('fz_programadas_ocurrencias').select('registro_id,programada_id').eq('business_id', b.id).eq('estado', 'creada'), sb.from('fz_programadas').select('id,nombre').eq('business_id', b.id)]);
+    if (!oc.error && !pg.error) { const nom = {}; (pg.data || []).forEach(x => { nom[x.id] = x.nombre; }); (oc.data || []).forEach(x => { if (x.registro_id) progPorPoliza[x.registro_id] = nom[x.programada_id] || 'programada'; }); } } catch (_) { /* opcional */ }
   const celdaFacturasPoliza = (fs) => fs.length ? escHtml(fs[0]) + (fs.length > 1 ? ` <span title="${escAttr(fs.join(', '))}" style="color:var(--muted);font-size:11px;">+${fs.length - 1}</span>` : '') : '';
 
   el.innerHTML = `
@@ -26776,12 +27043,12 @@ async function renderPolizas() {
               return `<tr class="poliza-resumen-row" data-poliza="${p.id}" style="cursor:pointer;">
                 <td data-rol="secundario">#${p.numero ?? '—'}</td>
                 <td data-rol="principal">${fechaCorta(p.fecha)}</td>
-                <td data-rol="secundario">${p.concepto ? escHtml(p.concepto) : '<span style="color:var(--muted);">(sin concepto)</span>'}</td>
+                <td data-rol="secundario">${p.concepto ? escHtml(p.concepto) : '<span style="color:var(--muted);">(sin concepto)</span>'}${progPorPoliza[p.id] ? ` <span class="rg-chip pg-chip-espera" title="Creada automáticamente por la programada «${escAttr(progPorPoliza[p.id])}»">Programada</span>` : ''}</td>
                 <td data-rol="meta">${celdaFacturasPoliza(facturasDePoliza(p))}</td>
                 <td data-rol="meta">${nAdj ? '📎 ' + nAdj + (nAdj===1?' archivo':' archivos') : ''}</td>
                 <td class="num" data-rol="importe" style="font-weight:700;">${fmt(t.cargo)}</td>
                 <td data-rol="estado"><span class="badge ${cuadrada?'pag':'pend'}">${cuadrada ? 'Cuadrada' : 'Diferencia ' + fmt(t.cargo-t.abono)}</span></td>
-                <td data-rol="acciones"><button class="btn btn-ghost btn-sm poliza-duplicar-btn" data-id="${p.id}" title="Duplicar esta póliza" style="font-size:12px;padding:4px 10px;">Duplicar</button></td>
+                <td data-rol="acciones"><button class="btn btn-ghost btn-sm poliza-duplicar-btn" data-id="${p.id}" title="Duplicar esta póliza" style="font-size:12px;padding:4px 10px;">Duplicar</button> <button class="btn btn-ghost btn-sm poliza-repetir-btn" data-id="${p.id}" title="Programar esta póliza para que se cree sola cada cierto tiempo" style="font-size:12px;padding:4px 10px;">Repetir…</button></td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -26807,6 +27074,7 @@ async function renderPolizas() {
     e.stopPropagation();
     duplicarPoliza(btn.dataset.id, b.id);
   }));
+  el.querySelectorAll('.poliza-repetir-btn').forEach(btn => btn.addEventListener('click', (e) => { e.stopPropagation(); progAbrirEditor({ polizaId: btn.dataset.id }); }));
   window.scrollTo(0, scrollY);
 }
 
@@ -27424,7 +27692,7 @@ async function guardarBorradorPolizaInterno() {
   const facturasClienteASincronizar = [...new Set([...facturasClienteOriginal, ...facturasClienteActuales])];
   for (const facturaId of facturasClienteASincronizar) await sincronizarCobroDesdePolizas(businessId, facturaId);
 
-  registrarAuditoria(businessId, borrador.esNueva ? 'crear' : 'editar', 'Pólizas', `Póliza #${borrador.poliza.numero ?? '—'} (${borrador.poliza.fecha || ''}) — ${borrador.poliza.concepto || 'sin concepto'}`);
+  registrarAuditoria(businessId, borrador.esNueva ? 'crear' : 'editar', 'Pólizas', `Póliza #${borrador.poliza.numero ?? '—'} (${borrador.poliza.fecha || ''}) — ${borrador.poliza.concepto || 'sin concepto'}${borrador.esNueva ? '' : polizaCambiosTxt(borrador)}`);
   STATE_polizaBorrador = null;
   document.getElementById('modalPoliza').classList.remove('show');
   renderPolizas();
