@@ -449,6 +449,19 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 #modalProg td input{width:100%;height:46px;text-align:right;padding:8px 12px;border:1.5px solid var(--line);border-radius:10px;font-size:16px;font-weight:600;background:#fff;box-sizing:border-box;}
 #modalProg td input:focus{outline:none;border-color:var(--navy-1);}
 #modalProg .modal-actions{margin-top:18px;}
+#modalRegla .pg-modal{width:min(1180px,94vw);max-width:none;max-height:94vh;overflow-y:auto;padding:26px 30px;}
+#modalRegla .pg-grid{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,5fr);gap:20px;align-items:start;margin-top:6px;}
+#modalRegla .pg-col{display:flex;flex-direction:column;gap:16px;min-width:0;}
+#modalRegla .pg-card{box-sizing:border-box;border:1px solid var(--line);border-radius:14px;padding:20px 22px;background:#fff;}
+#modalRegla .pg-card .field{margin-bottom:14px;}
+#modalRegla .pg-card .field:last-child{margin-bottom:0;}
+#modalRegla .pg-card .grid-2{margin-bottom:16px;}
+#modalRegla .pg-card .grid-2:last-child{margin-bottom:0;}
+#modalRegla .pg-titulo{margin:0 0 14px;font-size:11.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);}
+#modalRegla .pg-nota{margin:0;font-size:12.5px;color:var(--muted);line-height:1.5;}
+#modalRegla #reglaResumen{padding:12px 14px;background:#f4f6fa;border-radius:10px;color:var(--navy-1);}
+#modalRegla .modal-actions{margin-top:18px;}
+@media (max-width:900px){#modalRegla .pg-grid{grid-template-columns:1fr;}#modalRegla .pg-modal{padding:18px 16px;}}
 @media (max-width:900px){#modalProg .pg-grid{grid-template-columns:1fr;}#modalProg .pg-modal{padding:18px 16px;}#modalProg .pg-tabla{max-height:none;}}
 .pg-ok{color:#11603a;}.pg-mal{color:var(--red);}
 
@@ -1418,10 +1431,14 @@ Transacciones recurrentes
   </div>
 </div>
 
-<!-- Modal: regla de importación (crear / editar) -->
+<!-- Modal: regla de importación (crear / editar) — ventana grande en dos columnas, igual que la de programadas -->
 <div class="modal-bg" id="modalRegla">
-<div class="modal" style="max-width:660px;">
+<div class="modal pg-modal">
 <h3 id="reglaTitulo">Nueva regla de importación</h3>
+<div class="pg-grid">
+<div class="pg-col">
+<section class="pg-card">
+<h4 class="pg-titulo">Cuándo aplica la regla</h4>
 <div class="field"><label>Nombre de la regla</label><input type="text" id="reglaNombre" maxlength="120" placeholder="Ej. Depósitos del TPV de HSBC"></div>
 <div class="grid-2">
 <div class="field"><label>Se aplica al importar en</label><select id="reglaAplica"></select></div>
@@ -1434,10 +1451,22 @@ Transacciones recurrentes
 <div class="field" id="reglaMontoWrap" style="display:none;"><label id="reglaMontoLabel">Monto</label>
 <div style="display:flex;gap:8px;"><input type="text" inputmode="decimal" class="num-fmt" autocomplete="off" id="reglaMontoMin" data-imp-vacio="1" placeholder="Mínimo"><input type="text" inputmode="decimal" class="num-fmt" autocomplete="off" id="reglaMontoMax" data-imp-vacio="1" placeholder="Máximo"></div></div>
 </div>
+</section>
+</div>
+<div class="pg-col">
+<section class="pg-card">
+<h4 class="pg-titulo">Qué propone</h4>
 <div class="field"><label id="reglaContraLabel">Proponer registrarlo como traspaso</label><select id="reglaContra"></select>
 <div style="font-size:12px;color:var(--muted);margin-top:4px;" id="reglaContraHint"></div></div>
-<label style="display:flex;gap:8px;align-items:center;font-size:13.5px;margin:4px 0 10px;"><input type="checkbox" id="reglaActiva" checked> Regla activa</label>
-<div style="font-size:12.5px;color:var(--muted);margin-bottom:6px;">Al importar, las filas que coincidan se te mostrarán para confirmar. <strong>Nada se guarda sin tu confirmación.</strong></div>
+<label style="display:flex;gap:8px;align-items:center;font-size:14px;margin-top:6px;"><input type="checkbox" id="reglaActiva" checked> Regla activa</label>
+</section>
+<section class="pg-card">
+<h4 class="pg-titulo">Así se leerá</h4>
+<div id="reglaResumen" style="font-size:14px;line-height:1.6;"></div>
+</section>
+<p class="pg-nota">Al importar, las filas que coincidan se te mostrarán para confirmar. <strong>Nada se guarda sin tu confirmación.</strong> Cada cambio de la regla queda en Auditoría.</p>
+</div>
+</div>
 <div class="modal-actions">
 <button class="btn btn-ghost" id="reglaCancelar">Cancelar</button>
 <button class="btn btn-ghost" id="reglaProbar">Probar regla</button>
@@ -3474,6 +3503,6 @@ Transacciones recurrentes
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-05.7"></script>
+<script src="/app.js?v=2026-11-05.8"></script>
 </body>
 </html>

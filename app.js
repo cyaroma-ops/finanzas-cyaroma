@@ -123,7 +123,7 @@ document.addEventListener('input', (e) => {
   const el = e.target; if (!impEsCampo(el) || document.activeElement !== el) return;
   let v = impDescValor.get.call(el), pos = el.selectionStart == null ? v.length : el.selectionStart;
   if (e.inputType === 'insertText' && e.data === ',') v = v.slice(0, pos - 1) + '.' + v.slice(pos);   // la coma tecleada es decimal: los miles los pone la app
-  else if (e.inputType && /paste|drop/i.test(e.inputType)) { const n = leerMonto(v); v = /^[\s$\-\d.,]+$/.test(v) ? String(Math.round(n * 1e6) / 1e6) : v; pos = v.length; }
+  else if (!e.inputType || e.inputType === 'insertReplacementText' || (e.data && e.data.length > 1) || /paste|drop|yank/i.test(e.inputType)) { const n = leerMonto(v); v = /^[\s$\-\d.,]+$/.test(v) ? String(Math.round(n * 1e6) / 1e6) : v; pos = v.length; }
   const sig = (v.slice(0, pos).match(/[\d.]/g) || []).length;
   let t = v.replace(/[^\d.\-]/g, ''); t = (t.charAt(0) === '-' ? '-' : '') + t.replace(/-/g, ''); const p1 = t.indexOf('.'); if (p1 > -1) t = t.slice(0, p1 + 1) + t.slice(p1 + 1).replace(/\./g, '');
   const sal = impAgrupar(t); if (sal === impDescValor.get.call(el)) return; impPonerCrudo(el, sal);
@@ -14530,6 +14530,7 @@ function reglasImpActualizarForm() {
   g('reglaMontoMin').placeholder = modo === 'exacto' ? 'Monto exacto' : 'Mínimo'; g('reglaMontoLabel').textContent = modo === 'exacto' ? 'Monto exacto' : 'Monto entre';
   g('reglaContraLabel').textContent = signo === 'deposito' ? 'Proponer registrarlo como traspaso desde…' : signo === 'cargo' ? 'Proponer registrarlo como traspaso hacia…' : 'Proponer registrarlo como traspaso con…';
   g('reglaContraHint').textContent = signo === 'deposito' ? 'El depósito se registra como entrada del traspaso; la salida se crea en la cuenta que elijas.' : signo === 'cargo' ? 'El cargo se registra como salida del traspaso; el depósito se crea en la cuenta que elijas.' : 'Si es depósito: traspaso desde esa cuenta. Si es cargo: traspaso hacia esa cuenta.';
+  const rs = g('reglaResumen'); if (rs) { const f = reglasImpLeerForm(); rs.textContent = (f.contiene && f.contrapartida_id) ? `${f.nombre ? '«' + f.nombre + '»: ' : ''}${reglasImpResumen(f)}.` : 'Escribe el texto a buscar y elige la otra cuenta del traspaso para ver cómo se leerá la regla.'; }
 }
 function abrirReglaEditor(r) {
   const b = biz(), g = (id) => document.getElementById(id), c = STATE_reglasImpCuentas; STATE_reglaEditando = r;
@@ -14541,7 +14542,7 @@ function abrirReglaEditor(r) {
   g('reglaAplica').value = r ? `${r.origen}:${r.cuenta_id || '*'}` : 'banco:*'; g('reglaSigno').value = r ? r.signo : 'deposito';
   g('reglaMontoModo').value = r ? r.monto_modo : 'cualquiera'; g('reglaMontoMin').value = r && r.monto_min !== null ? r.monto_min : ''; g('reglaMontoMax').value = r && r.monto_max !== null ? r.monto_max : '';
   if (r) g('reglaContra').value = `${r.contrapartida_origen}:${r.contrapartida_id}`; g('reglaActiva').checked = r ? !!r.activa : true;
-  g('reglaMontoModo').onchange = g('reglaSigno').onchange = reglasImpActualizarForm; reglasImpActualizarForm();
+  ['reglaNombre', 'reglaAplica', 'reglaSigno', 'reglaContiene', 'reglaMontoModo', 'reglaMontoMin', 'reglaMontoMax', 'reglaContra', 'reglaActiva'].forEach(i => { g(i).oninput = g(i).onchange = reglasImpActualizarForm; }); reglasImpActualizarForm();
   g('reglaCancelar').onclick = () => g('modalRegla').classList.remove('show');
   g('reglaProbar').onclick = async () => { const nueva = reglasImpLeerForm(), err = reglasImpValidar(nueva); if (err) { toast(err, 'error'); return; } await reglasImpProbar({ ...nueva, id: r ? r.id : null }); };
   g('reglaGuardar').onclick = async () => {
@@ -25332,7 +25333,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-05.7';
+const APP_VERSION = '2026-11-05.8';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
