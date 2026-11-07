@@ -461,6 +461,60 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 #modalRegla .pg-nota{margin:0;font-size:12.5px;color:var(--muted);line-height:1.5;}
 #modalRegla #reglaResumen{padding:12px 14px;background:#f4f6fa;border-radius:10px;color:var(--navy-1);}
 #modalRegla .modal-actions{margin-top:18px;}
+/* ===== Ayuda (2026-11-05.9) ===== */
+#ayudaBtn[aria-expanded="true"]{background:var(--navy-1);color:#fff;border-color:var(--navy-1);}
+.ayuda-panel{position:fixed;top:0;right:0;bottom:0;width:440px;max-width:100vw;background:#fff;border-left:1px solid var(--line);box-shadow:-10px 0 28px rgba(14,34,64,.10);z-index:120;display:flex;flex-direction:column;box-sizing:border-box;}
+.ayuda-panel[hidden]{display:none;}
+@media (min-width:1100px){body.ayuda-abierta .main{margin-right:440px;}}
+.ayuda-cab{padding:18px 22px 12px;display:flex;justify-content:space-between;align-items:flex-start;gap:12px;}
+.ayuda-etiqueta{font-size:11px;letter-spacing:.1em;color:var(--muted);font-weight:700;}
+.ayuda-cab h2{margin:4px 0 0;font-family:Georgia,'Times New Roman',serif;font-size:26px;font-weight:700;color:var(--navy-1);outline:none;}
+.ayuda-x{width:44px;height:44px;flex:none;display:flex;align-items:center;justify-content:center;background:#fff;border:1px solid var(--line);border-radius:10px;cursor:pointer;color:var(--navy-1);}
+.ayuda-tabs{display:flex;gap:4px;padding:0 22px;border-bottom:1px solid var(--line);}
+.ayuda-tabs button{min-height:44px;background:none;border:none;border-bottom:3px solid transparent;padding:0 10px;font:500 13.5px inherit;font-family:inherit;color:var(--muted);cursor:pointer;}
+.ayuda-tabs button[aria-selected="true"]{border-bottom-color:#96691a;font-weight:700;color:var(--navy-1);}
+.ayuda-cuerpo{flex:1;overflow:auto;padding:18px 22px;display:flex;flex-direction:column;gap:16px;outline:none;}
+.ayuda-sec h3{margin:0 0 8px;font-size:11.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);}
+.ayuda-sec p{margin:0;font-size:14.5px;line-height:1.55;}
+.ayuda-aviso{background:#fff6e5;border:1.5px solid #e0b04f;border-radius:12px;padding:14px 16px;font-size:14px;line-height:1.5;color:#4a3000;}
+.ayuda-det{border:1px solid var(--line);border-radius:12px;background:#fff;}
+.ayuda-det>summary{cursor:pointer;min-height:44px;padding:0 16px;display:flex;align-items:center;font-weight:700;font-size:14px;color:var(--navy-1);list-style:none;}
+.ayuda-det>summary::-webkit-details-marker{display:none;}
+.ayuda-det>summary::before{content:'▸';display:inline-block;margin-right:10px;color:var(--muted);transition:transform .15s;}
+.ayuda-det[open]>summary::before{transform:rotate(90deg);}
+.ayuda-det>div,.ayuda-det>ol,.ayuda-det>ul{padding:0 16px 14px;margin:0;font-size:14px;line-height:1.55;}
+.ayuda-det ol,.ayuda-det ul{padding-left:36px;display:flex;flex-direction:column;gap:9px;}
+.ayuda-det.ayuda-det-cuidado{background:#fff6e5;border-color:#e0b04f;}
+.ayuda-det.ayuda-det-cuidado>summary,.ayuda-det.ayuda-det-cuidado li{color:#4a3000;}
+.ayuda-faq h3{margin:0 0 8px;font-size:11.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);}
+.ayuda-faq .ayuda-det{margin-bottom:8px;}
+.ayuda-rel{display:flex;flex-wrap:wrap;gap:8px;}
+.ayuda-rel button,.ayuda-lista button{font-family:inherit;cursor:pointer;}
+.ayuda-rel button{min-height:40px;border:1px solid var(--line);border-radius:999px;background:#fff;padding:0 14px;font-size:13px;font-weight:600;color:var(--navy-1);}
+.ayuda-buscar label{display:block;font-size:12.5px;font-weight:600;color:var(--muted);margin-bottom:6px;}
+.ayuda-buscar input{box-sizing:border-box;width:100%;min-height:46px;border:1.5px solid var(--line);border-radius:10px;padding:0 14px;font-size:14px;background:#f9fafc;}
+.ayuda-pasos{background:#f4f6fa;border:1px solid var(--line);border-radius:12px;padding:14px 16px;}
+.ayuda-pasos h3{margin:0 0 10px;font-family:Georgia,'Times New Roman',serif;font-size:17px;}
+.ayuda-pasos ol{margin:0;padding-left:22px;display:flex;flex-direction:column;gap:7px;font-size:13.5px;line-height:1.45;}
+.ayuda-lista h3{margin:0 0 6px;font-size:11.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);}
+.ayuda-lista button{display:flex;width:100%;justify-content:space-between;align-items:center;gap:10px;min-height:52px;padding:8px 4px;background:none;border:none;border-bottom:1px solid #eef2f8;text-align:left;color:var(--navy-1);}
+.ayuda-lista button[disabled]{cursor:default;opacity:.6;}
+.ayuda-lista strong{font-size:14px;}
+.ayuda-lista small{display:block;font-size:12.5px;color:var(--muted);font-weight:400;}
+.ayuda-volver{align-self:flex-start;min-height:40px;border:1px solid var(--line);border-radius:10px;background:#fff;padding:0 14px;font:600 13px inherit;font-family:inherit;color:var(--navy-1);cursor:pointer;}
+.ayuda-vacio{padding:14px;color:var(--muted);font-size:14px;}
+.ayuda-glosario dt{font-weight:700;font-size:14px;margin-top:12px;}
+.ayuda-glosario dd{margin:3px 0 0;font-size:14px;line-height:1.5;color:#2b3a52;}
+.ayuda-pie{padding:14px 22px 16px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:8px;}
+.ayuda-pie .btn{min-height:46px;justify-content:center;}
+.ayuda-pie-txt{font-size:12.5px;color:var(--muted);line-height:1.45;}
+.ayuda-copiado{margin:0;background:#f4f6fa;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font:500 12px/1.6 ui-monospace,Menlo,Consolas,monospace;color:var(--navy-1);white-space:pre-wrap;word-break:break-word;}
+.ayuda-version{font-size:11.5px;color:var(--muted);}
+.ayuda-btn-link{background:none;border:none;padding:0;color:var(--navy-1);font:600 13.5px inherit;font-family:inherit;text-decoration:underline;cursor:pointer;min-height:40px;}
+.ayuda-error{padding:14px;border:1.5px solid #e0b04f;background:#fff6e5;border-radius:12px;color:#4a3000;font-size:14px;}
+@media (min-width:1100px){body.ayuda-abierta .topbar{flex-wrap:wrap;gap:10px;}body.ayuda-abierta .topbar > div:first-child{flex:1 1 300px;min-width:0;}body.ayuda-abierta .topbar #pageTitle{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}body.ayuda-abierta .topbar .bq-kbd{display:none;}}
+@media (max-width:640px){.ayuda-panel{width:100vw;}.ayuda-tabs button{padding:0 6px;font-size:13px;}}
+
 @media (max-width:900px){#modalRegla .pg-grid{grid-template-columns:1fr;}#modalRegla .pg-modal{padding:18px 16px;}}
 @media (max-width:900px){#modalProg .pg-grid{grid-template-columns:1fr;}#modalProg .pg-modal{padding:18px 16px;}#modalProg .pg-tabla{max-height:none;}}
 .pg-ok{color:#11603a;}.pg-mal{color:var(--red);}
@@ -1332,6 +1386,7 @@ Transacciones recurrentes
         </div>
         <div class="topbar-actions" id="topbarActions">
           <button type="button" class="btn btn-ghost btn-sm" id="busquedaGlobalBtn" title="Buscar en todo (Ctrl+K)" aria-label="Buscar en todo"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg><span class="bq-txt">Buscar</span><span class="bq-kbd">Ctrl K</span></button>
+<button type="button" class="btn btn-ghost btn-sm" id="ayudaBtn" aria-controls="ayudaPanel" aria-expanded="false" title="Ayuda de esta pantalla" aria-label="Abrir la ayuda de esta pantalla"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M9.6 9.4a2.6 2.6 0 1 1 3.7 2.3c-.8.4-1.3 1-1.3 1.9"></path><path d="M12 17.2v.01"></path></svg><span class="bq-txt">Ayuda</span></button>
           <select id="printOrientacion" style="display:none !important;width:auto;">
             <option value="landscape">Horizontal</option>
             <option value="portrait">Vertical</option>
@@ -1549,6 +1604,25 @@ Transacciones recurrentes
 <div class="modal-actions"><button class="btn btn-ghost" id="phCerrar">Cerrar</button></div>
 </div>
 </div>
+<!-- Panel de ayuda (el contenido se descarga de ayuda.js solo al abrirlo) -->
+<aside id="ayudaPanel" class="ayuda-panel" role="complementary" aria-label="Ayuda" hidden>
+<div class="ayuda-cab">
+<div><div class="ayuda-etiqueta">AYUDA</div><h2 id="ayudaTitulo" tabindex="-1">Ayuda</h2></div>
+<button type="button" id="ayudaCerrar" class="ayuda-x" aria-label="Cerrar la ayuda"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg></button>
+</div>
+<div class="ayuda-tabs" role="tablist" aria-label="Secciones de la ayuda">
+<button type="button" role="tab" id="ayudaTabEsta" data-tab="esta" aria-selected="true">Esta pantalla</button>
+<button type="button" role="tab" id="ayudaTabTodas" data-tab="todas" aria-selected="false">Todas las pantallas</button>
+<button type="button" role="tab" id="ayudaTabGlosario" data-tab="glosario" aria-selected="false">Glosario</button>
+</div>
+<div class="ayuda-cuerpo" id="ayudaCuerpo" role="tabpanel" tabindex="0"></div>
+<div class="ayuda-pie">
+<button type="button" class="btn btn-gold" id="ayudaCopiar">Copiar datos para soporte</button>
+<div class="ayuda-pie-txt" id="ayudaPieTxt">Copia la pantalla, el negocio, el mes y tu usuario para pegarlos en tu mensaje: así sabemos dónde estabas.</div>
+<pre id="ayudaCopiado" class="ayuda-copiado" hidden></pre>
+<div class="ayuda-version" id="ayudaVersion"></div>
+</div>
+</aside>
 <!-- Modal: editar perfil del negocio (nombre comercial + razón social) -->
 <div class="modal-bg" id="modalEditBiz">
   <div class="modal" style="width:min(680px,94vw);max-height:88vh;overflow-y:auto;">
@@ -3503,6 +3577,6 @@ Transacciones recurrentes
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-05.8"></script>
+<script src="/app.js?v=2026-11-05.9"></script>
 </body>
 </html>

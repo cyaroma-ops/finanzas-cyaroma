@@ -1328,6 +1328,7 @@ function updateTopbar() {
     ? (STATE.esAdministrador ? 'Vista consolidada de todos los negocios' : (STATE.businesses.length > 1 ? 'Vista consolidada de tus negocios' : 'Tu negocio'))
     : meta.sub;
   document.getElementById('monthPicker').style.display = meta.showMonth ? 'block' : 'none';
+  if (typeof ayudaRefrescarSiAbierta === 'function') ayudaRefrescarSiAbierta();
 
   const printBtn = document.getElementById('printBtn');
   const printOrientacion = document.getElementById('printOrientacion');
@@ -14463,6 +14464,132 @@ function polizaCambiosTxt(b) {
   } catch (_) { return ''; }
 }
 
+/* ============================================================================================================
+   AYUDA (2026-11-05.9) — botón «Ayuda» junto a Buscar. Panel lateral con la ficha de la pantalla abierta (bloques plegables y preguntas
+   frecuentes), índice de todas las pantallas con buscador, glosario y «Copiar datos para soporte».
+   El contenido está en ayuda.js y se descarga SOLO la primera vez que se abre la ayuda: no pesa en el arranque ni consulta la base de datos.
+   ============================================================================================================ */
+const AYUDA_BASE = (() => { try { return new URL('ayuda.js', document.currentScript.src).href; } catch (_) { return 'ayuda.js'; } })();   // solo la ruta: APP_VERSION se declara más abajo en el archivo y se usa hasta abrir la ayuda
+let STATE_ayuda = { abierta: false, tab: 'esta', pantalla: null, q: '', abrirPregunta: null }, ayudaPromesa = null;
+function ayudaCargar() {
+  if (window.AYUDA) return Promise.resolve(window.AYUDA);
+  if (ayudaPromesa) return ayudaPromesa;
+  ayudaPromesa = new Promise((resolve, reject) => {
+    const s = document.createElement('script'); s.src = AYUDA_BASE + '?v=' + APP_VERSION;
+    s.onload = () => window.AYUDA ? resolve(window.AYUDA) : reject(new Error('sin contenido'));
+    s.onerror = () => reject(new Error('no se pudo descargar')); document.head.appendChild(s);
+  }).catch(e => { ayudaPromesa = null; throw e; });
+  return ayudaPromesa;
+}
+const ayudaMd = (t) => escHtml(String(t == null ? '' : t)).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+const ayudaMeta = (k) => SECTION_META[k] || null;
+const ayudaTitulo = (k) => { const m = ayudaMeta(k); return m ? m.title : String(k || 'Ayuda'); };
+function ayudaVisible(k) {   // las pantallas solo-fiscales no se listan en un negocio financiero
+  const m = ayudaMeta(k); if (!m) return false;
+  return !(SECCIONES_SOLO_FISCAL.includes(k) && esNegocioFinanciero(biz()));
+}
+function ayudaPrimerosPasos() { return `<section class="ayuda-pasos"><h3>Primeros pasos</h3><ol>${(window.AYUDA.primerosPasos || []).map(p => `<li>${ayudaMd(p)}</li>`).join('')}</ol></section>`; }
+function ayudaFicha(k, abrir) {
+  const P = (window.AYUDA.pantallas || {})[k], tit = escHtml(ayudaTitulo(k));
+  if (!P) return `<section class="ayuda-sec"><h3>Ayuda de esta pantalla</h3><p>Todavía no tenemos la ayuda de <strong>${tit}</strong>. Mientras tanto, revisa los «Primeros pasos» y el glosario; si tu duda sigue, copia los datos para soporte y pregúntala.</p></section>${ayudaPrimerosPasos()}${ayudaNoEncuentro()}`;
+  const det = (cls, t, cuerpo) => `<details class="ayuda-det ${cls}"><summary>${escHtml(t)}</summary>${cuerpo}</details>`;
+  let h = '';
+  if (P.aviso) h += `<div class="ayuda-aviso">${ayudaMd(P.aviso)}</div>`;
+  if (P.resumen) h += `<section class="ayuda-sec"><h3>Para qué sirve</h3><p>${ayudaMd(P.resumen)}</p></section>`;
+  if ((P.pasos || []).length) h += det('', 'Cómo se usa', `<ol>${P.pasos.map(x => `<li>${ayudaMd(x)}</li>`).join('')}</ol>`);
+  if ((P.faq || []).length) h += `<section class="ayuda-faq"><h3>Preguntas frecuentes</h3>${P.faq.map((f, i) => `<details class="ayuda-det" data-faq="${i}" ${abrir === f.q ? 'open' : ''}><summary>${escHtml(f.q)}</summary><div>${ayudaMd(f.a)}</div></details>`).join('')}</section>`;
+  if ((P.cuidado || []).length) h += det('ayuda-det-cuidado', `Cuidado con (${P.cuidado.length})`, `<ul>${P.cuidado.map(x => `<li>${ayudaMd(x)}</li>`).join('')}</ul>`);
+  if (P.auditoria) h += det('', 'Qué queda en Auditoría', `<div>${ayudaMd(P.auditoria)}</div>`);
+  if (P.noExplica) h += det('', 'Qué no explica esta ayuda', `<div>${ayudaMd(P.noExplica)}</div>`);
+  const rel = (P.relacionadas || []).filter(r => ayudaMeta(r) && ayudaVisible(r));
+  if (rel.length) h += `<section class="ayuda-sec"><h3>Relacionado</h3><div class="ayuda-rel">${rel.map(r => `<button type="button" data-ayuda-ir="${escAttr(r)}">${escHtml(ayudaTitulo(r))}</button>`).join('')}</div></section>`;
+  return h + ayudaNoEncuentro();
+}
+const ayudaNoEncuentro = () => `<div><button type="button" class="ayuda-btn-link" id="ayudaNoEncuentro">No encuentro la respuesta a mi duda</button></div>`;
+function ayudaTodas() {
+  const q = reglaNorm(STATE_ayuda.q), A_ = window.AYUDA, P = A_.pantallas || {};
+  let h = `<div class="ayuda-buscar"><label for="ayudaBuscar">Buscar en la ayuda</label><input id="ayudaBuscar" type="text" autocomplete="off" placeholder="Ej. traspaso, importar, póliza" value="${escAttr(STATE_ayuda.q)}"></div>`;
+  if (!q) {
+    h += ayudaPrimerosPasos();
+    (A_.grupos || []).forEach(g => {
+      if (g.solo === 'fiscal' && esNegocioFinanciero(biz())) return;   // el grupo fiscal no se muestra en un negocio financiero
+      const filas = (g.k || []).filter(ayudaVisible).map(k => P[k]
+        ? `<button type="button" data-ayuda-pant="${escAttr(k)}"><span><strong>${escHtml(ayudaTitulo(k))}</strong><small>${escHtml(String(P[k].resumen || '').replace(/\*\*/g, '').slice(0, 90))}${String(P[k].resumen || '').length > 90 ? '…' : ''}</small></span><span aria-hidden="true">›</span></button>`
+        : `<button type="button" disabled><span><strong>${escHtml(ayudaTitulo(k))}</strong><small>Ayuda próximamente</small></span></button>`).join('');
+      if (filas) h += `<section class="ayuda-lista"><h3>${escHtml(g.t)}</h3>${filas}</section>`;
+    });
+    return h;
+  }
+  const res = [];
+  Object.keys(P).forEach(k => { if (!ayudaVisible(k)) return; (P[k].faq || []).forEach(f => { if (reglaNorm(f.q + ' ' + f.a).includes(q)) res.push({ k, q: f.q }); }); if (reglaNorm(ayudaTitulo(k)).includes(q)) res.push({ k, q: null }); });
+  const gl = (A_.glosario || []).filter(x => reglaNorm(x.t + ' ' + x.d).includes(q));
+  if (!res.length && !gl.length) return h + `<div class="ayuda-vacio">No encontramos nada para «${escHtml(STATE_ayuda.q)}». Prueba con otra palabra o <button type="button" class="ayuda-btn-link" id="ayudaNoEncuentro">cuéntanos tu duda</button>.</div>`;
+  h += `<section class="ayuda-lista"><h3>${res.length} resultado(s)</h3>${res.map(r => `<button type="button" data-ayuda-pant="${escAttr(r.k)}" ${r.q ? `data-ayuda-faq="${escAttr(r.q)}"` : ''}><span><strong>${escHtml(r.q || ayudaTitulo(r.k))}</strong><small>${escHtml(ayudaTitulo(r.k))}</small></span><span aria-hidden="true">›</span></button>`).join('')}</section>`;
+  if (gl.length) h += `<section class="ayuda-glosario"><h3 style="font-size:11.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);margin:6px 0 0;">En el glosario</h3><dl>${gl.map(x => `<dt>${escHtml(x.t)}</dt><dd>${ayudaMd(x.d)}</dd>`).join('')}</dl></section>`;
+  return h;
+}
+const ayudaGlosario = () => `<section class="ayuda-glosario"><dl>${(window.AYUDA.glosario || []).map(x => `<dt>${escHtml(x.t)}</dt><dd>${ayudaMd(x.d)}</dd>`).join('')}</dl></section>`;
+function ayudaRender() {
+  const panel = document.getElementById('ayudaPanel'); if (!panel || !STATE_ayuda.abierta) return;
+  const g = (i) => document.getElementById(i), cuerpo = g('ayudaCuerpo'), tab = STATE_ayuda.tab;
+  ['esta', 'todas', 'glosario'].forEach(t => g('ayudaTab' + t.charAt(0).toUpperCase() + t.slice(1)).setAttribute('aria-selected', t === tab ? 'true' : 'false'));
+  g('ayudaVersion').textContent = 'Versión de la app: ' + APP_VERSION;
+  if (!window.AYUDA) { cuerpo.innerHTML = '<div class="ayuda-vacio">Cargando la ayuda…</div>'; return; }
+  const clave = STATE_ayuda.pantalla || STATE.currentSection;
+  if (tab === 'esta') { g('ayudaTitulo').textContent = ayudaTitulo(STATE.currentSection); cuerpo.innerHTML = ayudaFicha(STATE.currentSection); }
+  else if (tab === 'todas' && STATE_ayuda.pantalla) { g('ayudaTitulo').textContent = ayudaTitulo(clave); cuerpo.innerHTML = `<button type="button" class="ayuda-volver" id="ayudaVolver">← Todas las pantallas</button>${ayudaFicha(clave, STATE_ayuda.abrirPregunta)}`; }
+  else if (tab === 'todas') { g('ayudaTitulo').textContent = 'Todas las pantallas'; cuerpo.innerHTML = ayudaTodas(); }
+  else { g('ayudaTitulo').textContent = 'Glosario'; cuerpo.innerHTML = ayudaGlosario(); }
+}
+function ayudaAbrir() {
+  const panel = document.getElementById('ayudaPanel'); if (!panel) return;
+  STATE_ayuda.abierta = true; STATE_ayuda.pantalla = null; STATE_ayuda.q = ''; STATE_ayuda.tab = 'esta';
+  panel.hidden = false; document.body.classList.add('ayuda-abierta'); document.getElementById('ayudaBtn').setAttribute('aria-expanded', 'true');
+  document.getElementById('ayudaTitulo').textContent = ayudaTitulo(STATE.currentSection); ayudaRender();
+  ayudaCargar().then(ayudaRender).catch(() => { document.getElementById('ayudaCuerpo').innerHTML = '<div class="ayuda-error"><strong>No se pudo cargar la ayuda.</strong> Revisa tu conexión e inténtalo de nuevo.<br><button type="button" class="ayuda-btn-link" id="ayudaReintentar">Reintentar</button></div>'; });
+  try { document.getElementById('ayudaTitulo').focus(); } catch (_) {}
+}
+function ayudaCerrar() {
+  const panel = document.getElementById('ayudaPanel'); if (!panel) return;
+  STATE_ayuda.abierta = false; panel.hidden = true; document.body.classList.remove('ayuda-abierta');
+  const b = document.getElementById('ayudaBtn'); b.setAttribute('aria-expanded', 'false'); try { b.focus(); } catch (_) {}
+}
+const ayudaAlternar = () => (STATE_ayuda.abierta ? ayudaCerrar() : ayudaAbrir());
+function ayudaRefrescarSiAbierta() {   // al cambiar de pantalla, la ayuda sigue a la pantalla (la consulta de otra queda en «Todas las pantallas»)
+  if (!STATE_ayuda.abierta) return; if (STATE_ayuda.tab === 'todas' && STATE_ayuda.pantalla) return; ayudaRender();
+}
+function ayudaSoporteTexto() {
+  const b = biz(), meta = ayudaMeta(STATE.currentSection) || {}, ahora = new Date().toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' });
+  const tit = (document.getElementById('pageTitle') && document.getElementById('pageTitle').textContent) || meta.title || STATE.currentSection;
+  return [`Finanzas CYAROMA · versión ${APP_VERSION}`, `Pantalla: ${tit} · ${location.pathname}${location.search}`, `Negocio: ${b ? b.name + ' (' + (b.modo === 'fiscal_contable' ? 'fiscal' : 'financiero') + ')' : '—'} · Mes: ${STATE.currentMonth || '—'}`, `Usuario: ${(STATE.user && STATE.user.email) || '—'} · ${ahora}`].join('\n');
+}
+async function ayudaCopiar() {
+  const t = ayudaSoporteTexto(); let ok = false;
+  try { await navigator.clipboard.writeText(t); ok = true; } catch (_) {
+    try { const ta = document.createElement('textarea'); ta.value = t; ta.setAttribute('readonly', ''); ta.style.cssText = 'position:fixed;opacity:0;top:0;left:0;'; document.body.appendChild(ta); ta.select(); ok = document.execCommand('copy'); ta.remove(); } catch (_2) { ok = false; }
+  }
+  const pre = document.getElementById('ayudaCopiado'); pre.textContent = t; pre.hidden = false;
+  document.getElementById('ayudaPieTxt').textContent = ok ? '✓ Datos copiados: pégalos en tu mensaje y cuéntanos tu duda.' : 'No se pudo copiar solo: selecciona este texto, cópialo y pégalo en tu mensaje.';
+  return ok;
+}
+(function ayudaArranque() {
+  const panel = document.getElementById('ayudaPanel'), btn = document.getElementById('ayudaBtn'); if (!panel || !btn) return;
+  btn.addEventListener('click', ayudaAlternar);
+  panel.addEventListener('click', (e) => {
+    const t = e.target.closest('button'); if (!t) return;
+    if (t.id === 'ayudaCerrar') return ayudaCerrar();
+    if (t.dataset.tab) { STATE_ayuda.tab = t.dataset.tab; STATE_ayuda.pantalla = null; STATE_ayuda.abrirPregunta = null; STATE_ayuda.q = ''; return ayudaRender(); }
+    if (t.dataset.ayudaPant) { STATE_ayuda.tab = 'todas'; STATE_ayuda.pantalla = t.dataset.ayudaPant; STATE_ayuda.abrirPregunta = t.dataset.ayudaFaq || null; return ayudaRender(); }
+    if (t.id === 'ayudaVolver') { STATE_ayuda.pantalla = null; STATE_ayuda.abrirPregunta = null; return ayudaRender(); }
+    if (t.dataset.ayudaIr) { STATE_ayuda.tab = 'esta'; STATE_ayuda.pantalla = null; return irASeccion(t.dataset.ayudaIr); }
+    if (t.id === 'ayudaCopiar') return ayudaCopiar();
+    if (t.id === 'ayudaNoEncuentro') { const c = document.getElementById('ayudaCopiar'); ayudaCopiar(); try { c.focus(); } catch (_) {} return; }
+    if (t.id === 'ayudaReintentar') return ayudaCargar().then(ayudaRender).catch(() => { document.getElementById('ayudaCuerpo').innerHTML = '<div class="ayuda-error"><strong>Sigue sin cargar.</strong> Avisa a quien administra la app.</div>'; });
+  });
+  panel.addEventListener('input', (e) => { if (e.target.id === 'ayudaBuscar') { STATE_ayuda.q = e.target.value; const pos = e.target.selectionStart; ayudaRender(); const i = document.getElementById('ayudaBuscar'); if (i) { i.focus(); try { i.setSelectionRange(pos, pos); } catch (_) {} } } });
+  panel.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); ayudaCerrar(); } });
+})();
+
 async function renderRecurrentes() {
   const el = document.getElementById('sec-recurrentes'), b = biz();
   if (!b) { el.innerHTML = '<div class="empty">Selecciona un negocio.</div>'; return; }
@@ -25333,7 +25460,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-05.8';
+const APP_VERSION = '2026-11-05.9';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
