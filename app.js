@@ -12449,7 +12449,7 @@ async function renderNegocios() {
         <h3>Negocios del grupo</h3>
         <button class="btn btn-gold btn-sm" id="negociosAddBtn">+ Agregar negocio</button>
       </div>
-      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">El respaldo descarga toda la información de ese negocio (Ventas, Bancos, Efectivo, Proveedores, Pólizas, Catálogo de Cuentas) — cada negocio se descarga por separado.</p>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Los botones Excel y JSON exportan la información de ese negocio (Ventas, Bancos, Efectivo, Proveedores, Pólizas, Catálogo de Cuentas), cada negocio por separado. Es una exportación rápida: en negocios con muchos movimientos puede quedar incompleta. Para un respaldo confiable usa Configuración → Respaldo completo.</p>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Nombre comercial</th><th>Razón social</th><th>Estatus</th><th>Respaldo</th><th></th></tr></thead>
@@ -12513,7 +12513,7 @@ async function renderAuditoria() {
     </div>
     <div class="card">
       <div class="card-head"><h3>Bitácora de actividad — ${escHtml(b.name)}</h3></div>
-      <p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;">Por ahora se registran acciones en Pólizas de Diario, Proveedores, y eliminaciones de movimientos en Bancos/Efectivo. Se irá ampliando a más módulos.</p>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;">Se registran las altas, cambios y eliminaciones de Pólizas, Proveedores, Clientes, Ventas, CFDI, Catálogo de Cuentas, Activos Fijos, Impuestos, Reglas de importación y Transacciones programadas, entre otros, además de las conciliaciones y eliminaciones de movimientos de Bancos y Efectivo.</p>
       <div class="grid-3" style="margin-bottom:12px;">
         <div class="field" style="margin-bottom:0;">
           <label>Buscar</label>
@@ -14483,14 +14483,17 @@ function ayudaCargar() {
 }
 const ayudaMd = (t) => escHtml(String(t == null ? '' : t)).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
 const ayudaMeta = (k) => SECTION_META[k] || null;
-const ayudaTitulo = (k) => { const m = ayudaMeta(k); return m ? m.title : String(k || 'Ayuda'); };
+const ayudaGuia = (k) => ((window.AYUDA && window.AYUDA.guias) || {})[k] || null;
+const ayudaDato = (k) => ((window.AYUDA && window.AYUDA.pantallas) || {})[k] || ayudaGuia(k);   // la ficha de una pantalla o de una guía
+const ayudaTitulo = (k) => { const g = ayudaGuia(k); if (g) return g.titulo; const m = ayudaMeta(k); return m ? m.title : String(k || 'Ayuda'); };
 function ayudaVisible(k) {   // las pantallas solo-fiscales no se listan en un negocio financiero
+  if (ayudaGuia(k)) return true;
   const m = ayudaMeta(k); if (!m) return false;
   return !(SECCIONES_SOLO_FISCAL.includes(k) && esNegocioFinanciero(biz()));
 }
 function ayudaPrimerosPasos() { return `<section class="ayuda-pasos"><h3>Primeros pasos</h3><ol>${(window.AYUDA.primerosPasos || []).map(p => `<li>${ayudaMd(p)}</li>`).join('')}</ol></section>`; }
 function ayudaFicha(k, abrir) {
-  const P = (window.AYUDA.pantallas || {})[k], tit = escHtml(ayudaTitulo(k));
+  const P = ayudaDato(k), tit = escHtml(ayudaTitulo(k));
   if (!P) return `<section class="ayuda-sec"><h3>Ayuda de esta pantalla</h3><p>Todavía no tenemos la ayuda de <strong>${tit}</strong>. Mientras tanto, revisa los «Primeros pasos» y el glosario; si tu duda sigue, copia los datos para soporte y pregúntala.</p></section>${ayudaPrimerosPasos()}${ayudaNoEncuentro()}`;
   const det = (cls, t, cuerpo) => `<details class="ayuda-det ${cls}"><summary>${escHtml(t)}</summary>${cuerpo}</details>`;
   let h = '';
@@ -14501,8 +14504,8 @@ function ayudaFicha(k, abrir) {
   if ((P.cuidado || []).length) h += det('ayuda-det-cuidado', `Cuidado con (${P.cuidado.length})`, `<ul>${P.cuidado.map(x => `<li>${ayudaMd(x)}</li>`).join('')}</ul>`);
   if (P.auditoria) h += det('', 'Qué queda en Auditoría', `<div>${ayudaMd(P.auditoria)}</div>`);
   if (P.noExplica) h += det('', 'Qué no explica esta ayuda', `<div>${ayudaMd(P.noExplica)}</div>`);
-  const rel = (P.relacionadas || []).filter(r => ayudaMeta(r) && ayudaVisible(r));
-  if (rel.length) h += `<section class="ayuda-sec"><h3>Relacionado</h3><div class="ayuda-rel">${rel.map(r => `<button type="button" data-ayuda-ir="${escAttr(r)}">${escHtml(ayudaTitulo(r))}</button>`).join('')}</div></section>`;
+  const rel = (P.relacionadas || []).filter(r => (ayudaMeta(r) || ayudaGuia(r)) && ayudaVisible(r));
+  if (rel.length) h += `<section class="ayuda-sec"><h3>Relacionado</h3><div class="ayuda-rel">${rel.map(r => `<button type="button" ${ayudaGuia(r) ? 'data-ayuda-pant' : 'data-ayuda-ir'}="${escAttr(r)}">${escHtml(ayudaTitulo(r))}</button>`).join('')}</div></section>`;
   return h + ayudaNoEncuentro();
 }
 const ayudaNoEncuentro = () => `<div><button type="button" class="ayuda-btn-link" id="ayudaNoEncuentro">No encuentro la respuesta a mi duda</button></div>`;
@@ -14513,15 +14516,15 @@ function ayudaTodas() {
     h += ayudaPrimerosPasos();
     (A_.grupos || []).forEach(g => {
       if (g.solo === 'fiscal' && esNegocioFinanciero(biz())) return;   // el grupo fiscal no se muestra en un negocio financiero
-      const filas = (g.k || []).filter(ayudaVisible).map(k => P[k]
-        ? `<button type="button" data-ayuda-pant="${escAttr(k)}"><span><strong>${escHtml(ayudaTitulo(k))}</strong><small>${escHtml(String(P[k].resumen || '').replace(/\*\*/g, '').slice(0, 90))}${String(P[k].resumen || '').length > 90 ? '…' : ''}</small></span><span aria-hidden="true">›</span></button>`
+      const filas = (g.k || []).filter(ayudaVisible).map(k => ayudaDato(k)
+        ? `<button type="button" data-ayuda-pant="${escAttr(k)}"><span><strong>${escHtml(ayudaTitulo(k))}</strong><small>${escHtml(String(ayudaDato(k).resumen || '').replace(/\*\*/g, '').slice(0, 90))}${String(ayudaDato(k).resumen || '').length > 90 ? '…' : ''}</small></span><span aria-hidden="true">›</span></button>`
         : `<button type="button" disabled><span><strong>${escHtml(ayudaTitulo(k))}</strong><small>Ayuda próximamente</small></span></button>`).join('');
       if (filas) h += `<section class="ayuda-lista"><h3>${escHtml(g.t)}</h3>${filas}</section>`;
     });
     return h;
   }
   const res = [];
-  Object.keys(P).forEach(k => { if (!ayudaVisible(k)) return; (P[k].faq || []).forEach(f => { if (reglaNorm(f.q + ' ' + f.a).includes(q)) res.push({ k, q: f.q }); }); if (reglaNorm(ayudaTitulo(k)).includes(q)) res.push({ k, q: null }); });
+  [...Object.keys(P), ...Object.keys(A_.guias || {})].forEach(k => { if (!ayudaVisible(k)) return; const D = ayudaDato(k) || {}; (D.faq || []).forEach(f => { if (reglaNorm(f.q + ' ' + f.a).includes(q)) res.push({ k, q: f.q }); }); if (reglaNorm(ayudaTitulo(k) + ' ' + (D.resumen || '') + ' ' + (D.pasos || []).join(' ')).includes(q)) res.push({ k, q: null }); });
   const gl = (A_.glosario || []).filter(x => reglaNorm(x.t + ' ' + x.d).includes(q));
   if (!res.length && !gl.length) return h + `<div class="ayuda-vacio">No encontramos nada para «${escHtml(STATE_ayuda.q)}». Prueba con otra palabra o <button type="button" class="ayuda-btn-link" id="ayudaNoEncuentro">cuéntanos tu duda</button>.</div>`;
   h += `<section class="ayuda-lista"><h3>${res.length} resultado(s)</h3>${res.map(r => `<button type="button" data-ayuda-pant="${escAttr(r.k)}" ${r.q ? `data-ayuda-faq="${escAttr(r.q)}"` : ''}><span><strong>${escHtml(r.q || ayudaTitulo(r.k))}</strong><small>${escHtml(ayudaTitulo(r.k))}</small></span><span aria-hidden="true">›</span></button>`).join('')}</section>`;
@@ -25460,7 +25463,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-05.9';
+const APP_VERSION = '2026-11-06.1';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
