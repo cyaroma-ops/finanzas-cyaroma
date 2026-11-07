@@ -110,7 +110,7 @@ window.AYUDA = {
         { q: '¿Por qué una cuenta como Terminal HSBC sale en negativo?', a: 'Esa cuenta recibe las ventas con tarjeta y entrega lo que luego deposita el banco. Si el banco ya recibió el dinero y las ventas todavía no se han capturado, el saldo se ve negativo. No es un error del traspaso: **faltan ventas por registrar**.' },
         { q: '¿Cómo elimino un traspaso?', a: 'Ábrelo con **⋯ → Eliminar**. La app avisa que elimina **los dos movimientos** (la salida y el depósito) y los saldos de las dos cuentas vuelven a como estaban.' },
         { q: '¿Cómo concilio una cuenta?', a: 'Pulsa **Conciliar**. Escribe la fecha de corte y el saldo que dice tu estado de cuenta, y marca los movimientos que ya aparecen en el banco. Lo que quede sin marcar son cheques o depósitos en tránsito. Si hay diferencia, la ventana te la muestra antes de cerrar. Al cerrar, los marcados quedan conciliados y se registra en Auditoría.' },
-        { q: '¿Por qué mi movimiento nuevo salió con la fecha de mañana?', a: 'Pasadas las **7:00 p.m.** (hora de Cancún) la fecha que la app sugiere puede salir un día adelante. Revisa la fecha antes de guardar y corrígela si hace falta.' }
+        { q: '¿Qué fecha sugiere la app como «hoy»?', a: 'La de **Cancún** (la hora del negocio), sin importar desde qué zona trabajes ni la hora de tu computadora. Si capturas algo de otro día, cambia la fecha antes de guardar.' }
       ],
       cuidado: [
         'Un traspaso son **dos movimientos** con el mismo número TR. Si eliminas uno, se eliminan los dos.',
@@ -242,7 +242,7 @@ window.AYUDA = {
         { q: '¿Por qué no me deja guardar una póliza?', a: 'Normalmente es porque **no cuadra** (cargos distintos de abonos), falta la fecha o el periodo está cerrado.' }
       ],
       cuidado: [
-        'Revisa la fecha antes de guardar: pasadas las 7:00 p.m. (hora de Cancún) la app puede sugerir la fecha de mañana.',
+        'La fecha de «hoy» que sugiere la app es la de Cancún, aunque trabajes desde otra zona. Si capturas algo de otro día, cámbiala antes de guardar.',
         'Si cambias una póliza creada por una programada, el cambio no afecta a las que se creen después.'
       ],
       auditoria: 'Crear, editar y eliminar pólizas, con los cambios de fecha, concepto, cuentas y montos como «antes → después».',

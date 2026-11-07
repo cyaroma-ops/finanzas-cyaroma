@@ -66,12 +66,23 @@ function activarPaginacionAutomatica(cliente) {
 }
 activarPaginacionAutomatica(sb);
 
+/* ===== Hora del negocio (2026-11-06.2) =====
+   La «fecha de hoy» de la app es la de la zona del negocio (Cancún, UTC−5 todo el año), NO la hora universal ni el reloj de cada computadora.
+   Así una póliza, una programada o un vencimiento tienen la misma fecha sin importar desde qué estado se capture, ni a qué hora. */
+const ZONA_HORARIA_NEGOCIO = 'America/Cancun';
+function fechaHoyNegocio() {
+  try {
+    const f = new Intl.DateTimeFormat('en-CA', { timeZone: ZONA_HORARIA_NEGOCIO, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+    if (/^\d{4}-\d{2}-\d{2}$/.test(f)) return f;
+  } catch (_) { /* navegador sin Intl con zonas: se usa el respaldo */ }
+  return new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 10);   // respaldo: Cancún es UTC−5 fijo
+}
 const STATE = {
   user: null,
   businesses: [],
   currentBusinessId: null,
   currentSection: 'dashboard',
-  currentMonth: new Date().toISOString().slice(0, 7), // YYYY-MM
+  currentMonth: fechaHoyNegocio().slice(0, 7), // YYYY-MM (el mes de hoy en la hora del negocio)
   esAdministrador: false,
   negociosPermitidos: null, // null = sin restricción (propietario); array de ids = restringido
 };
@@ -145,7 +156,7 @@ const monthBounds = (ym) => {
   const end = new Date(y, m, 0).toISOString().slice(0, 10);
   return { start, end };
 };
-const todayStr = () => new Date().toISOString().slice(0, 10);
+const todayStr = () => fechaHoyNegocio();
 
 // Validación central de fechas operativas (movimientos, cobros, pagos) — se llama SIEMPRE antes
 // de cualquier INSERT/UPDATE, nunca se confía solo en los atributos min/max del <input> HTML
@@ -163,7 +174,7 @@ function validarFechaOperativa(fecha) {
   if (anio < anioMinimo) {
     return { valido: false, mensaje: `La fecha ${fecha} no parece válida (año ${fecha.slice(0,4)}). Revisa que no falte o sobre un dígito antes de guardar.` };
   }
-  const manana = new Date(); manana.setUTCDate(manana.getUTCDate() + 1);
+  const manana = new Date(fechaHoyNegocio() + 'T12:00:00Z'); manana.setUTCDate(manana.getUTCDate() + 1);
   const fechaLimiteFutura = manana.toISOString().slice(0, 10);
   if (fecha > fechaLimiteFutura) {
     return { valido: false, mensaje: `La fecha ${fecha} está en el futuro. Revisa que la hayas capturado correctamente.` };
@@ -14697,7 +14708,7 @@ function abrirReglaEditor(r) {
 async function reglasImpProbar(regla) {   // solo lectura: cuántos movimientos YA importados (últimos 12 meses, aún sin traspaso) habrían coincidido
   const b = biz(); if (!b) return;
   const tabla = regla.origen === 'banco' ? 'fz_bancos_mov' : 'fz_efectivo_mov', campo = regla.origen === 'banco' ? 'cuenta_id' : 'moneda_id';
-  const desde = new Date(); desde.setFullYear(desde.getFullYear() - 1); const d0 = desde.toISOString().slice(0, 10);
+  const hoyN = fechaHoyNegocio(), d0 = (Number(hoyN.slice(0, 4)) - 1) + hoyN.slice(4);
   toast('Probando la regla…');
   const { data, error } = await fetchTodasLasPaginas(() => { let q = sb.from(tabla).select('*').eq('business_id', b.id).gte('fecha', d0); if (regla.cuenta_id) q = q.eq(campo, regla.cuenta_id); return q.order('id'); });
   if (error) { toast('Error al probar: ' + error.message, 'error'); return; }
@@ -25463,7 +25474,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.1';
+const APP_VERSION = '2026-11-06.2';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
@@ -25616,7 +25627,7 @@ function normalizarMes(v) {   // acepta 2026-11, 2026-1, 11-2026, 11/2026 → '2
   const poner = (inp, ym) => { inp.value = ym; inp.dispatchEvent(new Event('input', { bubbles: true })); inp.dispatchEvent(new Event('change', { bubbles: true })); };
   const abrir = (ctx) => {
     cerrar(false); activo = ctx; const { inp, btn } = ctx;
-    const hoy = new Date(), hoyYm = hoy.getFullYear() + '-' + String(hoy.getMonth() + 1).padStart(2, '0');
+    const hoy = new Date(), hoyYm = fechaHoyNegocio().slice(0, 7);
     let anio = +(normalizarMes(inp.value) || hoyYm).slice(0, 4);
     pop = document.createElement('div'); pop.className = 'selmes-pop'; pop.setAttribute('role', 'dialog'); pop.setAttribute('aria-label', 'Elegir mes');
     const pintar = () => {
@@ -29080,7 +29091,7 @@ function revCfdiClasificados(ctx) {
   return { id: 'cfdi_clasificados', titulo: 'CFDI clasificados cancelados o sin factura', ayuda: 'Un CFDI cancelado deja de ser deducible y acreditable (o de amparar la venta) aunque su factura siga registrada. Solo lee: corrige en Proveedores, Clientes o CFDI (XML).', items };
 }
 function revFechasRaras(ctx) {
-  const hoy = new Date(); const limite = `${hoy.getFullYear() + 1}-12-31`;
+  const hoy = new Date(); const limite = `${Number(fechaHoyNegocio().slice(0, 4)) + 1}-12-31`;
   const fuentes = [['Facturas de proveedor', ctx.proveedores], ['Ventas', ctx.ventas], ['Movimientos de banco', ctx.bancosMov], ['Movimientos de efectivo', ctx.efectivoMov], ['Pólizas', ctx.polizas]];
   const items = [];
   fuentes.forEach(([nombre, filas]) => filas.forEach(f => {
