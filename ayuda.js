@@ -63,7 +63,8 @@ window.AYUDA = {
         { q: '¿Qué columnas trae el Excel de ventas?', a: 'Usa siempre la **plantilla**. Trae la Fecha, una columna por cada categoría de venta que configuraste (y su «TC» si es en otra moneda), los gastos del día y, si los usas, las columnas de lo que reporta tu sistema (efectivo, tarjetas y CxC). Si cambias los nombres de las columnas, la importación no los reconoce.' },
         { q: '¿Qué significan las columnas «Dif.»?', a: 'Comparan lo que tu sistema dice que se vendió con lo que realmente se contó o cobró. Una diferencia hay que revisarla antes de cerrar el mes.' },
         { q: '¿Por qué aparece «Aún no configuras qué vende este negocio»?', a: 'Porque el negocio todavía no tiene categorías de venta. Pulsa **Configurar categorías de venta** y agrega las que apliquen.' },
-        { q: '¿Qué es «Total Prop.»?', a: 'El total de propinas del día.' }
+        { q: '¿Qué es «Total Prop.»?', a: 'El total de propinas del día.' },
+        { q: '¿Qué pasa con las propinas si cambio la fecha de un día de ventas?', a: 'Sus facturas de propinas (en Proveedores, proveedor «Propinas por repartir») se mueven con la venta a la nueva fecha, aunque ya tengan pagos. Así la propina por pagar queda en el mismo mes que la venta. Si el mes de la fecha vieja o el de la nueva está cerrado, esas facturas no se mueven y la app te avisa.' }
       ],
       cuidado: [
         'Si el mes está cerrado, no se pueden capturar ni cambiar movimientos de ese mes. Un administrador puede reabrirlo.',
@@ -159,7 +160,8 @@ window.AYUDA = {
         { q: '¿Qué son los «Días retraso»?', a: 'Los días que han pasado desde el vencimiento de una factura que todavía tiene saldo.' },
         { q: '¿Cómo registro una devolución del proveedor?', a: 'Con **+ Nota de crédito**, que descuenta lo devuelto o corregido.' },
         { q: '¿Qué columnas trae el Excel de facturas?', a: 'Proveedor, Fecha, Factura e Importe. Opcional: Estatus (si empieza con «pag» se toma como pagada). Hay una guía con todos los formatos en «Todas las pantallas».' },
-        { q: '¿Se puede programar una factura de proveedor que se repite?', a: 'Todavía no. Está planeado para una próxima versión, con aviso de que esas facturas no llevan CFDI hasta que lo agregues.' }
+        { q: '¿Se puede programar una factura de proveedor que se repite?', a: 'Todavía no. Está planeado para una próxima versión, con aviso de que esas facturas no llevan CFDI hasta que lo agregues.' },
+        { q: '¿Qué hace «Poner al día propinas»?', a: 'Revisa todos los días de Ventas y deja la factura de propinas de cada día con la fecha de su venta y el monto que conciliaste, y crea las que falten. No duplica las que ya existen. Solo corrige las que están en estatus Pendiente; las que ya tienen pagos se editan a mano.' }
       ],
       cuidado: [
         'Como orientación general, el IVA de una compra se acredita cuando la factura está **pagada** y, en negocios fiscales, con su CFDI (XML). Confírmalo con tu contador.'

@@ -2041,6 +2041,11 @@ async function renderVentas() {
       const val = field === 'fecha' ? inp.value : leerMonto(inp.value);
       const { error: e3 } = await sb.from('fz_ventas').update({ [field]: val }).eq('id', id);
       if (e3) { toast('Error guardando: ' + e3.message, 'error'); return; }
+      if (field === 'fecha' && rowActual && rowActual.fecha && val && rowActual.fecha !== val) {   // las propinas de esa venta se mueven con ella
+        const rp = await moverPropinasConLaVenta(b.id, id, rowActual.fecha, val);
+        if (rp.movidas) toast(`Se movieron ${rp.movidas} factura(s) de propinas a la nueva fecha de la venta (${val}).`);
+        if (rp.omitidas) toast(`${rp.omitidas} factura(s) de propinas NO se movieron porque su fecha o la nueva está en un mes cerrado. Revísalas en Proveedores.`, 'error');
+      }
       renderVentas();
     });
   });
@@ -2181,6 +2186,30 @@ async function provisionarPropinasHistoricas(businessId, onDone) {
   }
   toast(`Listo — ${count} registro(s) de propinas revisados/creados.`);
   if (onDone) onDone();
+}
+
+/* Al cambiar la fecha de un día de Ventas, sus facturas de propina (las que nacieron de esa venta, con su marca origen_venta_id) se mueven a la nueva fecha.
+   Antes se quedaban con la fecha vieja y, si se movía la venta de mes, la Balanza de AMBOS meses salía descuadrada (la venta en un mes, su propina por pagar en el otro).
+   Candado de cierre: si el mes de la fecha vieja o el de la nueva está cerrado, esa factura no se mueve. Se registra en Auditoría. */
+async function moverPropinasConLaVenta(businessId, ventaId, fechaAnterior, fechaNueva) {
+  const res = { movidas: 0, omitidas: 0 };
+  if (!businessId || !ventaId || !fechaAnterior || !fechaNueva || fechaAnterior === fechaNueva) return res;
+  let facturas = [];
+  try {
+    const { data, error } = await sb.from('fz_proveedores').select('id,fecha,factura').eq('business_id', businessId).eq('origen_venta_id', ventaId);
+    if (error) throw error;
+    facturas = data || [];
+  } catch (err) { toast('No se pudieron revisar las propinas de esa venta: ' + (err.message || err) + '. Pulsa «Poner al día propinas» en Proveedores.', 'error'); return res; }
+  for (const f of facturas) {
+    if (!f.fecha || f.fecha === fechaNueva) continue;
+    if (await periodoEstaCerrado(businessId, f.fecha) || await periodoEstaCerrado(businessId, fechaNueva)) { res.omitidas++; continue; }
+    const nombre = /^Propina .+ \d{4}-\d{2}-\d{2}$/.test(f.factura || '') ? f.factura.replace(/\d{4}-\d{2}-\d{2}$/, fechaNueva) : f.factura;
+    const { error: e } = await sb.from('fz_proveedores').update({ fecha: fechaNueva, factura: nombre }).eq('id', f.id);
+    if (e) { res.omitidas++; continue; }
+    res.movidas++;
+  }
+  if (res.movidas) registrarAuditoria(businessId, 'editar', 'Proveedores', `Propinas movidas con su venta: ${res.movidas} factura(s) de «Propinas por repartir» pasaron de ${fechaAnterior} a ${fechaNueva} porque se cambió la fecha de la venta`);
+  return res;
 }
 
 function ventasRowHtml(r, conceptosVenta, porCat, recibidoCats, conceptosSistema) {
@@ -25524,7 +25553,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.6';
+const APP_VERSION = '2026-11-06.7';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
