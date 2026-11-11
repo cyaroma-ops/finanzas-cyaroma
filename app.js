@@ -25524,7 +25524,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.5';
+const APP_VERSION = '2026-11-06.6';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
@@ -26388,13 +26388,13 @@ function estadoResultadosSubtitulo(periodo) {
 }
 function plTagsHtml() {
   const { start, end } = monthBounds(STATE.currentMonth);
-  return `<div class="tag-row">
+  return `<div class="pl-fila-controles pl-fila-${STATE_plVista}"><div class="tag-row">
     <div class="tag ${STATE_plVista==='mensual'?'active':''}" id="plTabMensual">Mensual</div>
     <div class="tag ${STATE_plVista==='acumulado'?'active':''}" id="plTabAcumulado">Acumulado</div>
     <div class="tag ${STATE_plVista==='anual'?'active':''}" id="plTabAnual">Todos los meses</div>
-  </div>
+  </div><div class="pl-fila-izq">
   ${STATE_plVista!=='anual' ? `
-  <div class="field" style="max-width:280px;margin:8px 0 2px;">
+  <div class="field pl-comparar" style="max-width:280px;margin:8px 0 2px;">
     <label style="font-size:11px;">Comparar con</label>
     <select id="plComparacionSelect">
       <option value="ninguna" ${STATE_plComparacion==='ninguna'?'selected':''}>Sin comparación</option>
@@ -26436,7 +26436,7 @@ function plTagsHtml() {
       </div>
     </div>
     <p style="font-size:11.5px;color:var(--muted);margin:-2px 0 12px;">Por default muestra los 12 meses del año — acórtalo para ver solo algunos meses uno junto al otro (ej. Junio y Julio).</p>
-    </div>` : ''}`;
+    </div>` : ''}</div></div>`;
 }
 function wirePLTags(el) {
   el.querySelector('#plTabMensual').addEventListener('click', () => { STATE_plVista = 'mensual'; STATE_plAnualDesdeYm=''; STATE_plAnualHastaYm=''; renderPL(); });

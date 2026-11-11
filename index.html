@@ -463,6 +463,14 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 #modalRegla .modal-actions{margin-top:18px;}
 /* Tabla ajustada a la ventana (2026-11-06.5): se aprovecha el espacio en blanco de abajo para que la tabla sea más grande. Solo en pantalla (al imprimir no cambia). */
 @media screen{.content.con-caja-ajustada{padding-bottom:14px;}.card.card-caja-ajustada{margin-bottom:0;}}
+/* Estado de Resultados (2026-11-06.6): las pestañas Mensual / Acumulado / Todos los meses van en el mismo renglón que los selectores, a la derecha (se ahorra un renglón de alto).
+   Al imprimir NO cambia nada (el contenedor se comporta como bloque), salvo que el recuadro «Comparar con» ya no sale. */
+.pl-fila-controles{display:flex;flex-wrap:wrap;align-items:flex-start;column-gap:16px;}
+.pl-fila-controles>.tag-row{order:2;margin:32px 0 0 auto;}
+.pl-fila-controles.pl-fila-anual>.tag-row{margin-top:36px;}
+.pl-fila-izq{flex:1 1 0;min-width:min(100%,520px);}
+@media (max-width:900px){.pl-fila-controles>.tag-row,.pl-fila-controles.pl-fila-anual>.tag-row{order:0;margin:0 0 14px 0;}.pl-fila-izq{flex-basis:100%;}}
+@media print{.pl-fila-controles,.pl-fila-izq{display:block !important;}.pl-comparar{display:none !important;}}
 /* ===== Ayuda (2026-11-05.9) ===== */
 #ayudaBtn[aria-expanded="true"]{background:var(--navy-1);color:#fff;border-color:var(--navy-1);}
 .ayuda-panel{position:fixed;top:0;right:0;bottom:0;width:440px;max-width:100vw;background:#fff;border-left:1px solid var(--line);box-shadow:-10px 0 28px rgba(14,34,64,.10);z-index:120;display:flex;flex-direction:column;box-sizing:border-box;}
@@ -3579,6 +3587,6 @@ Transacciones recurrentes
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-06.5"></script>
+<script src="/app.js?v=2026-11-06.6"></script>
 </body>
 </html>
