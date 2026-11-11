@@ -1422,13 +1422,16 @@ actualizarAlturaTopbar();
 const CAJAS_TABLA_AJUSTABLES = '#sec-balanza .balanza-scroller-interior, #sec-balance .table-wrap.scroll-sticky, #sec-pl .table-wrap.scroll-sticky, #sec-polizas .table-wrap.scroll-sticky, #sec-librodiario .table-wrap.scroll-sticky, #sec-diariospolizas .table-wrap.scroll-sticky, #sec-auxiliares .table-wrap.scroll-sticky';
 function ajustarAlturaCajasTabla() {
   const cont = document.getElementById('content'); if (!cont) return;
-  document.querySelectorAll(CAJAS_TABLA_AJUSTABLES).forEach(caja => {
-    if (caja.closest('.modal-bg')) return;
-    if (window.innerWidth <= 760) { if (caja.style.maxHeight) caja.style.maxHeight = ''; return; }   // celular: como antes
-    if (caja.offsetParent === null) return;                                                            // pantalla oculta
+  const cajas = [...document.querySelectorAll(CAJAS_TABLA_AJUSTABLES)].filter(c => !c.closest('.modal-bg'));
+  const activas = window.innerWidth <= 760 ? [] : cajas.filter(c => c.offsetParent !== null);       // celular y pantallas ocultas: como antes
+  cajas.forEach(c => { if (!activas.includes(c)) { if (c.style.maxHeight) c.style.maxHeight = ''; const k = c.closest('.card'); if (k) k.classList.remove('card-caja-ajustada'); } });
+  // Con una tabla ajustada se aprovecha el espacio en blanco de abajo (relleno de la pantalla y margen de la tarjeta): la tabla es más grande.
+  cont.classList.toggle('con-caja-ajustada', activas.length > 0);
+  activas.forEach(c => { const k = c.closest('.card'); if (k) k.classList.add('card-caja-ajustada'); });
+  activas.forEach(caja => {
     const r = caja.getBoundingClientRect(), c = cont.getBoundingClientRect();
     const arriba = r.top + window.scrollY, debajo = c.bottom - r.bottom;                              // lo que hay encima y debajo de la tabla, dentro del contenido
-    const nuevo = Math.max(260, Math.floor(window.innerHeight - arriba - debajo) - 1) + 'px';
+    const nuevo = Math.max(300, Math.floor(window.innerHeight - arriba - debajo) - 1) + 'px';
     if (caja.style.maxHeight !== nuevo) caja.style.maxHeight = nuevo;
   });
 }
@@ -25521,7 +25524,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.4';
+const APP_VERSION = '2026-11-06.5';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.

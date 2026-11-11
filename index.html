@@ -461,6 +461,8 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 #modalRegla .pg-nota{margin:0;font-size:12.5px;color:var(--muted);line-height:1.5;}
 #modalRegla #reglaResumen{padding:12px 14px;background:#f4f6fa;border-radius:10px;color:var(--navy-1);}
 #modalRegla .modal-actions{margin-top:18px;}
+/* Tabla ajustada a la ventana (2026-11-06.5): se aprovecha el espacio en blanco de abajo para que la tabla sea más grande. Solo en pantalla (al imprimir no cambia). */
+@media screen{.content.con-caja-ajustada{padding-bottom:14px;}.card.card-caja-ajustada{margin-bottom:0;}}
 /* ===== Ayuda (2026-11-05.9) ===== */
 #ayudaBtn[aria-expanded="true"]{background:var(--navy-1);color:#fff;border-color:var(--navy-1);}
 .ayuda-panel{position:fixed;top:0;right:0;bottom:0;width:440px;max-width:100vw;background:#fff;border-left:1px solid var(--line);box-shadow:-10px 0 28px rgba(14,34,64,.10);z-index:120;display:flex;flex-direction:column;box-sizing:border-box;}
@@ -3577,6 +3579,6 @@ Transacciones recurrentes
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-06.4"></script>
+<script src="/app.js?v=2026-11-06.5"></script>
 </body>
 </html>
