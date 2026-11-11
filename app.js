@@ -1395,12 +1395,22 @@ function updateTopbar() {
 // asome el contenido de abajo.
 function actualizarAlturaTopbar() {
   requestAnimationFrame(() => {
-    const topbar = document.querySelector('.topbar');
-    if (topbar) document.documentElement.style.setProperty('--topbar-h', topbar.offsetHeight + 'px');
+    const topbar = document.querySelector('.topbar'); if (!topbar) return;
+    const h = Math.floor(topbar.getBoundingClientRect().height);
+    // h = 0 significa que la barra está oculta (antes de iniciar sesión): se conserva la medida anterior
+    if (h > 0 && document.documentElement.style.getPropertyValue('--topbar-h') !== h + 'px') document.documentElement.style.setProperty('--topbar-h', h + 'px');
   });
 }
 window.addEventListener('resize', actualizarAlturaTopbar);
 actualizarAlturaTopbar();
+// La barra puede cambiar de altura SIN que cambie la ventana: al cargar la tipografía, al cambiar el texto del selector de mes, al mostrarse la app tras
+// iniciar sesión, al acomodar sus botones en otra línea… Se observa su tamaño real, de modo que las barras fijas de abajo nunca dejen un hueco.
+(function observarTopbar() {
+  const tb = document.querySelector('.topbar'); if (!tb) return;
+  if (typeof ResizeObserver === 'function') new ResizeObserver(() => actualizarAlturaTopbar()).observe(tb, { box: 'border-box' });   // toda la caja (con relleno y borde), no solo el contenido
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(actualizarAlturaTopbar);
+  window.addEventListener('load', actualizarAlturaTopbar);
+})();
 
 async function renderCurrentSection() {
   if (esNegocioFinanciero(biz()) && SECCIONES_SOLO_FISCAL.includes(STATE.currentSection)) {
@@ -22414,10 +22424,13 @@ function mostrarCargandoSeccion(idSeccion, texto) {
   if (!aviso) {
     aviso = document.createElement('div');
     aviso.id = 'cargando-' + idSeccion;
-    aviso.style.cssText = 'position:sticky;top:0;z-index:6;background:#fff8ec;border:1px solid #f0d9a8;border-radius:8px;padding:8px 12px;font-size:13px;margin-bottom:8px;';
+    aviso.style.cssText = 'position:sticky;top:calc(var(--topbar-h,79px) + 8px);z-index:6;height:0;overflow:visible;margin:0;';   // sin altura propia: no mueve nada
+    const pastilla = document.createElement('div'); pastilla.className = 'cargando-pastilla';
+    pastilla.style.cssText = 'position:absolute;top:0;left:0;background:#fff8ec;border:1px solid #f0d9a8;border-radius:8px;padding:8px 12px;font-size:13px;white-space:nowrap;box-shadow:0 4px 14px rgba(0,0,0,.08);';
+    aviso.appendChild(pastilla);
     el.insertAdjacentElement('afterbegin', aviso);
   }
-  aviso.textContent = '⏳ ' + texto;
+  (aviso.firstElementChild || aviso).textContent = '⏳ ' + texto;
 }
 function quitarCargandoSeccion(idSeccion) {
   const el = document.getElementById(idSeccion);
@@ -25474,7 +25487,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.2';
+const APP_VERSION = '2026-11-06.3';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
