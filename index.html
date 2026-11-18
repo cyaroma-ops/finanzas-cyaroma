@@ -711,6 +711,53 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 .cm-alta-fila label{display:block;font-size:11.5px;font-weight:600;color:var(--muted);margin-bottom:4px;}
 .cm-alta-fila .cm-btn-alta{flex:0 0 auto;height:42px;}
 .cm-nota{font-size:11.5px;color:var(--muted);margin:10px 0 0;}
+/* 06.11 — Editor de pólizas de diario (solo presentación) */
+#modalPolizaBody .card{padding:16px 18px 0;}
+.pz-head{display:grid!important;grid-template-columns:auto 170px minmax(220px,1fr) auto;align-items:end;gap:10px 14px;margin:0 36px 12px 0!important;padding-bottom:12px;border-bottom:1px solid var(--line);}
+.pz-titulo{display:flex;flex-direction:column;gap:2px;padding-bottom:6px;}
+.pz-num{font-family:'Cormorant Garamond',serif;font-size:22px;font-weight:700;color:var(--navy-1);line-height:1.1;}
+.pz-prov{font-size:11px;color:var(--muted);}
+.pz-campo{display:flex;flex-direction:column;gap:3px;margin:0;}
+.pz-campo>span{font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);}
+.pz-campo input.cell{border:1.5px solid var(--line);background:#fff;padding:8px 10px;border-radius:9px;font-size:13.5px;}
+.pz-ampliar{border:1.5px solid var(--line);background:#fff;border-radius:9px;width:36px;height:36px;font-size:16px;color:var(--navy-1);cursor:pointer;}
+.pz-ampliar:hover{background:#eef3fb;}
+#modalPolizaBody .poliza-cerrar-x{top:12px!important;right:14px!important;z-index:3;}
+.modal-workspace.pz-ampliada{width:100vw!important;height:100vh!important;max-height:100vh!important;border-radius:0;resize:none!important;}
+.pz-soporte{margin-bottom:10px;border:1.5px dashed var(--line);border-radius:10px;padding:8px 10px;background:#fff;max-width:420px;}
+.pz-soporte-tit{font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;}
+.pz-soporte .doc-adjunto-bloque{border:none;background:none;padding:0;}
+.pz-tabla{border-collapse:separate;border-spacing:0 6px;}
+.pz-tabla thead th{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;padding:4px 6px;}
+.pz-tabla tbody tr:not(.total-row) td{padding:0 3px;border:none;background:transparent;}
+.pz-tabla input.cell{border:1.5px solid var(--line);background:#fff;padding:8px 10px;border-radius:8px;min-width:0;}
+.pz-tabla input.cell:hover{border-color:#c6d0e0;}
+.pz-tabla input.cell:focus{border-color:var(--navy-3);box-shadow:0 0 0 3px rgba(26,79,138,.12);}
+.pz-tabla td:nth-child(1){width:34%;}.pz-tabla td:nth-child(2){width:15%;}.pz-tabla td:nth-child(3){width:13%;}.pz-tabla td:nth-child(5),.pz-tabla td:nth-child(6){width:118px;}.pz-tabla td.pz-del{width:34px;text-align:center;}
+.pz-tabla .total-row{display:none;}
+.poliza-barra{flex-shrink:0;position:sticky;bottom:0;z-index:5;display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin:10px -18px 0;padding:12px 18px;background:#fff;border-top:2px solid var(--line);box-shadow:0 -6px 16px rgba(10,31,61,.07);border-radius:0 0 12px 12px;}
+.pb-tot{display:flex;flex-direction:column;gap:1px;}
+.pb-tot>span{font-size:10.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);}
+.pb-tot>strong{font-size:17px;color:var(--navy-1);font-variant-numeric:tabular-nums;}
+.pb-diff.ok{color:var(--green);}.pb-diff.mal{color:var(--red);}
+.pb-acc{margin-left:auto;display:flex;gap:10px;align-items:center;}
+.pb-acc .poliza-guardar{min-width:130px;}
+@media (max-width:880px){
+  .pz-head{grid-template-columns:1fr 1fr;}
+  .pz-titulo{grid-column:1/-1;}
+  .pz-concepto{grid-column:1/-1;}
+  .pz-ampliar{display:none;}
+  .pz-soporte{max-width:none;}
+  .pz-tabla thead{display:none;}
+  .pz-tabla,.pz-tabla tbody{display:block;}
+  .pz-tabla tbody tr:not(.total-row){display:grid;grid-template-columns:1fr 1fr;gap:8px;border:1.5px solid var(--line);border-radius:12px;padding:10px;margin-bottom:10px;position:relative;background:#fbfcfe;}
+  .pz-tabla tbody tr:not(.total-row) td{display:block;width:auto!important;padding:0;}
+  .pz-tabla td::before{content:attr(data-label);display:block;font-size:10.5px;font-weight:700;color:var(--muted);margin-bottom:2px;}
+  .pz-tabla td:nth-child(1),.pz-tabla td:nth-child(4){grid-column:1/-1;}
+  .pz-tabla td.pz-del{position:absolute;top:2px;right:2px;}.pz-tabla td.pz-del::before{display:none;}
+  .poliza-barra{gap:10px 14px;margin:10px -14px 0;padding:10px 14px;}
+  .pb-acc{width:100%;margin-left:0;}.pb-acc .btn{flex:1;}
+}
 .bs-wrap{position:relative;}
 .bs-input{width:100%;cursor:pointer;padding-right:30px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%2398a2b3' stroke-width='1.8' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 11px center;}
 .bs-oculto{display:none!important;}
@@ -3695,6 +3742,6 @@ Transacciones recurrentes
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-06.10"></script>
+<script src="/app.js?v=2026-11-06.11"></script>
 </body>
 </html>

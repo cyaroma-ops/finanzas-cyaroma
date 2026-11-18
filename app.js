@@ -26208,7 +26208,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.10';
+const APP_VERSION = '2026-11-06.11';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
@@ -28130,9 +28130,22 @@ function labelDeLineaPoliza(catalogoItems, l) {
   );
   return match ? match.label : '';
 }
+// Solo presentación: una póliza sin importes no se muestra como «Cuadrada» (el cálculo de cuadre y las validaciones de guardado no cambian).
+function estadoVisualPoliza(lineas) {
+  const t = totalesPolizaBorrador(lineas), vacia = t.totalCargo === 0 && t.totalAbono === 0;
+  return { ...t, vacia, txt: vacia ? 'Pendiente de captura' : (t.cuadrada ? 'Cuadrada' : 'Diferencia ' + fmt(t.diff)), cls: (!vacia && t.cuadrada) ? 'pag' : 'pend' };
+}
+function actualizarBarraPoliza(wrap) {
+  const barra = wrap.querySelector('.poliza-barra'); if (!barra) return;
+  const e = estadoVisualPoliza(STATE_polizaBorrador.lineas);
+  const set = (sel, txt) => { const el = barra.querySelector(sel); if (el) el.textContent = txt; };
+  set('.pb-cargo', fmt(e.totalCargo)); set('.pb-abono', fmt(e.totalAbono)); set('.pb-diff', fmt(e.diff));
+  const d = barra.querySelector('.pb-diff'); if (d) d.className = 'pb-diff ' + (e.vacia ? '' : (e.cuadrada ? 'ok' : 'mal'));
+  const b = barra.querySelector('.badge'); if (b) { b.className = 'badge ' + e.cls; b.textContent = e.txt; }
+}
 function actualizarTotalesPolizaEnSitio(wrap) {
-  const { totalCargo, totalAbono, diff, cuadrada } = totalesPolizaBorrador(STATE_polizaBorrador.lineas);
-  const badge = wrap.querySelector('.card-head .badge'); if (badge) { badge.className = 'badge ' + (cuadrada ? 'pag' : 'pend'); badge.textContent = cuadrada ? 'Cuadrada' : 'Diferencia ' + fmt(diff); }
+  const { totalCargo, totalAbono } = totalesPolizaBorrador(STATE_polizaBorrador.lineas);
+  actualizarBarraPoliza(wrap);
   const celdas = wrap.querySelectorAll('.total-row td.num'); if (celdas[0]) celdas[0].textContent = fmt(totalCargo); if (celdas[1]) celdas[1].textContent = fmt(totalAbono);
 }
 function refrescarFilaPolizaEnSitio(wrap, lineaId) {
@@ -28164,7 +28177,7 @@ function renderizarBorradorPoliza() {
   const capV = wrap.querySelector('.doc-workspace-panel-captura'), capN = tmp.querySelector('.doc-workspace-panel-captura'), encV = wrap.querySelector('.card-head'), encN = tmp.querySelector('.card-head');
   if (wrap.dataset.polizaTok === tok && capV && capN && encV && encN && !!wrap.querySelector('.poliza-del') === !!tmp.querySelector('.poliza-del')) {
     capV.replaceWith(capN);
-    const bV = encV.querySelector('.badge'), bN = encN.querySelector('.badge'); if (bV && bN) { bV.className = bN.className; bV.textContent = bN.textContent; }
+    actualizarBarraPoliza(wrap);
     const dlV = wrap.querySelector('#listaCuentasPoliza'), dlN = tmp.querySelector('#listaCuentasPoliza'); if (dlV && dlN && dlV.innerHTML !== dlN.innerHTML) dlV.innerHTML = dlN.innerHTML;
   } else { wrap.innerHTML = tmp.innerHTML; wrap.dataset.polizaTok = tok; }
   wireBorradorPolizaHandlers(wrap);
@@ -28199,33 +28212,30 @@ function polizaCardHtmlBorrador(borrador) {
   return `
     <div class="card" style="background:#fbfcfe;border:1.5px solid var(--line);margin-bottom:16px;position:relative;">
       <button class="poliza-cerrar-x" title="Cerrar" style="position:absolute;top:10px;right:14px;background:none;border:none;font-size:20px;color:var(--muted);cursor:pointer;line-height:1;">✕</button>
-      <div class="card-head" style="margin-bottom:10px;">
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-          <strong style="color:var(--navy-1);">${borrador.esNueva ? `Nueva póliza · No. ${escHtml(String(p.numero ?? '—'))} <span style="font-weight:400;font-size:11.5px;color:var(--muted);">(provisional; se confirma al guardar)</span>` : 'Póliza #' + (p.numero ?? '—')}</strong>
-          <input class="cell poliza-cell" type="date" value="${p.fecha}" data-field="fecha" style="width:auto;">
-          <input class="cell poliza-cell" type="text" placeholder="Concepto de la póliza" value="${escAttr(p.concepto || '')}" data-field="concepto" enterkeyhint="next" style="min-width:220px;">
+      <div class="card-head pz-head">
+        <div class="pz-titulo">
+          <span class="pz-num">${borrador.esNueva ? `Nueva póliza · No. ${escHtml(String(p.numero ?? '—'))}` : 'Póliza #' + escHtml(String(p.numero ?? '—'))}</span>
+          ${borrador.esNueva ? '<span class="pz-prov">provisional; se confirma al guardar</span>' : ''}
         </div>
-        <div style="display:flex;align-items:center;gap:10px;">
-          <span class="badge ${cuadrada ? 'pag' : 'pend'}">${cuadrada ? 'Cuadrada' : 'Diferencia ' + fmt(diff)}</span>
-          <button class="btn btn-gold btn-sm poliza-guardar">Guardar</button>
-          ${!borrador.esNueva ? `<button class="btn btn-ghost btn-sm poliza-del" data-id="${p.id}" style="color:var(--red);">Eliminar póliza</button>` : ''}
-        </div>
+        <label class="pz-campo pz-fecha"><span>Fecha</span><input class="cell poliza-cell" type="date" value="${p.fecha}" data-field="fecha"></label>
+        <label class="pz-campo pz-concepto"><span>Concepto general</span><input class="cell poliza-cell" type="text" placeholder="Ej. Pago a proveedor, gasto de la semana…" value="${escAttr(p.concepto || '')}" data-field="concepto" enterkeyhint="next"></label>
+        <button type="button" class="pz-ampliar poliza-ampliar" title="Ampliar o reducir la ventana" aria-label="Ampliar ventana">⤢</button>
       </div>
       <div class="doc-workspace" id="polWorkspace">
       <div class="doc-workspace-panel-captura">
-      <div style="max-width:340px;margin-bottom:10px;">${adjuntoHtml}</div>
+      <div class="pz-soporte"><div class="pz-soporte-tit">Documentos de soporte</div>${adjuntoHtml}</div>
       <div class="table-wrap scroll-sticky">
-        <table>
+        <table class="pz-tabla">
           <thead><tr><th>Cuenta</th><th>Proveedor</th><th>Referencia/Factura</th><th>Descripción</th><th>Cargo</th><th>Abono</th><th></th></tr></thead>
           <tbody>
             ${lineasPoliza.map(l => `<tr>
-              <td><input class="cell linea-cuenta-buscar" autocomplete="off" placeholder="Escribe para buscar…" value="${escAttr(labelDeLinea(l))}" title="${escAttr(labelDeLinea(l))}" data-id="${l.id}" data-field="cuenta" enterkeyhint="next"></td>
-              <td><input class="cell linea-cell" type="text" value="${escAttr(l.proveedor || '')}" placeholder="Nombre (opcional)" data-id="${l.id}" data-field="proveedor" enterkeyhint="next"></td>
-              <td><input class="cell linea-cell" type="text" value="${escAttr(l.referencia || '')}" data-id="${l.id}" data-field="referencia" enterkeyhint="next"></td>
-              <td><input class="cell linea-cell" type="text" value="${escAttr(l.descripcion || '')}" data-id="${l.id}" data-field="descripcion" enterkeyhint="next"></td>
-              <td><input class="cell linea-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(l.cargo)}" data-id="${l.id}" data-field="cargo" enterkeyhint="next"></td>
-              <td><input class="cell linea-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(l.abono)}" data-id="${l.id}" data-field="abono" enterkeyhint="next"></td>
-              <td><button class="row-del linea-del" tabindex="-1" data-id="${l.id}">✕</button></td>
+              <td data-label="Cuenta"><input class="cell linea-cuenta-buscar" autocomplete="off" placeholder="Escribe para buscar…" value="${escAttr(labelDeLinea(l))}" title="${escAttr(labelDeLinea(l))}" data-id="${l.id}" data-field="cuenta" enterkeyhint="next"></td>
+              <td data-label="Proveedor"><input class="cell linea-cell" type="text" value="${escAttr(l.proveedor || '')}" placeholder="Nombre (opcional)" data-id="${l.id}" data-field="proveedor" enterkeyhint="next"></td>
+              <td data-label="Referencia / Factura"><input class="cell linea-cell" type="text" value="${escAttr(l.referencia || '')}" data-id="${l.id}" data-field="referencia" enterkeyhint="next"></td>
+              <td data-label="Descripción"><input class="cell linea-cell" type="text" value="${escAttr(l.descripcion || '')}" data-id="${l.id}" data-field="descripcion" enterkeyhint="next"></td>
+              <td data-label="Cargo"><input class="cell linea-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(l.cargo)}" data-id="${l.id}" data-field="cargo" enterkeyhint="next"></td>
+              <td data-label="Abono"><input class="cell linea-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(l.abono)}" data-id="${l.id}" data-field="abono" enterkeyhint="next"></td>
+              <td class="pz-del"><button class="row-del linea-del" tabindex="-1" title="Quitar línea" data-id="${l.id}">✕</button></td>
             </tr>`).join('')}
             <tr class="total-row">
               <td colspan="4">Totales</td>
@@ -28246,6 +28256,16 @@ function polizaCardHtmlBorrador(borrador) {
         <div class="doc-viewer-embed" id="polPanelDocEmbed"></div>
       </div>
       </div>
+    <div class="poliza-barra">
+      <div class="pb-tot"><span>Total cargos</span><strong class="pb-cargo">${fmt(totalCargo)}</strong></div>
+      <div class="pb-tot"><span>Total abonos</span><strong class="pb-abono">${fmt(totalAbono)}</strong></div>
+      <div class="pb-tot"><span>Diferencia por cuadrar</span><strong class="pb-diff ${estadoVisualPoliza(lineasPoliza).vacia ? '' : (cuadrada ? 'ok' : 'mal')}">${fmt(diff)}</strong></div>
+      <span class="badge ${estadoVisualPoliza(lineasPoliza).cls}">${estadoVisualPoliza(lineasPoliza).txt}</span>
+      <div class="pb-acc">
+        ${!borrador.esNueva ? `<button class="btn btn-ghost btn-sm poliza-del" data-id="${p.id}" style="color:var(--red);">Eliminar póliza</button>` : ''}
+        <button class="btn btn-gold poliza-guardar">Guardar</button>
+      </div>
+    </div>
     </div>`;
 }
 
@@ -28435,6 +28455,19 @@ function wireBorradorPolizaHandlers(wrap) {
       if (e.key !== 'Enter' || e.isComposing || e.ctrlKey || e.altKey || e.metaKey || e.shiftKey || !t || t.tagName !== 'INPUT' || !t.matches('.poliza-cell')) return;
       const celdas = [...wrap.querySelectorAll('.poliza-cell, .linea-cuenta-buscar')], dest = celdas[celdas.indexOf(t) + 1];
       if (dest) { e.preventDefault(); dest.focus(); if (dest.select) { try { dest.select(); } catch (_) { /* tipo sin selección */ } } }
+    });
+  }
+  ligarUnaVez(wrap.querySelector('.poliza-ampliar'), 'click', () => { const m = wrap.closest('.modal-workspace'); if (m) { m.classList.toggle('pz-ampliada'); try { window.dispatchEvent(new Event('resize')); } catch (e) {} } });
+  if (!wrap.dataset.pzEnter) {   // Enter en el Abono de la última línea agrega una línea nueva y deja el cursor en su Cuenta (ritmo de hoja de cálculo)
+    wrap.dataset.pzEnter = '1';
+    wrap.addEventListener('keydown', (e) => {
+      const t = e.target;
+      if (e.key !== 'Enter' || e.isComposing || e.ctrlKey || e.altKey || e.metaKey || e.shiftKey || !t || !t.matches || !t.matches('.linea-cell[data-field="abono"]')) return;
+      const filas = wrap.querySelectorAll('.pz-tabla tbody tr:not(.total-row)'), ultima = filas[filas.length - 1];
+      if (!ultima || !ultima.contains(t)) return;
+      e.preventDefault(); e.stopPropagation(); t.dispatchEvent(new Event('change', { bubbles: true }));
+      const add = wrap.querySelector('.addLineaBtn'); if (add) add.click();
+      const nuevas = wrap.querySelectorAll('.pz-tabla tbody tr:not(.total-row)'), nueva = nuevas[nuevas.length - 1], cta = nueva && nueva.querySelector('.linea-cuenta-buscar'); if (cta) cta.focus();
     });
   }
   wrap.querySelectorAll('.linea-cuenta-buscar').forEach(inp => { hacerBuscadorCuentasPoliza(inp); inp.addEventListener('input', (e) => { inp._porLista = !e.inputType || e.inputType === 'insertReplacementText'; }); inp.addEventListener('change', () => {
