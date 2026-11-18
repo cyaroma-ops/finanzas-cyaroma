@@ -2542,6 +2542,12 @@ function opcionesSubcuentaHtml(subcuentas, mayores, selectedId) {
    ============================================================ */
 let STATE_ccEditando = new Set();
 let STATE_ccSoloPendientes = false;
+// Alta rápida (06.8): estado de la captura que sobrevive a cada redibujado del catálogo
+let STATE_ccAlta = { bizId: null, donde: '', padre: '', vinculo: '', nombre: '', texto: '', lote: false, enfocar: false, buscar: '', filtroTipo: '' };
+let STATE_ccSesion = [];            // cuentas dadas de alta en esta sesión (solo informativo, no se guarda)
+let STATE_ccRecientes = new Set();  // ids resaltados (última alta)
+let STATE_ccColapsados = new Set(); // 't:<tipo>' o id de cuenta mayor
+let STATE_ccAltaOcupado = false;
 /* ============================================================
    AUDITORÍA — bitácora de quién crea/edita/elimina qué
    ============================================================ */
@@ -12879,6 +12885,57 @@ async function renderCatalogoCuentas() {
   const cuentasBanco = cuentasBancoQ.data || [];
   const monedasEfectivo = monedasQ.data || [];
 
+  // 06.8: conserva lo que se estaba capturando (texto, selecciones, foco) aunque el catálogo se redibuje
+  if (STATE_ccAlta.bizId !== b.id) { STATE_ccAlta = { bizId: b.id, donde: '', padre: '', vinculo: '', nombre: '', texto: '', lote: false, enfocar: false, buscar: '', filtroTipo: '' }; STATE_ccSesion = []; STATE_ccRecientes = new Set(); STATE_ccColapsados = new Set(); }
+  {
+    const g = (id) => document.getElementById(id);
+    if (g('ccAltaNombre') && g('ccAltaNombre').isConnected) {
+      STATE_ccAlta.nombre = g('ccAltaNombre').value;
+      STATE_ccAlta.enfocar = (document.activeElement === g('ccAltaNombre'));
+      if (g('ccAltaDonde')) STATE_ccAlta.donde = g('ccAltaDonde').value;
+      if (g('ccAltaPadre')) STATE_ccAlta.padre = g('ccAltaPadre').value;
+      if (g('ccAltaVinculo')) STATE_ccAlta.vinculo = g('ccAltaVinculo').value;
+      if (g('ccAltaLoteTexto')) STATE_ccAlta.texto = g('ccAltaLoteTexto').value;
+    }
+    if (g('ccBuscar') && g('ccBuscar').isConnected) { STATE_ccAlta.buscar = g('ccBuscar').value; if (document.activeElement === g('ccBuscar')) STATE_ccAlta.enfocarBuscar = true; }
+    if (g('ccFiltroTipo')) STATE_ccAlta.filtroTipo = g('ccFiltroTipo').value;
+  }
+  const TIPOS_CC = ['activo','pasivo','capital','ingreso','costo','gasto'];
+  const altaDondeHtml = `<optgroup label="Crear una cuenta mayor nueva">${TIPOS_CC.map(t => `<option value="M:${t}">Cuenta mayor nueva · ${TIPO_CUENTA_LABEL[t]}</option>`).join('')}</optgroup>`
+    + TIPOS_CC.map(t => { const ms = mayores.filter(m => m.tipo === t); return ms.length ? `<optgroup label="Subcuenta dentro de… (${TIPO_CUENTA_LABEL[t]})">${ms.map(m => `<option value="S:${m.id}">${escHtml(m.nombre)}</option>`).join('')}</optgroup>` : ''; }).join('');
+  const altaCardHtml = `
+    <div class="card cc-alta${STATE_ccAlta.lote ? ' lote-abierto' : ''}" id="ccAltaCard">
+      <div class="card-head"><h3>Alta de cuenta</h3><span class="hint">Escribe el nombre y presiona Enter: se agrega y queda lista la siguiente.</span></div>
+      <div class="cc-alta-fila">
+        <div class="field"><label>Nombre</label><input type="text" id="ccAltaNombre" autocomplete="off" placeholder="Ej. Mantenimiento y conservación"></div>
+        <div class="field"><label>Va en</label><select id="ccAltaDonde">${altaDondeHtml}</select></div>
+        <div class="field" id="ccAltaPadreWrap"><label>Dentro de (opcional)</label><select id="ccAltaPadre"></select></div>
+        <div class="field" id="ccAltaVinculoWrap"><label>% de costo vs. categoría de venta</label><select id="ccAltaVinculo"><option value="">— sin vincular —</option>${conceptosVenta.map(c => `<option value="${c.id}">${escHtml(c.nombre)}</option>`).join('')}</select></div>
+        <div class="field"><button class="btn btn-gold" id="ccAltaAgregar" style="width:100%;">+ Agregar</button></div>
+      </div>
+      <p class="hint" id="ccAltaAyuda" style="margin:8px 0 0;font-size:11.5px;color:var(--muted);"></p>
+      <div style="margin-top:8px;"><button class="btn btn-ghost btn-sm" id="ccAltaLoteToggle">${STATE_ccAlta.lote ? 'Ocultar lista' : 'Pegar varias a la vez'}</button></div>
+      <div id="ccAltaLoteWrap" class="${STATE_ccAlta.lote ? '' : 'cc-oculto'}" style="margin-top:10px;">
+        <textarea id="ccAltaLoteTexto" rows="8" style="width:100%;font-family:inherit;font-size:13px;padding:8px;border:1px solid var(--line);border-radius:8px;" placeholder="Una cuenta por línea. Para anidar, sangra la línea con espacios o con «-». Ejemplo:&#10;Carnes&#10;  Res&#10;  Pollo&#10;    Pechuga&#10;Mariscos"></textarea>
+        <div style="display:flex;gap:10px;align-items:center;margin-top:8px;flex-wrap:wrap;">
+          <button class="btn btn-gold btn-sm" id="ccAltaLoteBtn">Agregar lista</button>
+          <span id="ccAltaLoteResumen" class="hint" style="font-size:12px;color:var(--muted);"></span>
+        </div>
+      </div>
+      <div id="ccAltaSesion" class="cc-sesion"></div>
+    </div>`;
+  const totalSubs = subcuentas.length;
+  const barraHtml = `
+    <div class="card cc-barra">
+      <div class="cc-barra-fila">
+        <div class="field" style="flex:1;min-width:200px;max-width:420px;margin:0;"><input type="text" id="ccBuscar" placeholder="Buscar cuenta…" autocomplete="off"></div>
+        <div class="field" style="margin:0;min-width:170px;"><select id="ccFiltroTipo"><option value="">Todos los tipos</option>${TIPOS_CC.filter(t => mayores.some(m => m.tipo === t)).map(t => `<option value="${t}">${TIPO_CUENTA_LABEL[t]}</option>`).join('')}</select></div>
+        <button class="btn btn-ghost btn-sm" id="ccExpandirTodo">Expandir todo</button>
+        <button class="btn btn-ghost btn-sm" id="ccContraerTodo">Contraer todo</button>
+        <span class="hint" id="ccResumenBusqueda" style="font-size:12px;color:var(--muted);">${mayores.length} cuenta(s) mayor · ${totalSubs} subcuenta(s)</span>
+      </div>
+    </div>`;
+
   el.innerHTML = `
     <div class="card" style="margin-bottom:14px;">
       <div class="card-head"><h3>Importar / Exportar catálogo</h3></div>
@@ -12900,57 +12957,7 @@ async function renderCatalogoCuentas() {
         })()}
       </div>
     </div>
-    <div class="card">
-      <div class="card-head"><h3>Nueva cuenta mayor</h3></div>
-      <div class="grid-3">
-        <div class="field" style="margin-bottom:0;">
-          <label>Nombre</label>
-          <input type="text" id="ccNuevaMayorNombre" placeholder="Ej. Acreedores, Activos Fijos">
-        </div>
-        <div class="field" style="margin-bottom:0;">
-          <label>Tipo</label>
-          <select id="ccNuevaMayorTipo">
-            <option value="activo">Activo</option>
-            <option value="pasivo">Pasivo</option>
-            <option value="capital">Capital</option>
-            <option value="ingreso">Ingreso</option>
-            <option value="costo">Costo de Ventas</option>
-            <option value="gasto">Gasto</option>
-          </select>
-        </div>
-        <div class="field" style="margin-bottom:0;display:flex;align-items:flex-end;">
-          <button class="btn btn-gold" id="ccSaveMayor" style="width:100%;">+ Agregar cuenta mayor</button>
-        </div>
-      </div>
-      <div class="field" id="ccVinculoWrap" style="display:none;max-width:340px;">
-        <label>Vincular a categoría de venta (para calcular % de costo)</label>
-        <select id="ccNuevaMayorVinculo">
-          <option value="">— sin vincular —</option>
-          ${conceptosVenta.map(c => `<option value="${c.id}">${escHtml(c.nombre)}</option>`).join('')}
-        </select>
-      </div>
-      <p style="font-size:11.5px;color:var(--muted);margin-top:-4px;">Al crearla se agrega automáticamente una subcuenta con el mismo nombre, lista para usarse en Pólizas de Diario. Puedes agregarle más subcuentas abajo si necesitas desglosarla.</p>
-    </div>
-
-    <div class="card">
-      <div class="card-head"><h3>Nueva subcuenta</h3></div>
-      <div class="grid-3">
-        <div class="field" style="margin-bottom:0;">
-          <label>Cuenta mayor</label>
-          <select id="ccNuevaSubMayor"></select>
-        </div>
-        <div class="field" style="margin-bottom:0;">
-          <label>Anidar bajo (opcional)</label>
-          <select id="ccNuevaSubPadre"><option value="">— nivel superior —</option></select>
-        </div>
-        <div class="field" style="margin-bottom:0;">
-          <label>Nombre</label>
-          <input type="text" id="ccNuevaSubNombre" placeholder="Ej. Mantenimiento y conservación">
-        </div>
-      </div>
-      <button class="btn btn-gold btn-sm" id="ccSaveSub">+ Agregar subcuenta</button>
-      <p style="font-size:11.5px;color:var(--muted);margin-top:10px;">Ejemplo de 3 niveles: Gastos de Operación › Mantenimiento y conservación › Reparación de freidoras.</p>
-    </div>
+    ${altaCardHtml}
 
     ${STATE_ccSoloPendientes ? (() => {
       const esCandidata = (s) => {
@@ -12994,6 +13001,19 @@ async function renderCatalogoCuentas() {
       `;
     })() : ''}
 
+    ${barraHtml}
+
+    ${['activo','pasivo','capital','ingreso','costo','gasto'].map(tipo => {
+      const mayoresTipo = mayores.filter(m => m.tipo === tipo);
+      if (!mayoresTipo.length) return '';
+      const idsMayorTipo = new Set(mayoresTipo.map(m => m.id));
+      const nSubsTipo = subcuentas.filter(s => idsMayorTipo.has(s.cuenta_mayor_id)).length;
+      return `<div class="card cc-tipo" data-tipo="${tipo}">
+        <div class="card-head cc-tipo-head" data-tipo="${tipo}" style="cursor:pointer;" title="Mostrar u ocultar este grupo"><h3><span class="cc-tipo-chev">▾</span> ${TIPO_CUENTA_LABEL[tipo]}</h3><span class="hint">${mayoresTipo.length} cuenta${mayoresTipo.length===1?'':'s'} mayor · ${nSubsTipo} subcuenta${nSubsTipo===1?'':'s'}</span></div>
+        <div id="ccList-${tipo}" class="cc-lista"></div>
+      </div>`;
+    }).join('') || `<div class="empty">Aún no has creado cuentas mayor de Activo, Pasivo, Capital, Ingreso o Gasto. Usa «Alta de cuenta» de arriba.</div>`}
+
     <div class="card">
       <div class="card-head"><h3>Bancos y Efectivo</h3><span class="hint">Se administran en sus propios módulos</span></div>
       <div class="grid-2">
@@ -13008,22 +13028,13 @@ async function renderCatalogoCuentas() {
       </div>
       <p style="font-size:11.5px;color:var(--muted);margin-top:10px;">Para agregar o editar cuentas bancarias ve a "Bancos"; para cajas de efectivo ve a "Efectivo & Divisas".</p>
     </div>
-
-    ${['activo','pasivo','capital','ingreso','costo','gasto'].map(tipo => {
-      const mayoresTipo = mayores.filter(m => m.tipo === tipo);
-      if (!mayoresTipo.length) return '';
-      return `<div class="card">
-        <div class="card-head"><h3>${TIPO_CUENTA_LABEL[tipo]}</h3></div>
-        <div id="ccList-${tipo}"></div>
-      </div>`;
-    }).join('') || `<div class="empty">Aún no has creado cuentas mayor de Activo, Pasivo, Capital, Ingreso o Gasto. Usa el formulario de arriba.</div>`}
   `;
   agregarBotonVolverConfig(el);
 
   const filaSubHtml = (s, nivel) => {
     const editando = STATE_ccEditando.has(s.id);
     return `
-    <div style="display:flex;align-items:center;gap:8px;padding:6px 4px 6px ${16 + nivel*18}px;border-bottom:1px solid var(--line);font-size:13px;flex-wrap:wrap;">
+    <div class="cc-fila" data-nivel="${nivel}" data-nombre="${escAttr(s.nombre)}" style="display:flex;align-items:center;gap:8px;padding:6px 4px 6px ${16 + nivel*18}px;border-bottom:1px solid var(--line);font-size:13px;flex-wrap:wrap;${STATE_ccRecientes.has(s.id) ? 'background:#f2f9f1;' : ''}">
       ${nivel>0?'<span style="color:var(--muted);">—</span>':''}
       ${editando ? `
         <input class="cell cc-sub-nombre" type="text" value="${escAttr(s.nombre)}" data-id="${s.id}" style="flex:1;min-width:120px;">
@@ -13053,9 +13064,10 @@ async function renderCatalogoCuentas() {
     box.innerHTML = mayoresTipo.map((m, idx) => {
       const editando = STATE_ccEditando.has(m.id);
       return `
-      <div style="margin-bottom:10px;">
-        <div style="display:flex;align-items:center;gap:8px;padding:6px 4px;background:#f7f9fc;border-radius:7px;flex-wrap:wrap;">
+      <div class="cc-bloque" data-id="${m.id}" data-nombre="${escAttr(m.nombre)}" style="margin-bottom:10px;">
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 4px;background:${STATE_ccRecientes.has(m.id) ? '#e8f4e6' : '#f7f9fc'};border-radius:7px;flex-wrap:wrap;">
           ${botonesOrdenHtml(idx, mayoresTipo.length, 'cc-mayor-orden')}
+          <button class="cc-mayor-toggle" data-id="${m.id}" title="Mostrar u ocultar sus subcuentas" style="border:none;background:none;cursor:pointer;color:var(--muted);font-size:13px;padding:0 4px;"><span class="cc-mayor-chev">▾</span></button>
           ${editando ? `
             <input class="cell cc-mayor-nombre" type="text" value="${escAttr(m.nombre)}" data-id="${m.id}" style="flex:1;min-width:0;font-weight:700;">
             <select class="cell cc-mayor-tipo" data-id="${m.id}" style="width:auto;">
@@ -13072,34 +13084,255 @@ async function renderCatalogoCuentas() {
             </select>` : ''}
             <button class="btn btn-ghost btn-sm cc-mayor-save" data-id="${m.id}">Guardar</button>
           ` : `
-            <strong style="flex:1;min-width:0;">${escHtml(m.nombre)}</strong>
+            <strong style="flex:1;min-width:0;">${escHtml(m.nombre)} <span style="font-weight:400;font-size:11px;color:var(--muted);">(${subcuentas.filter(x => x.cuenta_mayor_id === m.id).length})</span></strong>
             ${m.concepto_venta_vinculado_id ? `<span style="font-size:11px;color:var(--muted);">(% vs ${escHtml(conceptosVenta.find(c=>c.id===m.concepto_venta_vinculado_id)?.nombre||'')})</span>` : ''}
             <button class="btn btn-ghost btn-sm cc-mayor-editar" data-id="${m.id}">Editar</button>
           `}
           <button class="row-del cc-mayor-del" data-id="${m.id}" style="font-size:15px;">Eliminar</button>
         </div>
-        ${subcuentasRaiz(m.id, subcuentas).map(s => filaSubHtml(s, 0)).join('') || `<div style="padding:6px 4px 6px 16px;color:var(--muted);font-size:12px;">Sin subcuentas todavía.</div>`}
+        ${subcuentasRaiz(m.id, subcuentas).map(s => filaSubHtml(s, 0)).join('') || `<div class="cc-fila" data-nivel="0" data-nombre="" style="padding:6px 4px 6px 16px;color:var(--muted);font-size:12px;">Sin subcuentas todavía.</div>`}
       </div>`;
     }).join('');
     box.querySelectorAll('.cc-mayor-orden-subir').forEach(btn => btn.addEventListener('click', () => moverOrdenLista('fz_cuentas_mayor', mayoresTipo, Number(btn.dataset.idx), -1, () => renderCatalogoCuentas())));
     box.querySelectorAll('.cc-mayor-orden-bajar').forEach(btn => btn.addEventListener('click', () => moverOrdenLista('fz_cuentas_mayor', mayoresTipo, Number(btn.dataset.idx), 1, () => renderCatalogoCuentas())));
   });
 
-  const actualizarSubPadre = () => {
-    const mayorId = document.getElementById('ccNuevaSubMayor').value;
-    const sel = document.getElementById('ccNuevaSubPadre');
-    const construirNivel = (padreId, nivel) => subcuentas.filter(s => s.cuenta_mayor_id === mayorId && (s.subcuenta_padre_id || null) === padreId)
+  /* ===== 06.8 — Alta rápida, lista de sesión, búsqueda, colapsar ===== */
+  const $ = (id) => document.getElementById(id);
+  const norm = (t) => String(t == null ? '' : t).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  const inpNombre = $('ccAltaNombre'), selDonde = $('ccAltaDonde'), selPadre = $('ccAltaPadre');
+  const mayoresLocal = mayores.slice();
+  const subsLocal = subcuentas.slice();
+
+  // valores recordados
+  inpNombre.value = STATE_ccAlta.nombre || '';
+  const valoresDonde = Array.from(selDonde.options).map(o => o.value);
+  selDonde.value = valoresDonde.includes(STATE_ccAlta.donde) ? STATE_ccAlta.donde : (valoresDonde[0] || '');
+  if ($('ccAltaLoteTexto')) $('ccAltaLoteTexto').value = STATE_ccAlta.texto || '';
+
+  const llenarPadre = (mayorId) => {
+    const construirNivel = (padreId, nivel) => subsLocal.filter(s => s.cuenta_mayor_id === mayorId && (s.subcuenta_padre_id || null) === padreId)
       .flatMap(s => [`<option value="${s.id}">${'—'.repeat(nivel)} ${escHtml(s.nombre)}</option>`, ...construirNivel(s.id, nivel + 1)]);
-    sel.innerHTML = `<option value="">— nivel superior —</option>` + construirNivel(null, 0).join('');
+    selPadre.innerHTML = `<option value="">— nivel superior —</option>` + construirNivel(null, 0).join('');
   };
-  document.getElementById('ccNuevaSubMayor').innerHTML = mayores.map(m => `<option value="${m.id}">${escHtml(m.nombre)} (${TIPO_CUENTA_LABEL[m.tipo]})</option>`).join('') || `<option value="">— crea una cuenta mayor primero —</option>`;
-  actualizarSubPadre();
-  document.getElementById('ccNuevaSubMayor').addEventListener('change', actualizarSubPadre);
-  const toggleVinculo = () => {
-    document.getElementById('ccVinculoWrap').style.display = document.getElementById('ccNuevaMayorTipo').value === 'costo' ? 'block' : 'none';
+  const refrescarAlta = () => {
+    const v = selDonde.value || '';
+    const esMayor = v.startsWith('M:');
+    $('ccAltaPadreWrap').classList.toggle('cc-oculto', esMayor || !v);
+    $('ccAltaVinculoWrap').classList.toggle('cc-oculto', v !== 'M:costo');
+    if (!esMayor && v) llenarPadre(v.slice(2));
+    const ay = $('ccAltaAyuda');
+    if (esMayor) ay.textContent = `Se creará una cuenta mayor de tipo ${TIPO_CUENTA_LABEL[v.slice(2)]}, con su subcuenta del mismo nombre lista para usarse en Pólizas.`;
+    else { const m = mayoresLocal.find(x => x.id === v.slice(2)); ay.textContent = m ? `Se creará una subcuenta dentro de «${m.nombre}» (${TIPO_CUENTA_LABEL[m.tipo]}). Con «Dentro de» puedes anidarla un nivel más.` : ''; }
   };
-  document.getElementById('ccNuevaMayorTipo').addEventListener('change', toggleVinculo);
-  toggleVinculo();
+  refrescarAlta();
+  if (STATE_ccAlta.padre && Array.from(selPadre.options).some(o => o.value === STATE_ccAlta.padre)) selPadre.value = STATE_ccAlta.padre;
+  if (STATE_ccAlta.vinculo) $('ccAltaVinculo').value = STATE_ccAlta.vinculo;
+  selDonde.addEventListener('change', () => { STATE_ccAlta.padre = ''; refrescarAlta(); inpNombre.focus({ preventScroll: true }); });
+
+  const pintarSesion = () => {
+    const box = $('ccAltaSesion');
+    if (!box) return;
+    if (!STATE_ccSesion.length) { box.innerHTML = ''; return; }
+    const ult = STATE_ccSesion.slice(-8).reverse();
+    box.innerHTML = `<div style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--line);font-size:12px;color:var(--muted);display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+      <strong style="color:var(--navy-1);">Agregadas ahora (${STATE_ccSesion.length}):</strong>
+      ${ult.map(i => `<span title="${escAttr(i.ruta)}" style="background:#f2f9f1;border:1px solid #cfe5cc;border-radius:12px;padding:2px 9px;color:#2f5d2a;">${escHtml(i.etiqueta)}</span>`).join('')}
+      <button class="btn btn-ghost btn-sm" id="ccSesionLimpiar" style="margin-left:auto;">Limpiar</button></div>`;
+    $('ccSesionLimpiar').addEventListener('click', () => { STATE_ccSesion = []; STATE_ccRecientes = new Set(); renderCatalogoCuentas(); });
+  };
+  pintarSesion();
+
+  const rutaDe = (mayor, padreId, nombre) => {
+    const partes = [nombre]; let pid = padreId;
+    while (pid) { const p = subsLocal.find(x => x.id === pid); if (!p) break; partes.unshift(p.nombre); pid = p.subcuenta_padre_id; }
+    if (mayor) partes.unshift(mayor.nombre);
+    return partes.join(' › ');
+  };
+  const mismoNombre = (a, c) => String(a).trim().toLowerCase() === String(c).trim().toLowerCase();
+
+  // Mismos guardados que antes: cuenta mayor + su subcuenta por defecto; o subcuenta (con padre opcional)
+  const insertarMayor = async (nombre, tipo, vinculo) => {
+    if (mayoresLocal.some(m => m.tipo === tipo && mismoNombre(m.nombre, nombre))) return { dup: true };
+    const orden = mayoresLocal.filter(m => m.tipo === tipo).length;
+    const { data: m, error } = await sb.from('fz_cuentas_mayor').insert({ business_id: b.id, nombre, tipo, orden, concepto_venta_vinculado_id: vinculo || null }).select().single();
+    if (error) return { error };
+    mayoresLocal.push(m);
+    const { data: s, error: e2 } = await sb.from('fz_subcuentas').insert({ business_id: b.id, cuenta_mayor_id: m.id, nombre, orden: 0 }).select().single();
+    if (!e2 && s) subsLocal.push(s);
+    registrarAuditoria(b.id, 'crear', 'Catálogo de Cuentas', `Cuenta mayor "${nombre}" (${TIPO_CUENTA_LABEL[tipo] || tipo}) creada`);
+    STATE_ccSesion.push({ etiqueta: `${TIPO_CUENTA_LABEL[tipo]} › ${nombre}`, ruta: `${TIPO_CUENTA_LABEL[tipo]} › ${nombre} (cuenta mayor)` });
+    return { mayor: m, errorSub: e2 };
+  };
+  const insertarSub = async (nombre, mayorId, padreId) => {
+    const mayor = mayoresLocal.find(m => m.id === mayorId);
+    const hermanas = subsLocal.filter(s => s.cuenta_mayor_id === mayorId && (s.subcuenta_padre_id || null) === (padreId || null));
+    if (hermanas.some(s => mismoNombre(s.nombre, nombre))) return { dup: true };
+    const orden = hermanas.length ? Math.max(...hermanas.map(s => Number(s.orden) || 0)) + 1 : 0;
+    const { data: s, error } = await sb.from('fz_subcuentas').insert({ business_id: b.id, cuenta_mayor_id: mayorId, subcuenta_padre_id: padreId || null, nombre, orden }).select().single();
+    if (error) return { error };
+    subsLocal.push(s);
+    registrarAuditoria(b.id, 'crear', 'Catálogo de Cuentas', `Subcuenta "${nombre}" creada`);
+    STATE_ccSesion.push({ etiqueta: `${mayor ? mayor.nombre + ' › ' : ''}${nombre}`, ruta: rutaDe(mayor, padreId, nombre) });
+    return { sub: s };
+  };
+
+  const terminarAlta = (nuevosIds) => {
+    STATE_ccAlta.donde = selDonde.value; STATE_ccAlta.padre = selPadre.value; STATE_ccAlta.vinculo = $('ccAltaVinculo').value;
+    STATE_ccAlta.enfocar = true; STATE_ccRecientes = new Set(nuevosIds);
+    renderCatalogoCuentas();
+  };
+
+  const agregarUna = async () => {
+    if (STATE_ccAltaOcupado) return;
+    const nombre = inpNombre.value.trim();
+    const v = selDonde.value;
+    if (!v) { toast('Primero elige dónde va la cuenta.', 'error'); return; }
+    if (!nombre) { toast('Escribe un nombre.', 'error'); inpNombre.focus(); return; }
+    STATE_ccAltaOcupado = true; $('ccAltaAgregar').disabled = true; inpNombre.value = '';   // si se sigue escribiendo mientras guarda, no se pierde
+    try {
+      let r;
+      if (v.startsWith('M:')) { const tipo = v.slice(2); r = await insertarMayor(nombre, tipo, tipo === 'costo' ? ($('ccAltaVinculo').value || null) : null); }
+      else r = await insertarSub(nombre, v.slice(2), selPadre.value || null);
+      if (r.dup) { toast(`Ya existe «${nombre}» en ese lugar.`, 'error'); if (!inpNombre.value) inpNombre.value = nombre; return; }
+      if (r.error) { toast('Error: ' + r.error.message, 'error'); if (!inpNombre.value) inpNombre.value = nombre; return; }
+      if (r.errorSub) toast('La cuenta mayor se creó, pero hubo un error creando su subcuenta por default: ' + r.errorSub.message, 'error');
+      else toast(`Agregada: ${nombre}`);
+      terminarAlta([ (r.mayor || r.sub).id ]);
+    } finally { STATE_ccAltaOcupado = false; const bt = $('ccAltaAgregar'); if (bt) bt.disabled = false; }
+  };
+  $('ccAltaAgregar').addEventListener('click', agregarUna);
+  inpNombre.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); agregarUna(); } });
+
+  // ----- pegar varias a la vez -----
+  const parsearLote = (texto) => {
+    const filas = []; const pila = [];
+    texto.split(/\r?\n/).forEach(crudo => {
+      if (!crudo.trim()) return;
+      const linea = crudo.replace(/\t/g, '    ');
+      const m = linea.match(/^[\s\-–—•·*]*/)[0];
+      let ancho = 0; for (const ch of m) ancho += (ch === ' ' ? 1 : ch === '\n' ? 0 : 2);
+      const nombre = linea.slice(m.length).trim();
+      if (!nombre) return;
+      while (pila.length && ancho < pila[pila.length - 1]) pila.pop();
+      if (!pila.length || ancho > pila[pila.length - 1]) pila.push(ancho);
+      filas.push({ nivel: pila.length - 1, nombre });
+    });
+    if (filas.length && filas[0].nivel > 0) { const base = filas[0].nivel; filas.forEach(f => { f.nivel = Math.max(0, f.nivel - base); }); }
+    return filas;
+  };
+  const resumenLote = () => {
+    const filas = parsearLote($('ccAltaLoteTexto').value);
+    const v = selDonde.value;
+    const nM = v.startsWith('M:') ? filas.filter(f => f.nivel === 0).length : 0;
+    $('ccAltaLoteResumen').textContent = filas.length ? (v.startsWith('M:') ? `Se crearán ${nM} cuenta(s) mayor y ${filas.length - nM} subcuenta(s).` : `Se crearán ${filas.length} subcuenta(s).`) : 'Aún no hay nada que agregar.';
+  };
+  $('ccAltaLoteTexto').addEventListener('input', resumenLote);
+  selDonde.addEventListener('change', resumenLote);
+  resumenLote();
+  $('ccAltaLoteToggle').addEventListener('click', () => {
+    STATE_ccAlta.lote = !STATE_ccAlta.lote;
+    $('ccAltaLoteWrap').classList.toggle('cc-oculto', !STATE_ccAlta.lote);
+    $('ccAltaCard').classList.toggle('lote-abierto', STATE_ccAlta.lote);
+    $('ccAltaLoteToggle').textContent = STATE_ccAlta.lote ? 'Ocultar lista' : 'Pegar varias a la vez';
+    if (STATE_ccAlta.lote) $('ccAltaLoteTexto').focus({ preventScroll: true });
+  });
+  $('ccAltaLoteBtn').addEventListener('click', async () => {
+    if (STATE_ccAltaOcupado) return;
+    const filas = parsearLote($('ccAltaLoteTexto').value);
+    const v = selDonde.value;
+    if (!v) { toast('Primero elige dónde van las cuentas.', 'error'); return; }
+    if (!filas.length) { toast('Pega o escribe al menos una cuenta.', 'error'); return; }
+    if (!confirm(`Se agregarán ${filas.length} cuenta(s). ${v.startsWith('M:') ? 'Las líneas sin sangría serán cuentas mayor y las sangradas sus subcuentas.' : 'Todas irán dentro de la cuenta elegida.'} ¿Continuar?`)) return;
+    STATE_ccAltaOcupado = true; const btn = $('ccAltaLoteBtn'); btn.disabled = true;
+    const nuevos = []; let omitidas = 0, fallos = 0; let primerError = '';
+    try {
+      const ultimo = [];   // por nivel: id de la última cuenta creada o encontrada
+      let mayorActualId = v.startsWith('M:') ? null : v.slice(2);
+      const padreBase = v.startsWith('M:') ? null : (selPadre.value || null);
+      const tipoM = v.startsWith('M:') ? v.slice(2) : null;
+      const vincBase = tipoM === 'costo' ? ($('ccAltaVinculo').value || null) : null;
+      for (let i = 0; i < filas.length; i++) {
+        const f = filas[i]; btn.textContent = `Agregando ${i + 1}/${filas.length}…`;
+        let r;
+        if (tipoM && f.nivel === 0) {
+          r = await insertarMayor(f.nombre, tipoM, vincBase);
+          if (r.mayor) { mayorActualId = r.mayor.id; ultimo.length = 0; ultimo[0] = null; nuevos.push(r.mayor.id); }
+          else if (r.dup) { const ex = mayoresLocal.find(m => m.tipo === tipoM && mismoNombre(m.nombre, f.nombre)); mayorActualId = ex ? ex.id : null; ultimo.length = 0; ultimo[0] = null; }
+        } else {
+          if (!mayorActualId) { fallos++; continue; }
+          const nivelSub = tipoM ? f.nivel - 1 : f.nivel;                    // nivel dentro de la cuenta mayor
+          const padre = nivelSub === 0 ? padreBase : (ultimo[nivelSub - 1] || null);
+          if (nivelSub > 0 && !ultimo[nivelSub - 1]) { fallos++; continue; }
+          r = await insertarSub(f.nombre, mayorActualId, padre);
+          if (r.sub) { ultimo[nivelSub] = r.sub.id; ultimo.length = nivelSub + 1; nuevos.push(r.sub.id); }
+          else if (r.dup) { const ex = subsLocal.find(s => s.cuenta_mayor_id === mayorActualId && (s.subcuenta_padre_id || null) === (padre || null) && mismoNombre(s.nombre, f.nombre)); ultimo[nivelSub] = ex ? ex.id : null; ultimo.length = nivelSub + 1; }
+        }
+        if (r && r.dup) omitidas++;
+        else if (r && r.error) { fallos++; if (!primerError) primerError = r.error.message; }
+      }
+    } finally {
+      STATE_ccAltaOcupado = false;
+    }
+    toast(`Agregadas ${nuevos.length}.${omitidas ? ' Omitidas por repetidas: ' + omitidas + '.' : ''}${fallos ? ' Con error: ' + fallos + (primerError ? ' (' + primerError + ')' : '') + '.' : ''}`, fallos ? 'error' : undefined);
+    if (nuevos.length) registrarAuditoria(b.id, 'crear', 'Catálogo de Cuentas', `Alta en lote: ${nuevos.length} cuenta(s) agregada(s)`);
+    if (!fallos) $('ccAltaLoteTexto').value = '';   // el redibujado conserva lo escrito; se vacía solo si todo salió bien
+    terminarAlta(nuevos);
+  });
+
+  // ----- buscar, filtrar, colapsar -----
+  const aplicarVista = () => {
+    const q = norm($('ccBuscar').value.trim());
+    const ft = $('ccFiltroTipo').value;
+    let coinciden = 0;
+    el.querySelectorAll('.cc-tipo').forEach(card => {
+      const tipo = card.dataset.tipo;
+      const box = card.querySelector('.cc-lista');
+      let visibles = 0;
+      box.querySelectorAll('.cc-bloque').forEach(bl => {
+        const filas = Array.from(bl.querySelectorAll('.cc-fila'));
+        const mayorCoincide = !!q && norm(bl.dataset.nombre).includes(q);
+        const vis = filas.map(() => !q);
+        if (q) filas.forEach((f, i) => {
+          if (mayorCoincide || (f.dataset.nombre && norm(f.dataset.nombre).includes(q))) {
+            vis[i] = true; coinciden += (!mayorCoincide ? 1 : 0);
+            let n = Number(f.dataset.nivel);
+            for (let j = i - 1; j >= 0 && n > 0; j--) { if (Number(filas[j].dataset.nivel) < n) { vis[j] = true; n = Number(filas[j].dataset.nivel); } }
+            for (let j = i + 1; j < filas.length && Number(filas[j].dataset.nivel) > Number(f.dataset.nivel); j++) vis[j] = true;
+          }
+        });
+        const bloqueVisible = !q || mayorCoincide || vis.some(Boolean);
+        if (mayorCoincide) coinciden++;
+        const colapsado = !q && STATE_ccColapsados.has(bl.dataset.id);
+        bl.classList.toggle('cc-oculto', !bloqueVisible);
+        filas.forEach((f, i) => f.classList.toggle('cc-oculto', !vis[i] || colapsado));
+        const chev = bl.querySelector('.cc-mayor-chev'); if (chev) chev.textContent = colapsado ? '▸' : '▾';
+        if (bloqueVisible) visibles++;
+      });
+      const tipoColapsado = !q && STATE_ccColapsados.has('t:' + tipo);
+      box.classList.toggle('cc-oculto', tipoColapsado);
+      const chevT = card.querySelector('.cc-tipo-chev'); if (chevT) chevT.textContent = tipoColapsado ? '▸' : '▾';
+      card.classList.toggle('cc-oculto', (!!ft && ft !== tipo) || (!!q && visibles === 0));
+    });
+    $('ccResumenBusqueda').textContent = q ? (coinciden ? `${coinciden} coincidencia(s)` : 'Sin coincidencias') : `${mayores.length} cuenta(s) mayor · ${totalSubs} subcuenta(s)`;
+  };
+  $('ccBuscar').value = STATE_ccAlta.buscar || '';
+  $('ccFiltroTipo').value = STATE_ccAlta.filtroTipo || '';
+  $('ccBuscar').addEventListener('input', () => { STATE_ccAlta.buscar = $('ccBuscar').value; aplicarVista(); });
+  $('ccFiltroTipo').addEventListener('change', () => { STATE_ccAlta.filtroTipo = $('ccFiltroTipo').value; aplicarVista(); });
+  $('ccExpandirTodo').addEventListener('click', () => { STATE_ccColapsados.clear(); aplicarVista(); });
+  $('ccContraerTodo').addEventListener('click', () => { mayores.forEach(m => STATE_ccColapsados.add(m.id)); aplicarVista(); });
+  el.querySelectorAll('.cc-mayor-toggle').forEach(btn => btn.addEventListener('click', () => {
+    const id = btn.dataset.id; if (STATE_ccColapsados.has(id)) STATE_ccColapsados.delete(id); else STATE_ccColapsados.add(id);
+    aplicarVista();
+  }));
+  el.querySelectorAll('.cc-tipo-head').forEach(h => h.addEventListener('click', () => {
+    const k = 't:' + h.dataset.tipo; if (STATE_ccColapsados.has(k)) STATE_ccColapsados.delete(k); else STATE_ccColapsados.add(k);
+    aplicarVista();
+  }));
+  aplicarVista();
+  if (STATE_ccAlta.enfocar) { inpNombre.focus({ preventScroll: true }); const L = inpNombre.value.length; try { inpNombre.setSelectionRange(L, L); } catch (_) {} STATE_ccAlta.enfocar = false; }
+  else if (STATE_ccAlta.enfocarBuscar) { $('ccBuscar').focus({ preventScroll: true }); STATE_ccAlta.enfocarBuscar = false; }
 
   document.getElementById('ccDescargarBtn').addEventListener('click', () => descargarCatalogoCuentasExcel(b.id, b.name));
   document.getElementById('ccSubirBtn').addEventListener('click', () => abrirSubirCatalogoCuentas(b.id, renderCatalogoCuentas));
@@ -13127,31 +13360,6 @@ async function renderCatalogoCuentas() {
     renderCatalogoCuentas(); // única autoridad: se relee todo el catálogo, el contador y ambas vistas quedan al día
   }));
 
-  document.getElementById('ccSaveMayor').addEventListener('click', async () => {
-    const nombre = document.getElementById('ccNuevaMayorNombre').value.trim();
-    const tipo = document.getElementById('ccNuevaMayorTipo').value;
-    const vinculo = tipo === 'costo' ? (document.getElementById('ccNuevaMayorVinculo').value || null) : null;
-    if (!nombre) { toast('Escribe un nombre.', 'error'); return; }
-    const cantidadEnTipo = mayores.filter(m => m.tipo === tipo).length;
-    const { data: nuevaMayor, error } = await sb.from('fz_cuentas_mayor').insert({ business_id: b.id, nombre, tipo, orden: cantidadEnTipo, concepto_venta_vinculado_id: vinculo }).select().single();
-    if (error) { toast('Error: ' + error.message, 'error'); return; }
-    const { error: e2 } = await sb.from('fz_subcuentas').insert({ business_id: b.id, cuenta_mayor_id: nuevaMayor.id, nombre, orden: 0 });
-    if (e2) toast('La cuenta mayor se creó, pero hubo un error creando su subcuenta por default: ' + e2.message, 'error');
-    else toast('Cuenta mayor creada, ya lista para usarse en Pólizas de Diario.');
-    registrarAuditoria(b.id, 'crear', 'Catálogo de Cuentas', `Cuenta mayor "${nombre}" (${TIPO_CUENTA_LABEL[tipo]||tipo}) creada`);
-    renderCatalogoCuentas();
-  });
-  document.getElementById('ccSaveSub').addEventListener('click', async () => {
-    const cuenta_mayor_id = document.getElementById('ccNuevaSubMayor').value;
-    const subcuenta_padre_id = document.getElementById('ccNuevaSubPadre').value || null;
-    const nombre = document.getElementById('ccNuevaSubNombre').value.trim();
-    if (!cuenta_mayor_id) { toast('Primero crea una cuenta mayor.', 'error'); return; }
-    if (!nombre) { toast('Escribe un nombre.', 'error'); return; }
-    const { error } = await sb.from('fz_subcuentas').insert({ business_id: b.id, cuenta_mayor_id, subcuenta_padre_id, nombre, orden: 99 });
-    if (error) { toast('Error: ' + error.message, 'error'); return; }
-    registrarAuditoria(b.id, 'crear', 'Catálogo de Cuentas', `Subcuenta "${nombre}" creada`);
-    renderCatalogoCuentas();
-  });
   el.querySelectorAll('.cc-mayor-editar').forEach(btn => btn.addEventListener('click', () => {
     STATE_ccEditando.add(btn.dataset.id);
     renderCatalogoCuentas();
@@ -25553,7 +25761,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.7';
+const APP_VERSION = '2026-11-06.8';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.

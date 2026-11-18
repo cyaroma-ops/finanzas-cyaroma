@@ -367,13 +367,16 @@ window.AYUDA = {
       resumen: 'La estructura contable del negocio: cuenta mayor › subcuenta › sub-subcuenta. De aquí salen las cuentas que usas en las pólizas.',
       pasos: [
         'Para partir de una base ya lista, usa **Cargar catálogo sugerido**. Si ya tienes tu catálogo en Excel, usa **Subir catálogo (Excel)**.',
-        '**+ Agregar cuenta mayor** crea una; al crearla se agrega una subcuenta con el mismo nombre, lista para usarse. **+ Agregar subcuenta** agrega más.',
-        '**Descargar catálogo (Excel)** baja tu catálogo actual.',
-        'La sección de IVA acreditable lista las cuentas pendientes de clasificar. En **Bancos y Efectivo** se ven las cuentas de dinero del negocio.'
+        'En **Alta de cuenta** escribe el nombre y elige **Va en**: una cuenta mayor nueva (Activo, Pasivo, Capital, Ingreso, Costo o Gasto) o una cuenta mayor que ya tienes, para agregarle una subcuenta. Presiona **Enter** y queda lista la siguiente.',
+        'Una cuenta mayor nueva se crea con una subcuenta del mismo nombre, lista para usarse. Con **Dentro de** puedes anidar una subcuenta un nivel más. Si la cuenta mayor es de Costo, puedes vincularla a una categoría de venta para ver su porcentaje en el Estado de Resultados.',
+        'Para dar de alta muchas a la vez, usa **Pegar varias a la vez**: una cuenta por línea, y sangra (espacios o «-») las que van dentro de otra.',
+        'Debajo de Alta de cuenta ves lo que acabas de agregar. Usa el buscador, el filtro por tipo y **Contraer todo** / **Expandir todo** para moverte en un catálogo grande.',
+        '**Descargar catálogo (Excel)** baja tu catálogo actual. La sección de IVA acreditable lista las cuentas pendientes de clasificar. Al final de la página, **Bancos y Efectivo** muestra las cuentas de dinero del negocio.'
       ],
       faq: [
         { q: '¿Qué hace «Promover a cuenta mayor»?', a: 'Convierte una subcuenta en su propia cuenta mayor, con todo lo que tenga adentro.' },
         { q: '¿Qué es la clasificación de IVA acreditable?', a: 'Una clasificación fiscal que solo aplica a las subcuentas de gasto o costo con IVA.' },
+        { q: '¿Por qué no me deja vincular una subcuenta con una venta?', a: 'El vínculo «% vs venta» se pone en la cuenta mayor de Costo. Las categorías de venta se crean antes en Ventas. Si una subcuenta necesita su propio porcentaje, conviene que sea su propia cuenta mayor (puedes usar Promover a cuenta mayor).' },
         { q: '¿Puedo tener más de dos niveles?', a: 'Sí. Por ejemplo: Gastos de Operación › Mantenimiento y conservación › Reparación de freidoras.' }
       ],
       cuidado: ['Cambiar o eliminar una cuenta que ya tiene movimientos afecta lo que ya registraste. Los cambios quedan en Auditoría.'],
