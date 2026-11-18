@@ -758,6 +758,27 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   .poliza-barra{gap:10px 14px;margin:10px -14px 0;padding:10px 14px;}
   .pb-acc{width:100%;margin-left:0;}.pb-acc .btn{flex:1;}
 }
+/* 06.13 — Pago a proveedores asistido */
+.pza-top.pzp-top{grid-template-columns:minmax(240px,1.5fr) minmax(220px,1fr) 170px;}
+@media (max-width:880px){.pza-top.pzp-top{grid-template-columns:1fr;}}
+.pzp-tabla-wrap{overflow-x:auto;}
+.pzp-tabla{width:100%;border-collapse:collapse;font-size:13px;}
+.pzp-tabla th{font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);text-align:left;padding:6px 8px;border-bottom:1.5px solid var(--line);}
+.pzp-tabla td{padding:6px 8px;border-bottom:1px solid #eef1f6;vertical-align:middle;}
+.pzp-tabla .num{text-align:right;}
+.pzp-tabla td.num input{width:140px;max-width:100%;text-align:right;}
+.pzp-chip{display:inline-block;font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px;background:#fff1d6;color:#8a5a00;margin-left:4px;}
+.pzp-chip-m{background:#e8eefb;color:#34508a;}
+.pzp-error{border-color:var(--red)!important;background:#fff4f4;}
+.pzp-fiscal{background:#fff7e0;border:1.5px solid #f0c85a;color:#6b4a00;border-radius:10px;padding:10px 12px;font-size:12.5px;line-height:1.5;margin:4px 0 10px;}
+.pzp-fiscal:empty{display:none;}
+@media (max-width:880px){
+  .pzp-tabla thead{display:none;}
+  .pzp-tabla,.pzp-tabla tbody,.pzp-tabla tr,.pzp-tabla td{display:block;width:100%;}
+  .pzp-tabla tr{border:1px solid var(--line);border-radius:10px;padding:6px 10px;margin-bottom:8px;}
+  .pzp-tabla td{border:none;display:flex;justify-content:space-between;align-items:center;gap:10px;padding:3px 0;}
+  .pzp-tabla td::before{content:attr(data-label);font-size:10.5px;font-weight:700;text-transform:uppercase;color:var(--muted);}
+}
 /* 06.12 — Modalidad asistida de pólizas */
 .pz-modos{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:0 0 12px;}
 .pz-modos-lbl{font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-right:4px;}
@@ -3784,6 +3805,6 @@ Transacciones recurrentes
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-06.12"></script>
+<script src="/app.js?v=2026-11-06.13"></script>
 </body>
 </html>
