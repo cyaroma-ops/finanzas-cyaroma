@@ -20883,6 +20883,7 @@ function hacerSelectBuscable(sel) {
   inp.addEventListener('blur', () => {
     setTimeout(() => {
       if (document.activeElement === inp) return;
+      if (lista && lista.matches(':hover')) { inp.focus(); return; }   // arrastrando la barra de la lista
       const vacio = !inp.value.trim() && abierta;
       cerrar();
       if (vacio) { const op = Array.from(sel.options).find(o => o.value === ''); if (op && sel.value !== '') { sel.value = ''; sel.dispatchEvent(new Event('change', { bubbles: true })); } }
@@ -20891,10 +20892,14 @@ function hacerSelectBuscable(sel) {
   });
   document.addEventListener('mousedown', e => {
     if (!lista) return;
-    const op = e.target.closest && e.target.closest('.bs-op');
-    if (op && lista.contains(op)) { e.preventDefault(); elegir(Number(op.dataset.i)); }
-    else if (e.target !== inp) { cerrar(); inp.value = textoSel(); }
+    if (lista.contains(e.target)) {                       // dentro de la lista (opciones o barra de desplazamiento): no se cierra
+      const op = e.target.closest && e.target.closest('.bs-op');
+      if (op) { e.preventDefault(); elegir(Number(op.dataset.i)); }
+      return;
+    }
+    if (e.target !== inp) { cerrar(); inp.value = textoSel(); }
   });
+  inp.addEventListener('mousedown', () => { if (!abierta) setTimeout(() => { if (document.activeElement === inp && !abierta) abrir(); }, 0); });
   window.addEventListener('resize', () => { if (abierta) cerrar(); });
   document.addEventListener('scroll', e => { if (abierta && lista && !lista.contains(e.target)) posicionar(); }, true);
   // Mantener sincronizado cuando el código cambia el select (value = … / innerHTML = …)
