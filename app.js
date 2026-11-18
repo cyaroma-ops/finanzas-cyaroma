@@ -20817,7 +20817,7 @@ function hacerSelectBuscable(sel) {
   inp.placeholder = 'Escribe para buscar…';
   sel.parentNode.insertBefore(wrap, sel); wrap.appendChild(inp); wrap.appendChild(sel);
   sel.classList.add('bs-oculto');
-  let lista = null, items = [], activa = -1, abierta = false, filtrando = false;
+  let lista = null, items = [], activa = -1, abierta = false, filtrando = false, ratonEnLista = false;
   const etiqueta = o => (o ? o.textContent.replace(/^[—\s]+/, '').trim() : '');
   const textoSel = () => { const o = sel.selectedOptions && sel.selectedOptions[0]; return (o && o.value !== '') ? etiqueta(o) : ''; };
   const refrescar = () => { if (!abierta) inp.value = textoSel(); inp.disabled = sel.disabled; };
@@ -20883,7 +20883,7 @@ function hacerSelectBuscable(sel) {
   inp.addEventListener('blur', () => {
     setTimeout(() => {
       if (document.activeElement === inp) return;
-      if (lista && lista.matches(':hover')) { inp.focus(); return; }   // arrastrando la barra de la lista
+      if (lista && ratonEnLista) return;   // arrastrando la barra de la lista
       const vacio = !inp.value.trim() && abierta;
       cerrar();
       if (vacio) { const op = Array.from(sel.options).find(o => o.value === ''); if (op && sel.value !== '') { sel.value = ''; sel.dispatchEvent(new Event('change', { bubbles: true })); } }
@@ -20894,11 +20894,12 @@ function hacerSelectBuscable(sel) {
     if (!lista) return;
     if (lista.contains(e.target)) {                       // dentro de la lista (opciones o barra de desplazamiento): no se cierra
       const op = e.target.closest && e.target.closest('.bs-op');
-      if (op) { e.preventDefault(); elegir(Number(op.dataset.i)); }
+      if (op) { e.preventDefault(); elegir(Number(op.dataset.i)); } else ratonEnLista = true;
       return;
     }
     if (e.target !== inp) { cerrar(); inp.value = textoSel(); }
   });
+  document.addEventListener('mouseup', () => { if (ratonEnLista) { ratonEnLista = false; if (lista && document.activeElement !== inp) inp.focus(); } });
   inp.addEventListener('mousedown', () => { if (!abierta) setTimeout(() => { if (document.activeElement === inp && !abierta) abrir(); }, 0); });
   window.addEventListener('resize', () => { if (abierta) cerrar(); });
   document.addEventListener('scroll', e => { if (abierta && lista && !lista.contains(e.target)) posicionar(); }, true);
@@ -28138,7 +28139,7 @@ function refrescarFilaPolizaEnSitio(wrap, lineaId) {
   const l = STATE_polizaBorrador.lineas.find(x => x.id === lineaId); if (!l) return;
   const label = labelDeLineaPoliza(catalogoCuentasUnificado(STATE_polizaBorrador.catalogos), l);
   wrap.querySelectorAll('[data-id]').forEach(el => { if (el.dataset.id !== lineaId) return; const f = el.dataset.field;
-    if (f === 'cuenta') { el.value = label; el.title = label; } else if (f === 'cargo' || f === 'abono') el.value = fmtInputVal(l[f]); });
+    if (f === 'cuenta') { el.value = label; el.title = label; } else if (f === 'cargo' || f === 'abono') el.value = fmtInputVal(l[f]); else if (f === 'proveedor') el.value = l.proveedor || ''; });
 }
 const ligarUnaVez = (el, tipo, fn) => { const k = 'lig_' + tipo; if (!el || el.dataset[k]) return; el.dataset[k] = '1'; el.addEventListener(tipo, fn); };   // lo que se conserva entre redibujados no debe enlazarse dos veces
 
@@ -28267,7 +28268,7 @@ function catalogoCuentasUnificado(catalogos) {
     const saldo = Number(f.importe) - (Number(f.importe_pagado) || 0);
     const moneda = f.moneda && f.moneda !== 'MXN' ? ' ' + f.moneda : '';
     const partes = [f.folio ? '#' + f.folio : null, fechaCorta(f.fecha) || null, 'F. ' + (f.factura || 's/f')].filter(Boolean).join(' · ');
-    items.push({ label: etiquetaUnica(`Pagar: ${f.proveedor} — ${partes} · ${fmt(saldo)}${moneda} pendiente`, f.id), tipo: 'proveedor', id: f.id,
+    items.push({ label: etiquetaUnica(`Pagar: ${f.proveedor} — ${partes} · ${fmt(saldo)}${moneda} pendiente`, f.id), tipo: 'proveedor', id: f.id, prov: f.proveedor || '(sin proveedor)', saldo,
       vista: { a: `${f.proveedor} — ${f.folio ? '#' + f.folio + ' · ' : ''}Factura ${f.factura || 's/f'}`, b: [fechaCorta(f.fecha), f.fecha_vencimiento ? 'vence ' + fechaCorta(f.fecha_vencimiento) : ''].filter(Boolean).join(' · '), c: fmt(saldo) + moneda } });
   });
   (catalogos.facturasClientesPendientes || []).forEach(f => {
@@ -28292,10 +28293,10 @@ function bsResaltarTxt(txt, palabras) {
 function hacerBuscadorCuentasPoliza(inp) {
   if (!inp || inp.dataset.bsp === '1') return;
   inp.dataset.bsp = '1'; inp.removeAttribute('list'); inp.autocomplete = 'off';
-  let lista = null, filas = [], activa = -1, abierta = false, filtrando = false, verProv = false, prog = false;
+  let lista = null, filas = [], activa = -1, abierta = false, filtrando = false, verProv = false, prog = false, modo = null, ratonEnLista = false;
   inp.dataset.bspPrev = inp.value;
   const obtener = () => { try { return catalogoCuentasUnificado(STATE_polizaBorrador.catalogos); } catch (e) { return []; } };
-  const cerrar = () => { abierta = false; filtrando = false; verProv = false; if (lista) { lista.remove(); lista = null; } filas = []; activa = -1; };
+  const cerrar = () => { abierta = false; filtrando = false; verProv = false; modo = null; delete inp.dataset.bspModo; if (lista) { lista.remove(); lista = null; } filas = []; activa = -1; };
   const posicionar = () => {
     if (!lista) return; const r = inp.getBoundingClientRect();
     const ancho = Math.min(Math.max(r.width, 560), window.innerWidth - 16);
@@ -28308,7 +28309,36 @@ function hacerBuscadorCuentasPoliza(inp) {
     lista.querySelectorAll('[data-i]').forEach(el => el.classList.toggle('activa', Number(el.dataset.i) === activa));
     const el = lista.querySelector('[data-i].activa'); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
   };
+  const construirModo = () => {
+    const q = bsNorm(inp.value).trim(), palabras = q ? q.split(/\s+/) : [];
+    const facturas = obtener().filter(it => it.tipo === 'proveedor');
+    filas = []; let html = '';
+    if (modo.nivel === 'prov') {
+      const mapa = {};
+      facturas.forEach(it => { const m = mapa[it.prov] = mapa[it.prov] || { nombre: it.prov, n: 0, total: 0 }; m.n++; m.total += Number(it.saldo) || 0; });
+      const lst = Object.values(mapa).filter(m => palabras.every(p => bsNorm(m.nombre).includes(p))).sort((a, c) => a.nombre.localeCompare(c.nombre, 'es'));
+      filas.push({ back: true }); html += '<div class="bs-toggle bs-back" data-i="0">◂ Volver a todas las cuentas</div>';
+      html += '<div class="bs-grupo">Proveedores con facturas por pagar (' + lst.length + ')</div>';
+      lst.forEach(m => { const i = filas.length; filas.push({ prov: m.nombre });
+        html += '<div class="bs-op dos" role="option" data-i="' + i + '"><span class="bs-izq">' + bsResaltarTxt(m.nombre, palabras) + '<span class="bs-sec">' + m.n + (m.n === 1 ? ' factura pendiente' : ' facturas pendientes') + '</span></span><span class="bs-der">' + escHtml(fmt(m.total)) + '</span></div>'; });
+      if (!lst.length) html += '<div class="bs-vacio">Sin proveedores con ese nombre</div>';
+    } else {
+      const lst = facturas.filter(it => it.prov === modo.nombre && palabras.every(p => bsNorm(it.label).includes(p)));
+      filas.push({ back: true }); html += '<div class="bs-toggle bs-back" data-i="0">◂ Proveedores</div>';
+      html += '<div class="bs-grupo">' + escHtml(modo.nombre) + ' — facturas por pagar (' + lst.length + ')</div>';
+      lst.forEach(it => { const i = filas.length; filas.push({ it }); const v = it.vista;
+        html += '<div class="bs-op dos" role="option" data-i="' + i + '"><span class="bs-izq">' + bsResaltarTxt(v.a, palabras) + (v.b ? '<span class="bs-sec">' + escHtml(v.b) + '</span>' : '') + '</span><span class="bs-der">' + escHtml(v.c) + '</span></div>'; });
+      if (!lst.length) html += '<div class="bs-vacio">Sin facturas con ese dato</div>';
+    }
+    if (!lista) { lista = document.createElement('div'); lista.className = 'bs-lista bs-lista-poliza'; lista.setAttribute('role', 'listbox'); document.body.appendChild(lista); }
+    lista.innerHTML = html;
+    activa = filas.findIndex(f => !f.back); if (activa < 0) activa = 0;
+    marcar(); posicionar();
+  };
+  const entrarModo = (m) => { modo = m; inp.dataset.bspModo = '1'; inp.value = ''; filtrando = true; abierta = true; construirModo(); inp.focus(); };
+  const salirModo = () => { modo = null; delete inp.dataset.bspModo; inp.value = inp.dataset.bspPrev || ''; filtrando = false; construir(); try { inp.select(); } catch (e) {} };
   const construir = () => {
+    if (modo) { construirModo(); return; }
     const q = filtrando ? bsNorm(inp.value).trim() : '', palabras = q ? q.split(/\s+/) : [];
     const todos = obtener().filter(it => palabras.every(p => bsNorm(it.label).includes(p)));
     const grupos = {};
@@ -28317,6 +28347,8 @@ function hacerBuscadorCuentasPoliza(inp) {
     const prov = grupos[5] ? grupos[5].items : [];
     const mostrarProv = prov.length && (verProv || (!hayPagar && q.length >= 2));
     filas = []; let html = '';
+    const hayFacturasPend = obtener().some(it => it.tipo === 'proveedor');
+    if (hayFacturasPend && (!q || palabras.every(p => 'pago pagar a proveedor proveedores facturas'.includes(p)))) { filas.push({ modoProv: true }); html += '<div class="bs-toggle bs-pago" data-i="0">Pago a proveedor — elige el proveedor y luego su factura ▸</div>'; }
     Object.keys(grupos).map(Number).sort().forEach(n => {
       if (n === 5 && !mostrarProv) return;
       html += '<div class="bs-grupo">' + escHtml(grupos[n].t) + ' <span style="font-weight:500;">(' + grupos[n].items.length + ')</span></div>';
@@ -28332,18 +28364,21 @@ function hacerBuscadorCuentasPoliza(inp) {
     if (!filas.length) html = '<div class="bs-vacio">Sin coincidencias</div>';
     if (!lista) { lista = document.createElement('div'); lista.className = 'bs-lista bs-lista-poliza'; lista.setAttribute('role', 'listbox'); document.body.appendChild(lista); }
     lista.innerHTML = html;
-    activa = filas.findIndex(f => !f.toggle); if (activa < 0 && filas.length) activa = 0;
+    activa = filas.findIndex(f => f.it); if (activa < 0 && filas.length) activa = 0;
     marcar(); posicionar();
   };
   const elegir = (i) => {
     const f = filas[i]; if (!f) return;
+    if (f.modoProv) { entrarModo({ nivel: 'prov' }); return; }
+    if (f.prov) { entrarModo({ nivel: 'fact', nombre: f.prov }); return; }
+    if (f.back) { if (modo && modo.nivel === 'fact') entrarModo({ nivel: 'prov' }); else salirModo(); return; }
     if (f.toggle) { verProv = true; construir(); return; }
     prog = true; inp.value = f.it.label; inp.dataset.bspPrev = f.it.label; cerrar();
     inp.dispatchEvent(new Event('input', { bubbles: true })); inp.dispatchEvent(new Event('change', { bubbles: true })); prog = false;
   };
   inp.addEventListener('focus', () => { inp.dataset.bspPrev = inp.value; inp.select(); abierta = true; filtrando = false; construir(); });
   inp.addEventListener('mousedown', () => { if (!abierta) setTimeout(() => { if (document.activeElement === inp && !abierta) { abierta = true; filtrando = false; construir(); } }, 0); });
-  inp.addEventListener('input', () => { if (prog) return; abierta = true; filtrando = true; verProv = false; construir(); });
+  inp.addEventListener('input', () => { if (prog) return; abierta = true; filtrando = true; if (!modo) verProv = false; construir(); });
   inp.addEventListener('keydown', e => {
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault(); if (!abierta) { abierta = true; construir(); }
@@ -28352,23 +28387,27 @@ function hacerBuscadorCuentasPoliza(inp) {
       if (abierta && filas.length) { e.preventDefault(); e.stopPropagation(); if (activa >= 0) elegir(activa); }
       else if (abierta) { e.preventDefault(); e.stopPropagation(); }
     } else if (e.key === 'Escape') {
-      if (abierta) { e.preventDefault(); e.stopPropagation(); cerrar(); inp.value = inp.dataset.bspPrev || ''; }
+      if (abierta && modo) { e.preventDefault(); e.stopPropagation(); salirModo(); }
+      else if (abierta) { e.preventDefault(); e.stopPropagation(); cerrar(); inp.value = inp.dataset.bspPrev || ''; }
     } else if (e.key === 'Tab') {
-      if (abierta && filtrando && inp.value.trim() && activa >= 0 && filas[activa] && !filas[activa].toggle) elegir(activa); else cerrar();
+      if (abierta && !modo && filtrando && inp.value.trim() && activa >= 0 && filas[activa] && filas[activa].it) elegir(activa); else if (!modo) cerrar();
     }
   });
   inp.addEventListener('blur', () => { setTimeout(() => {
     if (document.activeElement === inp) return;
-    if (lista && lista.matches(':hover')) { inp.focus(); return; }
+    if (lista && ratonEnLista) return;   // arrastrando la barra de la lista: se queda abierta
+    const estabaEnModo = !!modo;
     cerrar();
+    if (estabaEnModo) { inp.value = inp.dataset.bspPrev || ''; return; }
     const v = inp.value.trim();
     if (v && !obtener().some(x => x.label === v)) inp.value = inp.dataset.bspPrev || '';
   }, 120); });
   document.addEventListener('mousedown', e => {
     if (!lista) return;
-    if (lista.contains(e.target)) { const op = e.target.closest && e.target.closest('[data-i]'); if (op) { e.preventDefault(); elegir(Number(op.dataset.i)); } return; }
+    if (lista.contains(e.target)) { const op = e.target.closest && e.target.closest('[data-i]'); if (op) { e.preventDefault(); elegir(Number(op.dataset.i)); } else ratonEnLista = true; return; }
     if (e.target !== inp) { cerrar(); }
   });
+  document.addEventListener('mouseup', () => { if (ratonEnLista) { ratonEnLista = false; if (lista && document.activeElement !== inp) inp.focus(); } });
   window.addEventListener('resize', () => { if (abierta) cerrar(); });
   document.addEventListener('scroll', e => { if (abierta && lista && !lista.contains(e.target)) posicionar(); }, true);
   // Si se escribió texto que no es una cuenta de la lista, no se manda al motor: se regresa a la cuenta anterior sin mensaje de error
@@ -28376,7 +28415,7 @@ function hacerBuscadorCuentasPoliza(inp) {
   if (td && !td.dataset.bspC) { td.dataset.bspC = '1'; td.addEventListener('change', e => {
     if (e.target !== inp || prog || !e.isTrusted) return;
     const v = inp.value.trim();
-    if (v && !obtener().some(x => x.label === v)) { e.stopImmediatePropagation(); e.stopPropagation(); inp.value = inp.dataset.bspPrev || ''; }
+    if (inp.dataset.bspModo === '1' || (v && !obtener().some(x => x.label === v))) { e.stopImmediatePropagation(); e.stopPropagation(); inp.value = inp.dataset.bspPrev || ''; }
   }, true); }
 }
 /* ===== fin 06.10 buscador de póliza ===== */
@@ -28415,14 +28454,18 @@ function wireBorradorPolizaHandlers(wrap) {
       linea.cuenta_tipo = 'proveedor'; linea.proveedor_factura_id = match.id; linea.subcuenta_id = null; linea.cuenta_ref_id = null; linea.cliente_factura_id = null;
       const factura = (STATE_polizaBorrador.catalogos.facturasPendientes || []).find(f => f.id === match.id);
       if (factura && !Number(linea.cargo)) linea.cargo = Number(factura.importe) - (Number(factura.importe_pagado) || 0);
+      if (factura && !String(linea.proveedor || '').trim()) linea.proveedor = factura.proveedor || '';
     }
     else if (match.tipo === 'cliente') {
       linea.cuenta_tipo = 'cliente'; linea.cliente_factura_id = match.id; linea.subcuenta_id = null; linea.cuenta_ref_id = null; linea.proveedor_factura_id = null;
       const factura = (STATE_polizaBorrador.catalogos.facturasClientesPendientes || []).find(f => f.id === match.id);
       if (factura && !Number(linea.abono)) linea.abono = Number(factura.total) - (Number(factura.importe_pagado) || 0);
+      if (factura && !String(linea.proveedor || '').trim()) linea.proveedor = factura.clienteNombre || '';
     }
     else if (match.tipo === 'proveedor_provision') {
       linea.cuenta_tipo = 'proveedor_provision'; linea.proveedor_catalogo_id = match.id; linea.subcuenta_id = null; linea.cuenta_ref_id = null; linea.proveedor_factura_id = null; linea.cliente_factura_id = null;
+      const cat = (STATE_polizaBorrador.catalogos.proveedoresCatalogo || []).find(c => c.id === match.id);
+      if (cat && !String(linea.proveedor || '').trim()) linea.proveedor = cat.nombre_comercial || cat.nombre || '';
     }
     else { linea.cuenta_tipo = 'subcuenta'; linea.subcuenta_id = match.id; linea.cuenta_ref_id = null; linea.proveedor_factura_id = null; linea.cliente_factura_id = null; }
     terminar(true);
