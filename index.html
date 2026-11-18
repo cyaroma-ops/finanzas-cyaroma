@@ -220,14 +220,46 @@ h1,h2,h3,.serif{font-family:'Cormorant Garamond',serif;}
 .add-biz-btn:hover{border-color:var(--gold);color:var(--gold);}
 
 .nav{padding:10px 12px;flex:1;overflow-y:auto;}
-.nav-item{
+.nav-item,.nav-grupo-cab{
   display:flex;align-items:center;gap:11px;padding:11px 12px;border-radius:9px;
   color:#b7c6df;font-size:13.5px;font-weight:600;cursor:pointer;margin-bottom:2px;
   transition:background .12s,color .12s;
 }
-.nav-item svg{width:17px;height:17px;flex-shrink:0;opacity:.85;}
-.nav-item:hover{background:rgba(255,255,255,.06);color:#fff;}
+.nav-item svg,.nav-grupo-cab svg{width:17px;height:17px;flex-shrink:0;opacity:.85;}
+.nav-item:hover,.nav-grupo-cab:hover{background:rgba(255,255,255,.06);color:#fff;}
 .nav-item.active{background:linear-gradient(90deg,rgba(185,138,46,.22),rgba(185,138,46,.05));color:#fff;box-shadow:inset 3px 0 0 var(--gold);}
+/* 06.16 — Menú agrupado (Reportes) y Accesos directos. Solo presentación: los ítems siguen siendo los mismos .nav-item */
+.nav-grupo-cab{user-select:none;}
+.nav-grupo-cab span:first-of-type{flex:1;}
+.nav-grupo-cab .nav-chev{width:14px;height:14px;margin-left:auto;opacity:.7;transition:transform .15s;}
+.nav-grupo.abierto>.nav-grupo-cab .nav-chev{transform:rotate(180deg);}
+.nav-grupo.tiene-activo>.nav-grupo-cab{color:#fff;}
+.nav-grupo-cab:focus-visible{outline:2px solid var(--gold);outline-offset:-2px;}
+.nav-cab-aviso{display:none;min-width:8px;height:8px;border-radius:50%;background:#c94a4a;box-shadow:0 0 0 2px rgba(201,74,74,.3);}
+.nav-grupo:not(.abierto) .nav-cab-aviso:not([hidden]){display:inline-block;}
+.nav-sub{display:none;margin:2px 0 6px 18px;border-left:1.5px solid rgba(255,255,255,.14);}
+.nav-grupo.abierto>.nav-sub{display:block;}
+.nav-sub .nav-item{padding:8px 10px 8px 16px;font-size:12.5px;}
+.nav-sub .nav-item svg{display:none;}
+.acc-btn{background:var(--navy-1)!important;color:#fff!important;border-color:var(--navy-1)!important;font-weight:700;display:inline-flex;align-items:center;gap:7px;}
+.acc-btn b{font-size:16px;line-height:1;color:var(--gold);}
+.acc-btn[aria-expanded="true"]{box-shadow:0 0 0 3px rgba(185,138,46,.35);}
+.acc-panel{position:fixed;right:20px;top:66px;width:min(660px,calc(100vw - 24px));max-height:calc(100vh - 84px);overflow:auto;background:#fff;border:1px solid var(--line);border-radius:16px;box-shadow:0 18px 48px rgba(18,38,74,.28);padding:16px 18px 18px;z-index:900;}
+.acc-panel[hidden]{display:none;}
+.acc-head{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
+.acc-head h4{margin:0;font-size:15px;color:var(--navy-1);}
+.acc-head span{font-size:12px;color:var(--muted);}
+.acc-head button{margin-left:auto;}
+.acc-sec{font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);margin:14px 0 8px;}
+.acc-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+.acc-t{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:11px;padding:10px 12px;font-size:13px;font-weight:600;color:var(--navy-1);background:#fbfcfe;cursor:pointer;text-align:left;width:100%;font-family:inherit;}
+.acc-t:hover,.acc-t:focus-visible{background:#eef3fb;border-color:#c9d6ea;outline:none;}
+.acc-t i{font-style:normal;flex:0 0 24px;height:24px;border-radius:7px;background:#e7f1ee;color:#1f7a5c;display:flex;align-items:center;justify-content:center;font-weight:700;}
+.acc-t.rep i{background:#fff1d6;color:#8a5a00;}
+.acc-t small{display:block;font-weight:400;color:var(--muted);font-size:11px;}
+.acc-flash{animation:accFlash 1.6s ease-out 1;}
+@keyframes accFlash{0%,30%{box-shadow:0 0 0 4px rgba(185,138,46,.55);}100%{box-shadow:0 0 0 0 rgba(185,138,46,0);}}
+@media (max-width:700px){.acc-grid{grid-template-columns:1fr;}.acc-btn .acc-txt{display:none;}}
 .nav-divider{font-size:10px;color:#63769a;text-transform:uppercase;letter-spacing:1.3px;font-weight:700;padding:14px 12px 6px;}
 
 .sb-foot{padding:14px 16px;border-top:1px solid rgba(255,255,255,.08);}
@@ -1447,13 +1479,34 @@ Transacciones recurrentes
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/><path d="M9 13h6M9 17h6"/></svg>
           CFDI (XML)
         </div>
+        <div class="nav-grupo" data-grupo="financieros">
+          <div class="nav-grupo-cab" role="button" tabindex="0" aria-expanded="false" data-grupo="financieros"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/><line x1="3" y1="9" x2="21" y2="9"/></svg><span>Reportes financieros</span><svg class="nav-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg><span class="nav-cab-aviso" hidden></span></div>
+          <div class="nav-sub">
         <div class="nav-item" data-section="pl">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><rect x="7" y="12" width="3" height="6"/><rect x="12" y="8" width="3" height="10"/><rect x="17" y="5" width="3" height="13"/></svg>
           Estado de Resultados
         </div>
+        <div class="nav-item" data-section="balance">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/><line x1="3" y1="9" x2="21" y2="9"/></svg>
+          Balance General
+        </div>
+        <div class="nav-item" data-section="balanza">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v18"/><path d="M5 8l-3 6a4 4 0 008 0L7 8"/><path d="M19 8l-3 6a4 4 0 008 0l-3-6"/><path d="M3 8h18"/></svg>
+          Balanza de Comprobación
+        </div>
         <div class="nav-item" data-section="flujo">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 014-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>
           Flujo de Efectivo
+        </div>
+        <div class="nav-item" data-section="auxiliares">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-4.35-4.35"/><circle cx="11" cy="11" r="8"/></svg>
+          Auxiliares
+        </div>
+        <div class="nav-item" data-section="revision">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><path d="M22 4L12 14.01l-3-3"/></svg>
+          Revisión de consistencia
+        </div>
+          </div>
         </div>
         <div class="nav-item" data-section="polizas">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3v4a1 1 0 001 1h4"/><path d="M17 21H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/><path d="M9 13h6"/><path d="M9 17h6"/></svg>
@@ -1463,18 +1516,9 @@ Transacciones recurrentes
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>
           Diarios y Pólizas
         </div>
-        <div class="nav-item" data-section="auxiliares">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-4.35-4.35"/><circle cx="11" cy="11" r="8"/></svg>
-          Auxiliares
-        </div>
-        <div class="nav-item" data-section="balanza">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v18"/><path d="M5 8l-3 6a4 4 0 008 0L7 8"/><path d="M19 8l-3 6a4 4 0 008 0l-3-6"/><path d="M3 8h18"/></svg>
-          Balanza de Comprobación
-        </div>
-        <div class="nav-item" data-section="balance">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/><line x1="3" y1="9" x2="21" y2="9"/></svg>
-          Balance General
-        </div>
+        <div class="nav-grupo" data-grupo="fiscal">
+          <div class="nav-grupo-cab" role="button" tabindex="0" aria-expanded="false" data-grupo="fiscal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18"/><path d="M9 8h6"/><path d="M9 12h6"/><path d="M9 16h4"/><path d="M5 21V5a2 2 0 012-2h6l6 6v12"/></svg><span>Reportes fiscales</span><svg class="nav-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg><span class="nav-cab-aviso" hidden></span></div>
+          <div class="nav-sub">
         <div class="nav-item" data-section="impuestos">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18"/><path d="M9 8h6"/><path d="M9 12h6"/><path d="M9 16h4"/><path d="M5 21V5a2 2 0 012-2h6l6 6v12"/></svg>
           Impuestos
@@ -1491,11 +1535,9 @@ Transacciones recurrentes
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
           Parámetros Fiscales
         </div>
-        <div class="nav-divider">Sistema</div>
-        <div class="nav-item" data-section="revision">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><path d="M22 4L12 14.01l-3-3"/></svg>
-          Revisión de consistencia
+          </div>
         </div>
+        <div class="nav-divider">Sistema</div>
         <div class="nav-item" data-section="configuracion">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
           Configuración
@@ -1529,6 +1571,7 @@ Transacciones recurrentes
           </div>
         </div>
         <div class="topbar-actions" id="topbarActions">
+          <button type="button" class="btn btn-sm acc-btn" id="accesosBtn" aria-haspopup="dialog" aria-expanded="false" aria-controls="accesosPanel" title="Accesos directos a las operaciones y reportes frecuentes"><b>+</b><span class="acc-txt">Accesos directos</span></button>
           <button type="button" class="btn btn-ghost btn-sm" id="busquedaGlobalBtn" title="Buscar en todo (Ctrl+K)" aria-label="Buscar en todo"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg><span class="bq-txt">Buscar</span><span class="bq-kbd">Ctrl K</span></button>
 <button type="button" class="btn btn-ghost btn-sm" id="ayudaBtn" aria-controls="ayudaPanel" aria-expanded="false" title="Ayuda de esta pantalla" aria-label="Abrir la ayuda de esta pantalla"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M9.6 9.4a2.6 2.6 0 1 1 3.7 2.3c-.8.4-1.3 1-1.3 1.9"></path><path d="M12 17.2v.01"></path></svg><span class="bq-txt">Ayuda</span></button>
           <select id="printOrientacion" style="display:none !important;width:auto;">
@@ -3744,6 +3787,6 @@ Transacciones recurrentes
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-06.15"></script>
+<script src="/app.js?v=2026-11-06.16"></script>
 </body>
 </html>

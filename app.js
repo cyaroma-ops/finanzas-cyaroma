@@ -1275,18 +1275,136 @@ function actualizarMenuPorModo() {
     const item = document.querySelector(`.nav-item[data-section="${sec}"]`);
     if (item) item.style.display = ocultar ? 'none' : '';
   });
+  const gf = document.querySelector('.nav-grupo[data-grupo="fiscal"]'); if (gf) gf.style.display = ocultar ? 'none' : '';   // el grupo solo contiene pantallas fiscales
 }
 function marcarNavActivo(seccion) {
   document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
   const seccionNav = SECCIONES_EN_CONFIGURACION.includes(seccion) ? 'configuracion' : seccion;
   const item = document.querySelector(`.nav-item[data-section="${seccionNav}"]`);
   if (item) item.classList.add('active');
+  navSincronizarGrupos();
 }
 
 function cerrarMenuMovil() {
   document.querySelector('.sidebar').classList.remove('open');
   document.getElementById('sidebarOverlay').classList.remove('show');
 }
+/* ===== 06.16 — Menú agrupado y Accesos directos. Solo navegación: los ítems del menú siguen siendo los mismos y cada acceso abre la pantalla
+   o el botón que ya existen (no se calcula ni se guarda nada aquí). ===== */
+const NAV_GRUPOS_LS = 'finanzas_nav_grupos', NAV_ULTIMO_REPORTE_LS = 'finanzas_ultimo_reporte';
+function navGruposEstado() { try { return JSON.parse(localStorage.getItem(NAV_GRUPOS_LS) || '{}') || {}; } catch (e) { return {}; } }
+function navSetGrupo(g, abierto, guardar) {
+  g.classList.toggle('abierto', !!abierto);
+  const cab = g.querySelector('.nav-grupo-cab'); if (cab) cab.setAttribute('aria-expanded', abierto ? 'true' : 'false');
+  if (guardar) { try { const est = navGruposEstado(); est[g.dataset.grupo] = !!abierto; localStorage.setItem(NAV_GRUPOS_LS, JSON.stringify(est)); } catch (e) { /* sin almacenamiento */ } }
+}
+function navSincronizarGrupos() {   // el grupo con la pantalla activa se abre solo y se marca
+  document.querySelectorAll('.nav-grupo').forEach(g => {
+    const activo = !!g.querySelector('.nav-item.active');
+    g.classList.toggle('tiene-activo', activo);
+    if (activo) {
+      navSetGrupo(g, true, false);
+      if (g.dataset.grupo === 'financieros') { const a = g.querySelector('.nav-item.active'); if (a) { try { localStorage.setItem(NAV_ULTIMO_REPORTE_LS, a.dataset.section); } catch (e) { /* sin almacenamiento */ } } }
+    }
+  });
+  navSincronizarAvisoGrupo();
+}
+function navSincronizarAvisoGrupo() {   // si «Revisión de consistencia» tiene pendientes y el grupo está plegado, se ve un punto en el encabezado
+  const g = document.querySelector('.nav-grupo[data-grupo="financieros"]'); if (!g) return;
+  const b = document.getElementById('revBadge'), av = g.querySelector('.nav-cab-aviso');
+  if (av) { const oculto = !(b && !b.hidden && b.classList.contains('pendiente')); if (av.hidden !== oculto) av.hidden = oculto; }
+}
+function navGruposSetup() {
+  const est = navGruposEstado();
+  document.querySelectorAll('.nav-grupo').forEach(g => {
+    const guardado = est[g.dataset.grupo];
+    navSetGrupo(g, guardado === undefined ? g.dataset.grupo === 'financieros' : !!guardado, false);
+    const cab = g.querySelector('.nav-grupo-cab'); if (!cab) return;
+    const alternar = () => navSetGrupo(g, !g.classList.contains('abierto'), true);
+    cab.addEventListener('click', alternar);
+    cab.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); alternar(); } });
+  });
+  navSincronizarGrupos();
+  try { new MutationObserver(navSincronizarAvisoGrupo).observe(document.getElementById('navList'), { subtree: true, childList: true, attributes: true, attributeFilter: ['hidden', 'class'] }); } catch (e) { /* sin observador */ }
+}
+async function irASeccion(sec) {
+  if (!SECTION_META[sec]) return;
+  STATE.currentSection = sec;
+  localStorage.setItem('finanzas_ultima_seccion', sec);
+  marcarNavActivo(sec);
+  document.querySelectorAll('.section').forEach(x => x.classList.remove('active'));
+  document.getElementById('sec-' + sec).classList.add('active');
+  updateTopbar();
+  try { await renderCurrentSection(); } catch (e) { /* la propia pantalla avisa sus errores */ }
+  cerrarMenuMovil();
+}
+function esperarElemento(sel, ms) {
+  return new Promise(res => {
+    const t0 = Date.now();
+    const rev = () => { const el = document.querySelector(sel); if (el && el.offsetParent !== null && !el.disabled) return res(el); if (Date.now() - t0 > ms) return res(null); setTimeout(rev, 120); };
+    rev();
+  });
+}
+const ACCESOS_DIRECTOS = [
+  { sec: 'Captura', items: [
+    { t: 'Nueva factura de proveedor', ir: 'proveedores', btn: '#addProvBtn', nombre: '+ Agregar factura' },
+    { t: 'Pagar proveedor', s: 'Elige proveedor y factura', ir: 'proveedores' },
+    { t: 'Nueva factura a cliente', ir: 'clientes', btn: '#addFacturaBtn', nombre: '+ Nueva factura' },
+    { t: 'Cobrar a cliente', s: 'Elige cliente y documento', ir: 'clientes' },
+    { t: 'Movimiento de banco', ir: 'bancos', btn: '#addMovBtnBanco', nombre: '+ Agregar movimiento' },
+    { t: 'Movimiento de efectivo', ir: 'efectivo', btn: '#addMovBtnEfvo', nombre: '+ Agregar movimiento' },
+    { t: 'Traspaso entre cuentas', s: 'Bancos', ir: 'bancos', enfocar: '#traspasoBtnBanco' },
+    { t: 'Nueva póliza de diario', ir: 'polizas', btn: '#addPolizaBtn', nombre: '+ Nueva póliza' },
+    { t: 'Importar estado de cuenta', s: 'Excel, en Bancos', ir: 'bancos', enfocar: '#importMovBtn' },
+  ] },
+  { sec: 'Consulta', items: [
+    { t: 'Reportes financieros', s: 'Balanza, Balance, Resultados, Flujo…', reportes: true },
+    { t: 'Catálogo de cuentas', ir: 'catalogo' },
+  ] },
+];
+let ACC_ABIERTO = false;
+function accesosCerrar(devolverFoco) {
+  const p = document.getElementById('accesosPanel'), b = document.getElementById('accesosBtn'); ACC_ABIERTO = false;
+  if (p) p.hidden = true; if (b) { b.setAttribute('aria-expanded', 'false'); if (devolverFoco) { try { b.focus(); } catch (e) { /* sin foco */ } } }
+}
+async function accesoEjecutar(a) {
+  accesosCerrar(false);
+  if (!a.reportes && SECTION_META[a.ir] && SECTION_META[a.ir].needsBiz && !biz()) { toast('Primero elige un negocio.', 'error'); return; }
+  let destino = a.ir;
+  if (a.reportes) { destino = localStorage.getItem(NAV_ULTIMO_REPORTE_LS); if (!destino || !document.querySelector('.nav-grupo[data-grupo="financieros"] .nav-item[data-section="' + destino + '"]')) destino = 'pl'; }
+  await irASeccion(destino);
+  if (a.btn) {
+    const el = await esperarElemento(a.btn, 8000);
+    if (el) el.click(); else toast('Abrí ' + (SECTION_META[destino].title) + '. Usa el botón «' + a.nombre + '».');
+  } else if (a.enfocar) {
+    const el = await esperarElemento(a.enfocar, 8000);
+    if (el) { try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { /* sin scroll */ } el.classList.add('acc-flash'); setTimeout(() => el.classList.remove('acc-flash'), 1800); }
+  } else if (a.s && !a.reportes && destino !== 'catalogo') {
+    toast('Abrí ' + SECTION_META[destino].title + ': ' + a.s.toLowerCase() + '.');
+  }
+}
+function accesosConstruir() {
+  let p = document.getElementById('accesosPanel');
+  if (!p) { p = document.createElement('div'); p.id = 'accesosPanel'; p.className = 'acc-panel'; p.hidden = true; p.setAttribute('role', 'dialog'); p.setAttribute('aria-label', 'Accesos directos'); document.body.appendChild(p); }
+  p.innerHTML = '<div class="acc-head"><h4>Accesos directos</h4><span>Operaciones y reportes frecuentes</span><button type="button" class="btn btn-ghost btn-sm" id="accesosCerrar">Cerrar ✕</button></div>'
+    + ACCESOS_DIRECTOS.map((g, gi) => '<div class="acc-sec">' + escHtml(g.sec) + '</div><div class="acc-grid">' + g.items.map((a, ai) => '<button type="button" class="acc-t' + (a.reportes ? ' rep' : '') + '" data-g="' + gi + '" data-a="' + ai + '"><i>' + (a.reportes ? '▤' : (g.sec === 'Captura' ? '+' : '☰')) + '</i><span>' + escHtml(a.t) + (a.s ? '<small>' + escHtml(a.s) + '</small>' : '') + '</span></button>').join('') + '</div>').join('');
+  p.querySelector('#accesosCerrar').addEventListener('click', () => accesosCerrar(true));
+  p.querySelectorAll('.acc-t').forEach(b => b.addEventListener('click', () => accesoEjecutar(ACCESOS_DIRECTOS[Number(b.dataset.g)].items[Number(b.dataset.a)])));
+  return p;
+}
+function accesosAlternar() {
+  if (ACC_ABIERTO) { accesosCerrar(true); return; }
+  const p = accesosConstruir(), b = document.getElementById('accesosBtn'); p.hidden = false; ACC_ABIERTO = true; if (b) b.setAttribute('aria-expanded', 'true');
+  const primero = p.querySelector('.acc-t'); if (primero) primero.focus();
+}
+function accesosDirectosSetup() {
+  const b = document.getElementById('accesosBtn'); if (!b) return;
+  b.addEventListener('click', e => { e.stopPropagation(); accesosAlternar(); });
+  document.addEventListener('mousedown', e => { if (!ACC_ABIERTO) return; const p = document.getElementById('accesosPanel'); if (p && !p.contains(e.target) && !b.contains(e.target)) accesosCerrar(false); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && ACC_ABIERTO) { e.stopPropagation(); accesosCerrar(true); } }, true);
+}
+/* ===== fin 06.16 ===== */
+
 function setupNav() {
   document.querySelectorAll('.nav-item').forEach(item => {
     item.addEventListener('click', () => {
@@ -1314,6 +1432,8 @@ function setupNav() {
     document.getElementById('sidebarOverlay').classList.add('show');
   });
   document.getElementById('sidebarOverlay').addEventListener('click', cerrarMenuMovil);
+  navGruposSetup();
+  accesosDirectosSetup();
 }
 
 const SECCIONES_IMPRIMIBLES = ['efectivo', 'bancos', 'pl', 'flujo', 'balance', 'proveedores', 'clientes'];
@@ -26208,7 +26328,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.15';
+const APP_VERSION = '2026-11-06.16';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
