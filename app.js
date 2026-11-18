@@ -26458,7 +26458,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.19';
+const APP_VERSION = '2026-11-06.20';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
@@ -29114,6 +29114,37 @@ function revVentasCategorias(ctx) {
   };
 }
 
+// 06.20 — Centavos de Ventas (recibido contra sistema). SOLO LEE. Suma por mes la columna «Dif.» de Ventas en los días cuya diferencia es de centavos (menos de $1):
+// ese neto pasa al Estado de Resultados como faltante/sobrante de caja y, si el mes no se compensa, es lo que deja el Balance descuadrado por unos centavos.
+// Avisa cuando el neto de un mes llega a $0.05; por debajo de eso solo deja una nota. Las diferencias de $1 o más son faltantes reales y ya se ven en las columnas «Dif.».
+const REV_CENTAVOS_UMBRAL = 0.05;
+function revCentavosRecibido(ctx) {
+  const { ventas, conceptosVenta, porCat, conceptosSistema } = ctx;
+  const porMes = new Map();
+  (ventas || []).forEach(r => {
+    const dif = revRedondeo(computeRowDiffs(r, conceptosVenta, porCat, conceptosSistema).difTotal);
+    if (Math.abs(dif) < 0.005 || Math.abs(dif) >= 1) return;
+    const mes = String(r.fecha).slice(0, 7);
+    if (!porMes.has(mes)) porMes.set(mes, []);
+    porMes.get(mes).push({ fecha: r.fecha, dif });
+  });
+  const items = []; let menores = 0, sumaMenores = 0;
+  [...porMes.keys()].sort().forEach(mes => {
+    const dias = porMes.get(mes).sort((a, z) => a.fecha.localeCompare(z.fecha));
+    const neto = revRedondeo(dias.reduce((acc, d) => acc + d.dif, 0));
+    if (Math.abs(neto) < REV_CENTAVOS_UMBRAL) { if (Math.abs(neto) >= 0.005) { menores++; sumaMenores += neto; } return; }
+    const nombre = MESES_ES[Number(mes.slice(5, 7)) - 1] + ' ' + mes.slice(0, 4);
+    const detalle = dias.map(d => `${fechaCorta(d.fecha)} ${d.dif > 0 ? '+' : ''}${d.dif.toFixed(2)}`).join(', ');
+    items.push({ fecha: mes + '-01', monto: neto, texto: `${nombre}: las diferencias de centavos de Ventas (recibido contra sistema) suman ${neto > 0 ? 'un faltante de ' : 'un sobrante de '}${fmt(Math.abs(neto))} en ${dias.length} día(s): ${detalle}. Si el Balance de ese mes queda descuadrado por ese monto, viene de aquí.` });
+  });
+  return {
+    id: 'centavos_recibido', titulo: 'Centavos de Ventas: recibido contra sistema',
+    ayuda: 'Suma por mes las diferencias de centavos (menos de $1) de la columna «Dif.» de Ventas. Esas diferencias entran al Estado de Resultados como faltante o sobrante de caja; si en un mes no se compensan, el Balance puede quedar descuadrado por esos centavos. Esta revisión solo avisa: no cambia nada. Avisa desde $0.05 de neto en el mes.',
+    items,
+    nota: menores ? `${menores} mes(es) más con diferencias menores a ${fmt(REV_CENTAVOS_UMBRAL)} (suman ${fmt(sumaMenores)}): no hace falta atenderlas.` : '',
+  };
+}
+
 // Propinas por repartir SIN la marca de venta (origen_venta_id). Sin ella el motor las toma por una factura de gasto normal: lo no
 // desglosado va a "Sin clasificar" y BAJA LA UTILIDAD, siendo dinero de los empleados. Hay dos situaciones muy distintas:
 //   · HUÉRFANA: no existe otra propina con marca para esa venta y concepto → se le RESTAURA la marca (no se crea ni se borra nada).
@@ -30386,7 +30417,7 @@ function revTraspasosCompletos(ctx) {
 
 async function ejecutarRevisionConsistencia(b) {
   const ctx = await cargarContextoRevision(b);
-  const checks = [revVentasCategorias, revPropinas, revPropinasSinMarca, revPropinasDuplicadas, revDepositosVentas, revPagosProveedor, revPagosReubicables, revGruposConFaltante, revCreditosDuplicados, revFacturasPagoIncoherente, revDescuadreLibro, revVinculosPagoFactura, revCreditosClientes, revVinculosCobroFactura, revDevolucionesCliente, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar, revTcCierre, revCfdiClasificados, revTraspasosCompletos];
+  const checks = [revVentasCategorias, revCentavosRecibido, revPropinas, revPropinasSinMarca, revPropinasDuplicadas, revDepositosVentas, revPagosProveedor, revPagosReubicables, revGruposConFaltante, revCreditosDuplicados, revFacturasPagoIncoherente, revDescuadreLibro, revVinculosPagoFactura, revCreditosClientes, revVinculosCobroFactura, revDevolucionesCliente, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar, revTcCierre, revCfdiClasificados, revTraspasosCompletos];
   const out = [];
   for (const fn of checks) {
     try { const r = fn(ctx); if (r) out.push(r); }
