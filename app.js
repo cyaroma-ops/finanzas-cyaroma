@@ -20053,6 +20053,7 @@ async function openModalFactura(factura, businessId) {
     STATE_facturaLineas = [{ _tmpId: 'tmp_' + Date.now(), producto_id: null, descripcion: '', cantidad: 1, precio_unitario: 0, subcuenta_id: null }];
   }
   renderFacturaLineas();
+  fcSincronizarCredito();
   document.getElementById('modalFactura').classList.add('show');
 }
 
@@ -20823,7 +20824,31 @@ function hacerSelectBuscable(sel) {
   new MutationObserver(refrescar).observe(sel, { childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'selected'] });
   refrescar();
 }
-const IDS_SELECT_BUSCABLE = ['fpProveedor', 'fpDesgloseSubcuenta', 'newDesgloseSubcuenta', 'movSubcuenta', 'newProductoSubcuenta', 'fpAfCuentaGasto', 'fpAfCuentaDepreciacion', 'afCuentaGasto', 'afCuentaDepreciacion'];
+/* Crédito/vencimiento de Facturas de Clientes (misma lógica que proveedores) */
+function fcActualizarHint() {
+  const el = document.getElementById('facturaCreditoHint'); if (!el) return;
+  const v = document.getElementById('facturaVencimiento').value, d = fpDiasEntre(document.getElementById('facturaFecha').value, v);
+  if (!v || d === null) { el.textContent = ''; return; }
+  el.textContent = d < 0 ? 'Ojo: el vencimiento es anterior a la fecha de registro.' : d === 0 ? 'Vence el mismo día del registro (contado).' : 'Vence en ' + d + ' día' + (d === 1 ? '' : 's') + ' después del registro.';
+}
+function fcSincronizarCredito() {
+  const f = document.getElementById('facturaFecha').value, v = document.getElementById('facturaVencimiento').value, sel = document.getElementById('facturaCredito');
+  if (!v) sel.value = ''; else { const d = fpDiasEntre(f, v); sel.value = (d !== null && CREDITOS_FP.includes(d)) ? String(d) : 'otro'; }
+  fcActualizarHint();
+}
+document.addEventListener('DOMContentLoaded', () => {
+  const g = id => document.getElementById(id); if (!g('facturaCredito')) return;
+  g('facturaCredito').addEventListener('change', () => {
+    const sel = g('facturaCredito'), f = g('facturaFecha').value, v = g('facturaVencimiento');
+    if (sel.value === '') v.value = ''; else if (sel.value !== 'otro' && f) v.value = fpSumarDias(f, Number(sel.value));
+    else if (sel.value === 'otro') { try { v.focus(); if (v.showPicker) v.showPicker(); } catch (e) {} }
+    fcActualizarHint();
+  });
+  g('facturaFecha').addEventListener('change', () => { const sel = g('facturaCredito'), f = g('facturaFecha').value; if (sel.value !== '' && sel.value !== 'otro' && f) g('facturaVencimiento').value = fpSumarDias(f, Number(sel.value)); fcActualizarHint(); });
+  g('facturaVencimiento').addEventListener('change', fcSincronizarCredito);
+  g('facturaVencimiento').addEventListener('input', fcSincronizarCredito);
+});
+const IDS_SELECT_BUSCABLE = ['facturaCliente', 'fpProveedor', 'fpDesgloseSubcuenta', 'newDesgloseSubcuenta', 'movSubcuenta', 'newProductoSubcuenta', 'fpAfCuentaGasto', 'fpAfCuentaDepreciacion', 'afCuentaGasto', 'afCuentaDepreciacion'];
 document.addEventListener('DOMContentLoaded', () => { IDS_SELECT_BUSCABLE.forEach(id => hacerSelectBuscable(document.getElementById(id))); });
 /* ===== fin 06.10 ===== */
 
@@ -20921,7 +20946,7 @@ async function openModalFacturaProveedor(factura, businessId, catalogo, opciones
   const ocultarImporteIvaDesglose = biz()?.modo === 'fiscal_contable';
   document.getElementById('fpDesgloseImporteWrap').style.display = ocultarImporteIvaDesglose ? 'none' : '';
   document.getElementById('fpDesgloseIvaWrap').style.display = ocultarImporteIvaDesglose ? 'none' : '';
-  document.getElementById('fpDesgloseMontoLabel').textContent = ocultarImporteIvaDesglose ? 'Monto (sin IVA)' : 'Monto (si no usas Importe+IVA)';
+  document.getElementById('fpDesgloseMontoLabel').textContent = ocultarImporteIvaDesglose ? 'Monto (sin IVA)' : 'Monto';
   renderFpDesgloseList();
 
   // Sección de Activo Fijo dentro de la misma factura
