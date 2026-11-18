@@ -77,7 +77,8 @@ window.AYUDA = {
       resumen: 'Las cajas de efectivo del negocio, una por moneda, con su saldo y sus movimientos mes por mes. Funciona igual que Bancos, pero para dinero en caja.',
       pasos: [
         'Elige la caja (la moneda) en las etiquetas de arriba. El mes se cambia arriba a la derecha.',
-        'Para crear una caja nueva usa **+ Agregar moneda**. Con **Editar** y **Eliminar** administras las que ya tienes.',
+        'Para crear una caja nueva usa **+ Agregar moneda**: se abre una ventana para su nombre, moneda, saldo inicial y tipo de cambio.',
+        'Para ver o corregir el nombre, la moneda, el saldo inicial, el tipo de cambio o desactivar una caja, abre **Cuentas y saldos iniciales** y pulsa **Editar**.',
         'Para registrar un pago en efectivo, usa **+ Agregar movimiento (pago en efectivo)**.',
         'Para cargar muchos movimientos, usa **Importar movimientos (Excel)**.',
         'Para mover dinero entre una caja y otra cuenta, usa **Transferir**: se crean los dos movimientos con el mismo número TR.'
@@ -86,7 +87,9 @@ window.AYUDA = {
         { q: '¿Qué columnas trae el Excel de efectivo?', a: 'Fecha, Descripción, Depósitos y Cargos son las principales. Opcionales: Proveedor, Factura y, para un traspaso, **Tipo** con «Traspaso» y **Cuenta destino**. Hay una guía con todos los formatos en «Todas las pantallas».' },
         { q: '¿Cómo registro que llevé dinero de la caja al banco?', a: 'Con **Transferir**. Eso crea la salida de la caja y el depósito en el banco, con el mismo número TR.' },
         { q: '¿Cómo elimino un traspaso?', a: 'Ábrelo con **⋯ → Eliminar**. La app avisa que elimina los dos movimientos (la salida y el depósito).' },
-        { q: '¿Puedo tener varias monedas?', a: 'Sí: cada moneda es una caja distinta, con su propio saldo.' }
+        { q: '¿Puedo tener varias monedas?', a: 'Sí: cada moneda es una caja distinta, con su propio saldo.' },
+        { q: '¿Se puede cambiar la moneda de una caja?', a: 'Solo si todavía no tiene movimientos. La moneda de una caja se reconoce por su nombre (por ejemplo «Dólares» o «Caja USD»), así que la app lo ajusta por ti y te avisa antes de guardar.' },
+        { q: '¿Se puede corregir el saldo inicial?', a: 'Sí, desde **Cuentas y saldos iniciales → Editar**. La ventana te muestra el saldo actual antes y después, pide confirmación y deja el cambio en Auditoría. No se puede si hay periodos cerrados.' }
       ],
       cuidado: [
         'Un traspaso son **dos movimientos**. Si eliminas uno, se eliminan los dos.',
@@ -99,12 +102,14 @@ window.AYUDA = {
       resumen: 'Aquí ves el saldo y los movimientos de cada cuenta bancaria del negocio, mes por mes. Es donde se importan los estados de cuenta y se concilia contra el banco.',
       pasos: [
         'Elige la cuenta en las etiquetas de arriba. El mes se cambia arriba a la derecha.',
+        'Para crear una cuenta usa **+ Agregar cuenta**: nombre, moneda y saldo inicial. Para ver o corregir esos datos, o desactivar una cuenta, abre **Cuentas y saldos iniciales** y pulsa **Editar**.',
         'Para cargar un estado de cuenta, pulsa **Importar movimientos (Excel)**. Las filas que ya existían se omiten solas.',
         'Para un movimiento suelto, usa **+ Agregar movimiento**. Puedes adjuntar su comprobante.',
         'Para mover dinero entre dos cuentas, usa **Transferir**: se crean los dos movimientos con el mismo número TR.',
         'Al cierre, **Conciliar** compara tus registros con el estado de cuenta del banco.'
       ],
       faq: [
+        { q: '¿Se puede cambiar la moneda o el saldo inicial de una cuenta?', a: 'Sí, en **Cuentas y saldos iniciales → Editar**. La moneda solo se cambia mientras la cuenta no tenga movimientos. El saldo inicial se puede corregir mostrando antes y después, con confirmación y registro en Auditoría; no se puede si hay periodos cerrados.' },
         { q: '¿Cómo importo un estado de cuenta?', a: 'Pulsa **Importar movimientos (Excel)** y elige el archivo. Se cargan las filas nuevas y se omiten las que ya estaban. Si alguna coincide con una regla de importación, antes de guardar verás una ventana para confirmarla.' },
         { q: '¿Qué pasa cuando una fila coincide con una regla?', a: 'Se abre **Confirmar reglas de importación** con las filas, la regla y a dónde se registrarían como traspaso. Puedes desmarcar filas, **importar sin aplicar reglas** o cancelar. No se guarda nada hasta que confirmes.' },
         { q: '¿Qué hago si un traspaso muestra «⚠ falta su salida» o «falta su depósito»?', a: 'Quedó con un solo movimiento. Ábrelo con **⋯ → Editar**, elige la otra cuenta y guarda: se crea el movimiento que falta. La pantalla Revisión de consistencia también los lista.' },

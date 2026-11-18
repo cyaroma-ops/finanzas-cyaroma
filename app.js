@@ -17072,10 +17072,12 @@ async function renderEfectivo() {
       <div class="card-head">
         <div style="display:flex;align-items:center;gap:8px;"><h3 style="margin-bottom:0;">Cajas de efectivo por moneda</h3>${infoTipHtml(`El efectivo ya conciliado en Ventas entra aquí automáticamente como "Corte de caja" (solo lo recibido en efectivo — tarjetas, CxC y gastos no se registran en esta caja). Aquí anotas lo que pagas en efectivo.`)}</div>
         <div style="display:flex;gap:8px;">
+          <button class="btn btn-ghost btn-sm" id="cdPanelBtn-efectivo">Cuentas y saldos iniciales</button>
           <button class="btn btn-ghost btn-sm" id="traspasoBtnEfvo">Transferir</button>
           <button class="btn btn-gold btn-sm" id="addMonedaBtn">+ Agregar moneda</button>
         </div>
       </div>
+      ${panelCuentasDineroHtml('efectivo', filasCuentasDinero('efectivo', monedasConSaldo))}
       <div class="tag-row">
         ${monedasConSaldo.map(m => `<div class="tag moneda-tab ${m.id===STATE_monedaAbierta?'active':''}" data-id="${m.id}">${escHtml(m.nombre)} · ${fmtNum(m.saldo)}</div>`).join('') || '<span class="hint">Aún no hay monedas configuradas.</span>'}
       </div>
@@ -17091,16 +17093,10 @@ async function renderEfectivo() {
     });
   });
   document.getElementById('traspasoBtnEfvo').addEventListener('click', () => openTraspasoModal(b.id, renderEfectivo));
-  document.getElementById('addMonedaBtn').addEventListener('click', async () => {
-    const nombre = prompt('Nombre de la moneda / caja (ej. Pesos, Dólares, Euros, Canadienses):');
-    if (!nombre) return;
-    const saldoInicial = Number(prompt('Saldo inicial (opcional, 0 si no aplica):', '0')) || 0;
-    const tcReporte = Number(prompt('Tipo de cambio de referencia a pesos (1 si ya es pesos):', '1')) || 1;
-    const { data, error } = await sb.from('fz_efectivo_monedas').insert({ business_id: b.id, nombre, saldo_inicial: saldoInicial, tc_reporte: tcReporte, activo: true }).select().single();
-    if (error) { toast('Error: ' + error.message, 'error'); return; }
-    STATE_monedaAbierta = data.id;
-    renderEfectivo();
-  });
+  const filasEfvo = filasCuentasDinero('efectivo', monedasConSaldo);
+  const alTerminarEfvo = (idNuevo) => { if (idNuevo) STATE_monedaAbierta = idNuevo; renderEfectivo(); };
+  enlazarCuentasDinero(el, 'efectivo', b.id, filasEfvo, alTerminarEfvo);
+  document.getElementById('addMonedaBtn').addEventListener('click', () => abrirModalCuentaDinero({ tipo: 'efectivo', businessId: b.id, fila: null, filas: filasEfvo, alTerminar: alTerminarEfvo }));
   el.querySelectorAll('.moneda-tab').forEach(tab => {
     tab.addEventListener('click', () => { STATE_monedaAbierta = tab.dataset.id; renderEfectivo(); });
   });
@@ -17270,6 +17266,184 @@ async function renderMonedaLedger(moneda, businessId, conceptosEfectivo) {
    ============================================================ */
 let STATE_bancoCuentaAbierta = null;
 
+/* ============================================================
+   CUENTAS DE BANCO Y CAJAS DE EFECTIVO — cuadro de saldos iniciales + alta/edición en ventana (06.9)
+   Solo pantalla: usa las mismas tablas y columnas de siempre (fz_bancos_cuentas, fz_efectivo_monedas).
+   ============================================================ */
+let STATE_panelCuentasDinero = { banco: false, efectivo: false };
+const MONEDAS_CUENTA_DINERO = [['MXN', 'Peso mexicano (MXN)'], ['USD', 'Dólar (USD)'], ['EUR', 'Euro (EUR)'], ['CAD', 'Dólar canadiense (CAD)'], ['GBP', 'Libra esterlina (GBP)']];
+
+// ¿Esta cuenta ya tiene algo capturado o ligado? (movimientos, líneas de póliza, conceptos de Ventas). Si no se puede saber, se asume que sí.
+async function contarUsoCuentaDinero(tipo, id, businessId) {
+  const cnt = async (q) => { const r = await q; return r.error ? 9999 : (r.count || 0); };
+  const esBanco = tipo === 'banco';
+  const [movs, polizas, conceptos] = await Promise.all([
+    cnt(sb.from(esBanco ? 'fz_bancos_mov' : 'fz_efectivo_mov').select('id', { count: 'exact', head: true }).eq(esBanco ? 'cuenta_id' : 'moneda_id', id)),
+    cnt(sb.from('fz_polizas_lineas').select('id', { count: 'exact', head: true }).eq('cuenta_tipo', esBanco ? 'banco' : 'efectivo').eq('cuenta_ref_id', id)),
+    cnt(sb.from('fz_conceptos').select('id', { count: 'exact', head: true }).eq('business_id', businessId).eq(esBanco ? 'banco_cuenta_id' : 'moneda_id', id)),
+  ]);
+  return { movs, polizas, conceptos, total: movs + polizas + conceptos };
+}
+async function hayPeriodosCerradosNegocio(businessId) {
+  const { data, error } = await sb.from('fz_cierres_periodo').select('periodo,reabierto').eq('business_id', businessId);
+  if (error) return { error: true, periodos: [] };
+  const cerrados = (data || []).filter(r => !r.reabierto).map(r => r.periodo).sort();
+  return { error: false, periodos: cerrados };
+}
+
+// Filas ya normalizadas para el cuadro: { id, nombre, moneda, saldoInicial, tc, saldo, activo }
+function filasCuentasDinero(tipo, lista) {
+  return lista.map(x => tipo === 'banco'
+    ? { id: x.id, nombre: x.nombre, moneda: x.moneda || 'MXN', saldoInicial: Number(x.saldo_inicial) || 0, tc: null, saldo: Number(x.saldo) || 0, activo: x.activo !== false }
+    : { id: x.id, nombre: x.nombre, moneda: codigoMonedaDeCaja(x.nombre, x.tc_reporte), saldoInicial: Number(x.saldo_inicial) || 0, tc: Number(x.tc_reporte) || 1, saldo: Number(x.saldo) || 0, activo: x.activo !== false });
+}
+function panelCuentasDineroHtml(tipo, filas) {
+  const esBanco = tipo === 'banco';
+  return `<div id="cdPanel-${tipo}" class="${STATE_panelCuentasDinero[tipo] ? '' : 'cc-oculto'}" style="margin-bottom:14px;border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:#fbfcfe;">
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">El <strong>saldo inicial</strong> es con el que arrancó la cuenta, antes de cualquier movimiento. No es el «Saldo inicial» que ves en el encabezado de cada mes: ese es el saldo con el que abre ese mes.</div>
+    <div class="table-wrap"><table class="tabla-operativa">
+      <thead><tr><th>${esBanco ? 'Cuenta' : 'Caja'}</th><th>Moneda</th><th class="num">Saldo inicial</th>${esBanco ? '' : '<th class="num">Tipo de cambio</th>'}<th class="num">Saldo actual</th><th>Estado</th><th></th></tr></thead>
+      <tbody>
+        ${filas.map(f => `<tr>
+          <td>${escHtml(f.nombre)}</td>
+          <td><span class="mf-badge-moneda">${escHtml(f.moneda)}</span></td>
+          <td class="num">${prefijoMoneda(f.moneda)} ${fmtNum(f.saldoInicial)}</td>
+          ${esBanco ? '' : `<td class="num">${f.moneda === 'MXN' ? '—' : fmtTC(f.tc)}</td>`}
+          <td class="num">${prefijoMoneda(f.moneda)} ${fmtNum(f.saldo)}</td>
+          <td>${f.activo ? 'Activa' : '<span style="color:var(--muted);">Inactiva</span>'}</td>
+          <td style="text-align:right;"><button class="btn btn-ghost btn-sm cdinero-editar" data-id="${f.id}">Editar</button></td>
+        </tr>`).join('') || `<tr><td colspan="${esBanco ? 6 : 7}" class="empty">Aún no hay ${esBanco ? 'cuentas bancarias' : 'cajas de efectivo'}.</td></tr>`}
+      </tbody>
+    </table></div>
+  </div>`;
+}
+function enlazarCuentasDinero(el, tipo, businessId, filas, alTerminar) {
+  const btn = el.querySelector('#cdPanelBtn-' + tipo);
+  const panel = el.querySelector('#cdPanel-' + tipo);
+  if (btn && panel) btn.addEventListener('click', () => {
+    STATE_panelCuentasDinero[tipo] = !STATE_panelCuentasDinero[tipo];
+    panel.classList.toggle('cc-oculto', !STATE_panelCuentasDinero[tipo]);
+  });
+  el.querySelectorAll('.cdinero-editar').forEach(b => b.addEventListener('click', () => {
+    abrirModalCuentaDinero({ tipo, businessId, fila: filas.find(f => f.id === b.dataset.id), filas, alTerminar });
+  }));
+}
+
+async function abrirModalCuentaDinero({ tipo, businessId, fila, filas, alTerminar }) {
+  const esBanco = tipo === 'banco';
+  const editando = !!fila;
+  if (document.getElementById('modalCuentaDinero')) return;
+  const uso = editando ? await contarUsoCuentaDinero(tipo, fila.id, businessId) : { total: 0, movs: 0, polizas: 0, conceptos: 0 };
+  const cierres = editando ? await hayPeriodosCerradosNegocio(businessId) : { error: false, periodos: [] };
+  const monedaBloqueada = editando && uso.total > 0;
+  const saldoBloqueado = editando && (cierres.error || cierres.periodos.length > 0);
+  const monedaActual = editando ? fila.moneda : 'MXN';
+  const opcionesMoneda = MONEDAS_CUENTA_DINERO.slice();
+  if (!opcionesMoneda.some(o => o[0] === monedaActual)) opcionesMoneda.push([monedaActual, monedaActual]);
+  const titulo = (editando ? 'Editar ' : 'Nueva ') + (esBanco ? 'cuenta bancaria' : 'caja de efectivo');
+
+  const bg = document.createElement('div');
+  bg.className = 'modal-bg show'; bg.id = 'modalCuentaDinero';
+  bg.innerHTML = `<div class="modal" style="width:min(500px,94vw);max-height:92vh;overflow:auto;">
+    <h3>${titulo}</h3>
+    <div class="field"><label>Nombre</label><input type="text" id="cdNombre" autocomplete="off" value="${escAttr(editando ? fila.nombre : '')}" placeholder="${esBanco ? 'Ej. Banco-Peibo' : 'Ej. Caja chica, Dólares'}"></div>
+    <div class="field"><label>Moneda</label>
+      <select id="cdMoneda" ${monedaBloqueada ? 'disabled' : ''}>${opcionesMoneda.map(([c, n]) => `<option value="${escAttr(c)}" ${c === monedaActual ? 'selected' : ''}>${escHtml(n)}</option>`).join('')}</select>
+      ${monedaBloqueada ? `<div class="hint" style="font-size:11.5px;color:var(--muted);margin-top:4px;">No se puede cambiar: esta ${esBanco ? 'cuenta' : 'caja'} ya tiene movimientos o ligas (${uso.movs >= 9999 ? 'no se pudo verificar' : uso.movs + ' movimiento(s), ' + uso.polizas + ' línea(s) de póliza, ' + uso.conceptos + ' concepto(s) de Ventas'}).</div>` : ''}
+    </div>
+    <div class="field" id="cdTcWrap"><label>Tipo de cambio de referencia a pesos</label><input type="text" id="cdTc" inputmode="decimal" value="${editando && !esBanco ? escAttr(String(fila.tc)) : '1'}"></div>
+    <div class="field"><label>Saldo inicial</label>
+      <input type="text" id="cdSaldo" inputmode="decimal" value="${editando ? escAttr(fmtInputVal(fila.saldoInicial)) : '0.00'}" ${saldoBloqueado ? 'disabled' : ''}>
+      <div class="hint" style="font-size:11.5px;color:var(--muted);margin-top:4px;">${saldoBloqueado
+        ? (cierres.error ? 'No se pudo verificar si hay periodos cerrados, por seguridad no se puede cambiar ahora.' : `No se puede cambiar: hay periodos cerrados (${escHtml(cierres.periodos.slice(0, 4).join(', '))}${cierres.periodos.length > 4 ? '…' : ''}). Pide que los reabran en Configuración → Cierre de periodo.`)
+        : 'Con lo que arrancó la cuenta, antes de cualquier movimiento (puede ser 0).'}</div>
+    </div>
+    ${editando ? `<div class="field"><label style="display:flex;gap:8px;align-items:center;"><input type="checkbox" id="cdActiva" style="width:auto;" ${fila.activo ? 'checked' : ''}> ${esBanco ? 'Cuenta activa' : 'Caja activa'}</label></div>` : ''}
+    <div id="cdResumen" style="font-size:12.5px;background:#f7f9fc;border-radius:8px;padding:10px 12px;margin-top:6px;display:none;"></div>
+    <div class="modal-actions"><button class="btn btn-ghost" id="cdCancelar">Cancelar</button><button class="btn btn-gold" id="cdGuardar">Guardar</button></div>
+  </div>`;
+  document.body.appendChild(bg);
+  const $ = (id) => document.getElementById(id);
+  const cerrar = () => { bg.remove(); document.removeEventListener('keydown', alTeclear); };
+  const alTeclear = (e) => { if (e.key === 'Escape') cerrar(); };
+  document.addEventListener('keydown', alTeclear);
+  $('cdCancelar').addEventListener('click', cerrar);
+
+  const nombreFinalEfectivo = (nombre, moneda, tc) => codigoMonedaDeCaja(nombre, tc) === moneda ? nombre : `${nombre} ${moneda}`;
+  const refrescar = () => {
+    const moneda = $('cdMoneda').value;
+    $('cdTcWrap').style.display = (!esBanco && moneda !== 'MXN') ? '' : 'none';
+    const lineas = [];
+    if (editando && !saldoBloqueado) {
+      const nuevo = leerMonto($('cdSaldo').value);
+      if (Math.abs(nuevo - fila.saldoInicial) > 0.004) lineas.push(`Saldo actual: <strong>${prefijoMoneda(fila.moneda)} ${fmtNum(fila.saldo)}</strong> → <strong>${prefijoMoneda(fila.moneda)} ${fmtNum(fila.saldo + (nuevo - fila.saldoInicial))}</strong> (${nuevo - fila.saldoInicial >= 0 ? '+' : '−'}${fmtNum(Math.abs(nuevo - fila.saldoInicial))})`);
+    }
+    if (!esBanco) {
+      const nom = $('cdNombre').value.trim();
+      const tc = moneda === 'MXN' ? 1 : (leerMonto($('cdTc').value) || 0);
+      if (nom && tc > 0) { const fin = nombreFinalEfectivo(nom, moneda, tc); if (fin !== nom) lineas.push(`La moneda de una caja se reconoce por su nombre, así que se guardará como «${escHtml(fin)}».`); }
+    }
+    $('cdResumen').style.display = lineas.length ? '' : 'none';
+    $('cdResumen').innerHTML = lineas.join('<br>');
+  };
+  ['cdNombre', 'cdMoneda', 'cdTc', 'cdSaldo'].forEach(i => { $(i).addEventListener('input', refrescar); $(i).addEventListener('change', refrescar); });
+  refrescar();
+  $('cdNombre').focus();
+
+  let guardando = false;
+  const guardar = async () => {
+    if (guardando) return;
+    const nombre = $('cdNombre').value.trim();
+    const moneda = $('cdMoneda').value;
+    const saldoInicial = leerMonto($('cdSaldo').value);
+    const activa = editando ? $('cdActiva').checked : true;
+    if (!nombre) { toast('Escribe un nombre.', 'error'); $('cdNombre').focus(); return; }
+    let tc = 1;
+    if (!esBanco) { tc = moneda === 'MXN' ? 1 : (leerMonto($('cdTc').value) || 0); if (!(tc > 0)) { toast('Escribe el tipo de cambio de referencia (mayor que 0).', 'error'); $('cdTc').focus(); return; } }
+    if (!esBanco) { const senal = codigoMonedaDeCaja(nombre, 0); if (/^[A-Z]{3}$/.test(senal) && senal !== moneda) { toast(`El nombre «${nombre}» sugiere ${senal}, pero la moneda elegida es ${moneda}. Cambia el nombre o la moneda.`, 'error'); $('cdNombre').focus(); return; } }
+    const nombreFinal = esBanco ? nombre : nombreFinalEfectivo(nombre, moneda, tc);
+    if (!esBanco && codigoMonedaDeCaja(nombreFinal, tc) !== moneda) { toast('No se pudo asociar la moneda al nombre. Prueba con otro nombre.', 'error'); return; }
+    if ((filas || []).some(f => (!editando || f.id !== fila.id) && String(f.nombre).trim().toLowerCase() === nombreFinal.toLowerCase())) { toast(`Ya existe «${nombreFinal}».`, 'error'); return; }
+    if (editando && !activa && Math.abs(fila.saldo) > 0.004) { toast(`No se puede desactivar con saldo (${fmtNum(fila.saldo)}). Primero traspasa o ajusta el saldo a cero.`, 'error'); return; }
+    const cambiaSaldo = editando && Math.abs(saldoInicial - fila.saldoInicial) > 0.004;
+    if (cambiaSaldo && saldoBloqueado) { toast('El saldo inicial no se puede cambiar ahora.', 'error'); return; }
+    if (editando && monedaBloqueada && !esBanco && codigoMonedaDeCaja(nombreFinal, tc) !== fila.moneda) { toast('Ese nombre cambiaría la moneda de la caja, y ya tiene movimientos.', 'error'); return; }
+    if (cambiaSaldo && !confirm(`Vas a cambiar el saldo inicial de «${fila.nombre}»: ${fmtNum(fila.saldoInicial)} → ${fmtNum(saldoInicial)}.\nEl saldo actual pasará de ${fmtNum(fila.saldo)} a ${fmtNum(fila.saldo + (saldoInicial - fila.saldoInicial))} y se reflejará en Balance, Balanza y reportes. ¿Continuar?`)) return;
+    guardando = true; $('cdGuardar').disabled = true;
+    try {
+      const modulo = esBanco ? 'Bancos' : 'Efectivo';
+      const nombreTipo = esBanco ? 'Cuenta bancaria' : 'Caja de efectivo';
+      let idResultado = fila ? fila.id : null;
+      if (!editando) {
+        const payload = esBanco
+          ? { business_id: businessId, nombre: nombreFinal, saldo_inicial: saldoInicial, moneda, activo: true }
+          : { business_id: businessId, nombre: nombreFinal, saldo_inicial: saldoInicial, tc_reporte: tc, activo: true, orden: (filas || []).length };
+        const { data, error } = await sb.from(esBanco ? 'fz_bancos_cuentas' : 'fz_efectivo_monedas').insert(payload).select().single();
+        if (error) { toast('Error: ' + error.message, 'error'); return; }
+        idResultado = data.id;
+        registrarAuditoria(businessId, 'crear', modulo, `${nombreTipo} "${nombreFinal}" creada · moneda ${moneda} · saldo inicial ${fmtNum(saldoInicial)}`);
+        toast(`${nombreTipo} creada.`);
+      } else {
+        const cambios = []; const payload = {};
+        if (nombreFinal !== fila.nombre) { payload.nombre = nombreFinal; cambios.push(`nombre "${fila.nombre}" → "${nombreFinal}"`); }
+        if (cambiaSaldo) { payload.saldo_inicial = saldoInicial; cambios.push(`saldo inicial ${fmtNum(fila.saldoInicial)} → ${fmtNum(saldoInicial)}`); }
+        if (esBanco && !monedaBloqueada && moneda !== fila.moneda) { payload.moneda = moneda; cambios.push(`moneda ${fila.moneda} → ${moneda}`); }
+        if (!esBanco && Math.abs(tc - fila.tc) > 0.000001) { payload.tc_reporte = tc; cambios.push(`tipo de cambio ${fila.tc} → ${tc}`); }
+        if (activa !== fila.activo) { payload.activo = activa; cambios.push(activa ? 'reactivada' : 'desactivada'); }
+        if (!cambios.length) { toast('No hay cambios que guardar.'); cerrar(); return; }
+        const { error } = await sb.from(esBanco ? 'fz_bancos_cuentas' : 'fz_efectivo_monedas').update(payload).eq('id', fila.id);
+        if (error) { toast('Error: ' + error.message, 'error'); return; }
+        registrarAuditoria(businessId, 'editar', modulo, `${nombreTipo} "${fila.nombre}": ${cambios.join('; ')}`);
+        toast('Guardado.');
+      }
+      cerrar();
+      alTerminar(idResultado);
+    } finally { guardando = false; const g = document.getElementById('cdGuardar'); if (g) g.disabled = false; }
+  };
+  $('cdGuardar').addEventListener('click', guardar);
+  bg.querySelectorAll('input[type=text]').forEach(i => i.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); guardar(); } }));
+}
+
 async function renderBancos() {
   const el = document.getElementById('sec-bancos');
   const b = biz();
@@ -17304,10 +17478,12 @@ async function renderBancos() {
       <div class="card-head">
         <div style="display:flex;align-items:center;gap:8px;"><h3 style="margin-bottom:0;">Cuentas bancarias</h3>${infoTipHtml(`Las terminales/tarjetas conciliadas en Ventas que estén vinculadas a una cuenta (en "Conceptos de recibido") entran aquí automáticamente como "Corte de caja". Dentro de cada cuenta puedes importar su estado de cuenta desde Excel.`)}</div>
         <div style="display:flex;gap:8px;">
+          <button class="btn btn-ghost btn-sm" id="cdPanelBtn-banco">Cuentas y saldos iniciales</button>
           <button class="btn btn-ghost btn-sm" id="traspasoBtnBanco">Transferir</button>
           <button class="btn btn-gold btn-sm" id="addCuentaBtn">+ Agregar cuenta</button>
         </div>
       </div>
+      ${panelCuentasDineroHtml('banco', filasCuentasDinero('banco', cuentasConSaldo))}
       <div class="tag-row">
         ${cuentasConSaldo.map(c => `<div class="tag banco-tab ${c.id===STATE_bancoCuentaAbierta?'active':''}" data-id="${c.id}">${escHtml(c.nombre)} · <span class="mf-badge-moneda">${escHtml(c.moneda)}</span> · ${prefijoMoneda(c.moneda)} ${fmt(c.saldo)}</div>`).join('') || '<span class="hint">Aún no hay cuentas.</span>'}
       </div>
@@ -17316,15 +17492,10 @@ async function renderBancos() {
   `;
 
   document.getElementById('traspasoBtnBanco').addEventListener('click', () => openTraspasoModal(b.id, renderBancos));
-  document.getElementById('addCuentaBtn').addEventListener('click', async () => {
-    const nombre = prompt('Nombre de la cuenta / banco (ej. Banco-Peibo):');
-    if (!nombre) return;
-    const saldoInicial = Number(prompt('Saldo inicial (opcional, 0 si no aplica):', '0')) || 0;
-    const { data, error: e2 } = await sb.from('fz_bancos_cuentas').insert({ business_id: b.id, nombre, saldo_inicial: saldoInicial, activo: true }).select().single();
-    if (e2) { toast('Error: ' + e2.message, 'error'); return; }
-    STATE_bancoCuentaAbierta = data.id;
-    renderBancos();
-  });
+  const filasBanco = filasCuentasDinero('banco', cuentasConSaldo);
+  const alTerminarBanco = (idNuevo) => { if (idNuevo) STATE_bancoCuentaAbierta = idNuevo; renderBancos(); };
+  enlazarCuentasDinero(el, 'banco', b.id, filasBanco, alTerminarBanco);
+  document.getElementById('addCuentaBtn').addEventListener('click', () => abrirModalCuentaDinero({ tipo: 'banco', businessId: b.id, fila: null, filas: filasBanco, alTerminar: alTerminarBanco }));
 
   el.querySelectorAll('.banco-tab').forEach(tab => {
     tab.addEventListener('click', () => { STATE_bancoCuentaAbierta = tab.dataset.id; renderBancos(); });
@@ -25761,7 +25932,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.8';
+const APP_VERSION = '2026-11-06.9';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
