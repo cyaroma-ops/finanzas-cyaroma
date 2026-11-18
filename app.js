@@ -20662,6 +20662,171 @@ async function syncPagoProveedor(businessId, facturaId) {
   }
 }
 
+/* ===== 06.10 — Crédito/vencimiento, bloque Pago y buscador de cuentas (solo interfaz; no toca cálculos ni guardado) ===== */
+const CREDITOS_FP = [0, 7, 15, 30, 45, 60, 90];
+function fpSumarDias(fechaStr, dias) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(fechaStr || '');
+  if (!m) return '';
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3] + dias));
+  return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0') + '-' + String(d.getUTCDate()).padStart(2, '0');
+}
+function fpDiasEntre(a, b) {
+  const pa = /^(\d{4})-(\d{2})-(\d{2})$/.exec(a || ''), pb = /^(\d{4})-(\d{2})-(\d{2})$/.exec(b || '');
+  if (!pa || !pb) return null;
+  return Math.round((Date.UTC(+pb[1], +pb[2] - 1, +pb[3]) - Date.UTC(+pa[1], +pa[2] - 1, +pa[3])) / 86400000);
+}
+function fpActualizarHintCredito() {
+  const f = document.getElementById('fpFecha').value, v = document.getElementById('fpVencimiento').value;
+  const el = document.getElementById('fpCreditoHint');
+  if (!el) return;
+  const d = fpDiasEntre(f, v);
+  if (!v || d === null) { el.textContent = ''; return; }
+  if (d < 0) el.textContent = 'Ojo: el vencimiento es anterior a la fecha de registro.';
+  else if (d === 0) el.textContent = 'Vence el mismo día del registro (contado).';
+  else el.textContent = 'Vence en ' + d + ' día' + (d === 1 ? '' : 's') + ' después del registro.';
+}
+function fpSincronizarCreditoDesdeVencimiento() {
+  const f = document.getElementById('fpFecha').value, v = document.getElementById('fpVencimiento').value;
+  const sel = document.getElementById('fpCredito');
+  if (!v) sel.value = '';
+  else { const d = fpDiasEntre(f, v); sel.value = (d !== null && CREDITOS_FP.includes(d)) ? String(d) : 'otro'; }
+  fpActualizarHintCredito();
+}
+function fpAlCambiarCredito() {
+  const sel = document.getElementById('fpCredito'), f = document.getElementById('fpFecha').value;
+  const venc = document.getElementById('fpVencimiento');
+  if (sel.value === '') venc.value = '';
+  else if (sel.value !== 'otro' && f) venc.value = fpSumarDias(f, Number(sel.value));
+  else if (sel.value === 'otro') { try { venc.focus(); if (venc.showPicker) venc.showPicker(); } catch (e) {} }
+  fpActualizarHintCredito();
+}
+function fpAlCambiarFechaRegistro() {
+  const sel = document.getElementById('fpCredito'), f = document.getElementById('fpFecha').value;
+  if (sel.value !== '' && sel.value !== 'otro' && f) document.getElementById('fpVencimiento').value = fpSumarDias(f, Number(sel.value));
+  fpActualizarHintCredito();
+}
+function fpAlEscribirVencimiento() { fpSincronizarCreditoDesdeVencimiento(); }
+function fpActualizarVisibilidadPago() {
+  const pendiente = document.getElementById('fpEstatus').value === 'Pendiente';
+  document.querySelectorAll('#fpPagoFila .fp-pago-campo').forEach(el => el.classList.toggle('cc-oculto', pendiente));
+}
+function fpIniciarBloqueFechas() {
+  fpSincronizarCreditoDesdeVencimiento();
+  fpActualizarVisibilidadPago();
+}
+document.addEventListener('DOMContentLoaded', () => {
+  const g = id => document.getElementById(id);
+  if (g('fpCredito')) {
+    g('fpCredito').addEventListener('change', fpAlCambiarCredito);
+    g('fpFecha').addEventListener('change', fpAlCambiarFechaRegistro);
+    g('fpVencimiento').addEventListener('change', fpAlEscribirVencimiento);
+    g('fpVencimiento').addEventListener('input', fpAlEscribirVencimiento);
+    g('fpEstatus').addEventListener('change', fpActualizarVisibilidadPago);
+  }
+});
+
+/* Buscador «escribe y sugiere» sobre un <select> existente. El select sigue siendo la fuente de verdad. */
+function bsNorm(t) { return String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase(); }
+function hacerSelectBuscable(sel) {
+  if (!sel || sel.dataset.bs === '1') return;
+  sel.dataset.bs = '1';
+  const wrap = document.createElement('div'); wrap.className = 'bs-wrap';
+  const inp = document.createElement('input');
+  inp.type = 'text'; inp.className = 'bs-input'; inp.autocomplete = 'off'; inp.spellcheck = false;
+  inp.setAttribute('role', 'combobox'); inp.setAttribute('aria-autocomplete', 'list');
+  inp.placeholder = 'Escribe para buscar…';
+  sel.parentNode.insertBefore(wrap, sel); wrap.appendChild(inp); wrap.appendChild(sel);
+  sel.classList.add('bs-oculto');
+  let lista = null, items = [], activa = -1, abierta = false, filtrando = false;
+  const etiqueta = o => (o ? o.textContent.replace(/^[—\s]+/, '').trim() : '');
+  const textoSel = () => { const o = sel.selectedOptions && sel.selectedOptions[0]; return (o && o.value !== '') ? etiqueta(o) : ''; };
+  const refrescar = () => { if (!abierta) inp.value = textoSel(); inp.disabled = sel.disabled; };
+  const cerrar = () => { abierta = false; filtrando = false; if (lista) { lista.remove(); lista = null; } items = []; activa = -1; };
+  const posicionar = () => {
+    if (!lista) return; const r = inp.getBoundingClientRect();
+    lista.style.left = r.left + 'px'; lista.style.width = Math.max(r.width, 220) + 'px';
+    const abajo = window.innerHeight - r.bottom, alto = Math.min(260, lista.scrollHeight);
+    if (abajo < alto + 12 && r.top > abajo) { lista.style.top = ''; lista.style.bottom = (window.innerHeight - r.top + 4) + 'px'; }
+    else { lista.style.bottom = ''; lista.style.top = (r.bottom + 4) + 'px'; }
+  };
+  const resaltar = (txt, palabras) => {
+    let out = escHtml(txt);
+    palabras.forEach(p => { if (p) out = out.replace(new RegExp('(' + p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'ig'), '<mark>$1</mark>'); });
+    return out;
+  };
+  const construir = () => {
+    const q = filtrando ? bsNorm(inp.value).trim() : '', palabras = q ? q.split(/\s+/) : [];
+    const todos = Array.from(sel.options).map(o => ({ o, grupo: o.parentNode.tagName === 'OPTGROUP' ? o.parentNode.label : '' }));
+    items = todos.filter(x => {
+      if (x.o.value === '') return !q;                       // «sin especificar» solo con el cuadro vacío
+      const hay = bsNorm(x.grupo + ' ' + etiqueta(x.o));
+      return palabras.every(p => hay.includes(p));
+    });
+    if (!lista) { lista = document.createElement('div'); lista.className = 'bs-lista'; lista.setAttribute('role', 'listbox'); document.body.appendChild(lista); }
+    let html = '', ultimoGrupo = null;
+    items.forEach((x, i) => {
+      if (x.grupo !== ultimoGrupo) { ultimoGrupo = x.grupo; if (x.grupo) html += '<div class="bs-grupo">' + escHtml(x.grupo) + '</div>'; }
+      const pre = (x.o.textContent.match(/^[—\s]+/) || [''])[0].replace(/\s/g, '');
+      const pad = pre.length ? ' style="padding-left:' + (12 + pre.length * 12) + 'px"' : '';
+      html += '<div class="bs-op" role="option" data-i="' + i + '"' + pad + '>' + (x.o.value === '' ? '<em>' + escHtml(x.o.textContent) + '</em>' : resaltar(etiqueta(x.o), palabras)) + '</div>';
+    });
+    if (!items.length) html = '<div class="bs-vacio">Sin coincidencias</div>';
+    lista.innerHTML = html;
+    activa = items.length ? 0 : -1; if (!filtrando) { const k = items.findIndex(x => x.o.value === sel.value && x.o.value !== ''); if (k >= 0) activa = k; } marcar(); posicionar();
+  };
+  const marcar = () => {
+    if (!lista) return;
+    lista.querySelectorAll('.bs-op').forEach(el => el.classList.toggle('activa', Number(el.dataset.i) === activa));
+    const el = lista.querySelector('.bs-op.activa'); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+  };
+  const elegir = i => {
+    const x = items[i]; if (!x) return;
+    const cambio = sel.value !== x.o.value;
+    sel.value = x.o.value; cerrar(); inp.value = textoSel();
+    if (cambio) sel.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  const abrir = () => { abierta = true; filtrando = false; construir(); };
+  inp.addEventListener('focus', () => { inp.select(); abrir(); });
+  inp.addEventListener('input', () => { abierta = true; filtrando = true; construir(); });
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault(); if (!abierta) abrir();
+      if (items.length) { activa = (activa + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length; marcar(); }
+    } else if (e.key === 'Enter') {
+      if (abierta) { e.preventDefault(); e.stopPropagation(); if (activa >= 0) elegir(activa); else { cerrar(); inp.value = textoSel(); } }
+    } else if (e.key === 'Escape') {
+      if (abierta) { e.preventDefault(); e.stopPropagation(); cerrar(); inp.value = textoSel(); }
+    } else if (e.key === 'Tab') {
+      if (abierta && inp.value.trim() && activa >= 0 && bsNorm(inp.value) !== bsNorm(textoSel())) elegir(activa); else cerrar();
+    }
+  });
+  inp.addEventListener('blur', () => {
+    setTimeout(() => {
+      if (document.activeElement === inp) return;
+      const vacio = !inp.value.trim() && abierta;
+      cerrar();
+      if (vacio) { const op = Array.from(sel.options).find(o => o.value === ''); if (op && sel.value !== '') { sel.value = ''; sel.dispatchEvent(new Event('change', { bubbles: true })); } }
+      inp.value = textoSel();
+    }, 120);
+  });
+  document.addEventListener('mousedown', e => {
+    if (!lista) return;
+    const op = e.target.closest && e.target.closest('.bs-op');
+    if (op && lista.contains(op)) { e.preventDefault(); elegir(Number(op.dataset.i)); }
+    else if (e.target !== inp) { cerrar(); inp.value = textoSel(); }
+  });
+  window.addEventListener('resize', () => { if (abierta) cerrar(); });
+  document.addEventListener('scroll', e => { if (abierta && lista && !lista.contains(e.target)) posicionar(); }, true);
+  // Mantener sincronizado cuando el código cambia el select (value = … / innerHTML = …)
+  const desc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value');
+  Object.defineProperty(sel, 'value', { configurable: true, get() { return desc.get.call(this); }, set(v) { desc.set.call(this, v); refrescar(); } });
+  new MutationObserver(refrescar).observe(sel, { childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'selected'] });
+  refrescar();
+}
+const IDS_SELECT_BUSCABLE = ['fpProveedor', 'fpDesgloseSubcuenta', 'newDesgloseSubcuenta', 'movSubcuenta', 'newProductoSubcuenta', 'fpAfCuentaGasto', 'fpAfCuentaDepreciacion', 'afCuentaGasto', 'afCuentaDepreciacion'];
+document.addEventListener('DOMContentLoaded', () => { IDS_SELECT_BUSCABLE.forEach(id => hacerSelectBuscable(document.getElementById(id))); });
+/* ===== fin 06.10 ===== */
+
 let STATE_provArchivosPendientes = [];
 let STATE_facturaProveedorEditandoId = null;
 const IDS_PANEL_DOC_FP = { workspace: 'fpWorkspace', panel: 'fpPanelDoc', nombre: 'fpPanelDocNombre', embed: 'fpPanelDocEmbed', toggleBtn: 'fpTogglePanelDoc' };
@@ -20797,6 +20962,7 @@ async function openModalFacturaProveedor(factura, businessId, catalogo, opciones
     renderFpAdjuntoPendiente();
   }
 
+  fpIniciarBloqueFechas();
   document.getElementById('modalFacturaProveedor').classList.add('show');
 }
 document.getElementById('closeFacturaProveedor').addEventListener('click', () => {
@@ -25932,7 +26098,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.9';
+const APP_VERSION = '2026-11-06.10';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.

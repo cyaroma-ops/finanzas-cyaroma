@@ -652,6 +652,21 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 .empty{padding:36px;text-align:center;color:var(--muted);font-size:13.5px;}
 
 /* Modal */
+/* 06.10 — Factura de proveedor: fila de fechas, bloque Pago, buscador de cuentas */
+.fp-fechas{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:0 12px;}
+.fp-fechas .field{margin-bottom:10px;min-width:0;}
+.fp-hint{font-size:11.5px;color:var(--muted);margin:-2px 0 12px;min-height:0;}
+.fp-hint:empty{display:none;}
+.fp-pago-titulo{font-size:11.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);margin:16px 0 8px;border-top:1px solid var(--line);padding-top:12px;}
+.bs-wrap{position:relative;}
+.bs-input{width:100%;}
+.bs-oculto{display:none!important;}
+.bs-lista{position:fixed;z-index:400;background:#fff;border:1.5px solid var(--line);border-radius:10px;box-shadow:0 14px 36px rgba(0,0,0,.18);max-height:260px;overflow-y:auto;padding:4px 0;font-size:13px;}
+.bs-grupo{padding:6px 12px 3px;font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);}
+.bs-op{padding:7px 12px;cursor:pointer;white-space:normal;}
+.bs-op.activa{background:#eef3fb;}
+.bs-op mark{background:#fff1b8;color:inherit;border-radius:2px;}
+.bs-vacio{padding:10px 12px;color:var(--muted);}
 .modal-bg{position:fixed;inset:0;background:rgba(10,20,40,.5);z-index:150;display:none;align-items:center;justify-content:center;}
 .modal-bg.show{display:flex;}
 .modal{background:#fff;border-radius:16px;padding:28px;width:min(420px,92vw);box-shadow:0 30px 80px rgba(0,0,0,.3);}
@@ -2516,10 +2531,28 @@ Transacciones recurrentes
         <input type="text" id="fpFactura" placeholder="Ej. A-4512">
       </div>
     </div>
-    <div class="grid-3">
+    <div class="fp-fechas">
       <div class="field">
-        <label>Fecha</label>
+        <label>Fecha de registro</label>
         <input type="date" id="fpFecha">
+      </div>
+      <div class="field">
+        <label>Crédito</label>
+        <select id="fpCredito">
+          <option value="">Sin definir</option>
+          <option value="0">Contado (mismo día)</option>
+          <option value="7">7 días</option>
+          <option value="15">15 días</option>
+          <option value="30">30 días</option>
+          <option value="45">45 días</option>
+          <option value="60">60 días</option>
+          <option value="90">90 días</option>
+          <option value="otro">Otra fecha…</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Fecha de vencimiento</label>
+        <input type="date" id="fpVencimiento">
       </div>
       <div class="field">
         <label>Moneda</label>
@@ -2530,19 +2563,16 @@ Transacciones recurrentes
         </select>
       </div>
       <div class="field" id="fpTcWrap" style="display:none;">
-        <label>Tipo de cambio de esta factura</label>
+        <label>Tipo de cambio</label>
         <input type="text" inputmode="decimal" id="fpTipoCambio" placeholder="Ej. 18.50">
       </div>
+      <div class="field fp-importe">
+        <label id="fpImporteLabel">Importe</label>
+        <input type="text" inputmode="decimal" id="fpImporte" placeholder="0.00">
+      </div>
     </div>
-    <div class="field" style="max-width:240px;">
-      <label>Fecha de vencimiento (opcional)</label>
-      <input type="date" id="fpVencimiento">
-    </div>
-    <div class="field">
-      <label id="fpImporteLabel">Importe</label>
-      <input type="text" inputmode="decimal" id="fpImporte" placeholder="0.00">
-      <div id="fpEquivalenteMxnWrap" style="display:none;font-size:11.5px;color:var(--muted);margin-top:4px;">Equivalente MXN al TC <span id="fpEquivalenteTcTxt"></span>: <strong id="fpEquivalenteMxnTxt"></strong></div>
-    </div>
+    <div id="fpCreditoHint" class="fp-hint"></div>
+    <div id="fpEquivalenteMxnWrap" style="display:none;font-size:11.5px;color:var(--muted);margin:-4px 0 12px;">Equivalente MXN al TC <span id="fpEquivalenteTcTxt"></span>: <strong id="fpEquivalenteMxnTxt"></strong></div>
     <div id="fpIvaWrap" style="display:none;border:1.5px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:12px;">
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;margin-bottom:8px;">
         <input type="checkbox" id="fpAplicaIva" checked> Esta factura desglosa IVA
@@ -2592,30 +2622,6 @@ Transacciones recurrentes
         </div>
         <p style="font-size:11px;color:var(--muted);margin-top:8px;">Los % normalmente se calculan sobre el Subtotal. Lo retenido va a "Retenciones por pagar" (se lo debes al SAT, no al proveedor) — el Importe de abajo ya se ajusta solo, restando lo retenido.</p>
       </div>
-    </div>
-    <div class="grid-3">
-      <div class="field">
-        <label>Estatus</label>
-        <select id="fpEstatus">
-          <option>Pendiente</option>
-          <option>Parcial</option>
-          <option>Pagado</option>
-        </select>
-      </div>
-      <div class="field">
-        <label>Fecha de pago</label>
-        <input type="date" id="fpFechaPago">
-      </div>
-      <div class="field">
-        <label>Pagado desde</label>
-        <select id="fpPagadoDesde">
-          <option value="">— sin especificar —</option>
-        </select>
-      </div>
-    </div>
-    <div class="field" id="fpPagosAplicadosWrap" style="display:none;">
-      <label>Pagos aplicados a esta factura</label>
-      <div id="fpPagosAplicadosBox" style="background:#f7f9fc;border-radius:8px;padding:8px 10px;font-size:12.5px;"></div>
     </div>
     <div class="field">
       <label>Desglose (clasificación contable)</label>
@@ -2689,6 +2695,31 @@ Transacciones recurrentes
     <div class="field" id="fpAdjuntoWrap">
       <label>Documento soporte</label>
       <div id="fpAdjuntoCell"></div>
+    </div>
+    <div class="field" id="fpPagosAplicadosWrap" style="display:none;">
+      <label>Pagos aplicados a esta factura</label>
+      <div id="fpPagosAplicadosBox" style="background:#f7f9fc;border-radius:8px;padding:8px 10px;font-size:12.5px;"></div>
+    </div>
+    <div class="fp-pago-titulo">Pago</div>
+    <div class="grid-3" id="fpPagoFila">
+      <div class="field">
+        <label>Estatus</label>
+        <select id="fpEstatus">
+          <option>Pendiente</option>
+          <option>Parcial</option>
+          <option>Pagado</option>
+        </select>
+      </div>
+      <div class="field fp-pago-campo">
+        <label>Fecha de pago</label>
+        <input type="date" id="fpFechaPago">
+      </div>
+      <div class="field fp-pago-campo">
+        <label>Pagado desde</label>
+        <select id="fpPagadoDesde">
+          <option value="">— sin especificar —</option>
+        </select>
+      </div>
     </div>
     </div>
     <div class="doc-workspace-panel-doc" id="fpPanelDoc" style="display:none;">
@@ -3595,6 +3626,6 @@ Transacciones recurrentes
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-06.9"></script>
+<script src="/app.js?v=2026-11-06.10"></script>
 </body>
 </html>

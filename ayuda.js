@@ -163,6 +163,9 @@ window.AYUDA = {
       faq: [
         { q: '¿Qué significa cada estatus de una factura?', a: '**Pendiente**: sin pagos. **Parcial**: se ha pagado una parte. **Pagado**: el saldo está en cero. **Cancelado**: la factura se anuló.' },
         { q: '¿Qué son los «Días retraso»?', a: 'Los días que han pasado desde el vencimiento de una factura que todavía tiene saldo.' },
+        { q: '¿Cómo pongo los días de crédito de una factura?', a: 'En la ventana de la factura, junto a la **Fecha de registro**, elige **Crédito**: Contado (mismo día), 7, 15, 30, 45, 60 o 90 días y el vencimiento se calcula solo. Si necesitas otra fecha, elige **Otra fecha…** o escríbela directo en **Fecha de vencimiento**; si coincide con un plazo de la lista, el selector lo reconoce.' },
+        { q: '¿Por qué no veo «Fecha de pago» ni «Pagado desde»?', a: 'Están al final de la ventana, en **Pago**, y solo aparecen cuando el estatus es Parcial o Pagado.' },
+        { q: '¿Cómo busco una cuenta sin recorrer toda la lista?', a: 'En los campos de cuenta (desglose, activos fijos, proveedor y movimientos de Bancos/Efectivo) escribe parte del nombre: la lista se filtra sin importar acentos ni mayúsculas. Usa las flechas y **Enter** para elegir, o haz clic.' },
         { q: '¿Cómo registro una devolución del proveedor?', a: 'Con **+ Nota de crédito**, que descuenta lo devuelto o corregido.' },
         { q: '¿Qué columnas trae el Excel de facturas?', a: 'Proveedor, Fecha, Factura e Importe. Opcional: Estatus (si empieza con «pag» se toma como pagada). Hay una guía con todos los formatos en «Todas las pantallas».' },
         { q: '¿Se puede programar una factura de proveedor que se repite?', a: 'Todavía no. Está planeado para una próxima versión, con aviso de que esas facturas no llevan CFDI hasta que lo agregues.' },
