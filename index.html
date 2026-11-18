@@ -1295,6 +1295,23 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   .mf-datos-section{ padding:14px 16px; }
   .mf-footer{ padding:12px 16px; }
 }
+/* ===== 06.18 — «Nueva cuenta» en ventana ===== */
+.card.cc-alta.abierta{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(620px,94vw);max-height:90vh;overflow:auto;z-index:951;margin:0;padding:24px 26px;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.35);background:#fff;}
+.cc-alta-fondo{display:none;position:fixed;inset:0;background:rgba(10,31,61,.45);z-index:950;}
+.cc-alta.abierta + .cc-alta-fondo{display:block;}
+.cc-alta-x{position:absolute;right:16px;top:12px;border:0;background:none;font-size:24px;line-height:1;color:var(--muted);cursor:pointer;padding:4px 8px;}
+.cc-alta-cab{margin-bottom:14px;}.cc-alta-cab h3{margin:0 0 4px;font-size:22px;}
+.cc-seg{display:flex;border:1px solid var(--line);border-radius:9px;overflow:hidden;}
+.cc-seg button{flex:1;padding:9px;border:0;background:#fff;font:inherit;font-size:13px;cursor:pointer;color:var(--navy-1);}
+.cc-seg button.on{background:var(--navy-1);color:#fff;font-weight:600;}
+.card.cc-alta .cc-alta-fila{grid-template-columns:1fr 1fr;align-items:start;}
+.cc-alta .field{margin-bottom:12px;}
+.cc-vinculo{padding:10px 12px;background:#f7f4ec;border-radius:9px;margin-top:2px;}
+.cc-alta-pie{display:flex;gap:10px;align-items:center;margin-top:18px;padding-top:14px;border-top:1px solid var(--line);flex-wrap:wrap;}
+.cc-alta-cab .hint{font-size:13px;color:var(--muted);}
+.cc-alta-pie .btn{white-space:nowrap;padding:9px 14px;font-size:13px;}
+.cc-lnk{border:0;background:none;color:#b98a2e;font:inherit;font-size:13px;font-weight:600;cursor:pointer;padding:0;}
+@media (max-width:560px){.card.cc-alta.abierta{padding:18px 16px;}.card.cc-alta .cc-alta-fila{grid-template-columns:1fr;}.cc-alta-pie .btn{flex:1;}}
 </style>
 <style id="estiloModalProveedoresCat">
 /* ===== Modal «Catálogo de proveedores» — estilos acotados a ESTE modal (ningún otro modal cambia) ===== */
@@ -3834,6 +3851,6 @@ Transacciones recurrentes
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-06.17"></script>
+<script src="/app.js?v=2026-11-06.18"></script>
 </body>
 </html>

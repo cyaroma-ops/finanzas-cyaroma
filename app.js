@@ -13044,20 +13044,23 @@ async function renderCatalogoCuentas() {
     if (g('ccFiltroTipo')) STATE_ccAlta.filtroTipo = g('ccFiltroTipo').value;
   }
   const TIPOS_CC = ['activo','pasivo','capital','ingreso','costo','gasto'];
-  const altaDondeHtml = `<optgroup label="Crear una cuenta mayor nueva">${TIPOS_CC.map(t => `<option value="M:${t}">Cuenta mayor nueva · ${TIPO_CUENTA_LABEL[t]}</option>`).join('')}</optgroup>`
-    + TIPOS_CC.map(t => { const ms = mayores.filter(m => m.tipo === t); return ms.length ? `<optgroup label="Subcuenta dentro de… (${TIPO_CUENTA_LABEL[t]})">${ms.map(m => `<option value="S:${m.id}">${escHtml(m.nombre)}</option>`).join('')}</optgroup>` : ''; }).join('');
+  const altaOpcM = TIPOS_CC.map(t => `<option value="M:${t}">${TIPO_CUENTA_LABEL[t]}</option>`).join('');
+  const altaOpcS = TIPOS_CC.map(t => { const ms = mayores.filter(m => m.tipo === t); return ms.length ? `<optgroup label="${TIPO_CUENTA_LABEL[t]}">${ms.map(m => `<option value="S:${m.id}">${escHtml(m.nombre)}</option>`).join('')}</optgroup>` : ''; }).join('');
+  const altaModoInicial = ((STATE_ccAlta.donde || '').startsWith('M:') || !mayores.length) ? 'M' : 'S';
+  const altaDondeHtml = altaModoInicial === 'M' ? altaOpcM : altaOpcS;
   const altaCardHtml = `
-    <div class="card cc-alta${STATE_ccAlta.lote ? ' lote-abierto' : ''}${(STATE_ccAltaAbierta || STATE_ccAlta.enfocar || STATE_ccAlta.lote || STATE_ccAlta.nombre) ? ' abierta' : ''}" id="ccAltaCard">
-      <div class="card-head"><h3>Alta de cuenta</h3><span class="hint">Escribe el nombre y presiona Enter: se agrega y queda lista la siguiente.</span></div>
+    <div class="card cc-alta${STATE_ccAlta.lote ? ' lote-abierto' : ''}${(STATE_ccAltaAbierta || STATE_ccAlta.enfocar || STATE_ccAlta.lote || STATE_ccAlta.nombre) ? ' abierta' : ''}" id="ccAltaCard" role="dialog" aria-modal="true" aria-labelledby="ccAltaTitulo">
+      <button type="button" class="cc-alta-x" id="ccAltaCerrar" aria-label="Cerrar">×</button>
+      <div class="cc-alta-cab"><h3 id="ccAltaTitulo">Nueva cuenta</h3><div class="hint">Se agrega al catálogo y queda lista para usarse en Pólizas.</div></div>
+      <div class="field"><label>¿Qué vas a crear?</label>
+        <div class="cc-seg" id="ccAltaModo"><button type="button" data-modo="S" class="${altaModoInicial === 'S' ? 'on' : ''}">Subcuenta</button><button type="button" data-modo="M" class="${altaModoInicial === 'M' ? 'on' : ''}">Cuenta mayor nueva</button></div></div>
+      <div class="field"><label>Nombre</label><input type="text" id="ccAltaNombre" autocomplete="off" placeholder="Ej. Mantenimiento y conservación"></div>
       <div class="cc-alta-fila">
-        <div class="field"><label>Nombre</label><input type="text" id="ccAltaNombre" autocomplete="off" placeholder="Ej. Mantenimiento y conservación"></div>
-        <div class="field"><label>Va en</label><select id="ccAltaDonde">${altaDondeHtml}</select></div>
-        <div class="field" id="ccAltaPadreWrap"><label>Dentro de (opcional)</label><select id="ccAltaPadre"></select></div>
-        <div class="field" id="ccAltaVinculoWrap"><label>% de costo vs. categoría de venta</label><select id="ccAltaVinculo"><option value="">— sin vincular —</option>${conceptosVenta.map(c => `<option value="${c.id}">${escHtml(c.nombre)}</option>`).join('')}</select></div>
-        <div class="field"><button class="btn btn-gold" id="ccAltaAgregar" style="width:100%;">+ Agregar</button></div>
+        <div class="field"><label id="ccAltaDondeLbl">Dentro de la cuenta mayor</label><select id="ccAltaDonde">${altaDondeHtml}</select></div>
+        <div class="field" id="ccAltaPadreWrap"><label>Subcuenta padre (opcional)</label><select id="ccAltaPadre"></select></div>
       </div>
+      <div class="field cc-vinculo" id="ccAltaVinculoWrap"><label>% de costo vs. categoría de venta (opcional)</label><select id="ccAltaVinculo"><option value="">— sin vincular —</option>${conceptosVenta.map(c => `<option value="${c.id}">${escHtml(c.nombre)}</option>`).join('')}</select></div>
       <p class="hint" id="ccAltaAyuda" style="margin:8px 0 0;font-size:11.5px;color:var(--muted);"></p>
-      <div style="margin-top:8px;"><button class="btn btn-ghost btn-sm" id="ccAltaLoteToggle">${STATE_ccAlta.lote ? 'Ocultar lista' : 'Pegar varias a la vez'}</button></div>
       <div id="ccAltaLoteWrap" class="${STATE_ccAlta.lote ? '' : 'cc-oculto'}" style="margin-top:10px;">
         <textarea id="ccAltaLoteTexto" rows="8" style="width:100%;font-family:inherit;font-size:13px;padding:8px;border:1px solid var(--line);border-radius:8px;" placeholder="Una cuenta por línea. Para anidar, sangra la línea con espacios o con «-». Ejemplo:&#10;Carnes&#10;  Res&#10;  Pollo&#10;    Pechuga&#10;Mariscos"></textarea>
         <div style="display:flex;gap:10px;align-items:center;margin-top:8px;flex-wrap:wrap;">
@@ -13066,7 +13069,15 @@ async function renderCatalogoCuentas() {
         </div>
       </div>
       <div id="ccAltaSesion" class="cc-sesion"></div>
-    </div>`;
+      <div class="cc-alta-pie">
+        <button type="button" class="cc-lnk" id="ccAltaLoteToggle">${STATE_ccAlta.lote ? 'Ocultar lista' : 'Pegar varias a la vez'}</button>
+        <span style="flex:1"></span>
+        <button type="button" class="btn btn-ghost" id="ccAltaCancelar">Cancelar</button>
+        <button type="button" class="btn btn-ghost" id="ccAltaAgregar">Agregar y seguir</button>
+        <button type="button" class="btn btn-gold" id="ccAltaAgregarCerrar">Agregar y cerrar</button>
+      </div>
+    </div>
+    <div class="cc-alta-fondo" id="ccAltaFondo"></div>`;
   const totalSubs = subcuentas.length;
   const barraHtml = `
     <div class="card cc-barra">
@@ -13268,6 +13279,7 @@ async function renderCatalogoCuentas() {
   const refrescarAlta = () => {
     const v = selDonde.value || '';
     const esMayor = v.startsWith('M:');
+    $('ccAltaDondeLbl').textContent = esMayor ? 'Tipo de cuenta mayor' : 'Dentro de la cuenta mayor';
     $('ccAltaPadreWrap').classList.toggle('cc-oculto', esMayor || !v);
     $('ccAltaVinculoWrap').classList.toggle('cc-oculto', v !== 'M:costo');
     if (!esMayor && v) llenarPadre(v.slice(2));
@@ -13279,6 +13291,13 @@ async function renderCatalogoCuentas() {
   if (STATE_ccAlta.padre && Array.from(selPadre.options).some(o => o.value === STATE_ccAlta.padre)) selPadre.value = STATE_ccAlta.padre;
   if (STATE_ccAlta.vinculo) $('ccAltaVinculo').value = STATE_ccAlta.vinculo;
   selDonde.addEventListener('change', () => { STATE_ccAlta.padre = ''; refrescarAlta(); inpNombre.focus({ preventScroll: true }); });
+  $('ccAltaModo').querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+    const m = b.dataset.modo;
+    if (m === 'S' && !mayoresLocal.length) { toast('Aún no hay cuentas mayor: primero crea una cuenta mayor.', 'error'); return; }
+    $('ccAltaModo').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+    selDonde.innerHTML = m === 'M' ? altaOpcM : altaOpcS; selDonde.selectedIndex = 0; STATE_ccAlta.padre = '';
+    refrescarAlta(); inpNombre.focus({ preventScroll: true });
+  }));
 
   const pintarSesion = () => {
     const box = $('ccAltaSesion');
@@ -13327,19 +13346,20 @@ async function renderCatalogoCuentas() {
     return { sub: s };
   };
 
-  const terminarAlta = (nuevosIds) => {
+  const terminarAlta = (nuevosIds, cerrar) => {
     STATE_ccAlta.donde = selDonde.value; STATE_ccAlta.padre = selPadre.value; STATE_ccAlta.vinculo = $('ccAltaVinculo').value;
-    STATE_ccAlta.enfocar = true; STATE_ccRecientes = new Set(nuevosIds);
+    if (cerrar) { STATE_ccAltaAbierta = false; STATE_ccAlta.enfocar = false; STATE_ccAlta.lote = false; STATE_ccAlta.nombre = ''; } else { STATE_ccAltaAbierta = true; STATE_ccAlta.enfocar = true; }
+    STATE_ccRecientes = new Set(nuevosIds);
     renderCatalogoCuentas();
   };
 
-  const agregarUna = async () => {
+  const agregarUna = async (cerrar) => {
     if (STATE_ccAltaOcupado) return;
     const nombre = inpNombre.value.trim();
     const v = selDonde.value;
     if (!v) { toast('Primero elige dónde va la cuenta.', 'error'); return; }
     if (!nombre) { toast('Escribe un nombre.', 'error'); inpNombre.focus(); return; }
-    STATE_ccAltaOcupado = true; $('ccAltaAgregar').disabled = true; inpNombre.value = '';   // si se sigue escribiendo mientras guarda, no se pierde
+    STATE_ccAltaOcupado = true; $('ccAltaAgregar').disabled = true; $('ccAltaAgregarCerrar').disabled = true; inpNombre.value = '';   // si se sigue escribiendo mientras guarda, no se pierde
     try {
       let r;
       if (v.startsWith('M:')) { const tipo = v.slice(2); r = await insertarMayor(nombre, tipo, tipo === 'costo' ? ($('ccAltaVinculo').value || null) : null); }
@@ -13348,11 +13368,12 @@ async function renderCatalogoCuentas() {
       if (r.error) { toast('Error: ' + r.error.message, 'error'); if (!inpNombre.value) inpNombre.value = nombre; return; }
       if (r.errorSub) toast('La cuenta mayor se creó, pero hubo un error creando su subcuenta por default: ' + r.errorSub.message, 'error');
       else toast(`Agregada: ${nombre}`);
-      terminarAlta([ (r.mayor || r.sub).id ]);
-    } finally { STATE_ccAltaOcupado = false; const bt = $('ccAltaAgregar'); if (bt) bt.disabled = false; }
+      terminarAlta([ (r.mayor || r.sub).id ], cerrar === true);
+    } finally { STATE_ccAltaOcupado = false; const bt = $('ccAltaAgregar'); if (bt) bt.disabled = false; const bc = $('ccAltaAgregarCerrar'); if (bc) bc.disabled = false; }
   };
-  $('ccAltaAgregar').addEventListener('click', agregarUna);
-  inpNombre.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); agregarUna(); } });
+  $('ccAltaAgregar').addEventListener('click', () => agregarUna(false));
+  $('ccAltaAgregarCerrar').addEventListener('click', () => agregarUna(true));
+  inpNombre.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); agregarUna(false); } });
 
   // ----- pegar varias a la vez -----
   const parsearLote = (texto) => {
@@ -13469,12 +13490,29 @@ async function renderCatalogoCuentas() {
   /* ===== 06.17 — Catálogo: «+ Nueva cuenta», «Importar / Exportar» y menús «···». Solo vista: los botones y campos de siempre siguen en su lugar. ===== */
   {
     const alta = $('ccAltaCard'), btnNueva = $('ccNuevaBtn'), btnIE = $('ccImpExpBtn'), pop = $('ccImpExpPop');
-    const sincNueva = () => { const ab = alta.classList.contains('abierta'); btnNueva.setAttribute('aria-expanded', ab ? 'true' : 'false'); btnNueva.textContent = ab ? '− Cerrar alta' : '+ Nueva cuenta'; };
-    sincNueva();
+    const cerrarAlta = () => {
+      STATE_ccAltaAbierta = false; STATE_ccAlta.enfocar = false; STATE_ccAlta.nombre = ''; STATE_ccAlta.lote = false;
+      const i = $('ccAltaNombre'); if (i) i.value = '';
+      alta.classList.remove('abierta'); alta.classList.remove('lote-abierto'); const w = $('ccAltaLoteWrap'); if (w) w.classList.add('cc-oculto');
+      const t = $('ccAltaLoteToggle'); if (t) t.textContent = 'Pegar varias a la vez';
+      btnNueva.setAttribute('aria-expanded', 'false');
+      try { btnNueva.focus({ preventScroll: true }); } catch (e) { /* sin foco */ }
+    };
     btnNueva.addEventListener('click', () => {
-      const ab = !alta.classList.contains('abierta'); alta.classList.toggle('abierta', ab); STATE_ccAltaAbierta = ab; sincNueva();
-      if (ab) { const i = $('ccAltaNombre'); if (i) { try { i.focus(); } catch (e) { /* sin foco */ } } }
+      alta.classList.add('abierta'); STATE_ccAltaAbierta = true; btnNueva.setAttribute('aria-expanded', 'true');
+      const i = $('ccAltaNombre'); if (i) { try { i.focus(); } catch (e) { /* sin foco */ } }
     });
+    $('ccAltaCerrar').addEventListener('click', cerrarAlta);
+    $('ccAltaCancelar').addEventListener('click', cerrarAlta);
+    $('ccAltaFondo').addEventListener('click', cerrarAlta);
+    if (!window.__ccAltaEsc) {
+      window.__ccAltaEsc = true;
+      document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        const a2 = document.getElementById('ccAltaCard'), x = document.getElementById('ccAltaCerrar');
+        if (a2 && x && a2.classList.contains('abierta')) x.click();
+      });
+    }
     btnIE.addEventListener('click', (e) => {
       e.stopPropagation(); const ab = !pop.classList.contains('abierto'); pop.classList.toggle('abierto', ab); btnIE.setAttribute('aria-expanded', ab ? 'true' : 'false');
       if (ab) { const r = btnIE.getBoundingClientRect(); pop.style.top = (r.bottom + 6) + 'px'; pop.style.left = Math.max(8, Math.min(r.right - 460, window.innerWidth - 468)) + 'px'; }
@@ -26386,7 +26424,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.17';
+const APP_VERSION = '2026-11-06.18';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
