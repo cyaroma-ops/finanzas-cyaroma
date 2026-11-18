@@ -13432,6 +13432,11 @@ async function renderCatalogoCuentas() {
 }
 
 async function openCuentasModal(businessId, onClose) {
+  STATE_cmEditando = null; STATE_cmBuscar = '';
+  { const bq = document.getElementById('cmBuscar'); bq.value = ''; bq.oninput = () => { STATE_cmBuscar = bq.value; renderCuentasList(businessId); }; }
+  document.getElementById('cmExpandir').onclick = () => { STATE_cmColapsados.clear(); renderCuentasList(businessId); };
+  document.getElementById('cmContraer').onclick = async () => { (await loadCuentasMayor(businessId)).forEach(m => STATE_cmColapsados.add(m.id)); renderCuentasList(businessId); };
+  [['newCuentaMayorNombre', 'saveCuentaMayor'], ['newSubcuentaNombre', 'saveSubcuenta']].forEach(([i, b]) => { document.getElementById(i).onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); document.getElementById(b).click(); } }; });
   await renderCuentasList(businessId);
   document.getElementById('modalCuentas').classList.add('show');
   document.getElementById('closeCuentas').onclick = () => { document.getElementById('modalCuentas').classList.remove('show'); if (onClose) onClose(); };
@@ -13472,48 +13477,120 @@ function etiquetaRol(esAdministrador, rol) {
   return ROL_LABEL[rol] || 'Gerencia';
 }
 const TIPO_CUENTA_LABEL = { activo: 'Activo', pasivo: 'Pasivo', capital: 'Capital', ingreso: 'Ingreso', costo: 'Costo de Ventas', gasto: 'Gasto' };
+let STATE_cmEditando = null, STATE_cmBuscar = '', STATE_cmColapsados = new Set(), STATE_cmMenuBtn = null;
+function cmCerrarMenu() { const m = document.getElementById('cmMenu'); if (m) m.remove(); if (STATE_cmMenuBtn) STATE_cmMenuBtn.classList.remove('abierto'); STATE_cmMenuBtn = null; }
+function cmAbrirMenu(btn, opciones) {
+  if (STATE_cmMenuBtn === btn) { cmCerrarMenu(); return; }
+  cmCerrarMenu();
+  const m = document.createElement('div'); m.id = 'cmMenu'; m.className = 'cm-menu'; m.setAttribute('role', 'menu');
+  m.innerHTML = opciones.map((o, i) => `<button type="button" role="menuitem" data-i="${i}" class="${o.peligro ? 'peligro' : ''}">${o.txt}</button>`).join('');
+  document.body.appendChild(m);
+  const r = btn.getBoundingClientRect();
+  m.style.top = Math.max(8, Math.min(r.bottom + 4, window.innerHeight - m.offsetHeight - 8)) + 'px';
+  m.style.left = Math.max(8, r.right - m.offsetWidth) + 'px';
+  btn.classList.add('abierto'); STATE_cmMenuBtn = btn;
+  m.querySelectorAll('button').forEach(b => b.addEventListener('click', () => { cmCerrarMenu(); opciones[Number(b.dataset.i)].fn(); }));
+}
+document.addEventListener('mousedown', e => { if (STATE_cmMenuBtn && !(e.target.closest && (e.target.closest('#cmMenu') || e.target.closest('.cm-mas')))) cmCerrarMenu(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && STATE_cmMenuBtn) { e.stopPropagation(); cmCerrarMenu(); } }, true);
+document.addEventListener('scroll', () => { if (STATE_cmMenuBtn) cmCerrarMenu(); }, true);
+
 async function renderCuentasList(businessId) {
   const [mayores, subcuentas] = await Promise.all([loadCuentasMayor(businessId), loadSubcuentas(businessId)]);
   const box = document.getElementById('cuentasMayorList');
   const sel = document.getElementById('newSubcuentaMayor');
+  const previa = sel.value;
   sel.innerHTML = mayores.map(m => `<option value="${m.id}">${escHtml(m.nombre)} (${TIPO_CUENTA_LABEL[m.tipo]||m.tipo})</option>`).join('') || `<option value="">— crea una cuenta mayor primero —</option>`;
+  if (previa && mayores.some(m => m.id === previa)) sel.value = previa;
   await actualizarSelectSubcuentaPadre(businessId);
+  cmCerrarMenu();
 
-  if (!mayores.length) { box.innerHTML = `<div class="empty" style="padding:16px;">Aún no hay cuentas mayor. Crea la primera abajo.</div>`; return; }
-  const filaSubHtml = (s, nivel) => `
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:5px 4px 5px ${16 + nivel*18}px;border-bottom:1px solid var(--line);font-size:13px;">
-      <span>${nivel>0?'— ':''}${escHtml(s.nombre)}</span>
-      <button class="row-del sub-del" data-id="${s.id}" style="font-size:14px;">✕</button>
-    </div>
-    ${subcuentasHijas(s.id, subcuentas).map(h => filaSubHtml(h, nivel+1)).join('')}`;
-  box.innerHTML = mayores.map(m => `
-    <div style="margin-bottom:10px;">
-      <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 4px;background:#f7f9fc;border-radius:7px;">
-        <strong>${escHtml(m.nombre)}</strong>
-        <span style="display:flex;align-items:center;gap:10px;">
-          <span class="tag" style="cursor:default;padding:2px 10px;font-size:11px;">${TIPO_CUENTA_LABEL[m.tipo]||m.tipo}</span>
-          <button class="row-del mayor-del" data-id="${m.id}" style="font-size:15px;">✕</button>
-        </span>
-      </div>
-      ${subcuentasRaiz(m.id, subcuentas).map(s => filaSubHtml(s, 0)).join('') || `<div style="padding:5px 4px 5px 16px;color:var(--muted);font-size:12px;">Sin subcuentas todavía.</div>`}
-    </div>`).join('');
-  box.querySelectorAll('.mayor-del').forEach(btn => btn.addEventListener('click', async () => {
-    if (!confirm('¿Eliminar esta cuenta mayor y todas sus subcuentas?')) return;
-    const { error } = await sb.from('fz_cuentas_mayor').delete().eq('id', btn.dataset.id);
-    if (error) {
-      toast('No se puede eliminar: ya tiene movimientos, facturas o pólizas registradas con alguna de sus subcuentas. Si ya no la usas, deja de seleccionarla en capturas nuevas — el historial se conserva.', 'error');
-      return;
-    }
-    renderCuentasList(businessId);
+  const q = cfdiNorm(STATE_cmBuscar).trim();
+  const descendientes = (id) => { const out = []; const rec = (pid) => subcuentasHijas(pid, subcuentas).forEach(h => { out.push(h); rec(h.id); }); rec(id); return out; };
+  const coincideSub = (s) => !q || cfdiNorm(s.nombre).includes(q);
+  const totalSubs = subcuentas.length;
+  let visiblesSubs = 0;
+  const hayEdicion = (id) => STATE_cmEditando === id;
+  const opcionesTipo = (actual) => Object.entries(TIPO_CUENTA_LABEL).map(([k, v]) => `<option value="${k}" ${k===actual?'selected':''}>${v}</option>`).join('');
+  const filaSubHtml = (s, nivel, forzar) => {
+    const hijos = subcuentasHijas(s.id, subcuentas);
+    const hijosHtml = hijos.map(hh => filaSubHtml(hh, nivel + 1, forzar || coincideSub(s))).join('');
+    const propia = forzar || coincideSub(s);
+    if (!propia && !hijosHtml) return '';
+    const pad = 12 + nivel * 20;
+    if (propia) visiblesSubs++;
+    const fila = hayEdicion(s.id)
+      ? `<div class="cm-fila edit" style="padding-left:${pad}px;"><div class="cm-edit"><input type="text" class="cm-in-nombre" data-id="${s.id}" value="${escAttr(s.nombre)}" maxlength="120"><button type="button" class="btn btn-gold btn-sm cm-guardar-sub" data-id="${s.id}">Guardar</button><button type="button" class="btn btn-ghost btn-sm cm-cancelar">Cancelar</button></div></div>`
+      : `<div class="cm-fila" style="padding-left:${pad}px;"><span class="cm-nom">${nivel>0?'<span style="color:var(--muted);">└ </span>':''}${escHtml(s.nombre)}</span><button type="button" class="cm-mas" data-kind="sub" data-id="${s.id}" aria-label="Acciones de ${escAttr(s.nombre)}" aria-haspopup="menu">⋯</button></div>`;
+    return fila + hijosHtml;
+  };
+  if (!mayores.length) { box.innerHTML = `<div class="cm-vacio">Aún no hay cuentas mayor. Crea la primera abajo.</div>`; document.getElementById('cmConteo').textContent = ''; return; }
+  const html = mayores.map(m => {
+    const raices = subcuentasRaiz(m.id, subcuentas);
+    const mayorCoincide = !q || cfdiNorm(m.nombre).includes(q);
+    const cuerpo = raices.map(r => filaSubHtml(r, 0, mayorCoincide && !!q)).join('');
+    if (q && !mayorCoincide && !cuerpo) return '';
+    const total = raices.length + raices.reduce((n, r) => n + descendientes(r.id).length, 0);
+    const colapsado = !q && STATE_cmColapsados.has(m.id);
+    const cab = hayEdicion(m.id)
+      ? `<div class="cm-mayor-cab edit"><div class="cm-edit"><input type="text" class="cm-in-nombre" data-id="${m.id}" value="${escAttr(m.nombre)}" maxlength="120"><select class="cm-in-tipo" data-id="${m.id}">${opcionesTipo(m.tipo)}</select><button type="button" class="btn btn-gold btn-sm cm-guardar-mayor" data-id="${m.id}">Guardar</button><button type="button" class="btn btn-ghost btn-sm cm-cancelar">Cancelar</button></div></div>`
+      : `<div class="cm-mayor-cab"><button type="button" class="cm-chev ${colapsado?'cerrado':''}" data-id="${m.id}" aria-label="${colapsado?'Expandir':'Contraer'}">▼</button><span class="cm-mayor-nombre">${escHtml(m.nombre)}</span><span class="cm-cont">${total}</span><span class="cm-tag">${TIPO_CUENTA_LABEL[m.tipo]||m.tipo}</span><button type="button" class="cm-mas" data-kind="mayor" data-id="${m.id}" aria-label="Acciones de ${escAttr(m.nombre)}" aria-haspopup="menu">⋯</button></div>`;
+    return `<div class="cm-mayor">${cab}${colapsado ? '' : (cuerpo || `<div class="cm-fila" style="color:var(--muted);font-size:12px;padding-left:32px;">Sin subcuentas todavía.</div>`)}</div>`;
+  }).join('');
+  box.innerHTML = html || `<div class="cm-vacio">Sin resultados para «${escHtml(STATE_cmBuscar)}».</div>`;
+  document.getElementById('cmConteo').textContent = q ? `${visiblesSubs} de ${totalSubs} subcuentas` : `${mayores.length} cuentas mayor · ${totalSubs} subcuentas`;
+
+  box.querySelectorAll('.cm-chev').forEach(b => b.addEventListener('click', () => { const id = b.dataset.id; if (STATE_cmColapsados.has(id)) STATE_cmColapsados.delete(id); else STATE_cmColapsados.add(id); renderCuentasList(businessId); }));
+  box.querySelectorAll('.cm-cancelar').forEach(b => b.addEventListener('click', () => { STATE_cmEditando = null; renderCuentasList(businessId); }));
+  box.querySelectorAll('.cm-in-nombre').forEach(inp => inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); const btn = box.querySelector('.cm-guardar-sub, .cm-guardar-mayor'); if (btn) btn.click(); }
+    else if (e.key === 'Escape') { e.stopPropagation(); STATE_cmEditando = null; renderCuentasList(businessId); }
   }));
-  box.querySelectorAll('.sub-del').forEach(btn => btn.addEventListener('click', async () => {
-    if (!confirm('¿Eliminar esta subcuenta? (si tiene sub-subcuentas anidadas, también se eliminan)')) return;
-    const { error } = await sb.from('fz_subcuentas').delete().eq('id', btn.dataset.id);
-    if (error) {
-      toast('No se puede eliminar: ya tiene movimientos, facturas o pólizas registradas. Si ya no la usas, simplemente deja de seleccionarla en capturas nuevas — el historial se conserva.', 'error');
-      return;
-    }
+  const enfoque = box.querySelector('.cm-in-nombre'); if (enfoque) { enfoque.focus(); enfoque.select(); }
+
+  const eliminarMayor = async (id) => {
+    if (!confirm('¿Eliminar esta cuenta mayor y todas sus subcuentas?')) return;
+    const { error } = await sb.from('fz_cuentas_mayor').delete().eq('id', id);
+    if (error) { toast('No se puede eliminar: ya tiene movimientos, facturas o pólizas registradas con alguna de sus subcuentas. Si ya no la usas, deja de seleccionarla en capturas nuevas — el historial se conserva.', 'error'); return; }
     renderCuentasList(businessId);
+  };
+  const eliminarSub = async (id) => {
+    if (!confirm('¿Eliminar esta subcuenta? (si tiene sub-subcuentas anidadas, también se eliminan)')) return;
+    const { error } = await sb.from('fz_subcuentas').delete().eq('id', id);
+    if (error) { toast('No se puede eliminar: ya tiene movimientos, facturas o pólizas registradas. Si ya no la usas, simplemente deja de seleccionarla en capturas nuevas — el historial se conserva.', 'error'); return; }
+    renderCuentasList(businessId);
+  };
+  box.querySelectorAll('.cm-mas').forEach(btn => btn.addEventListener('click', () => {
+    const id = btn.dataset.id, esMayor = btn.dataset.kind === 'mayor';
+    cmAbrirMenu(btn, [
+      { txt: 'Editar', fn: () => { STATE_cmEditando = id; renderCuentasList(businessId); } },
+      { txt: 'Eliminar…', peligro: true, fn: () => (esMayor ? eliminarMayor(id) : eliminarSub(id)) },
+    ]);
+  }));
+  box.querySelectorAll('.cm-guardar-mayor').forEach(btn => btn.addEventListener('click', async () => {
+    const id = btn.dataset.id, m = mayores.find(x => x.id === id);
+    const nombre = box.querySelector(`.cm-in-nombre[data-id="${id}"]`).value.trim();
+    const tipo = box.querySelector(`.cm-in-tipo[data-id="${id}"]`).value;
+    if (!nombre) { toast('Escribe un nombre.', 'error'); return; }
+    if (mayores.some(x => x.id !== id && cfdiNorm(x.nombre) === cfdiNorm(nombre))) { toast('Ya existe otra cuenta mayor con ese nombre.', 'error'); return; }
+    if (m && nombre === m.nombre && tipo === m.tipo) { STATE_cmEditando = null; renderCuentasList(businessId); return; }
+    const payload = { nombre, tipo };
+    if (tipo !== 'costo') payload.concepto_venta_vinculado_id = null;
+    const { error } = await sb.from('fz_cuentas_mayor').update(payload).eq('id', id);
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    registrarAuditoria(businessId, 'editar', 'Catálogo de Cuentas', `Cuenta "${m ? m.nombre : nombre}" → "${nombre}", tipo ${TIPO_CUENTA_LABEL[tipo]||tipo}`);
+    STATE_cmEditando = null; toast('Guardado.'); renderCuentasList(businessId);
+  }));
+  box.querySelectorAll('.cm-guardar-sub').forEach(btn => btn.addEventListener('click', async () => {
+    const id = btn.dataset.id, sbc = subcuentas.find(x => x.id === id);
+    const nombre = box.querySelector(`.cm-in-nombre[data-id="${id}"]`).value.trim();
+    if (!nombre) { toast('Escribe un nombre.', 'error'); return; }
+    if (sbc && subcuentas.some(x => x.id !== id && x.cuenta_mayor_id === sbc.cuenta_mayor_id && (x.subcuenta_padre_id || null) === (sbc.subcuenta_padre_id || null) && cfdiNorm(x.nombre) === cfdiNorm(nombre))) { toast('Ya existe otra subcuenta con ese nombre en el mismo lugar.', 'error'); return; }
+    if (sbc && nombre === sbc.nombre) { STATE_cmEditando = null; renderCuentasList(businessId); return; }
+    const { error } = await sb.from('fz_subcuentas').update({ nombre }).eq('id', id);
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    registrarAuditoria(businessId, 'editar', 'Catálogo de Cuentas', `Subcuenta "${sbc ? sbc.nombre : nombre}" → "${nombre}"`);
+    STATE_cmEditando = null; toast('Guardado.'); renderCuentasList(businessId);
   }));
 }
 
@@ -20850,7 +20927,7 @@ document.addEventListener('DOMContentLoaded', () => {
   g('facturaVencimiento').addEventListener('change', fcSincronizarCredito);
   g('facturaVencimiento').addEventListener('input', fcSincronizarCredito);
 });
-const IDS_SELECT_BUSCABLE = ['facturaCliente', 'fpProveedor', 'fpDesgloseSubcuenta', 'newDesgloseSubcuenta', 'movSubcuenta', 'newProductoSubcuenta', 'fpAfCuentaGasto', 'fpAfCuentaDepreciacion', 'afCuentaGasto', 'afCuentaDepreciacion'];
+const IDS_SELECT_BUSCABLE = ['facturaCliente', 'newSubcuentaMayor', 'fpProveedor', 'fpDesgloseSubcuenta', 'newDesgloseSubcuenta', 'movSubcuenta', 'newProductoSubcuenta', 'fpAfCuentaGasto', 'fpAfCuentaDepreciacion', 'afCuentaGasto', 'afCuentaDepreciacion'];
 document.addEventListener('DOMContentLoaded', () => { IDS_SELECT_BUSCABLE.forEach(id => hacerSelectBuscable(document.getElementById(id))); });
 /* ===== fin 06.10 ===== */
 

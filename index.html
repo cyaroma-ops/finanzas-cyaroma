@@ -675,6 +675,41 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 .fp-pago-titulo{font-size:11.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);margin:16px 0 8px;border-top:1px solid var(--line);padding-top:12px;}
 .prov-tabs-barra{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px;}
 .prov-acciones{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;}
+/* 06.10 — Catálogo de cuentas (ventana) */
+.modal.cm-modal{width:min(760px,95vw);max-height:92vh;overflow-y:auto;padding:24px;}
+.cm-cab h3{margin:0 0 4px;}
+.cm-sub{font-size:12.5px;color:var(--muted);margin:0 0 14px;}
+.cm-herr{display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;}
+.cm-conteo{font-size:11.5px;color:var(--muted);white-space:nowrap;}
+.cm-lista{max-height:min(44vh,400px);overflow-y:auto;border:1.5px solid var(--line);border-radius:12px;margin-bottom:14px;background:#fff;}
+.cm-mayor{border-bottom:1px solid var(--line);}
+.cm-mayor:last-child{border-bottom:none;}
+.cm-mayor-cab{display:flex;align-items:center;gap:8px;padding:8px 10px;background:#f4f6fa;position:sticky;top:0;z-index:2;}
+.cm-chev{background:none;border:none;cursor:pointer;font-size:12px;color:var(--muted);width:20px;padding:0;transition:transform .15s;}
+.cm-chev.cerrado{transform:rotate(-90deg);}
+.cm-mayor-nombre{font-weight:700;font-size:13.5px;color:var(--navy-1);flex:1;min-width:0;overflow-wrap:anywhere;}
+.cm-cont{font-size:11px;color:var(--muted);background:#e9edf4;border-radius:20px;padding:1px 8px;}
+.cm-tag{font-size:10.5px;font-weight:600;border-radius:20px;padding:2px 10px;background:#fff;border:1px solid var(--line);color:#475467;}
+.cm-fila{display:flex;align-items:center;gap:8px;padding:6px 10px;border-top:1px solid #eef1f6;font-size:13px;}
+.cm-fila:hover{background:#fafbfd;}
+.cm-fila .cm-nom{flex:1;min-width:0;overflow-wrap:anywhere;}
+.cm-fila.edit,.cm-mayor-cab.edit{background:#fffbea;flex-wrap:wrap;}
+.cm-edit{display:flex;align-items:center;gap:6px;flex:1;flex-wrap:wrap;}
+.cm-edit input,.cm-edit select{padding:6px 9px;font-size:13px;border:1.5px solid var(--line);border-radius:8px;}
+.cm-edit input{flex:1 1 180px;min-width:120px;}
+.cm-mas{background:none;border:none;cursor:pointer;color:var(--muted);font-size:18px;line-height:1;padding:2px 8px;border-radius:7px;letter-spacing:1px;}
+.cm-mas:hover,.cm-mas.abierto{background:#e9edf4;color:var(--navy-1);}
+.cm-menu{position:fixed;z-index:400;min-width:150px;background:#fff;border:1.5px solid var(--line);border-radius:10px;box-shadow:0 14px 36px rgba(0,0,0,.18);padding:4px;}
+.cm-menu button{display:block;width:100%;text-align:left;background:none;border:none;padding:8px 12px;font-size:13px;border-radius:7px;cursor:pointer;color:var(--navy-1);}
+.cm-menu button:hover{background:#eef3fb;}
+.cm-menu button.peligro{color:var(--red);}
+.cm-menu button.peligro:hover{background:#fdecec;}
+.cm-vacio{padding:18px;color:var(--muted);font-size:13px;text-align:center;}
+.cm-alta{background:#f7f9fc;border:1.5px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px;}
+.cm-alta-tit{font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;}
+.cm-alta-fila{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+.cm-alta-fila .btn{flex:0 0 auto;}
+.cm-nota{font-size:11.5px;color:var(--muted);margin:10px 0 0;}
 .bs-wrap{position:relative;}
 .bs-input{width:100%;}
 .bs-oculto{display:none!important;}
@@ -2160,51 +2195,43 @@ Transacciones recurrentes
 
 <!-- Modal: catálogo de cuentas (cuenta mayor + subcuentas) -->
 <div class="modal-bg" id="modalCuentas">
-  <div class="modal" style="width:min(560px,92vw);">
-    <h3>Catálogo de cuentas</h3>
-    <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px;">Crea tus cuentas mayor (ej. Nómina, Servicios, Pasivos, Otros Ingresos) y dentro de cada una sus subcuentas — así se clasifican los gastos e ingresos en el Estado de Resultados y las pólizas de diario.</p>
-    <div id="cuentasMayorList" style="max-height:280px;overflow-y:auto;margin-bottom:16px;"></div>
-    <div class="grid-3" style="margin-bottom:10px;">
-      <div class="field" style="margin-bottom:0;">
-        <label>Nueva cuenta mayor</label>
-        <input type="text" id="newCuentaMayorNombre" placeholder="Ej. Servicios">
-      </div>
-      <div class="field" style="margin-bottom:0;">
-        <label>Tipo</label>
-        <select id="newCuentaMayorTipo">
-          <option value="gasto" selected>Gasto</option>
-          <option value="costo">Costo de Ventas</option>
-          <option value="ingreso">Ingreso</option>
-          <option value="activo">Activo</option>
-          <option value="pasivo">Pasivo</option>
-          <option value="capital">Capital</option>
-        </select>
-      </div>
-      <div class="field" style="margin-bottom:0;display:flex;align-items:flex-end;">
-        <button class="btn btn-ghost" id="saveCuentaMayor" style="width:100%;">+ Agregar cuenta mayor</button>
-      </div>
+  <div class="modal cm-modal">
+    <div class="cm-cab">
+      <h3>Catálogo de cuentas</h3>
+      <p class="cm-sub">Cuentas mayor y sus subcuentas: así se clasifican los gastos e ingresos en el Estado de Resultados y las pólizas de diario.</p>
     </div>
-    <div class="grid-3">
-      <div class="field" style="margin-bottom:0;grid-column:span 1;">
-        <label>Cuenta mayor</label>
-        <select id="newSubcuentaMayor"></select>
-      </div>
-      <div class="field" style="margin-bottom:0;">
-        <label>Anidar bajo (opcional)</label>
-        <select id="newSubcuentaPadre"><option value="">— nivel superior —</option></select>
-      </div>
-      <div class="field" style="margin-bottom:0;">
-        <label>Nueva subcuenta</label>
-        <input type="text" id="newSubcuentaNombre" placeholder="Ej. Internet">
-      </div>
+    <div class="cm-herr">
+      <div class="field" style="margin:0;flex:1;"><input type="text" id="cmBuscar" placeholder="Buscar cuenta…" autocomplete="off"></div>
+      <span class="cm-conteo" id="cmConteo"></span>
+      <button type="button" class="btn btn-ghost btn-sm" id="cmExpandir">Expandir</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="cmContraer">Contraer</button>
     </div>
-    <div class="grid-3">
-      <div></div><div></div>
-      <div class="field" style="margin-bottom:0;">
-        <button class="btn btn-ghost" id="saveSubcuenta" style="width:100%;">+ Agregar</button>
+    <div id="cuentasMayorList" class="cm-lista"></div>
+    <div class="cm-alta">
+      <div class="cm-alta-tit">Nueva cuenta mayor</div>
+      <div class="cm-alta-fila">
+        <div class="field" style="flex:2 1 180px;margin:0;"><input type="text" id="newCuentaMayorNombre" placeholder="Ej. Servicios"></div>
+        <div class="field" style="flex:1 1 140px;margin:0;">
+          <select id="newCuentaMayorTipo">
+            <option value="gasto" selected>Gasto</option>
+            <option value="costo">Costo de Ventas</option>
+            <option value="ingreso">Ingreso</option>
+            <option value="activo">Activo</option>
+            <option value="pasivo">Pasivo</option>
+            <option value="capital">Capital</option>
+          </select>
+        </div>
+        <button class="btn btn-ghost" id="saveCuentaMayor">+ Agregar</button>
       </div>
+      <div class="cm-alta-tit" style="margin-top:12px;">Nueva subcuenta</div>
+      <div class="cm-alta-fila">
+        <div class="field" style="flex:1 1 170px;margin:0;"><select id="newSubcuentaMayor"></select></div>
+        <div class="field" style="flex:1 1 150px;margin:0;"><select id="newSubcuentaPadre"><option value="">— nivel superior —</option></select></div>
+        <div class="field" style="flex:1 1 150px;margin:0;"><input type="text" id="newSubcuentaNombre" placeholder="Ej. Internet"></div>
+        <button class="btn btn-ghost" id="saveSubcuenta">+ Agregar</button>
+      </div>
+      <p class="cm-nota">Elige la cuenta mayor, si va dentro de otra subcuenta («Anidar bajo») y escribe el nombre. Ej.: Gastos de Operación › Mantenimiento › Reparación de freidoras.</p>
     </div>
-    <p style="font-size:11.5px;color:var(--muted);margin:-6px 0 12px;">Ejemplo: Mayor "Gastos de Operación" › Subcuenta "Mantenimiento y conservación" › (anidada) "Reparación de freidoras".</p>
     <div class="modal-actions">
       <button class="btn btn-gold" id="closeCuentas" style="width:100%;">Cerrar</button>
     </div>
