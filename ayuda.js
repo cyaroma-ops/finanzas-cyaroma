@@ -62,6 +62,7 @@ window.AYUDA = {
         'Revisa las columnas **Dif.** (efectivo, tarjeta y total): si están en cero, el día cuadra.'
       ],
       faq: [
+        { q: '¿Cómo llevo el saldo de lo que me deben (CxC) desde Ventas?', a: 'Primero crea en **Catálogo de cuentas** la cuenta donde se acumula (por ejemplo «Deudores diversos» con una subcuenta por cada tipo: Staff, Socios, Otros). Luego, en **Configurar conceptos de recibido**, agrega un concepto de categoría **CxC** y elige su **Cuenta destino**. Lo que captures en ese concepto aumenta el saldo de esa cuenta, y lo ves en el Balance y en Auxiliares. Cuando te paguen, regístralo con una **Póliza de diario** (de Banco o Efectivo contra esa cuenta). Solo aplica a negocios en modo Financiero.' },
         { q: '¿Qué columnas trae el Excel de ventas?', a: 'Usa siempre la **plantilla**. Trae la Fecha, una columna por cada categoría de venta que configuraste (y su «TC» si es en otra moneda), los gastos del día y, si los usas, las columnas de lo que reporta tu sistema (efectivo, tarjetas y CxC). Si cambias los nombres de las columnas, la importación no los reconoce.' },
         { q: '¿Qué significan las columnas «Dif.»?', a: 'Comparan lo que tu sistema dice que se vendió con lo que realmente se contó o cobró. Una diferencia hay que revisarla antes de cerrar el mes.' },
         { q: '¿Por qué aparece «Aún no configuras qué vende este negocio»?', a: 'Porque el negocio todavía no tiene categorías de venta. Pulsa **Configurar categorías de venta** y agrega las que apliquen.' },

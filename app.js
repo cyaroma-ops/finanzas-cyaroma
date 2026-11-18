@@ -2402,6 +2402,8 @@ async function openConceptosModal(businessId) {
     (monedas || []).map(m => `<option value="${m.id}">${escHtml(m.nombre)}</option>`).join('');
   document.getElementById('newConceptoBancoId').innerHTML = `<option value="">— no vincular —</option>` +
     (cuentasBanco || []).map(c => `<option value="${c.id}">${escHtml(c.nombre)}</option>`).join('');
+  document.getElementById('newConceptoSubcuentaId').innerHTML = `<option value="">— sin cuenta destino —</option>` +
+    (await opcionesSubcuentasActivo(businessId)).map(o => `<option value="${o.id}">${escHtml(o.label)}</option>`).join('');
   document.getElementById('modalConceptos').classList.add('show');
   document.getElementById('newConceptoCategoria').onchange = updateConceptoFieldsVisibility;
   updateConceptoFieldsVisibility();
@@ -2419,7 +2421,8 @@ async function openConceptosModal(businessId) {
     const moneda_id = (permiteVinculoGuardar && categoria === 'efectivo') ? (document.getElementById('newConceptoMonedaId').value || null) : null;
     const banco_cuenta_id = (permiteVinculoGuardar && (categoria === 'tarjetas' || categoria === 'bancos')) ? (document.getElementById('newConceptoBancoId').value || null) : null;
     if (!nombre) { toast('Escribe un nombre para el concepto.', 'error'); return; }
-    const { error } = await sb.from('fz_conceptos').insert({ business_id: businessId, nombre, categoria, es_moneda, medio, moneda_id, banco_cuenta_id, orden: 99 });
+    const subcuenta_id = (permiteVinculoGuardar && categoria === 'cxc') ? (document.getElementById('newConceptoSubcuentaId').value || null) : null;
+    const { error } = await sb.from('fz_conceptos').insert({ business_id: businessId, nombre, categoria, es_moneda, medio, moneda_id, banco_cuenta_id, orden: 99, ...(subcuenta_id ? { subcuenta_id } : {}) });
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     document.getElementById('newConceptoNombre').value = '';
     document.getElementById('newConceptoMoneda').checked = false;
@@ -2433,6 +2436,20 @@ function updateConceptoFieldsVisibility() {
   document.getElementById('medioWrap').style.display = cat === 'propinas' ? 'block' : 'none';
   document.getElementById('monedaVinculoWrap').style.display = (permiteVinculo && cat === 'efectivo') ? 'block' : 'none';
   document.getElementById('bancoVinculoWrap').style.display = (permiteVinculo && (cat === 'tarjetas' || cat === 'bancos')) ? 'block' : 'none';
+  document.getElementById('cxcVinculoWrap').style.display = (permiteVinculo && cat === 'cxc') ? 'block' : 'none';
+}
+// 06.19 — subcuentas de cuentas mayor de tipo Activo, con su ruta, para elegir la «cuenta destino» de un concepto CxC.
+async function opcionesSubcuentasActivo(businessId) {
+  try {
+    const [mayores, subs] = await Promise.all([loadCuentasMayor(businessId), loadSubcuentas(businessId)]);
+    const out = [];
+    mayores.filter(m => m.tipo === 'activo').forEach(m => {
+      const propias = subs.filter(s => s.cuenta_mayor_id === m.id);
+      const hijos = (pid, pref) => propias.filter(s => (s.subcuenta_padre_id || null) === pid).forEach(s => { const et = pref + ' › ' + s.nombre; out.push({ id: s.id, label: et }); hijos(s.id, et); });
+      hijos(null, m.nombre);
+    });
+    return out;
+  } catch (e) { return []; }
 }
 async function renderConceptosList(businessId) {
   const [conceptos, monedasQ, cuentasQ] = await Promise.all([
@@ -2445,6 +2462,7 @@ async function renderConceptosList(businessId) {
   const box = document.getElementById('conceptosList');
   if (!conceptos.length) { box.innerHTML = `<div class="empty" style="padding:16px;">Aún no hay conceptos. Agrega el primero abajo.</div>`; return; }
   const permiteVinculo = ventasAfectaFueraDeSuRegistro(businessId);
+  const opcionesSubCxc = permiteVinculo && conceptos.some(c => c.categoria === 'cxc') ? await opcionesSubcuentasActivo(businessId) : [];
   box.innerHTML = conceptos.map(c => `
     <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 4px;border-bottom:1px solid var(--line);gap:10px;">
       <div style="min-width:0;">
@@ -2453,6 +2471,10 @@ async function renderConceptosList(businessId) {
       ${(permiteVinculo && c.categoria === 'efectivo') ? `<select class="cell concepto-moneda-vinculo" data-id="${c.id}" style="max-width:170px;flex-shrink:0;">
         <option value="">— no vincular —</option>
         ${monedas.map(m => `<option value="${m.id}" ${c.moneda_id===m.id?'selected':''}>${escHtml(m.nombre)}</option>`).join('')}
+      </select>` : ''}
+      ${(permiteVinculo && c.categoria === 'cxc') ? `<select class="cell concepto-sub-vinculo" data-id="${c.id}" style="max-width:230px;flex-shrink:0;" title="Cuenta destino: lo recibido en este concepto aumenta esa cuenta por cobrar">
+        <option value="">— sin cuenta destino —</option>
+        ${opcionesSubCxc.map(o => `<option value="${o.id}" ${c.subcuenta_id===o.id?'selected':''}>${escHtml(o.label)}</option>`).join('')}
       </select>` : ''}
       ${(permiteVinculo && (c.categoria === 'tarjetas' || c.categoria === 'bancos')) ? `<select class="cell concepto-banco-vinculo" data-id="${c.id}" style="max-width:170px;flex-shrink:0;">
         <option value="">— no vincular —</option>
@@ -2464,6 +2486,13 @@ async function renderConceptosList(businessId) {
     sel.addEventListener('change', async () => {
       await sb.from('fz_conceptos').update({ moneda_id: sel.value || null }).eq('id', sel.dataset.id);
       toast('Vínculo actualizado.');
+    });
+  });
+  box.querySelectorAll('.concepto-sub-vinculo').forEach(sel => {
+    sel.addEventListener('change', async () => {
+      const { error } = await sb.from('fz_conceptos').update({ subcuenta_id: sel.value || null }).eq('id', sel.dataset.id);
+      if (error) { toast('No se pudo guardar la cuenta destino: ' + error.message + ' (¿ya corriste el SQL de la 06.19?)', 'error'); return; }
+      toast('Cuenta destino actualizada.');
     });
   });
   box.querySelectorAll('.concepto-banco-vinculo').forEach(sel => {
@@ -12052,7 +12081,7 @@ async function renderDiariosPolizasVista() {
           <tfoot><tr class="total-row"><td colspan="3">TOTAL</td><td class="num">${fmt(d.cargo)}</td><td class="num">${fmt(d.abono)}</td></tr></tfoot>
         </table>
       </div>
-      ${!cuadra && d.unLadoPorDiseno ? `<p style="font-size:12px;color:var(--muted);">Documento de un solo lado por diseño: ${d.tipoOrigen === 'venta_recibido' ? 'es lo vendido que espera su depósito; su contrapartida es el depósito en Bancos o Efectivo (cuenta "Ventas pendientes de depositar").' : (d.tipoOrigen === 'factura_proveedor' && !String(d.referencia || '').startsWith('Cr') ? 'es la propina por repartir; su contrapartida es la venta conciliada.' : 'es un pago en exceso a un proveedor y su crédito a favor; juntos se compensan a cero.')} No es un error.</p>` : !cuadra ? `<p style="font-size:12.5px;font-weight:700;color:var(--red);">Diferencia: ${fmt(Math.abs(d.diferencia))} — ${d.diferencia<0?'Abonos exceden Cargos':'Cargos exceden Abonos'} por ${fmt(Math.abs(d.diferencia))}</p>` : ''}
+      ${!cuadra && d.unLadoPorDiseno ? `<p style="font-size:12px;color:var(--muted);">Documento de un solo lado por diseño: ${d.tipoOrigen === 'venta_recibido' ? 'es lo vendido que espera su depósito (cuenta "Ventas pendientes de depositar") o que quedó por cobrar (cuenta por cobrar de ventas); su contrapartida es el depósito en Bancos o Efectivo, o el cobro que registres.' : (d.tipoOrigen === 'factura_proveedor' && !String(d.referencia || '').startsWith('Cr') ? 'es la propina por repartir; su contrapartida es la venta conciliada.' : 'es un pago en exceso a un proveedor y su crédito a favor; juntos se compensan a cero.')} No es un error.</p>` : !cuadra ? `<p style="font-size:12.5px;font-weight:700;color:var(--red);">Diferencia: ${fmt(Math.abs(d.diferencia))} — ${d.diferencia<0?'Abonos exceden Cargos':'Cargos exceden Abonos'} por ${fmt(Math.abs(d.diferencia))}</p>` : ''}
       <button class="btn btn-ghost btn-sm dp-ver-documento" data-idx="${idx}" style="margin-top:6px;">Ver documento</button>
     </div>`;
   };
@@ -21923,7 +21952,9 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
     .then(async (r) => { const ids = [...new Set((r.data || []).map(a => a.pago_impuesto_id))]; return { aplicaciones: r, refs: ids.length ? await sb.from('fz_pagos_impuestos').select('id,tipo_impuesto,concepto').in('id', ids) : { data: [] } }; });
   cargaAplicacionesFiscales.catch(() => {});
   const cargaVentasConcepto = esFinanciero0
-    ? lanzar(sb.from('fz_conceptos').select('id,nombre,banco_cuenta_id,moneda_id').eq('business_id', businessId).or('banco_cuenta_id.not.is.null,moneda_id.not.is.null'))
+    ? lanzar(sb.from('fz_conceptos').select('id,nombre,banco_cuenta_id,moneda_id,subcuenta_id').eq('business_id', businessId).or('banco_cuenta_id.not.is.null,moneda_id.not.is.null,subcuenta_id.not.is.null'))
+        // 06.19: si la columna subcuenta_id aún no existe en la base, se usa la consulta de siempre (nada cambia hasta correr el SQL).
+        .then(async (c0) => c0.error ? await sb.from('fz_conceptos').select('id,nombre,banco_cuenta_id,moneda_id').eq('business_id', businessId).or('banco_cuenta_id.not.is.null,moneda_id.not.is.null') : c0)
         .then(async (c) => ({ conceptos: c, ventas: (c.data && c.data.length) ? await conDesde(sb.from('fz_ventas').select('id,fecha,recon_data').eq('business_id', businessId).lte('fecha', hastaFecha)) : { data: [] } }))
     : null;
   if (cargaVentasConcepto) cargaVentasConcepto.catch(() => {});
@@ -22155,7 +22186,10 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
           const tcDia = Number(entradaRecon?.tc) || 0;
           monto = redondearMoneda(monto * (tcDia > 0 ? tcDia : (Number(monedas.find(x=>x.id===cv.moneda_id)?.tc_reporte)||1)));
         }
-        if (monto) push({ modulo: 'Ventas', tipoOrigen: 'venta_recibido', id: v.id+':'+cv.id, fecha: v.fecha, referencia: `Venta ${v.fecha} — ${cv.nombre}`, detalle: '', cuenta: 'Ventas pendientes de depositar' }, 'sub:'+subVentasPendientesDepositar, 'activo', monto, 0);
+        // 06.19: un concepto CxC con «cuenta destino» (sin banco/efectivo) deja su monto como saldo por cobrar en esa subcuenta, en lugar de la cuenta puente de depósitos.
+        if (monto && cv.subcuenta_id && !cv.banco_cuenta_id && !cv.moneda_id) push({ modulo: 'Ventas', tipoOrigen: 'venta_recibido', id: v.id+':'+cv.id, fecha: v.fecha, referencia: `Venta ${v.fecha} — ${cv.nombre}`, detalle: '', cuenta: 'Cuenta por cobrar de ventas' }, 'sub:'+cv.subcuenta_id, 'activo', monto, 0);
+        else if (monto && !cv.subcuenta_id) push({ modulo: 'Ventas', tipoOrigen: 'venta_recibido', id: v.id+':'+cv.id, fecha: v.fecha, referencia: `Venta ${v.fecha} — ${cv.nombre}`, detalle: '', cuenta: 'Ventas pendientes de depositar' }, 'sub:'+subVentasPendientesDepositar, 'activo', monto, 0);
+        else if (monto && (cv.banco_cuenta_id || cv.moneda_id)) push({ modulo: 'Ventas', tipoOrigen: 'venta_recibido', id: v.id+':'+cv.id, fecha: v.fecha, referencia: `Venta ${v.fecha} — ${cv.nombre}`, detalle: '', cuenta: 'Ventas pendientes de depositar' }, 'sub:'+subVentasPendientesDepositar, 'activo', monto, 0);
       });
     });
   }
@@ -26424,7 +26458,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.18';
+const APP_VERSION = '2026-11-06.19';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
