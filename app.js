@@ -28068,7 +28068,7 @@ async function openPolizaModal(polizaId, businessId, baseOverride) {
   ]);
   const base = baseOverride || (polizaId ? await crearBorradorPolizaExistente(polizaId, businessId) : await crearBorradorPolizaNueva(businessId));
   const idsYaVinculados = base.lineas.filter(l => l.cuenta_tipo === 'proveedor' && l.proveedor_factura_id).map(l => l.proveedor_factura_id);
-  const { data: facturasData } = await sb.from('fz_proveedores').select('id,proveedor,factura,importe,importe_pagado,estatus').eq('business_id', businessId);
+  const { data: facturasData } = await sb.from('fz_proveedores').select('id,proveedor,factura,importe,importe_pagado,estatus,folio,fecha,fecha_vencimiento,moneda').eq('business_id', businessId);
   const facturasPendientes = (facturasData || []).filter(f => f.estatus === 'Pendiente' || f.estatus === 'Parcial' || idsYaVinculados.includes(f.id));
 
   const idsClienteYaVinculados = base.lineas.filter(l => l.cuenta_tipo === 'cliente' && l.cliente_factura_id).map(l => l.cliente_factura_id);
@@ -28196,9 +28196,6 @@ function polizaCardHtmlBorrador(borrador) {
   }
 
   return `
-    <datalist id="listaCuentasPoliza">
-      ${catalogoItems.map(it => `<option value="${escAttr(it.label)}">`).join('')}
-    </datalist>
     <div class="card" style="background:#fbfcfe;border:1.5px solid var(--line);margin-bottom:16px;position:relative;">
       <button class="poliza-cerrar-x" title="Cerrar" style="position:absolute;top:10px;right:14px;background:none;border:none;font-size:20px;color:var(--muted);cursor:pointer;line-height:1;">✕</button>
       <div class="card-head" style="margin-bottom:10px;">
@@ -28221,7 +28218,7 @@ function polizaCardHtmlBorrador(borrador) {
           <thead><tr><th>Cuenta</th><th>Proveedor</th><th>Referencia/Factura</th><th>Descripción</th><th>Cargo</th><th>Abono</th><th></th></tr></thead>
           <tbody>
             ${lineasPoliza.map(l => `<tr>
-              <td><input class="cell linea-cuenta-buscar" list="listaCuentasPoliza" placeholder="Escribe para buscar…" value="${escAttr(labelDeLinea(l))}" title="${escAttr(labelDeLinea(l))}" data-id="${l.id}" data-field="cuenta" enterkeyhint="next"></td>
+              <td><input class="cell linea-cuenta-buscar" autocomplete="off" placeholder="Escribe para buscar…" value="${escAttr(labelDeLinea(l))}" title="${escAttr(labelDeLinea(l))}" data-id="${l.id}" data-field="cuenta" enterkeyhint="next"></td>
               <td><input class="cell linea-cell" type="text" value="${escAttr(l.proveedor || '')}" placeholder="Nombre (opcional)" data-id="${l.id}" data-field="proveedor" enterkeyhint="next"></td>
               <td><input class="cell linea-cell" type="text" value="${escAttr(l.referencia || '')}" data-id="${l.id}" data-field="referencia" enterkeyhint="next"></td>
               <td><input class="cell linea-cell" type="text" value="${escAttr(l.descripcion || '')}" data-id="${l.id}" data-field="descripcion" enterkeyhint="next"></td>
@@ -28263,9 +28260,15 @@ function catalogoCuentasUnificado(catalogos) {
   });
   catalogos.cuentasBanco.forEach(c => items.push({ label: `Banco — ${c.nombre}`, tipo: 'banco', id: c.id }));
   catalogos.monedasEfectivo.forEach(m => items.push({ label: `Caja — ${m.nombre}`, tipo: 'efectivo', id: m.id }));
-  (catalogos.facturasPendientes || []).forEach(f => {
+  const fechaCorta = (d) => d ? String(d).slice(0, 10).split('-').reverse().join('/') : '';
+  const etiquetasUsadas = new Set(items.map(i => i.label));
+  const etiquetaUnica = (txt, id) => { let t = txt; if (etiquetasUsadas.has(t)) t = txt + ' ·' + String(id).slice(0, 4); etiquetasUsadas.add(t); return t; };
+  [...(catalogos.facturasPendientes || [])].sort((a, c) => String(a.proveedor || '').localeCompare(String(c.proveedor || ''), 'es') || String(a.fecha || '').localeCompare(String(c.fecha || '')) || (Number(a.folio) || 0) - (Number(c.folio) || 0)).forEach(f => {
     const saldo = Number(f.importe) - (Number(f.importe_pagado) || 0);
-    items.push({ label: `Pagar: ${f.proveedor} — Factura ${f.factura || 's/f'} (${fmt(saldo)} pendiente)`, tipo: 'proveedor', id: f.id });
+    const moneda = f.moneda && f.moneda !== 'MXN' ? ' ' + f.moneda : '';
+    const partes = [f.folio ? '#' + f.folio : null, fechaCorta(f.fecha) || null, 'F. ' + (f.factura || 's/f')].filter(Boolean).join(' · ');
+    items.push({ label: etiquetaUnica(`Pagar: ${f.proveedor} — ${partes} · ${fmt(saldo)}${moneda} pendiente`, f.id), tipo: 'proveedor', id: f.id,
+      vista: { a: `${f.proveedor} — ${f.folio ? '#' + f.folio + ' · ' : ''}Factura ${f.factura || 's/f'}`, b: [fechaCorta(f.fecha), f.fecha_vencimiento ? 'vence ' + fechaCorta(f.fecha_vencimiento) : ''].filter(Boolean).join(' · '), c: fmt(saldo) + moneda } });
   });
   (catalogos.facturasClientesPendientes || []).forEach(f => {
     const saldo = Number(f.total) - (Number(f.importe_pagado) || 0);
@@ -28277,6 +28280,106 @@ function catalogoCuentasUnificado(catalogos) {
   });
   return items;
 }
+
+/* ===== 06.10 — Buscador de cuentas de la póliza: grupos, varias palabras y «Provisionar» aparte.
+   Solo presentación: escribe en el campo la misma etiqueta de siempre y lanza los mismos eventos, así que el motor no cambia. ===== */
+const GRUPOS_CUENTA_POLIZA = { proveedor: { n: 1, t: 'Pagar a proveedores' }, cliente: { n: 2, t: 'Cobrar a clientes' }, banco: { n: 3, t: 'Bancos y cajas' }, efectivo: { n: 3, t: 'Bancos y cajas' }, sub: { n: 4, t: 'Cuentas contables' }, proveedor_provision: { n: 5, t: 'Provisionar (registra una deuda nueva)' } };
+function bsResaltarTxt(txt, palabras) {
+  let out = escHtml(txt);
+  palabras.forEach(p => { if (p) out = out.replace(new RegExp('(' + escHtml(p).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'ig'), '<mark>$1</mark>'); });
+  return out;
+}
+function hacerBuscadorCuentasPoliza(inp) {
+  if (!inp || inp.dataset.bsp === '1') return;
+  inp.dataset.bsp = '1'; inp.removeAttribute('list'); inp.autocomplete = 'off';
+  let lista = null, filas = [], activa = -1, abierta = false, filtrando = false, verProv = false, prog = false;
+  inp.dataset.bspPrev = inp.value;
+  const obtener = () => { try { return catalogoCuentasUnificado(STATE_polizaBorrador.catalogos); } catch (e) { return []; } };
+  const cerrar = () => { abierta = false; filtrando = false; verProv = false; if (lista) { lista.remove(); lista = null; } filas = []; activa = -1; };
+  const posicionar = () => {
+    if (!lista) return; const r = inp.getBoundingClientRect();
+    const ancho = Math.min(Math.max(r.width, 560), window.innerWidth - 16);
+    lista.style.width = ancho + 'px'; lista.style.left = Math.max(8, Math.min(r.left, window.innerWidth - ancho - 8)) + 'px';
+    const abajo = window.innerHeight - r.bottom, alto = Math.min(340, lista.scrollHeight);
+    if (abajo < alto + 12 && r.top > abajo) { lista.style.top = ''; lista.style.bottom = (window.innerHeight - r.top + 4) + 'px'; } else { lista.style.bottom = ''; lista.style.top = (r.bottom + 4) + 'px'; }
+  };
+  const marcar = () => {
+    if (!lista) return;
+    lista.querySelectorAll('[data-i]').forEach(el => el.classList.toggle('activa', Number(el.dataset.i) === activa));
+    const el = lista.querySelector('[data-i].activa'); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+  };
+  const construir = () => {
+    const q = filtrando ? bsNorm(inp.value).trim() : '', palabras = q ? q.split(/\s+/) : [];
+    const todos = obtener().filter(it => palabras.every(p => bsNorm(it.label).includes(p)));
+    const grupos = {};
+    todos.forEach(it => { const g = GRUPOS_CUENTA_POLIZA[it.tipo] || GRUPOS_CUENTA_POLIZA.sub; (grupos[g.n] = grupos[g.n] || { t: g.t, items: [] }).items.push(it); });
+    const hayPagar = !!(grupos[1] && grupos[1].items.length);
+    const prov = grupos[5] ? grupos[5].items : [];
+    const mostrarProv = prov.length && (verProv || (!hayPagar && q.length >= 2));
+    filas = []; let html = '';
+    Object.keys(grupos).map(Number).sort().forEach(n => {
+      if (n === 5 && !mostrarProv) return;
+      html += '<div class="bs-grupo">' + escHtml(grupos[n].t) + ' <span style="font-weight:500;">(' + grupos[n].items.length + ')</span></div>';
+      grupos[n].items.forEach(it => {
+        const i = filas.length; filas.push({ it });
+        const v = it.vista;
+        html += v
+          ? '<div class="bs-op dos" role="option" data-i="' + i + '"><span class="bs-izq">' + bsResaltarTxt(v.a, palabras) + (v.b ? '<span class="bs-sec">' + escHtml(v.b) + '</span>' : '') + '</span><span class="bs-der">' + escHtml(v.c) + '</span></div>'
+          : '<div class="bs-op" role="option" data-i="' + i + '">' + bsResaltarTxt(it.label, palabras) + '</div>';
+      });
+    });
+    if (prov.length && !mostrarProv) { const i = filas.length; filas.push({ toggle: true }); html += '<div class="bs-toggle" data-i="' + i + '">Provisionar un proveedor (' + prov.length + ') — registra una deuda nueva ▸</div>'; }
+    if (!filas.length) html = '<div class="bs-vacio">Sin coincidencias</div>';
+    if (!lista) { lista = document.createElement('div'); lista.className = 'bs-lista bs-lista-poliza'; lista.setAttribute('role', 'listbox'); document.body.appendChild(lista); }
+    lista.innerHTML = html;
+    activa = filas.findIndex(f => !f.toggle); if (activa < 0 && filas.length) activa = 0;
+    marcar(); posicionar();
+  };
+  const elegir = (i) => {
+    const f = filas[i]; if (!f) return;
+    if (f.toggle) { verProv = true; construir(); return; }
+    prog = true; inp.value = f.it.label; inp.dataset.bspPrev = f.it.label; cerrar();
+    inp.dispatchEvent(new Event('input', { bubbles: true })); inp.dispatchEvent(new Event('change', { bubbles: true })); prog = false;
+  };
+  inp.addEventListener('focus', () => { inp.dataset.bspPrev = inp.value; inp.select(); abierta = true; filtrando = false; construir(); });
+  inp.addEventListener('mousedown', () => { if (!abierta) setTimeout(() => { if (document.activeElement === inp && !abierta) { abierta = true; filtrando = false; construir(); } }, 0); });
+  inp.addEventListener('input', () => { if (prog) return; abierta = true; filtrando = true; verProv = false; construir(); });
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault(); if (!abierta) { abierta = true; construir(); }
+      if (filas.length) { activa = (activa + (e.key === 'ArrowDown' ? 1 : -1) + filas.length) % filas.length; marcar(); }
+    } else if (e.key === 'Enter') {
+      if (abierta && filas.length) { e.preventDefault(); e.stopPropagation(); if (activa >= 0) elegir(activa); }
+      else if (abierta) { e.preventDefault(); e.stopPropagation(); }
+    } else if (e.key === 'Escape') {
+      if (abierta) { e.preventDefault(); e.stopPropagation(); cerrar(); inp.value = inp.dataset.bspPrev || ''; }
+    } else if (e.key === 'Tab') {
+      if (abierta && filtrando && inp.value.trim() && activa >= 0 && filas[activa] && !filas[activa].toggle) elegir(activa); else cerrar();
+    }
+  });
+  inp.addEventListener('blur', () => { setTimeout(() => {
+    if (document.activeElement === inp) return;
+    if (lista && lista.matches(':hover')) { inp.focus(); return; }
+    cerrar();
+    const v = inp.value.trim();
+    if (v && !obtener().some(x => x.label === v)) inp.value = inp.dataset.bspPrev || '';
+  }, 120); });
+  document.addEventListener('mousedown', e => {
+    if (!lista) return;
+    if (lista.contains(e.target)) { const op = e.target.closest && e.target.closest('[data-i]'); if (op) { e.preventDefault(); elegir(Number(op.dataset.i)); } return; }
+    if (e.target !== inp) { cerrar(); }
+  });
+  window.addEventListener('resize', () => { if (abierta) cerrar(); });
+  document.addEventListener('scroll', e => { if (abierta && lista && !lista.contains(e.target)) posicionar(); }, true);
+  // Si se escribió texto que no es una cuenta de la lista, no se manda al motor: se regresa a la cuenta anterior sin mensaje de error
+  const td = inp.parentNode;
+  if (td && !td.dataset.bspC) { td.dataset.bspC = '1'; td.addEventListener('change', e => {
+    if (e.target !== inp || prog || !e.isTrusted) return;
+    const v = inp.value.trim();
+    if (v && !obtener().some(x => x.label === v)) { e.stopImmediatePropagation(); e.stopPropagation(); inp.value = inp.dataset.bspPrev || ''; }
+  }, true); }
+}
+/* ===== fin 06.10 buscador de póliza ===== */
 
 function wireBorradorPolizaHandlers(wrap) {
   const b = STATE_polizaBorrador;   // cada manejador se ignora si el borrador ya no es este: un campo viejo que se reemplaza con el cursor dentro dispara un «cambió» tardío y, sin esta guarda, escribía su valor en el borrador NUEVO
@@ -28295,7 +28398,7 @@ function wireBorradorPolizaHandlers(wrap) {
       if (dest) { e.preventDefault(); dest.focus(); if (dest.select) { try { dest.select(); } catch (_) { /* tipo sin selección */ } } }
     });
   }
-  wrap.querySelectorAll('.linea-cuenta-buscar').forEach(inp => { inp.addEventListener('input', (e) => { inp._porLista = !e.inputType || e.inputType === 'insertReplacementText'; }); inp.addEventListener('change', () => {
+  wrap.querySelectorAll('.linea-cuenta-buscar').forEach(inp => { hacerBuscadorCuentasPoliza(inp); inp.addEventListener('input', (e) => { inp._porLista = !e.inputType || e.inputType === 'insertReplacementText'; }); inp.addEventListener('change', () => {
     if (STATE_polizaBorrador !== b) return;
     const linea = STATE_polizaBorrador.lineas.find(l => l.id === inp.dataset.id);
     if (!linea) return;
