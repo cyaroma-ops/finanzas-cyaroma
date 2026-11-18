@@ -676,7 +676,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 .prov-tabs-barra{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px;}
 .prov-acciones{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;}
 /* 06.10 — Catálogo de cuentas (ventana) */
-.modal.cm-modal{width:min(760px,95vw);max-height:92vh;overflow-y:auto;padding:24px;}
+.modal.cm-modal{width:min(940px,96vw);max-height:92vh;overflow-y:auto;padding:24px;}
 .cm-cab h3{margin:0 0 4px;}
 .cm-sub{font-size:12.5px;color:var(--muted);margin:0 0 14px;}
 .cm-herr{display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;}
@@ -707,8 +707,9 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 .cm-vacio{padding:18px;color:var(--muted);font-size:13px;text-align:center;}
 .cm-alta{background:#f7f9fc;border:1.5px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px;}
 .cm-alta-tit{font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;}
-.cm-alta-fila{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
-.cm-alta-fila .btn{flex:0 0 auto;}
+.cm-alta-fila{display:flex;gap:10px 12px;flex-wrap:wrap;align-items:flex-end;}
+.cm-alta-fila label{display:block;font-size:11.5px;font-weight:600;color:var(--muted);margin-bottom:4px;}
+.cm-alta-fila .cm-btn-alta{flex:0 0 auto;height:42px;}
 .cm-nota{font-size:11.5px;color:var(--muted);margin:10px 0 0;}
 .bs-wrap{position:relative;}
 .bs-input{width:100%;}
@@ -2210,8 +2211,8 @@ Transacciones recurrentes
     <div class="cm-alta">
       <div class="cm-alta-tit">Nueva cuenta mayor</div>
       <div class="cm-alta-fila">
-        <div class="field" style="flex:2 1 180px;margin:0;"><input type="text" id="newCuentaMayorNombre" placeholder="Ej. Servicios"></div>
-        <div class="field" style="flex:1 1 140px;margin:0;">
+        <div class="field" style="flex:3 1 260px;margin:0;"><label>Nombre</label><input type="text" id="newCuentaMayorNombre" placeholder="Ej. Servicios"></div>
+        <div class="field" style="flex:1 1 180px;margin:0;"><label>Tipo</label>
           <select id="newCuentaMayorTipo">
             <option value="gasto" selected>Gasto</option>
             <option value="costo">Costo de Ventas</option>
@@ -2221,16 +2222,18 @@ Transacciones recurrentes
             <option value="capital">Capital</option>
           </select>
         </div>
-        <button class="btn btn-ghost" id="saveCuentaMayor">+ Agregar</button>
+        <button class="btn btn-ghost cm-btn-alta" id="saveCuentaMayor">+ Agregar cuenta mayor</button>
       </div>
-      <div class="cm-alta-tit" style="margin-top:12px;">Nueva subcuenta</div>
+      <div class="cm-alta-tit" style="margin-top:16px;">Nueva subcuenta</div>
       <div class="cm-alta-fila">
-        <div class="field" style="flex:1 1 170px;margin:0;"><select id="newSubcuentaMayor"></select></div>
-        <div class="field" style="flex:1 1 150px;margin:0;"><select id="newSubcuentaPadre"><option value="">— nivel superior —</option></select></div>
-        <div class="field" style="flex:1 1 150px;margin:0;"><input type="text" id="newSubcuentaNombre" placeholder="Ej. Internet"></div>
-        <button class="btn btn-ghost" id="saveSubcuenta">+ Agregar</button>
+        <div class="field" style="flex:1 1 300px;margin:0;"><label>Dentro de la cuenta mayor</label><select id="newSubcuentaMayor"></select></div>
+        <div class="field" style="flex:1 1 300px;margin:0;"><label>Anidar bajo (opcional)</label><select id="newSubcuentaPadre"><option value="">— nivel superior —</option></select></div>
       </div>
-      <p class="cm-nota">Elige la cuenta mayor, si va dentro de otra subcuenta («Anidar bajo») y escribe el nombre. Ej.: Gastos de Operación › Mantenimiento › Reparación de freidoras.</p>
+      <div class="cm-alta-fila" style="margin-top:8px;">
+        <div class="field" style="flex:1 1 300px;margin:0;"><label>Nombre de la subcuenta</label><input type="text" id="newSubcuentaNombre" placeholder="Ej. Internet"></div>
+        <button class="btn btn-ghost cm-btn-alta" id="saveSubcuenta">+ Agregar subcuenta</button>
+      </div>
+      <p class="cm-nota">Ej.: Gastos de Operación › Mantenimiento › Reparación de freidoras.</p>
     </div>
     <div class="modal-actions">
       <button class="btn btn-gold" id="closeCuentas" style="width:100%;">Cerrar</button>
