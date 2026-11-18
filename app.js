@@ -17685,10 +17685,13 @@ function claveProveedor(f) {
   return f.proveedor_id ? `id:${f.proveedor_id}` : `name:${f.proveedor || '(sin proveedor)'}`;
 }
 
-function provTabsHtml() {
-  return `<div class="tag-row" style="margin-bottom:14px;">
-    <div class="tag ${STATE_provVista==='facturas'?'active':''}" id="provTabFacturas">Facturas</div>
-    <div class="tag ${STATE_provVista==='directorio'||STATE_provVista==='detalle'?'active':''}" id="provTabDirectorio">Directorio de proveedores</div>
+function provTabsHtml(accionesHtml) {
+  return `<div class="prov-tabs-barra">
+    <div class="tag-row" style="margin-bottom:0;">
+      <div class="tag ${STATE_provVista==='facturas'?'active':''}" id="provTabFacturas">Facturas</div>
+      <div class="tag ${STATE_provVista==='directorio'||STATE_provVista==='detalle'?'active':''}" id="provTabDirectorio">Directorio de proveedores</div>
+    </div>
+    ${accionesHtml ? `<div class="prov-acciones">${accionesHtml}</div>` : ''}
   </div>`;
 }
 function wireProvTabs(el) {
@@ -17748,7 +17751,14 @@ async function renderProveedores() {
   })).sort((a,b) => b.total - a.total);
 
   el.innerHTML = `
-    ${provTabsHtml()}
+    ${provTabsHtml(`
+          <button class="btn btn-ghost btn-sm" id="openProveedoresCatBtn">${iconoConfigurar()}Catálogo de proveedores</button>
+          <button class="btn btn-ghost btn-sm" id="openCuentasBtnProv">${iconoConfigurar()}Catálogo de cuentas</button>
+          <button class="btn btn-ghost btn-sm" id="importFacturasBtn">Importar facturas (Excel)</button>
+          <button class="btn btn-ghost btn-sm" id="provisionarPropinasBtn">Poner al día propinas</button>
+          <button class="btn btn-ghost btn-sm" id="addNcProvBtn" title="Registra una nota de crédito del proveedor (devolución, descuento o corrección)">+ Nota de crédito</button>
+          <button class="btn btn-gold btn-sm" id="addProvBtn">+ Agregar factura</button>
+    `)}
     <div class="kpi-grid">
       <div class="kpi"><div class="label">Total pendiente</div><div class="value num red">${fmt(pendiente)}</div></div>
       <div class="kpi"><div class="label">Total pagado (histórico)</div><div class="value num green">${fmt(pagado)}</div></div>
@@ -17780,14 +17790,6 @@ async function renderProveedores() {
     <div class="card">
       <div class="card-head">
         <h3>Cuentas por pagar</h3>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button class="btn btn-ghost btn-sm" id="openProveedoresCatBtn">${iconoConfigurar()}Catálogo de proveedores</button>
-          <button class="btn btn-ghost btn-sm" id="openCuentasBtnProv">${iconoConfigurar()}Catálogo de cuentas</button>
-          <button class="btn btn-ghost btn-sm" id="importFacturasBtn">Importar facturas (Excel)</button>
-          <button class="btn btn-ghost btn-sm" id="provisionarPropinasBtn">Poner al día propinas</button>
-          <button class="btn btn-ghost btn-sm" id="addNcProvBtn" title="Registra una nota de crédito del proveedor (devolución, descuento o corrección)">+ Nota de crédito</button>
-          <button class="btn btn-gold btn-sm" id="addProvBtn">+ Agregar factura</button>
-        </div>
       </div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Al marcar "Pagado" y elegir de dónde, se crea/actualiza automáticamente el movimiento real en esa cuenta (y se descuenta su saldo).</p>
       <div class="tag-row">
