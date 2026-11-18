@@ -228,6 +228,53 @@ h1,h2,h3,.serif{font-family:'Cormorant Garamond',serif;}
 .nav-item svg,.nav-grupo-cab svg{width:17px;height:17px;flex-shrink:0;opacity:.85;}
 .nav-item:hover,.nav-grupo-cab:hover{background:rgba(255,255,255,.06);color:#fff;}
 .nav-item.active{background:linear-gradient(90deg,rgba(185,138,46,.22),rgba(185,138,46,.05));color:#fff;box-shadow:inset 3px 0 0 var(--gold);}
+/* 06.17 — Catálogo de cuentas con vista profesional + ventana de reportes (solo presentación) */
+#sec-catalogo .cc-barra-fila .btn{white-space:nowrap;}
+.cc-alta:not(.abierta){display:none;}
+.cc-impexp{display:none;position:fixed;z-index:880;width:460px;max-width:calc(100vw - 16px);margin:0!important;box-shadow:0 14px 40px rgba(18,38,74,.28);}
+.cc-impexp.abierto{display:block;}
+.cc-impexp .card-head{margin-bottom:6px;}
+.card.cc-tipo{background:transparent;border:none;box-shadow:none;padding:0;margin:0 0 4px;}
+.cc-tipo .cc-tipo-head{padding:14px 4px 8px;margin:0;border:none;background:none;display:flex;align-items:center;gap:8px;}
+.cc-tipo .cc-tipo-head h3{margin:0;font:700 11px Inter,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);display:flex;align-items:center;gap:7px;}
+.cc-tipo .cc-tipo-head h3::after{content:'';width:9px;height:9px;border-radius:50%;background:var(--cc-c,#6b7a99);order:-1;}
+.cc-tipo .cc-tipo-head .hint{font-size:11.5px;color:var(--muted);}
+.cc-tipo[data-tipo="activo"]{--cc-c:#2f6fb5;}.cc-tipo[data-tipo="pasivo"]{--cc-c:#c0702b;}.cc-tipo[data-tipo="capital"]{--cc-c:#6a4fb0;}
+.cc-tipo[data-tipo="ingreso"]{--cc-c:#2e8b6a;}.cc-tipo[data-tipo="costo"]{--cc-c:#b5892f;}.cc-tipo[data-tipo="gasto"]{--cc-c:#b5472f;}
+.cc-lista{background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden;}
+.cc-bloque{margin:0!important;border-top:1px solid var(--line);}
+.cc-bloque:first-child{border-top:none;}
+.cc-mayor-cab{display:flex;align-items:center;gap:8px;min-height:40px;padding:4px 10px;background:#f4f7fb;}
+.cc-mayor-cab>span:first-child{opacity:.3;transition:opacity .12s;}
+.cc-mayor-cab:hover>span:first-child{opacity:1;}
+.cc-mayor-toggle{border:none;background:none;cursor:pointer;color:var(--muted);font-size:12px;padding:0 4px;}
+.cc-mayor-nom{flex:1;min-width:0;font-size:13.5px;font-weight:600;color:var(--navy-1);}
+.cc-n{font-weight:500;font-size:11.5px;color:var(--muted);background:#fff;border:1px solid var(--line);border-radius:10px;padding:0 8px;line-height:18px;margin-left:4px;}
+.cc-fila{display:flex;align-items:center;gap:6px;min-height:32px;padding:2px 10px 2px calc(46px + var(--cc-n,0) * 26px);border-top:1px solid #eef1f6;font-size:13px;color:#26344f;flex-wrap:wrap;}
+.cc-fila:hover{background:#fafbfe;}
+.cc-fila .cc-nom{flex:1;min-width:0;}
+.cc-guia{color:#b3bdd0;}
+.cc-vacia{color:var(--muted);font-size:12px;}
+.cc-nuevo{background:#eaf5e8!important;}
+.cc-acc{margin-left:auto;position:relative;}
+.cc-mas{width:28px;height:26px;border:1px solid transparent;border-radius:7px;background:transparent;color:var(--muted);font:700 16px/1 Inter,sans-serif;cursor:pointer;letter-spacing:1px;}
+.cc-fila:hover .cc-mas,.cc-mayor-cab:hover .cc-mas,.cc-acc.abierto .cc-mas,.cc-mas:focus-visible{border-color:var(--line);background:#fff;}
+.cc-menu{display:none;position:fixed;z-index:890;width:210px;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 28px rgba(18,38,74,.22);padding:5px;}
+.cc-acc.abierto .cc-menu{display:block;}
+.cc-menu button{display:block;width:100%;text-align:left;border:none;background:none;padding:8px 10px;border-radius:7px;font:13px Inter,sans-serif;color:var(--navy-1);cursor:pointer;}
+.cc-menu button:hover,.cc-menu button:focus-visible{background:#eef3fb;outline:none;}
+.cc-menu .row-del{color:#c0392b;border-top:1px solid var(--line);border-radius:0 0 7px 7px;margin-top:3px;}
+.hub-bg{position:fixed;inset:0;background:rgba(10,31,61,.45);z-index:950;display:flex;align-items:flex-start;justify-content:center;padding:9vh 12px 12px;overflow:auto;}
+.hub{background:#fff;border-radius:16px;box-shadow:0 20px 60px rgba(10,31,61,.35);width:min(780px,100%);padding:20px 22px 22px;}
+.hub-head{display:flex;align-items:flex-start;gap:12px;margin-bottom:14px;}
+.hub-head h3{margin:0;color:var(--navy-1);font-size:18px;}.hub-head span{font-size:12.5px;color:var(--muted);}
+.hub-head .btn{margin-left:auto;}
+.hub-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
+.hub-card{display:flex;gap:12px;align-items:flex-start;text-align:left;border:1px solid var(--line);background:#fbfcfe;border-radius:13px;padding:14px;cursor:pointer;font-family:inherit;}
+.hub-card:hover,.hub-card:focus-visible{background:#eef3fb;border-color:#c9d6ea;outline:none;}
+.hub-card i{font-style:normal;flex:0 0 34px;height:34px;border-radius:10px;background:#fff1d6;color:#8a5a00;display:flex;align-items:center;justify-content:center;font-size:16px;}
+.hub-card b{display:block;color:var(--navy-1);font-size:13.5px;}.hub-card small{display:block;color:var(--muted);font-size:11.5px;line-height:1.4;margin-top:3px;}
+@media (max-width:760px){.hub-grid{grid-template-columns:1fr;}.cc-fila{padding-left:calc(26px + var(--cc-n,0) * 20px);}}
 /* 06.16 — Menú agrupado (Reportes) y Accesos directos. Solo presentación: los ítems siguen siendo los mismos .nav-item */
 .nav-grupo-cab{user-select:none;}
 .nav-grupo-cab span:first-of-type{flex:1;}
@@ -3787,6 +3834,6 @@ Transacciones recurrentes
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-06.16"></script>
+<script src="/app.js?v=2026-11-06.17"></script>
 </body>
 </html>

@@ -1362,6 +1362,28 @@ const ACCESOS_DIRECTOS = [
     { t: 'Catálogo de cuentas', ir: 'catalogo' },
   ] },
 ];
+const REPORTES_FINANCIEROS = [
+  { sec: 'pl', t: 'Estado de Resultados', d: 'Ingresos, costos y gastos del periodo', i: '◔' },
+  { sec: 'balance', t: 'Balance General', d: 'Activo, pasivo y capital al día de hoy', i: '▤' },
+  { sec: 'balanza', t: 'Balanza de Comprobación', d: 'Saldos por cuenta; cargos = abonos', i: '⚖' },
+  { sec: 'flujo', t: 'Flujo de Efectivo', d: 'Entradas y salidas de efectivo y bancos', i: '⇄' },
+  { sec: 'auxiliares', t: 'Auxiliares', d: 'Movimientos por cuenta', i: '☰' },
+  { sec: 'revision', t: 'Revisión de consistencia', d: 'Qué está descuadrado o incompleto', i: '✓' },
+];
+function reportesHubCerrar() { const h = document.getElementById('reportesHub'); if (h) h.remove(); }
+function reportesHubAbrir() {
+  reportesHubCerrar();
+  const bg = document.createElement('div'); bg.id = 'reportesHub'; bg.className = 'hub-bg'; bg.setAttribute('role', 'dialog'); bg.setAttribute('aria-modal', 'true'); bg.setAttribute('aria-label', 'Reportes financieros');
+  bg.innerHTML = '<div class="hub"><div class="hub-head"><div><h3>Reportes financieros</h3><span>Elige el reporte. Se abre con el negocio y el mes activos.</span></div><button type="button" class="btn btn-ghost btn-sm" id="hubCerrar">Cerrar ✕</button></div><div class="hub-grid">'
+    + REPORTES_FINANCIEROS.map((r, i) => '<button type="button" class="hub-card" data-i="' + i + '"><i>' + r.i + '</i><span><b>' + escHtml(r.t) + '</b><small>' + escHtml(r.d) + '</small></span></button>').join('') + '</div></div>';
+  document.body.appendChild(bg);
+  bg.addEventListener('mousedown', e => { if (e.target === bg) reportesHubCerrar(); });
+  bg.querySelector('#hubCerrar').addEventListener('click', reportesHubCerrar);
+  bg.querySelectorAll('.hub-card').forEach(c => c.addEventListener('click', () => { const r = REPORTES_FINANCIEROS[Number(c.dataset.i)]; reportesHubCerrar(); irASeccion(r.sec); }));
+  const k = (e) => { if (e.key === 'Escape') { e.stopPropagation(); reportesHubCerrar(); document.removeEventListener('keydown', k, true); } };
+  document.addEventListener('keydown', k, true);
+  const p = bg.querySelector('.hub-card'); if (p) p.focus();
+}
 let ACC_ABIERTO = false;
 function accesosCerrar(devolverFoco) {
   const p = document.getElementById('accesosPanel'), b = document.getElementById('accesosBtn'); ACC_ABIERTO = false;
@@ -1370,8 +1392,8 @@ function accesosCerrar(devolverFoco) {
 async function accesoEjecutar(a) {
   accesosCerrar(false);
   if (!a.reportes && SECTION_META[a.ir] && SECTION_META[a.ir].needsBiz && !biz()) { toast('Primero elige un negocio.', 'error'); return; }
+  if (a.reportes) { reportesHubAbrir(); return; }   // ventana con los reportes; el menú lateral conserva su submenú
   let destino = a.ir;
-  if (a.reportes) { destino = localStorage.getItem(NAV_ULTIMO_REPORTE_LS); if (!destino || !document.querySelector('.nav-grupo[data-grupo="financieros"] .nav-item[data-section="' + destino + '"]')) destino = 'pl'; }
   await irASeccion(destino);
   if (a.btn) {
     const el = await esperarElemento(a.btn, 8000);
@@ -12990,6 +13012,7 @@ function abrirSubirCatalogoCuentas(businessId, onDone) {
   input.click();
 }
 
+let STATE_ccAltaAbierta = false;
 async function renderCatalogoCuentas() {
   const el = document.getElementById('sec-catalogo');
   const b = biz();
@@ -13024,7 +13047,7 @@ async function renderCatalogoCuentas() {
   const altaDondeHtml = `<optgroup label="Crear una cuenta mayor nueva">${TIPOS_CC.map(t => `<option value="M:${t}">Cuenta mayor nueva · ${TIPO_CUENTA_LABEL[t]}</option>`).join('')}</optgroup>`
     + TIPOS_CC.map(t => { const ms = mayores.filter(m => m.tipo === t); return ms.length ? `<optgroup label="Subcuenta dentro de… (${TIPO_CUENTA_LABEL[t]})">${ms.map(m => `<option value="S:${m.id}">${escHtml(m.nombre)}</option>`).join('')}</optgroup>` : ''; }).join('');
   const altaCardHtml = `
-    <div class="card cc-alta${STATE_ccAlta.lote ? ' lote-abierto' : ''}" id="ccAltaCard">
+    <div class="card cc-alta${STATE_ccAlta.lote ? ' lote-abierto' : ''}${(STATE_ccAltaAbierta || STATE_ccAlta.enfocar || STATE_ccAlta.lote || STATE_ccAlta.nombre) ? ' abierta' : ''}" id="ccAltaCard">
       <div class="card-head"><h3>Alta de cuenta</h3><span class="hint">Escribe el nombre y presiona Enter: se agrega y queda lista la siguiente.</span></div>
       <div class="cc-alta-fila">
         <div class="field"><label>Nombre</label><input type="text" id="ccAltaNombre" autocomplete="off" placeholder="Ej. Mantenimiento y conservación"></div>
@@ -13048,16 +13071,20 @@ async function renderCatalogoCuentas() {
   const barraHtml = `
     <div class="card cc-barra">
       <div class="cc-barra-fila">
-        <div class="field" style="flex:1;min-width:200px;max-width:420px;margin:0;"><input type="text" id="ccBuscar" placeholder="Buscar cuenta…" autocomplete="off"></div>
+        <div class="field" style="flex:1;min-width:160px;max-width:300px;margin:0;"><input type="text" id="ccBuscar" placeholder="Buscar cuenta…" autocomplete="off"></div>
         <div class="field" style="margin:0;min-width:170px;"><select id="ccFiltroTipo"><option value="">Todos los tipos</option>${TIPOS_CC.filter(t => mayores.some(m => m.tipo === t)).map(t => `<option value="${t}">${TIPO_CUENTA_LABEL[t]}</option>`).join('')}</select></div>
         <button class="btn btn-ghost btn-sm" id="ccExpandirTodo">Expandir todo</button>
         <button class="btn btn-ghost btn-sm" id="ccContraerTodo">Contraer todo</button>
-        <span class="hint" id="ccResumenBusqueda" style="font-size:12px;color:var(--muted);">${mayores.length} cuenta(s) mayor · ${totalSubs} subcuenta(s)</span>
+        <span class="hint" id="ccResumenBusqueda" style="font-size:12px;color:var(--muted);margin-left:auto;">${mayores.length} cuenta(s) mayor · ${totalSubs} subcuenta(s)</span>
+        <button class="btn btn-ghost btn-sm" id="ccImpExpBtn" aria-haspopup="true" aria-expanded="false">Importar / Exportar ▾</button>
+        <button class="btn btn-gold btn-sm" id="ccNuevaBtn" aria-expanded="false">+ Nueva cuenta</button>
       </div>
     </div>`;
 
   el.innerHTML = `
-    <div class="card" style="margin-bottom:14px;">
+    ${barraHtml}
+    ${altaCardHtml}
+    <div class="card cc-impexp" id="ccImpExpPop">
       <div class="card-head"><h3>Importar / Exportar catálogo</h3></div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Si este negocio ya tiene su catálogo armado en otro lado, súbelo desde Excel. Si quieres partir de una base ya lista, carga la propuesta sugerida — ninguna de las dos opciones duplica lo que ya exista.</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
@@ -13077,7 +13104,6 @@ async function renderCatalogoCuentas() {
         })()}
       </div>
     </div>
-    ${altaCardHtml}
 
     ${STATE_ccSoloPendientes ? (() => {
       const esCandidata = (s) => {
@@ -13121,8 +13147,6 @@ async function renderCatalogoCuentas() {
       `;
     })() : ''}
 
-    ${barraHtml}
-
     ${['activo','pasivo','capital','ingreso','costo','gasto'].map(tipo => {
       const mayoresTipo = mayores.filter(m => m.tipo === tipo);
       if (!mayoresTipo.length) return '';
@@ -13132,7 +13156,7 @@ async function renderCatalogoCuentas() {
         <div class="card-head cc-tipo-head" data-tipo="${tipo}" style="cursor:pointer;" title="Mostrar u ocultar este grupo"><h3><span class="cc-tipo-chev">▾</span> ${TIPO_CUENTA_LABEL[tipo]}</h3><span class="hint">${mayoresTipo.length} cuenta${mayoresTipo.length===1?'':'s'} mayor · ${nSubsTipo} subcuenta${nSubsTipo===1?'':'s'}</span></div>
         <div id="ccList-${tipo}" class="cc-lista"></div>
       </div>`;
-    }).join('') || `<div class="empty">Aún no has creado cuentas mayor de Activo, Pasivo, Capital, Ingreso o Gasto. Usa «Alta de cuenta» de arriba.</div>`}
+    }).join('') || `<div class="empty">Aún no has creado cuentas mayor de Activo, Pasivo, Capital, Ingreso o Gasto. Usa «+ Nueva cuenta» de arriba.</div>`}
 
     <div class="card">
       <div class="card-head"><h3>Bancos y Efectivo</h3><span class="hint">Se administran en sus propios módulos</span></div>
@@ -13154,8 +13178,8 @@ async function renderCatalogoCuentas() {
   const filaSubHtml = (s, nivel) => {
     const editando = STATE_ccEditando.has(s.id);
     return `
-    <div class="cc-fila" data-nivel="${nivel}" data-nombre="${escAttr(s.nombre)}" style="display:flex;align-items:center;gap:8px;padding:6px 4px 6px ${16 + nivel*18}px;border-bottom:1px solid var(--line);font-size:13px;flex-wrap:wrap;${STATE_ccRecientes.has(s.id) ? 'background:#f2f9f1;' : ''}">
-      ${nivel>0?'<span style="color:var(--muted);">—</span>':''}
+    <div class="cc-fila${STATE_ccRecientes.has(s.id) ? ' cc-nuevo' : ''}" data-nivel="${nivel}" data-nombre="${escAttr(s.nombre)}" style="--cc-n:${nivel}">
+      ${nivel>0?'<span class="cc-guia">└</span>':''}
       ${editando ? `
         <input class="cell cc-sub-nombre" type="text" value="${escAttr(s.nombre)}" data-id="${s.id}" style="flex:1;min-width:120px;">
         <select class="cell cc-sub-padre" data-id="${s.id}" style="min-width:200px;">${opcionesMoverSubcuenta(s, subcuentas)}</select>
@@ -13168,11 +13192,14 @@ async function renderCatalogoCuentas() {
         </select>
         <button class="btn btn-ghost btn-sm cc-sub-save" data-id="${s.id}">Guardar</button>
       ` : `
-        <span style="flex:1;min-width:0;">${escHtml(s.nombre)}</span>
-        <button class="btn btn-ghost btn-sm cc-sub-editar" data-id="${s.id}">Editar</button>
-        ${nivel===0 ? `<button class="btn btn-ghost btn-sm cc-sub-promover" data-id="${s.id}" data-mayor="${escAttr(s.cuenta_mayor_id)}" title="Convierte esta subcuenta en su propia cuenta mayor, con todo y lo que tenga adentro">Promover a cuenta mayor</button>` : ''}
+        <span class="cc-nom">${escHtml(s.nombre)}</span>
+        <span class="cc-acc"><button type="button" class="cc-mas" title="Acciones" aria-haspopup="menu" aria-expanded="false">···</button><span class="cc-menu" role="menu">
+          <button type="button" class="cc-sub-editar" data-id="${s.id}">Editar</button>
+          ${nivel===0 ? `<button type="button" class="cc-sub-promover" data-id="${s.id}" data-mayor="${escAttr(s.cuenta_mayor_id)}" title="Convierte esta subcuenta en su propia cuenta mayor, con todo y lo que tenga adentro">Promover a cuenta mayor</button>` : ''}
+          <button type="button" class="row-del cc-sub-del" data-id="${s.id}">Eliminar</button>
+        </span></span>
       `}
-      <button class="row-del cc-sub-del" data-id="${s.id}" style="font-size:14px;">Eliminar</button>
+      ${editando ? `<button class="row-del cc-sub-del" data-id="${s.id}" style="font-size:14px;">Eliminar</button>` : ''}
     </div>
     ${subcuentasHijas(s.id, subcuentas).map(h => filaSubHtml(h, nivel+1)).join('')}`;
   };
@@ -13184,10 +13211,10 @@ async function renderCatalogoCuentas() {
     box.innerHTML = mayoresTipo.map((m, idx) => {
       const editando = STATE_ccEditando.has(m.id);
       return `
-      <div class="cc-bloque" data-id="${m.id}" data-nombre="${escAttr(m.nombre)}" style="margin-bottom:10px;">
-        <div style="display:flex;align-items:center;gap:8px;padding:6px 4px;background:${STATE_ccRecientes.has(m.id) ? '#e8f4e6' : '#f7f9fc'};border-radius:7px;flex-wrap:wrap;">
+      <div class="cc-bloque" data-id="${m.id}" data-nombre="${escAttr(m.nombre)}">
+        <div class="cc-mayor-cab${STATE_ccRecientes.has(m.id) ? ' cc-nuevo' : ''}">
           ${botonesOrdenHtml(idx, mayoresTipo.length, 'cc-mayor-orden')}
-          <button class="cc-mayor-toggle" data-id="${m.id}" title="Mostrar u ocultar sus subcuentas" style="border:none;background:none;cursor:pointer;color:var(--muted);font-size:13px;padding:0 4px;"><span class="cc-mayor-chev">▾</span></button>
+          <button class="cc-mayor-toggle" data-id="${m.id}" title="Mostrar u ocultar sus subcuentas"><span class="cc-mayor-chev">▾</span></button>
           ${editando ? `
             <input class="cell cc-mayor-nombre" type="text" value="${escAttr(m.nombre)}" data-id="${m.id}" style="flex:1;min-width:0;font-weight:700;">
             <select class="cell cc-mayor-tipo" data-id="${m.id}" style="width:auto;">
@@ -13204,13 +13231,16 @@ async function renderCatalogoCuentas() {
             </select>` : ''}
             <button class="btn btn-ghost btn-sm cc-mayor-save" data-id="${m.id}">Guardar</button>
           ` : `
-            <strong style="flex:1;min-width:0;">${escHtml(m.nombre)} <span style="font-weight:400;font-size:11px;color:var(--muted);">(${subcuentas.filter(x => x.cuenta_mayor_id === m.id).length})</span></strong>
+            <strong class="cc-mayor-nom">${escHtml(m.nombre)} <span class="cc-n">${subcuentas.filter(x => x.cuenta_mayor_id === m.id).length}</span></strong>
             ${m.concepto_venta_vinculado_id ? `<span style="font-size:11px;color:var(--muted);">(% vs ${escHtml(conceptosVenta.find(c=>c.id===m.concepto_venta_vinculado_id)?.nombre||'')})</span>` : ''}
-            <button class="btn btn-ghost btn-sm cc-mayor-editar" data-id="${m.id}">Editar</button>
+            <span class="cc-acc"><button type="button" class="cc-mas" title="Acciones" aria-haspopup="menu" aria-expanded="false">···</button><span class="cc-menu" role="menu">
+              <button type="button" class="cc-mayor-editar" data-id="${m.id}">Editar</button>
+              <button type="button" class="row-del cc-mayor-del" data-id="${m.id}">Eliminar</button>
+            </span></span>
           `}
-          <button class="row-del cc-mayor-del" data-id="${m.id}" style="font-size:15px;">Eliminar</button>
+          ${editando ? `<button class="row-del cc-mayor-del" data-id="${m.id}" style="font-size:15px;">Eliminar</button>` : ''}
         </div>
-        ${subcuentasRaiz(m.id, subcuentas).map(s => filaSubHtml(s, 0)).join('') || `<div class="cc-fila" data-nivel="0" data-nombre="" style="padding:6px 4px 6px 16px;color:var(--muted);font-size:12px;">Sin subcuentas todavía.</div>`}
+        ${subcuentasRaiz(m.id, subcuentas).map(s => filaSubHtml(s, 0)).join('') || `<div class="cc-fila cc-vacia" data-nivel="0" data-nombre="">Sin subcuentas todavía.</div>`}
       </div>`;
     }).join('');
     box.querySelectorAll('.cc-mayor-orden-subir').forEach(btn => btn.addEventListener('click', () => moverOrdenLista('fz_cuentas_mayor', mayoresTipo, Number(btn.dataset.idx), -1, () => renderCatalogoCuentas())));
@@ -13436,6 +13466,34 @@ async function renderCatalogoCuentas() {
     });
     $('ccResumenBusqueda').textContent = q ? (coinciden ? `${coinciden} coincidencia(s)` : 'Sin coincidencias') : `${mayores.length} cuenta(s) mayor · ${totalSubs} subcuenta(s)`;
   };
+  /* ===== 06.17 — Catálogo: «+ Nueva cuenta», «Importar / Exportar» y menús «···». Solo vista: los botones y campos de siempre siguen en su lugar. ===== */
+  {
+    const alta = $('ccAltaCard'), btnNueva = $('ccNuevaBtn'), btnIE = $('ccImpExpBtn'), pop = $('ccImpExpPop');
+    const sincNueva = () => { const ab = alta.classList.contains('abierta'); btnNueva.setAttribute('aria-expanded', ab ? 'true' : 'false'); btnNueva.textContent = ab ? '− Cerrar alta' : '+ Nueva cuenta'; };
+    sincNueva();
+    btnNueva.addEventListener('click', () => {
+      const ab = !alta.classList.contains('abierta'); alta.classList.toggle('abierta', ab); STATE_ccAltaAbierta = ab; sincNueva();
+      if (ab) { const i = $('ccAltaNombre'); if (i) { try { i.focus(); } catch (e) { /* sin foco */ } } }
+    });
+    btnIE.addEventListener('click', (e) => {
+      e.stopPropagation(); const ab = !pop.classList.contains('abierto'); pop.classList.toggle('abierto', ab); btnIE.setAttribute('aria-expanded', ab ? 'true' : 'false');
+      if (ab) { const r = btnIE.getBoundingClientRect(); pop.style.top = (r.bottom + 6) + 'px'; pop.style.left = Math.max(8, Math.min(r.right - 460, window.innerWidth - 468)) + 'px'; }
+    });
+    pop.querySelectorAll('button').forEach(b => b.addEventListener('click', () => { pop.classList.remove('abierto'); btnIE.setAttribute('aria-expanded', 'false'); }));
+    el.querySelectorAll('.cc-mas').forEach(b => b.addEventListener('click', (e) => {
+      e.stopPropagation(); const acc = b.closest('.cc-acc'), ab = !acc.classList.contains('abierto');
+      el.querySelectorAll('.cc-acc.abierto').forEach(x => { x.classList.remove('abierto'); const m = x.querySelector('.cc-mas'); if (m) m.setAttribute('aria-expanded', 'false'); });
+      acc.classList.toggle('abierto', ab); b.setAttribute('aria-expanded', ab ? 'true' : 'false');
+      const menu = acc.querySelector('.cc-menu'); if (ab && menu) { const r = b.getBoundingClientRect(); menu.style.top = (r.bottom + 4) + 'px'; menu.style.left = Math.max(8, r.right - 210) + 'px'; }
+    }));
+    if (!window.__ccMenusGlobal) {
+      window.__ccMenusGlobal = true;
+      const cerrarMenus = () => { document.querySelectorAll('.cc-acc.abierto').forEach(x => x.classList.remove('abierto')); const p = document.getElementById('ccImpExpPop'); if (p) p.classList.remove('abierto'); };
+      document.addEventListener('click', (e) => { if (!e.target.closest || (!e.target.closest('.cc-acc') && !e.target.closest('#ccImpExpPop'))) cerrarMenus(); });
+      document.addEventListener('keydown', (e) => { if (e.key === 'Escape') cerrarMenus(); });
+      window.addEventListener('scroll', cerrarMenus, true);
+    }
+  }
   $('ccBuscar').value = STATE_ccAlta.buscar || '';
   $('ccFiltroTipo').value = STATE_ccAlta.filtroTipo || '';
   $('ccBuscar').addEventListener('input', () => { STATE_ccAlta.buscar = $('ccBuscar').value; aplicarVista(); });
@@ -26328,7 +26386,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.16';
+const APP_VERSION = '2026-11-06.17';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
