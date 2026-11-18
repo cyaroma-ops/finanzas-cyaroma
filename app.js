@@ -26208,7 +26208,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.14';
+const APP_VERSION = '2026-11-06.15';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
@@ -28069,7 +28069,7 @@ async function openPolizaModal(polizaId, businessId, baseOverride) {
   ]);
   const base = baseOverride || (polizaId ? await crearBorradorPolizaExistente(polizaId, businessId) : await crearBorradorPolizaNueva(businessId));
   const idsYaVinculados = base.lineas.filter(l => l.cuenta_tipo === 'proveedor' && l.proveedor_factura_id).map(l => l.proveedor_factura_id);
-  const { data: facturasData } = await sb.from('fz_proveedores').select('id,proveedor,factura,importe,importe_pagado,estatus,folio,fecha,fecha_vencimiento,moneda,aplica_iva,iva_monto,aplica_retencion,retencion_isr_monto,retencion_iva_monto').eq('business_id', businessId);
+  const { data: facturasData } = await sb.from('fz_proveedores').select('id,proveedor,factura,importe,importe_pagado,estatus,folio,fecha,fecha_vencimiento,moneda').eq('business_id', businessId);
   const facturasPendientes = (facturasData || []).filter(f => f.estatus === 'Pendiente' || f.estatus === 'Parcial' || idsYaVinculados.includes(f.id));
 
   const idsClienteYaVinculados = base.lineas.filter(l => l.cuenta_tipo === 'cliente' && l.cliente_factura_id).map(l => l.cliente_factura_id);
@@ -28224,8 +28224,7 @@ function polizaCardHtmlBorrador(borrador) {
       <div class="doc-workspace" id="polWorkspace">
       <div class="doc-workspace-panel-captura">
       <div class="pz-soporte"><div class="pz-soporte-tit">Documentos de soporte</div>${adjuntoHtml}</div>
-      ${borrador.esNueva ? pzSelectorModalidadHtml(borrador) : ''}
-      ${borrador.asistente ? pzAsistenteHtml(borrador) : `<div class="table-wrap scroll-sticky">
+      <div class="table-wrap scroll-sticky">
         <table class="pz-tabla">
           <thead><tr><th>Cuenta</th><th>Proveedor</th><th>Referencia/Factura</th><th>Descripción</th><th>Cargo</th><th>Abono</th><th></th></tr></thead>
           <tbody>
@@ -28247,7 +28246,7 @@ function polizaCardHtmlBorrador(borrador) {
           </tbody>
         </table>
       </div>
-      <button class="btn btn-ghost btn-sm addLineaBtn" style="margin-top:10px;">+ Agregar línea</button>`}
+      <button class="btn btn-ghost btn-sm addLineaBtn" style="margin-top:10px;">+ Agregar línea</button>
       </div>
       <div class="doc-workspace-panel-doc" id="polPanelDoc" style="display:none;">
         <div class="doc-viewer-toolbar">
@@ -28314,10 +28313,16 @@ function bsResaltarTxt(txt, palabras) {
 function hacerBuscadorCuentasPoliza(inp) {
   if (!inp || inp.dataset.bsp === '1') return;
   inp.dataset.bsp = '1'; inp.removeAttribute('list'); inp.autocomplete = 'off';
-  let lista = null, filas = [], activa = -1, abierta = false, filtrando = false, verProv = false, prog = false, modo = null, ratonEnLista = false;
+  let lista = null, filas = [], activa = -1, abierta = false, filtrando = false, verProv = false, prog = false, modo = null, ratonEnLista = false, sinFiltro = false;
   inp.dataset.bspPrev = inp.value;
   const obtener = () => { try { return catalogoCuentasUnificado(STATE_polizaBorrador.catalogos); } catch (e) { return []; } };
-  const cerrar = () => { abierta = false; filtrando = false; verProv = false; modo = null; delete inp.dataset.bspModo; if (lista) { lista.remove(); lista = null; } filas = []; activa = -1; };
+  // Facturas que ya se eligieron en OTRAS líneas de esta póliza, y proveedor «activo» (el de la última otra línea que paga una factura): solo ayudan a filtrar la lista, no cambian ningún dato
+  const idsUsadas = () => { try { return new Set(STATE_polizaBorrador.lineas.filter(l => l.id !== inp.dataset.id && l.cuenta_tipo === 'proveedor' && l.proveedor_factura_id).map(l => l.proveedor_factura_id)); } catch (e) { return new Set(); } };
+  const provActivo = () => { try {
+    const pf = STATE_polizaBorrador.lineas.filter(l => l.id !== inp.dataset.id && l.cuenta_tipo === 'proveedor' && l.proveedor_factura_id), it = obtener();
+    for (let k = pf.length - 1; k >= 0; k--) { const x = it.find(y => y.tipo === 'proveedor' && y.id === pf[k].proveedor_factura_id); if (x && x.prov) return x.prov; }
+  } catch (e) { /* sin filtro */ } return null; };
+  const cerrar = () => { abierta = false; filtrando = false; verProv = false; sinFiltro = false; modo = null; delete inp.dataset.bspModo; if (lista) { lista.remove(); lista = null; } filas = []; activa = -1; };
   const posicionar = () => {
     if (!lista) return; const r = inp.getBoundingClientRect();
     const ancho = Math.min(Math.max(r.width, 560), window.innerWidth - 16);
@@ -28332,7 +28337,7 @@ function hacerBuscadorCuentasPoliza(inp) {
   };
   const construirModo = () => {
     const q = bsNorm(inp.value).trim(), palabras = q ? q.split(/\s+/) : [];
-    const facturas = obtener().filter(it => it.tipo === 'proveedor');
+    const usadasM = idsUsadas(), facturas = obtener().filter(it => it.tipo === 'proveedor' && !usadasM.has(it.id));
     filas = []; let html = '';
     if (modo.nivel === 'prov') {
       const mapa = {};
@@ -28361,15 +28366,29 @@ function hacerBuscadorCuentasPoliza(inp) {
   const construir = () => {
     if (modo) { construirModo(); return; }
     const q = filtrando ? bsNorm(inp.value).trim() : '', palabras = q ? q.split(/\s+/) : [];
-    const todos = obtener().filter(it => palabras.every(p => bsNorm(it.label).includes(p)));
+    const usadasC = idsUsadas(), todos = obtener().filter(it => it.tipo !== 'proveedor' && palabras.every(p => bsNorm(it.label).includes(p)));
     const grupos = {};
     todos.forEach(it => { const g = GRUPOS_CUENTA_POLIZA[it.tipo] || GRUPOS_CUENTA_POLIZA.sub; (grupos[g.n] = grupos[g.n] || { t: g.t, items: [] }).items.push(it); });
-    const hayPagar = !!(grupos[1] && grupos[1].items.length);
+    const fpend = obtener().filter(it => it.tipo === 'proveedor' && !usadasC.has(it.id)), act = sinFiltro ? null : provActivo();
+    const matchF = fpend.filter(it => palabras.every(p => bsNorm(it.label).includes(p)));
+    const actFiltra = !!act && (!q || matchF.some(it => it.prov === act));
+    const resumen = {}; fpend.forEach(it => { const m = resumen[it.prov] = resumen[it.prov] || { nombre: it.prov, n: 0, total: 0 }; m.n++; m.total += Number(it.saldo) || 0; });
+    const provsCoinc = (q && !actFiltra) ? [...new Set(matchF.map(it => it.prov))].map(n => resumen[n]).sort((a1, c1) => a1.nombre.localeCompare(c1.nombre, 'es')) : [];
+    const hayPagar = actFiltra || provsCoinc.length > 0;
     const prov = grupos[5] ? grupos[5].items : [];
     const mostrarProv = prov.length && (verProv || (!hayPagar && q.length >= 2));
     filas = []; let html = '';
-    const hayFacturasPend = obtener().some(it => it.tipo === 'proveedor');
+    const hayFacturasPend = fpend.length > 0 && !actFiltra;
     if (hayFacturasPend && (!q || palabras.every(p => 'pago pagar a proveedor proveedores facturas'.includes(p)))) { filas.push({ modoProv: true }); html += '<div class="bs-toggle bs-pago" data-i="0">Pago a proveedor — elige el proveedor y luego su factura ▸</div>'; }
+    const filaFactura = (it) => { const i = filas.length; filas.push({ it }); const v = it.vista; return '<div class="bs-op dos" role="option" data-i="' + i + '"><span class="bs-izq">' + bsResaltarTxt(v.a, palabras) + (v.b ? '<span class="bs-sec">' + escHtml(v.b) + '</span>' : '') + '</span><span class="bs-der">' + escHtml(v.c) + '</span></div>'; };
+    if (actFiltra) {   // ya hay un proveedor en otra línea de esta póliza: solo sus facturas pendientes, con salida para ver a los demás
+      const lst = matchF.filter(it => it.prov === act);
+      html += '<div class="bs-grupo">Pagar a ' + escHtml(act) + ' — facturas pendientes (' + lst.length + ') <span class="bs-verotros" role="button" data-i="' + filas.length + '">Ver todos los proveedores</span></div>'; filas.push({ verTodos: true });
+      lst.forEach(it => { html += filaFactura(it); });
+    } else if (provsCoinc.length) {   // al escribir: primero el proveedor; al darle clic se ven sus facturas
+      html += '<div class="bs-grupo">Proveedores con facturas por pagar (' + provsCoinc.length + ')</div>';
+      provsCoinc.forEach(m => { const i = filas.length; filas.push({ prov: m.nombre }); html += '<div class="bs-op dos" role="option" data-i="' + i + '"><span class="bs-izq">' + bsResaltarTxt(m.nombre, palabras) + '<span class="bs-sec">' + m.n + (m.n === 1 ? ' factura pendiente' : ' facturas pendientes') + '</span></span><span class="bs-der">' + fmt(m.total) + '</span></div>'; });
+    }
     Object.keys(grupos).map(Number).sort().forEach(n => {
       if (n === 5 && !mostrarProv) return;
       html += '<div class="bs-grupo">' + escHtml(grupos[n].t) + ' <span style="font-weight:500;">(' + grupos[n].items.length + ')</span></div>';
@@ -28385,13 +28404,14 @@ function hacerBuscadorCuentasPoliza(inp) {
     if (!filas.length) html = '<div class="bs-vacio">Sin coincidencias</div>';
     if (!lista) { lista = document.createElement('div'); lista.className = 'bs-lista bs-lista-poliza'; lista.setAttribute('role', 'listbox'); document.body.appendChild(lista); }
     lista.innerHTML = html;
-    activa = filas.findIndex(f => f.it); if (activa < 0 && filas.length) activa = 0;
+    activa = filas.findIndex(f => f.it || f.prov); if (activa < 0 && filas.length) activa = 0;
     marcar(); posicionar();
   };
   const elegir = (i) => {
     const f = filas[i]; if (!f) return;
     if (f.modoProv) { entrarModo({ nivel: 'prov' }); return; }
     if (f.prov) { entrarModo({ nivel: 'fact', nombre: f.prov }); return; }
+    if (f.verTodos) { sinFiltro = true; construir(); return; }
     if (f.back) { if (modo && modo.nivel === 'fact') entrarModo({ nivel: 'prov' }); else salirModo(); return; }
     if (f.toggle) { verProv = true; construir(); return; }
     prog = true; inp.value = f.it.label; inp.dataset.bspPrev = f.it.label; cerrar();
@@ -28441,310 +28461,6 @@ function hacerBuscadorCuentasPoliza(inp) {
 }
 /* ===== fin 06.10 buscador de póliza ===== */
 
-/* ===== 06.12 — Modalidad asistida «Gasto o pago contra banco/efectivo» (solo captura).
-   El asistente únicamente LLENA las líneas del editor de siempre (Cargo a la cuenta de destino, Abono al banco o efectivo);
-   el guardado, la numeración, los saldos y el IVA no cambian, y no hay campos de IVA ni de facturas. Solo para pólizas nuevas. ===== */
-const PZ_TIPOS_DESTINO = ['gasto', 'costo', 'pasivo'];
-const PZ_RE_FISCAL = /\b(iva|retenci[oó]n|retenciones|isr)\b/i;
-const pzIdNuevo = () => 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
-function pzLineasConDatos(lineas) { return lineas.some(l => Number(l.cargo) || Number(l.abono) || l.subcuenta_id || l.cuenta_ref_id || (l.descripcion || '').trim() || (l.referencia || '').trim()); }
-function pzOrigenesDinero(cat) {
-  return [
-    ...(cat.cuentasBanco || []).map(c => ({ key: 'banco:' + c.id, tipo: 'banco', id: c.id, nombre: c.nombre, moneda: c.moneda || 'MXN' })),
-    ...(cat.monedasEfectivo || []).map(m => ({ key: 'efectivo:' + m.id, tipo: 'efectivo', id: m.id, nombre: m.nombre, moneda: (typeof codigoMonedaDeCaja === 'function' ? codigoMonedaDeCaja(m.nombre, m.tipo_cambio) : 'MXN') })),
-  ];
-}
-function pzOpcionesDestino(cat, verTodas, seleccionada) {
-  let h = '<option value="">— elige la cuenta —</option>';
-  (cat.mayores || []).forEach(m => {
-    if (!verTodas && (!PZ_TIPOS_DESTINO.includes(m.tipo) || PZ_RE_FISCAL.test(m.nombre))) return;
-    let ops = '';
-    const rec = (sb_, nivel) => {
-      if (verTodas || !PZ_RE_FISCAL.test(sb_.nombre) || sb_.id === seleccionada) ops += '<option value="' + escAttr(sb_.id) + '"' + (sb_.id === seleccionada ? ' selected' : '') + '>' + '—'.repeat(nivel + 1) + ' ' + escHtml(sb_.nombre) + '</option>';
-      subcuentasHijas(sb_.id, cat.subcuentas).forEach(hh => rec(hh, nivel + 1));
-    };
-    subcuentasRaiz(m.id, cat.subcuentas).forEach(x => rec(x, 0));
-    if (ops) h += '<optgroup label="' + escAttr(m.nombre + ' · ' + (TIPO_CUENTA_LABEL[m.tipo] || m.tipo)) + '">' + ops + '</optgroup>';
-  });
-  return h;
-}
-const PZ_RE_BANCO = /\b(bancos?|efectivo|caja|cajas)\b/i;
-function pzOpcionesCtaOrigen(cat, seleccionada, verTodas) {   // cuentas contables con las que se paga: acreedores (pasivo) y deudores (activo)
-  const sel = String(seleccionada || '').startsWith('cta:') ? String(seleccionada).slice(4) : '';
-  const rotulo = { pasivo: 'Acreedores / pasivo', activo: 'Deudores / activo' };
-  let h = '';
-  (cat.mayores || []).forEach(m => {
-    if (!verTodas && (!['pasivo', 'activo'].includes(m.tipo) || PZ_RE_FISCAL.test(m.nombre) || PZ_RE_BANCO.test(m.nombre))) return;
-    let ops = '';
-    const rec = (x, nivel) => {
-      if (verTodas || x.id === sel || (!PZ_RE_FISCAL.test(x.nombre) && !PZ_RE_BANCO.test(x.nombre))) ops += '<option value="cta:' + escAttr(x.id) + '"' + ('cta:' + x.id === seleccionada ? ' selected' : '') + '>' + '—'.repeat(nivel + 1) + ' ' + escHtml(x.nombre) + '</option>';
-      subcuentasHijas(x.id, cat.subcuentas).forEach(hh => rec(hh, nivel + 1));
-    };
-    subcuentasRaiz(m.id, cat.subcuentas).forEach(x => rec(x, 0));
-    if (ops) h += '<optgroup label="' + escAttr(m.nombre + ' · ' + (verTodas ? (TIPO_CUENTA_LABEL[m.tipo] || m.tipo) : (rotulo[m.tipo] || m.tipo))) + '">' + ops + '</optgroup>';
-  });
-  return h;
-}
-function pzLineaOrigen(a, org, monto, orden) {
-  if (!(monto > 0)) return null;
-  if (org) return { id: 'tmp_asist_origen', subcuenta_id: null, cuenta_tipo: org.tipo, cuenta_ref_id: org.id, cargo: 0, abono: monto, descripcion: '', referencia: a.referencia || '', orden };
-  if (String(a.origen || '').startsWith('cta:')) return { id: 'tmp_asist_origen', subcuenta_id: a.origen.slice(4), cuenta_tipo: 'subcuenta', cuenta_ref_id: null, cargo: 0, abono: monto, descripcion: '', referencia: a.referencia || '', orden };
-  return null;
-}
-function pzAsistenteGenerarLineas() {
-  const b = STATE_polizaBorrador, a = b && b.asistente; if (!a) return;
-  const org = pzOrigenesDinero(b.catalogos).find(o => o.key === a.origen);
-  const lineas = []; let orden = 0;
-  a.destinos.forEach(d => {
-    if (!d.subcuenta_id && !(Number(d.monto) > 0)) return;
-    lineas.push({ id: 'tmp_asist_' + d.id, subcuenta_id: d.subcuenta_id || null, cuenta_tipo: 'subcuenta', cuenta_ref_id: null, cargo: Number(d.monto) || 0, abono: 0, descripcion: d.descripcion || '', referencia: a.referencia || '', orden: orden++ });
-  });
-  const lo = pzLineaOrigen(a, org, Number(a.total), orden++); if (lo) lineas.push(lo);
-  b.lineas = lineas;
-}
-function pzSelectorModalidadHtml(b) {
-  const modo = b.asistente ? b.asistente.modo : 'libre';
-  const btn = (m, t) => '<button type="button" class="pz-modo-btn ' + (modo === m ? 'activo' : '') + '" data-modo="' + m + '" aria-pressed="' + (modo === m) + '">' + t + '</button>';
-  return '<div class="pz-modos" role="group" aria-label="Modalidad de captura"><span class="pz-modos-lbl">Modalidad</span>' + btn('libre', 'Registro libre') + btn('gasto', 'Gasto o pago directo') + btn('proveedores', 'Pago a proveedores') + '</div>';
-}
-function pzAsistenteHtml(b) {
-  if (b.asistente.modo === 'proveedores') return pzProvHtml(b);
-  const a = b.asistente, cat = b.catalogos, origenes = pzOrigenesDinero(cat);
-  const optsOrigen = '<option value="">— elige banco, efectivo o cuenta —</option>' + origenes.map(o => '<option value="' + escAttr(o.key) + '"' + (o.key === a.origen ? ' selected' : '') + '>' + (o.tipo === 'banco' ? 'Banco' : 'Caja') + ' — ' + escHtml(o.nombre) + (o.moneda !== 'MXN' ? ' (' + o.moneda + ')' : '') + '</option>').join('') + pzOpcionesCtaOrigen(cat, a.origen, a.verTodas);
-  const filas = a.destinos.map((d, i) => {
-    const lb = (t) => '<label class="pza-lbl' + (i > 0 ? ' pza-lbl-sec' : '') + '">' + t + '</label>';
-    return '<div class="pza-fila">'
-      + '<div class="field pza-cta">' + lb('Cuenta de destino') + '<select class="pza-destino" data-id="' + d.id + '" data-field="destino">' + pzOpcionesDestino(cat, a.verTodas, d.subcuenta_id) + '</select></div>'
-      + '<div class="field pza-monto">' + lb('Importe') + '<input class="pz-in num-fmt pza-monto-in" type="text" inputmode="decimal" data-id="' + d.id + '" data-field="monto" value="' + fmtInputVal(d.monto) + '" placeholder="0.00"></div>'
-      + '<div class="field pza-desc">' + lb('Descripción (opcional)') + '<input class="pz-in pza-desc-in" type="text" data-id="' + d.id + '" data-field="descripcion" value="' + escAttr(d.descripcion || '') + '" placeholder="Ej. Gasolina camioneta"></div>'
-      + '<button type="button" class="row-del pza-quitar" data-id="' + d.id + '" title="Quitar esta cuenta" aria-label="Quitar esta cuenta"' + (a.destinos.length < 2 ? ' disabled style="visibility:hidden"' : '') + '>✕</button></div>';
-  }).join('');
-  return '<div class="pz-asist">'
-    + '<div class="pz-asist-tit">Gasto o pago directo <span>Cargo a la cuenta de destino · Abono a la cuenta de pago</span></div>'
-    + '<div class="pza-top">'
-    + '<div class="field"><label class="pza-lbl">Pagado desde</label><select class="pza-origen" data-id="pza" data-field="origen">' + optsOrigen + '</select></div>'
-    + '<div class="field"><label class="pza-lbl">Importe total</label><input class="pz-in num-fmt pza-total" type="text" inputmode="decimal" data-id="pza" data-field="total" value="' + fmtInputVal(a.total) + '" placeholder="0.00"></div>'
-    + '<div class="field"><label class="pza-lbl">Referencia (opcional)</label><input class="pz-in pza-ref" type="text" data-id="pza" data-field="referencia" value="' + escAttr(a.referencia || '') + '" placeholder="Folio, ticket, transferencia…"></div>'
-    + '</div>'
-    + '<div class="pza-aviso" id="pzaAviso"></div>'
-    + '<div class="pza-sec"><strong>Cuentas de destino</strong><label class="pza-vertodas"><input type="checkbox" class="pza-vertodas-chk" data-id="pza" data-field="vertodas"' + (a.verTodas ? ' checked' : '') + '> Ver todas las cuentas del catálogo</label></div>'
-    + filas
-    + '<button type="button" class="btn btn-ghost btn-sm pza-agregar" data-id="pza" data-field="agregar">+ Agregar otra cuenta de destino</button>'
-    + '<div class="pza-resumen" id="pzaResumen"></div>'
-    + '<div class="pza-falta" id="pzaFalta"></div>'
-    + '<details class="pza-vista"><summary>Vista previa del registro contable</summary><div id="pzaVista"></div></details>'
-    + '</div>';
-}
-function pzAsistenteRefrescar(wrap) {
-  const b = STATE_polizaBorrador, a = b && b.asistente; if (!a) return;
-  if (a.destinos.length === 1 && !a.destinos[0].manual) {   // con una sola cuenta de destino, su importe sigue al total hasta que lo edites a mano
-    a.destinos[0].monto = Number(a.total) || 0;
-    const inp = wrap.querySelector('.pza-monto-in[data-id="' + a.destinos[0].id + '"]'); if (inp && document.activeElement !== inp) inp.value = fmtInputVal(a.destinos[0].monto);
-  }
-  pzAsistenteGenerarLineas();
-  const aplicado = a.destinos.reduce((s, d) => s + (Number(d.monto) || 0), 0), porDist = Math.round(((Number(a.total) || 0) - aplicado) * 100) / 100;
-  const res = wrap.querySelector('#pzaResumen');
-  if (res) res.innerHTML = '<span>Importe total <strong>' + fmt(Number(a.total) || 0) + '</strong></span><span>Aplicado <strong>' + fmt(aplicado) + '</strong></span><span>Por distribuir <strong class="' + (Math.abs(porDist) < 0.005 ? 'ok' : 'mal') + '">' + fmt(porDist) + '</strong></span>';
-  const org = pzOrigenesDinero(b.catalogos).find(o => o.key === a.origen), av = wrap.querySelector('#pzaAviso');
-  if (av) av.textContent = (org && org.moneda !== 'MXN') ? 'Ojo: esta cuenta es en ' + org.moneda + '. La póliza no maneja moneda por línea: captura los importes en la misma moneda de la cuenta.' : '';
-  if (av) av.style.display = av.textContent ? '' : 'none';
-  const vista = wrap.querySelector('#pzaVista');
-  if (vista) {
-    const items = catalogoCuentasUnificado(b.catalogos);
-    vista.innerHTML = b.lineas.length
-      ? '<table class="pza-vista-tabla"><thead><tr><th>Cuenta</th><th>Descripción</th><th class="num">Cargo</th><th class="num">Abono</th></tr></thead><tbody>' + b.lineas.map(l => '<tr><td>' + escHtml(labelDeLineaPoliza(items, l) || '(sin cuenta)') + '</td><td>' + escHtml(l.descripcion || '') + '</td><td class="num">' + (Number(l.cargo) ? fmt(l.cargo) : '') + '</td><td class="num">' + (Number(l.abono) ? fmt(l.abono) : '') + '</td></tr>').join('') + '</tbody></table><p class="pza-vista-nota">Estas son las líneas exactas que se guardarán en la póliza. No se generan movimientos adicionales ni IVA.</p>'
-      : '<p class="pza-vista-nota">Aún no hay líneas: elige el banco o efectivo, el importe y la cuenta de destino.</p>';
-  }
-  actualizarTotalesPolizaEnSitio(wrap);
-  pzActualizarGuardar(wrap);
-}
-function pzActualizarGuardar(wrap) {
-  const btn = wrap.querySelector('.poliza-guardar'), b = STATE_polizaBorrador; if (!btn || !b || STATE_polizaGuardando) return;
-  const a = b.asistente, faltaEl = wrap.querySelector('#pzaFalta');
-  if (!a) { btn.disabled = false; btn.removeAttribute('title'); return; }
-  if (a.modo === 'proveedores') { pzProvActualizarGuardar(wrap, btn, faltaEl); return; }
-  const faltas = [];
-  if (!a.origen) faltas.push('elige el banco o efectivo');
-  if (!(Number(a.total) > 0)) faltas.push('captura el importe total');
-  if (!a.destinos.some(d => d.subcuenta_id && Number(d.monto) > 0)) faltas.push('elige la cuenta de destino y su importe');
-  else if (a.destinos.some(d => Number(d.monto) > 0 && !d.subcuenta_id)) faltas.push('elige la cuenta de cada importe');
-  const e = estadoVisualPoliza(b.lineas);
-  if (!e.vacia && !e.cuadrada && Number(a.total) > 0) faltas.push('distribuye todo el importe (faltan ' + fmt(Math.abs(e.diff)) + ')');
-  btn.disabled = faltas.length > 0;
-  const txt = faltas.length ? 'Para guardar: ' + faltas.join('; ') + '.' : '';
-  if (faltaEl) faltaEl.textContent = txt;
-  if (txt) btn.title = txt; else btn.removeAttribute('title');
-}
-function pzCambiarModalidad(modo) {
-  const b = STATE_polizaBorrador; if (!b || !b.esNueva) return;
-  const actual = b.asistente ? b.asistente.modo : 'libre'; if (modo === actual) return;
-  if (modo === 'libre') {
-    b.asistente = null;   // las líneas generadas se conservan y quedan editables
-    if (!b.lineas.length) { const t = Date.now(); b.lineas = [0, 1].map(i => ({ id: 'tmp_' + t + '_' + i, subcuenta_id: null, cuenta_tipo: 'subcuenta', cuenta_ref_id: null, cargo: 0, abono: 0, descripcion: '', referencia: '', orden: i })); }
-  } else {
-    if (!b.asistente && pzLineasConDatos(b.lineas) && !confirm('Al usar el asistente se reemplazarán las líneas que ya capturaste. ¿Continuar?')) return;
-    let origen = b.asistente ? b.asistente.origen : ''; const referencia = b.asistente ? b.asistente.referencia : '';
-    if (modo === 'proveedores' && !String(origen).startsWith('cta:')) origen = '';
-    if (modo === 'proveedores') { b.asistente = { modo, origen, referencia, proveedor: '', total: 0, pagos: {} }; pzProvGenerar(); }
-    else { b.asistente = { modo, origen, total: 0, referencia, verTodas: false, destinos: [{ id: pzIdNuevo(), subcuenta_id: '', monto: 0, manual: false, descripcion: '' }] }; pzAsistenteGenerarLineas(); }
-  }
-  renderizarBorradorPoliza();
-}
-function pzAsistenteWire(wrap) {
-  const b = STATE_polizaBorrador; if (!b) return;
-  wrap.querySelectorAll('.pz-modo-btn').forEach(btn => ligarUnaVez(btn, 'click', () => pzCambiarModalidad(btn.dataset.modo)));
-  const a = b.asistente;
-  if (!a) { pzActualizarGuardar(wrap); return; }
-  if (a.modo === 'proveedores') { pzProvWire(wrap, b, a); return; }
-  const on = (sel, ev, fn) => wrap.querySelectorAll(sel).forEach(el => ligarUnaVez(el, ev, (e) => { if (STATE_polizaBorrador !== b || b.asistente !== a) return; fn(el, e); }));
-  on('.pza-origen', 'change', (el) => { a.origen = el.value; pzAsistenteRefrescar(wrap); });
-  on('.pza-total', 'change', (el) => { a.total = leerMonto(el.value); pzAsistenteRefrescar(wrap); });
-  on('.pza-ref', 'change', (el) => { a.referencia = el.value; pzAsistenteRefrescar(wrap); });
-  on('.pza-vertodas-chk', 'change', (el) => { a.verTodas = el.checked; renderizarBorradorPoliza(); });
-  const dest = (el) => a.destinos.find(d => d.id === el.dataset.id);
-  on('.pza-destino', 'change', (el) => { const d = dest(el); if (d) { d.subcuenta_id = el.value; pzAsistenteRefrescar(wrap); } });
-  on('.pza-monto-in', 'change', (el) => { const d = dest(el); if (d) { d.monto = leerMonto(el.value); d.manual = true; pzAsistenteRefrescar(wrap); } });
-  on('.pza-desc-in', 'change', (el) => { const d = dest(el); if (d) { d.descripcion = el.value; pzAsistenteRefrescar(wrap); } });
-  const agregar = () => {
-    a.destinos.forEach(d => { d.manual = true; });
-    const aplicado = a.destinos.reduce((s, d) => s + (Number(d.monto) || 0), 0), resto = Math.max(0, Math.round(((Number(a.total) || 0) - aplicado) * 100) / 100);
-    const nuevo = { id: pzIdNuevo(), subcuenta_id: '', monto: resto, manual: true, descripcion: '' };
-    a.destinos.push(nuevo); pzAsistenteGenerarLineas(); renderizarBorradorPoliza();
-    const sel = wrap.querySelector('.pza-destino[data-id="' + nuevo.id + '"]'), inp = sel && sel.parentNode.querySelector('.bs-input'); if (inp) inp.focus();
-  };
-  on('.pza-agregar', 'click', () => agregar());
-  on('.pza-quitar', 'click', (el) => { a.destinos = a.destinos.filter(d => d.id !== el.dataset.id); if (a.destinos.length === 1) a.destinos[0].manual = false; pzAsistenteGenerarLineas(); renderizarBorradorPoliza(); });
-  on('.pza-desc-in', 'keydown', (el, e) => {   // Enter en la descripción de la última cuenta agrega otra
-    if (e.key !== 'Enter' || e.isComposing) return; const ult = a.destinos[a.destinos.length - 1];
-    if (ult && ult.id === el.dataset.id && Number(ult.monto) > 0 && ult.subcuenta_id) { e.preventDefault(); el.dispatchEvent(new Event('change', { bubbles: true })); agregar(); }
-  });
-  wrap.querySelectorAll('.pza-destino').forEach(sel => hacerSelectBuscable(sel));
-  pzAsistenteRefrescar(wrap);
-}
-/* ===== fin 06.12 ===== */
-
-/* ===== 06.13 — Modalidad asistida «Pago a proveedores» (solo captura).
-   Llena las MISMAS líneas que ya captura el editor a mano (cargo a la factura del proveedor, abono al banco o efectivo). El guardado, la
-   aplicación del pago, los saldos y el IVA no cambian. Si alguna factura tiene IVA o retención, solo se AVISA (no se bloquea). ===== */
-const pzFmtF = (d) => d ? String(d).slice(0, 10).split('-').reverse().join('/') : '';
-const pzR2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
-function pzProvFacturas(b) {   // facturas con saldo del proveedor elegido, de la más antigua a la más nueva
-  const a = b.asistente; if (!a || !a.proveedor) return [];
-  const org = pzOrigenesDinero(b.catalogos).find(o => o.key === a.origen);
-  return (b.catalogos.facturasPendientes || []).filter(f => f.proveedor === a.proveedor)
-    .map(f => ({ f, saldo: pzR2(Number(f.importe) - (Number(f.importe_pagado) || 0)), moneda: f.moneda || 'MXN' }))
-    .filter(x => x.saldo > 0.004)
-    .map(x => ({ ...x, otraMoneda: !!a.origen && x.moneda !== (org ? org.moneda : 'MXN'), iva: !!x.f.aplica_iva && Number(x.f.iva_monto) > 0, ret: !!x.f.aplica_retencion && (Number(x.f.retencion_isr_monto) > 0 || Number(x.f.retencion_iva_monto) > 0) }))
-    .sort((p, q) => String(p.f.fecha || '').localeCompare(String(q.f.fecha || '')) || (Number(p.f.folio) || 0) - (Number(q.f.folio) || 0));
-}
-function pzProvSumaPagos(b) { const a = b.asistente; return pzR2(pzProvFacturas(b).reduce((s, x) => s + (x.otraMoneda ? 0 : (Number(a.pagos[x.f.id]) || 0)), 0)); }
-function pzProvDistribuir(b) {   // reparte el importe total de la más antigua a la más nueva
-  const a = b.asistente; let resto = Number(a.total) || 0; a.pagos = {};
-  pzProvFacturas(b).forEach(x => { if (x.otraMoneda || resto <= 0.004) return; const p = Math.min(x.saldo, pzR2(resto)); a.pagos[x.f.id] = p; resto = pzR2(resto - p); });
-}
-function pzProvGenerar() {
-  const b = STATE_polizaBorrador, a = b && b.asistente; if (!a) return;
-  const org = pzOrigenesDinero(b.catalogos).find(o => o.key === a.origen), lineas = []; let orden = 0, suma = 0;
-  pzProvFacturas(b).forEach(x => {
-    const p = x.otraMoneda ? 0 : (Number(a.pagos[x.f.id]) || 0); if (!(p > 0)) return;
-    suma = pzR2(suma + p);
-    lineas.push({ id: 'tmp_asist_' + x.f.id, subcuenta_id: null, cuenta_tipo: 'proveedor', cuenta_ref_id: null, proveedor_factura_id: x.f.id, cargo: p, abono: 0, descripcion: '', referencia: a.referencia || '', proveedor: x.f.proveedor || '', orden: orden++ });
-  });
-  const lo = pzLineaOrigen(a, org, suma, orden++); if (lo) lineas.push(lo);
-  b.lineas = lineas;
-}
-function pzProvHtml(b) {
-  const a = b.asistente, cat = b.catalogos, origenes = pzOrigenesDinero(cat);
-  const optsOrigen = '<option value="">— elige la cuenta de acreedores o deudores —</option>' + pzOpcionesCtaOrigen(cat, a.origen, a.verTodas);
-  const por = {};
-  (cat.facturasPendientes || []).forEach(f => { const s = pzR2(Number(f.importe) - (Number(f.importe_pagado) || 0)); if (s > 0.004 && f.proveedor) { (por[f.proveedor] = por[f.proveedor] || { n: 0, t: 0 }).n++; por[f.proveedor].t = pzR2(por[f.proveedor].t + s); } });
-  const nombres = Object.keys(por).sort((x, y) => x.localeCompare(y, 'es'));
-  const optsProv = '<option value="">— elige el proveedor —</option>' + nombres.map(n => '<option value="' + escAttr(n) + '"' + (n === a.proveedor ? ' selected' : '') + '>' + escHtml(n) + ' — ' + por[n].n + (por[n].n === 1 ? ' factura' : ' facturas') + ' · ' + fmt(por[n].t) + '</option>').join('');
-  const facs = pzProvFacturas(b);
-  let tabla = '';
-  if (a.proveedor) {
-    tabla = facs.length ? '<div class="pzp-tabla-wrap"><table class="pzp-tabla"><thead><tr><th>Factura</th><th>Fecha</th><th>Vence</th><th class="num">Saldo</th><th class="num">Pagar</th></tr></thead><tbody>'
-      + facs.map(x => '<tr data-fid="' + escAttr(x.f.id) + '">'
-        + '<td data-label="Factura"><strong>' + (x.f.folio ? '#' + escHtml(x.f.folio) + ' · ' : '') + escHtml(x.f.factura || 's/f') + '</strong>' + (x.iva ? ' <span class="pzp-chip">IVA</span>' : '') + (x.ret ? ' <span class="pzp-chip">Retención</span>' : '') + (x.otraMoneda ? ' <span class="pzp-chip pzp-chip-m">' + escHtml(x.moneda) + ' · otra moneda</span>' : '') + '</td>'
-        + '<td data-label="Fecha">' + escHtml(pzFmtF(x.f.fecha)) + '</td><td data-label="Vence">' + escHtml(pzFmtF(x.f.fecha_vencimiento)) + '</td>'
-        + '<td data-label="Saldo" class="num">' + fmt(x.saldo) + (x.moneda !== 'MXN' ? ' ' + escHtml(x.moneda) : '') + '</td>'
-        + '<td data-label="Pagar" class="num"><input class="pz-in num-fmt pzp-pago" type="text" inputmode="decimal" data-id="' + escAttr(x.f.id) + '" data-field="pago" value="' + fmtInputVal(a.pagos[x.f.id] || 0) + '" placeholder="0.00"' + (x.otraMoneda ? ' disabled' : '') + '></td></tr>').join('')
-      + '</tbody></table></div>' : '<p class="pza-vista-nota">Este proveedor no tiene facturas con saldo pendiente.</p>';
-  }
-  return '<div class="pz-asist">'
-    + '<div class="pz-asist-tit">Pago a proveedores <span>Cargo a las facturas del proveedor · Abono a la cuenta de acreedores o deudores</span></div>'
-    + '<div class="pza-top pzp-top">'
-    + '<div class="field"><label class="pza-lbl">Proveedor</label><select class="pzp-prov" data-id="pza" data-field="proveedor">' + optsProv + '</select></div>'
-    + '<div class="field"><label class="pza-lbl">Pagado con (acreedores / deudores)</label><select class="pza-origen" data-id="pza" data-field="origen">' + optsOrigen + '</select></div>'
-    + '<div class="field"><label class="pza-lbl">Importe total</label><input class="pz-in num-fmt pza-total" type="text" inputmode="decimal" data-id="pza" data-field="total" value="' + fmtInputVal(a.total) + '" placeholder="0.00"></div>'
-    + '</div>'
-    + '<label class="pza-vertodas pzp-vertodas"><input type="checkbox" class="pzp-vertodas-chk" data-id="pza" data-field="vertodas"' + (a.verTodas ? ' checked' : '') + '> Ver todas las cuentas del catálogo</label>'
-    + '<div class="field"><label class="pza-lbl">Referencia (opcional)</label><input class="pz-in pza-ref" type="text" data-id="pza" data-field="referencia" value="' + escAttr(a.referencia || '') + '" placeholder="Folio, transferencia, cheque…"></div>'
-    + '<div class="pza-aviso" id="pzaAviso"></div>'
-    + '<div class="pzp-fiscal" id="pzaFiscal"></div>'
-    + (a.proveedor ? '<div class="pza-sec"><strong>Facturas pendientes (de la más antigua a la más nueva)</strong><button type="button" class="btn btn-ghost btn-sm pzp-todo" data-id="pza" data-field="todo">Liquidar todo el saldo</button></div>' + tabla : '<p class="pza-vista-nota">Elige el proveedor para ver sus facturas pendientes. Al capturar el importe total se reparte de la más antigua a la más nueva; puedes ajustar cada importe a mano (pagos parciales).</p>')
-    + '<div class="pza-resumen" id="pzaResumen"></div>'
-    + '<div class="pza-falta" id="pzaFalta"></div>'
-    + '<details class="pza-vista"><summary>Vista previa del registro contable</summary><div id="pzaVista"></div></details>'
-    + '</div>';
-}
-function pzProvRefrescar(wrap) {
-  const b = STATE_polizaBorrador, a = b && b.asistente; if (!a || a.modo !== 'proveedores') return;
-  pzProvGenerar();
-  const facs = pzProvFacturas(b), suma = pzProvSumaPagos(b), porDist = pzR2((Number(a.total) || 0) - suma);
-  wrap.querySelectorAll('.pzp-pago').forEach(inp => {
-    const x = facs.find(y => y.f.id === inp.dataset.id); if (!x) return;
-    if (document.activeElement !== inp) inp.value = fmtInputVal(x.otraMoneda ? 0 : (a.pagos[x.f.id] || 0));
-    const mal = (Number(a.pagos[x.f.id]) || 0) > x.saldo + 0.004; inp.classList.toggle('pzp-error', mal);
-  });
-  const res = wrap.querySelector('#pzaResumen');
-  if (res) res.innerHTML = '<span>Importe total <strong>' + fmt(Number(a.total) || 0) + '</strong></span><span>Aplicado a facturas <strong>' + fmt(suma) + '</strong></span><span>Por distribuir <strong class="' + (Math.abs(porDist) < 0.005 ? 'ok' : 'mal') + '">' + fmt(porDist) + '</strong></span>';
-  const org = pzOrigenesDinero(b.catalogos).find(o => o.key === a.origen), av = wrap.querySelector('#pzaAviso');
-  if (av) { const ot = facs.filter(x => x.otraMoneda).length; av.textContent = (a.origen && ot) ? 'Hay ' + ot + (ot === 1 ? ' factura' : ' facturas') + ' con moneda distinta a MXN: la póliza no maneja moneda por línea; págala desde Bancos, Efectivo o Proveedores.' : ''; av.style.display = av.textContent ? '' : 'none'; }
-  const fis = wrap.querySelector('#pzaFiscal');
-  if (fis) {
-    const afect = facs.filter(x => !x.otraMoneda && (Number(a.pagos[x.f.id]) || 0) > 0 && (x.iva || x.ret));
-    if (afect.length) {
-      fis.innerHTML = '<strong>⚠ Atención: ' + (afect.length === 1 ? 'esta factura tiene' : 'estas facturas tienen') + ' IVA o retención</strong> (' + afect.map(x => escHtml((x.f.folio ? '#' + x.f.folio + ' ' : '') + (x.f.factura || 's/f'))).join(', ') + ').<br>Para que el IVA pase a <em>realizado</em>, ese pago debe registrarse desde <strong>Bancos</strong>, <strong>Efectivo</strong> o <strong>Proveedores</strong>. Si lo guardas aquí, el pago queda bien en lo financiero (saldo de la factura y de la cuenta), pero el IVA de esa factura seguirá pendiente de realizar. Este aviso no bloquea el guardado.';
-      fis.style.display = '';
-    } else { fis.innerHTML = ''; fis.style.display = 'none'; }
-  }
-  const vista = wrap.querySelector('#pzaVista');
-  if (vista) {
-    const items = catalogoCuentasUnificado(b.catalogos);
-    vista.innerHTML = b.lineas.length
-      ? '<table class="pza-vista-tabla"><thead><tr><th>Cuenta</th><th class="num">Cargo</th><th class="num">Abono</th></tr></thead><tbody>' + b.lineas.map(l => '<tr><td>' + escHtml(labelDeLineaPoliza(items, l) || '(sin cuenta)') + '</td><td class="num">' + (Number(l.cargo) ? fmt(l.cargo) : '') + '</td><td class="num">' + (Number(l.abono) ? fmt(l.abono) : '') + '</td></tr>').join('') + '</tbody></table><p class="pza-vista-nota">Estas son las líneas exactas que se guardarán en la póliza (cada factura se aplica como en el registro libre). No se generan movimientos adicionales ni IVA.</p>'
-      : '<p class="pza-vista-nota">Aún no hay líneas: elige el proveedor, el banco o efectivo y el importe.</p>';
-  }
-  actualizarTotalesPolizaEnSitio(wrap);
-  pzActualizarGuardar(wrap);
-}
-function pzProvActualizarGuardar(wrap, btn, faltaEl) {
-  const b = STATE_polizaBorrador, a = b.asistente, faltas = [], facs = pzProvFacturas(b), suma = pzProvSumaPagos(b);
-  if (!a.proveedor) faltas.push('elige el proveedor');
-  if (!a.origen) faltas.push('elige la cuenta de pago');
-  if (a.proveedor && !(suma > 0)) faltas.push('captura el importe o los importes por factura');
-  if (facs.some(x => (Number(a.pagos[x.f.id]) || 0) > x.saldo + 0.004)) faltas.push('un importe excede el saldo de su factura');
-  if (suma > 0 && Math.abs((Number(a.total) || 0) - suma) > 0.005) faltas.push('el importe total no coincide con lo aplicado (' + fmt(Math.abs((Number(a.total) || 0) - suma)) + ')');
-  btn.disabled = faltas.length > 0;
-  const txt = faltas.length ? 'Para guardar: ' + faltas.join('; ') + '.' : '';
-  if (faltaEl) faltaEl.textContent = txt;
-  if (txt) btn.title = txt; else btn.removeAttribute('title');
-}
-function pzProvWire(wrap, b, a) {
-  const on = (sel, ev, fn) => wrap.querySelectorAll(sel).forEach(el => ligarUnaVez(el, ev, (e) => { if (STATE_polizaBorrador !== b || b.asistente !== a) return; fn(el, e); }));
-  on('.pzp-prov', 'change', (el) => { a.proveedor = el.value; a.pagos = {}; a.total = 0; pzProvGenerar(); renderizarBorradorPoliza(); });
-  on('.pza-origen', 'change', (el) => { a.origen = el.value; Object.keys(a.pagos).forEach(k => { const x = pzProvFacturas(b).find(y => y.f.id === k); if (x && x.otraMoneda) delete a.pagos[k]; }); a.total = Math.max(Number(a.total) || 0, 0); renderizarBorradorPoliza(); });
-  on('.pza-total', 'change', (el) => { a.total = leerMonto(el.value); pzProvDistribuir(b); pzProvRefrescar(wrap); });
-  on('.pza-ref', 'change', (el) => { a.referencia = el.value; pzProvRefrescar(wrap); });
-  on('.pzp-pago', 'change', (el) => { a.pagos[el.dataset.id] = leerMonto(el.value); a.total = pzProvSumaPagos(b); const t = wrap.querySelector('.pza-total'); if (t) t.value = fmtInputVal(a.total); pzProvRefrescar(wrap); });
-  on('.pzp-vertodas-chk', 'change', (el) => { a.verTodas = el.checked; renderizarBorradorPoliza(); });
-  on('.pzp-todo', 'click', () => { a.total = pzR2(pzProvFacturas(b).reduce((s, x) => s + (x.otraMoneda ? 0 : x.saldo), 0)); pzProvDistribuir(b); renderizarBorradorPoliza(); });
-  wrap.querySelectorAll('.pzp-prov').forEach(sel => hacerSelectBuscable(sel));
-  pzProvRefrescar(wrap);
-}
-/* ===== fin 06.13 ===== */
-
 function wireBorradorPolizaHandlers(wrap) {
   const b = STATE_polizaBorrador;   // cada manejador se ignora si el borrador ya no es este: un campo viejo que se reemplaza con el cursor dentro dispara un «cambió» tardío y, sin esta guarda, escribía su valor en el borrador NUEVO
   // La fecha y el concepto no cambian nada más del editor: se guardan SIN redibujar. Antes se redibujaba todo el editor en cada cambio, y como el campo de fecha da por válido el valor al teclear el día,
@@ -28762,7 +28478,6 @@ function wireBorradorPolizaHandlers(wrap) {
       if (dest) { e.preventDefault(); dest.focus(); if (dest.select) { try { dest.select(); } catch (_) { /* tipo sin selección */ } } }
     });
   }
-  pzAsistenteWire(wrap);
   ligarUnaVez(wrap.querySelector('.poliza-ampliar'), 'click', () => { const m = wrap.closest('.modal-workspace'); if (m) { m.classList.toggle('pz-ampliada'); try { window.dispatchEvent(new Event('resize')); } catch (e) {} } });
   if (!wrap.dataset.pzEnter) {   // Enter en el Abono de la última línea agrega una línea nueva y deja el cursor en su Cuenta (ritmo de hoja de cálculo)
     wrap.dataset.pzEnter = '1';
