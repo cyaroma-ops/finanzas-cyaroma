@@ -758,6 +758,48 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   .poliza-barra{gap:10px 14px;margin:10px -14px 0;padding:10px 14px;}
   .pb-acc{width:100%;margin-left:0;}.pb-acc .btn{flex:1;}
 }
+/* 06.12 — Modalidad asistida de pólizas */
+.pz-modos{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:0 0 12px;}
+.pz-modos-lbl{font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-right:4px;}
+.pz-modo-btn{border:1.5px solid var(--line);background:#fff;color:var(--navy-1);border-radius:20px;padding:6px 14px;font-size:12.5px;font-weight:600;cursor:pointer;}
+.pz-modo-btn:hover{background:#eef3fb;}
+.pz-modo-btn.activo{background:var(--navy-1);border-color:var(--navy-1);color:#fff;}
+.pz-asist{border:1.5px solid var(--line);border-radius:12px;background:#fff;padding:14px 16px;margin-bottom:12px;}
+.pz-asist-tit{font-weight:700;color:var(--navy-1);font-size:14px;margin-bottom:10px;}
+.pz-asist-tit span{display:block;font-weight:400;font-size:11.5px;color:var(--muted);margin-top:2px;}
+.pza-top{display:grid;grid-template-columns:minmax(240px,1.6fr) 160px minmax(160px,1fr);gap:0 12px;}
+.pza-lbl{display:block;font-size:10.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;}
+.pz-asist .field{margin-bottom:10px;min-width:0;}
+.pz-in,.pz-asist select{width:100%;border:1.5px solid var(--line);background:#fff;border-radius:9px;padding:8px 10px;font-family:'Inter';font-size:13.5px;}
+.pz-in:focus,.pz-asist select:focus{outline:none;border-color:var(--navy-3);box-shadow:0 0 0 3px rgba(26,79,138,.12);}
+.pza-total,.pza-monto-in{text-align:right;}
+.pza-aviso{background:#fff7e0;border:1px solid #f0d78a;color:#7a5a00;border-radius:8px;padding:7px 10px;font-size:12px;margin:-2px 0 10px;}
+.pza-sec{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin:6px 0 8px;padding-top:10px;border-top:1px solid var(--line);}
+.pza-sec strong{font-size:12px;color:var(--navy-1);}
+.pza-vertodas{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;cursor:pointer;}
+.pza-fila{display:grid;grid-template-columns:minmax(240px,1.8fr) 150px minmax(160px,1.2fr) 34px;gap:0 12px;align-items:end;}
+.pza-lbl-sec{visibility:hidden;height:0;margin:0;overflow:hidden;}
+.pza-quitar{margin-bottom:12px;}
+.pza-resumen{display:flex;gap:22px;flex-wrap:wrap;margin:12px 0 4px;padding:10px 12px;background:#f7f9fc;border-radius:10px;font-size:12.5px;color:var(--muted);}
+.pza-resumen strong{color:var(--navy-1);font-size:15px;margin-left:4px;}
+.pza-resumen strong.ok{color:var(--green);}.pza-resumen strong.mal{color:var(--red);}
+.pza-falta{font-size:12px;color:var(--red);min-height:0;margin:4px 2px;}
+.pza-falta:empty{display:none;}
+.pza-vista{margin-top:8px;border:1px dashed var(--line);border-radius:10px;padding:6px 12px;}
+.pza-vista summary{cursor:pointer;font-size:12.5px;font-weight:600;color:var(--navy-1);padding:4px 0;}
+.pza-vista-tabla{width:100%;font-size:12.5px;margin-top:6px;}
+.pza-vista-tabla th{font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);text-align:left;padding:4px 6px;}
+.pza-vista-tabla td{padding:5px 6px;border-top:1px solid #eef1f6;}
+.pza-vista-tabla .num{text-align:right;}
+#pzaVista{overflow-x:auto;}
+.poliza-guardar:disabled{opacity:.45;cursor:not-allowed;filter:grayscale(.4);}
+.pza-vista-nota{font-size:11.5px;color:var(--muted);margin:8px 0 2px;}
+@media (max-width:880px){
+  .pza-top,.pza-fila{grid-template-columns:1fr;}
+  .pza-lbl-sec{visibility:visible;height:auto;margin-bottom:4px;overflow:visible;}
+  .pza-fila{border-top:1px dashed var(--line);padding-top:8px;margin-top:6px;position:relative;}
+  .pza-quitar{position:absolute;top:6px;right:0;margin:0;}
+}
 .bs-wrap{position:relative;}
 .bs-input{width:100%;cursor:pointer;padding-right:30px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%2398a2b3' stroke-width='1.8' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 11px center;}
 .bs-oculto{display:none!important;}
@@ -3742,6 +3784,6 @@ Transacciones recurrentes
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-06.11"></script>
+<script src="/app.js?v=2026-11-06.12"></script>
 </body>
 </html>

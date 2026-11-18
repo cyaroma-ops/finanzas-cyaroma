@@ -26208,7 +26208,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.11';
+const APP_VERSION = '2026-11-06.12';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
@@ -28224,7 +28224,8 @@ function polizaCardHtmlBorrador(borrador) {
       <div class="doc-workspace" id="polWorkspace">
       <div class="doc-workspace-panel-captura">
       <div class="pz-soporte"><div class="pz-soporte-tit">Documentos de soporte</div>${adjuntoHtml}</div>
-      <div class="table-wrap scroll-sticky">
+      ${borrador.esNueva ? pzSelectorModalidadHtml(borrador) : ''}
+      ${borrador.asistente ? pzAsistenteHtml(borrador) : `<div class="table-wrap scroll-sticky">
         <table class="pz-tabla">
           <thead><tr><th>Cuenta</th><th>Proveedor</th><th>Referencia/Factura</th><th>Descripción</th><th>Cargo</th><th>Abono</th><th></th></tr></thead>
           <tbody>
@@ -28246,7 +28247,7 @@ function polizaCardHtmlBorrador(borrador) {
           </tbody>
         </table>
       </div>
-      <button class="btn btn-ghost btn-sm addLineaBtn" style="margin-top:10px;">+ Agregar línea</button>
+      <button class="btn btn-ghost btn-sm addLineaBtn" style="margin-top:10px;">+ Agregar línea</button>`}
       </div>
       <div class="doc-workspace-panel-doc" id="polPanelDoc" style="display:none;">
         <div class="doc-viewer-toolbar">
@@ -28440,6 +28441,160 @@ function hacerBuscadorCuentasPoliza(inp) {
 }
 /* ===== fin 06.10 buscador de póliza ===== */
 
+/* ===== 06.12 — Modalidad asistida «Gasto o pago contra banco/efectivo» (solo captura).
+   El asistente únicamente LLENA las líneas del editor de siempre (Cargo a la cuenta de destino, Abono al banco o efectivo);
+   el guardado, la numeración, los saldos y el IVA no cambian, y no hay campos de IVA ni de facturas. Solo para pólizas nuevas. ===== */
+const PZ_TIPOS_DESTINO = ['gasto', 'costo', 'pasivo'];
+const PZ_RE_FISCAL = /\b(iva|retenci[oó]n|retenciones|isr)\b/i;
+const pzIdNuevo = () => 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+function pzLineasConDatos(lineas) { return lineas.some(l => Number(l.cargo) || Number(l.abono) || l.subcuenta_id || l.cuenta_ref_id || (l.descripcion || '').trim() || (l.referencia || '').trim()); }
+function pzOrigenesDinero(cat) {
+  return [
+    ...(cat.cuentasBanco || []).map(c => ({ key: 'banco:' + c.id, tipo: 'banco', id: c.id, nombre: c.nombre, moneda: c.moneda || 'MXN' })),
+    ...(cat.monedasEfectivo || []).map(m => ({ key: 'efectivo:' + m.id, tipo: 'efectivo', id: m.id, nombre: m.nombre, moneda: (typeof codigoMonedaDeCaja === 'function' ? codigoMonedaDeCaja(m.nombre, m.tipo_cambio) : 'MXN') })),
+  ];
+}
+function pzOpcionesDestino(cat, verTodas, seleccionada) {
+  let h = '<option value="">— elige la cuenta —</option>';
+  (cat.mayores || []).forEach(m => {
+    if (!verTodas && (!PZ_TIPOS_DESTINO.includes(m.tipo) || PZ_RE_FISCAL.test(m.nombre))) return;
+    let ops = '';
+    const rec = (sb_, nivel) => {
+      if (verTodas || !PZ_RE_FISCAL.test(sb_.nombre) || sb_.id === seleccionada) ops += '<option value="' + escAttr(sb_.id) + '"' + (sb_.id === seleccionada ? ' selected' : '') + '>' + '—'.repeat(nivel + 1) + ' ' + escHtml(sb_.nombre) + '</option>';
+      subcuentasHijas(sb_.id, cat.subcuentas).forEach(hh => rec(hh, nivel + 1));
+    };
+    subcuentasRaiz(m.id, cat.subcuentas).forEach(x => rec(x, 0));
+    if (ops) h += '<optgroup label="' + escAttr(m.nombre + ' · ' + (TIPO_CUENTA_LABEL[m.tipo] || m.tipo)) + '">' + ops + '</optgroup>';
+  });
+  return h;
+}
+function pzAsistenteGenerarLineas() {
+  const b = STATE_polizaBorrador, a = b && b.asistente; if (!a) return;
+  const org = pzOrigenesDinero(b.catalogos).find(o => o.key === a.origen);
+  const lineas = []; let orden = 0;
+  a.destinos.forEach(d => {
+    if (!d.subcuenta_id && !(Number(d.monto) > 0)) return;
+    lineas.push({ id: 'tmp_asist_' + d.id, subcuenta_id: d.subcuenta_id || null, cuenta_tipo: 'subcuenta', cuenta_ref_id: null, cargo: Number(d.monto) || 0, abono: 0, descripcion: d.descripcion || '', referencia: a.referencia || '', orden: orden++ });
+  });
+  if (org && Number(a.total) > 0) lineas.push({ id: 'tmp_asist_origen', subcuenta_id: null, cuenta_tipo: org.tipo, cuenta_ref_id: org.id, cargo: 0, abono: Number(a.total), descripcion: '', referencia: a.referencia || '', orden: orden++ });
+  b.lineas = lineas;
+}
+function pzSelectorModalidadHtml(b) {
+  const modo = b.asistente ? b.asistente.modo : 'libre';
+  const btn = (m, t) => '<button type="button" class="pz-modo-btn ' + (modo === m ? 'activo' : '') + '" data-modo="' + m + '" aria-pressed="' + (modo === m) + '">' + t + '</button>';
+  return '<div class="pz-modos" role="group" aria-label="Modalidad de captura"><span class="pz-modos-lbl">Modalidad</span>' + btn('libre', 'Registro libre') + btn('gasto', 'Gasto o pago contra banco/efectivo') + '</div>';
+}
+function pzAsistenteHtml(b) {
+  const a = b.asistente, cat = b.catalogos, origenes = pzOrigenesDinero(cat);
+  const optsOrigen = '<option value="">— elige banco o efectivo —</option>' + origenes.map(o => '<option value="' + escAttr(o.key) + '"' + (o.key === a.origen ? ' selected' : '') + '>' + (o.tipo === 'banco' ? 'Banco' : 'Caja') + ' — ' + escHtml(o.nombre) + (o.moneda !== 'MXN' ? ' (' + o.moneda + ')' : '') + '</option>').join('');
+  const filas = a.destinos.map((d, i) => {
+    const lb = (t) => '<label class="pza-lbl' + (i > 0 ? ' pza-lbl-sec' : '') + '">' + t + '</label>';
+    return '<div class="pza-fila">'
+      + '<div class="field pza-cta">' + lb('Cuenta de destino') + '<select class="pza-destino" data-id="' + d.id + '" data-field="destino">' + pzOpcionesDestino(cat, a.verTodas, d.subcuenta_id) + '</select></div>'
+      + '<div class="field pza-monto">' + lb('Importe') + '<input class="pz-in num-fmt pza-monto-in" type="text" inputmode="decimal" data-id="' + d.id + '" data-field="monto" value="' + fmtInputVal(d.monto) + '" placeholder="0.00"></div>'
+      + '<div class="field pza-desc">' + lb('Descripción (opcional)') + '<input class="pz-in pza-desc-in" type="text" data-id="' + d.id + '" data-field="descripcion" value="' + escAttr(d.descripcion || '') + '" placeholder="Ej. Gasolina camioneta"></div>'
+      + '<button type="button" class="row-del pza-quitar" data-id="' + d.id + '" title="Quitar esta cuenta" aria-label="Quitar esta cuenta"' + (a.destinos.length < 2 ? ' disabled style="visibility:hidden"' : '') + '>✕</button></div>';
+  }).join('');
+  return '<div class="pz-asist">'
+    + '<div class="pz-asist-tit">Gasto o pago contra banco/efectivo <span>Cargo a la cuenta de destino · Abono al banco o efectivo</span></div>'
+    + '<div class="pza-top">'
+    + '<div class="field"><label class="pza-lbl">Pagado desde</label><select class="pza-origen" data-id="pza" data-field="origen">' + optsOrigen + '</select></div>'
+    + '<div class="field"><label class="pza-lbl">Importe total</label><input class="pz-in num-fmt pza-total" type="text" inputmode="decimal" data-id="pza" data-field="total" value="' + fmtInputVal(a.total) + '" placeholder="0.00"></div>'
+    + '<div class="field"><label class="pza-lbl">Referencia (opcional)</label><input class="pz-in pza-ref" type="text" data-id="pza" data-field="referencia" value="' + escAttr(a.referencia || '') + '" placeholder="Folio, ticket, transferencia…"></div>'
+    + '</div>'
+    + '<div class="pza-aviso" id="pzaAviso"></div>'
+    + '<div class="pza-sec"><strong>Cuentas de destino</strong><label class="pza-vertodas"><input type="checkbox" class="pza-vertodas-chk" data-id="pza" data-field="vertodas"' + (a.verTodas ? ' checked' : '') + '> Ver todas las cuentas del catálogo</label></div>'
+    + filas
+    + '<button type="button" class="btn btn-ghost btn-sm pza-agregar" data-id="pza" data-field="agregar">+ Agregar otra cuenta de destino</button>'
+    + '<div class="pza-resumen" id="pzaResumen"></div>'
+    + '<div class="pza-falta" id="pzaFalta"></div>'
+    + '<details class="pza-vista"><summary>Vista previa del registro contable</summary><div id="pzaVista"></div></details>'
+    + '</div>';
+}
+function pzAsistenteRefrescar(wrap) {
+  const b = STATE_polizaBorrador, a = b && b.asistente; if (!a) return;
+  if (a.destinos.length === 1 && !a.destinos[0].manual) {   // con una sola cuenta de destino, su importe sigue al total hasta que lo edites a mano
+    a.destinos[0].monto = Number(a.total) || 0;
+    const inp = wrap.querySelector('.pza-monto-in[data-id="' + a.destinos[0].id + '"]'); if (inp && document.activeElement !== inp) inp.value = fmtInputVal(a.destinos[0].monto);
+  }
+  pzAsistenteGenerarLineas();
+  const aplicado = a.destinos.reduce((s, d) => s + (Number(d.monto) || 0), 0), porDist = Math.round(((Number(a.total) || 0) - aplicado) * 100) / 100;
+  const res = wrap.querySelector('#pzaResumen');
+  if (res) res.innerHTML = '<span>Importe total <strong>' + fmt(Number(a.total) || 0) + '</strong></span><span>Aplicado <strong>' + fmt(aplicado) + '</strong></span><span>Por distribuir <strong class="' + (Math.abs(porDist) < 0.005 ? 'ok' : 'mal') + '">' + fmt(porDist) + '</strong></span>';
+  const org = pzOrigenesDinero(b.catalogos).find(o => o.key === a.origen), av = wrap.querySelector('#pzaAviso');
+  if (av) av.textContent = (org && org.moneda !== 'MXN') ? 'Ojo: esta cuenta es en ' + org.moneda + '. La póliza no maneja moneda por línea: captura los importes en la misma moneda de la cuenta.' : '';
+  if (av) av.style.display = av.textContent ? '' : 'none';
+  const vista = wrap.querySelector('#pzaVista');
+  if (vista) {
+    const items = catalogoCuentasUnificado(b.catalogos);
+    vista.innerHTML = b.lineas.length
+      ? '<table class="pza-vista-tabla"><thead><tr><th>Cuenta</th><th>Descripción</th><th class="num">Cargo</th><th class="num">Abono</th></tr></thead><tbody>' + b.lineas.map(l => '<tr><td>' + escHtml(labelDeLineaPoliza(items, l) || '(sin cuenta)') + '</td><td>' + escHtml(l.descripcion || '') + '</td><td class="num">' + (Number(l.cargo) ? fmt(l.cargo) : '') + '</td><td class="num">' + (Number(l.abono) ? fmt(l.abono) : '') + '</td></tr>').join('') + '</tbody></table><p class="pza-vista-nota">Estas son las líneas exactas que se guardarán en la póliza. No se generan movimientos adicionales ni IVA.</p>'
+      : '<p class="pza-vista-nota">Aún no hay líneas: elige el banco o efectivo, el importe y la cuenta de destino.</p>';
+  }
+  actualizarTotalesPolizaEnSitio(wrap);
+  pzActualizarGuardar(wrap);
+}
+function pzActualizarGuardar(wrap) {
+  const btn = wrap.querySelector('.poliza-guardar'), b = STATE_polizaBorrador; if (!btn || !b || STATE_polizaGuardando) return;
+  const a = b.asistente, faltaEl = wrap.querySelector('#pzaFalta');
+  if (!a) { btn.disabled = false; btn.removeAttribute('title'); return; }
+  const faltas = [];
+  if (!a.origen) faltas.push('elige el banco o efectivo');
+  if (!(Number(a.total) > 0)) faltas.push('captura el importe total');
+  if (!a.destinos.some(d => d.subcuenta_id && Number(d.monto) > 0)) faltas.push('elige la cuenta de destino y su importe');
+  else if (a.destinos.some(d => Number(d.monto) > 0 && !d.subcuenta_id)) faltas.push('elige la cuenta de cada importe');
+  const e = estadoVisualPoliza(b.lineas);
+  if (!e.vacia && !e.cuadrada && Number(a.total) > 0) faltas.push('distribuye todo el importe (faltan ' + fmt(Math.abs(e.diff)) + ')');
+  btn.disabled = faltas.length > 0;
+  const txt = faltas.length ? 'Para guardar: ' + faltas.join('; ') + '.' : '';
+  if (faltaEl) faltaEl.textContent = txt;
+  if (txt) btn.title = txt; else btn.removeAttribute('title');
+}
+function pzCambiarModalidad(modo) {
+  const b = STATE_polizaBorrador; if (!b || !b.esNueva) return;
+  const actual = b.asistente ? b.asistente.modo : 'libre'; if (modo === actual) return;
+  if (modo === 'libre') {
+    b.asistente = null;   // las líneas generadas se conservan y quedan editables
+    if (!b.lineas.length) { const t = Date.now(); b.lineas = [0, 1].map(i => ({ id: 'tmp_' + t + '_' + i, subcuenta_id: null, cuenta_tipo: 'subcuenta', cuenta_ref_id: null, cargo: 0, abono: 0, descripcion: '', referencia: '', orden: i })); }
+  } else {
+    if (pzLineasConDatos(b.lineas) && !confirm('Al usar el asistente se reemplazarán las líneas que ya capturaste. ¿Continuar?')) return;
+    b.asistente = { modo, origen: '', total: 0, referencia: '', verTodas: false, destinos: [{ id: pzIdNuevo(), subcuenta_id: '', monto: 0, manual: false, descripcion: '' }] };
+    pzAsistenteGenerarLineas();
+  }
+  renderizarBorradorPoliza();
+}
+function pzAsistenteWire(wrap) {
+  const b = STATE_polizaBorrador; if (!b) return;
+  wrap.querySelectorAll('.pz-modo-btn').forEach(btn => ligarUnaVez(btn, 'click', () => pzCambiarModalidad(btn.dataset.modo)));
+  const a = b.asistente;
+  if (!a) { pzActualizarGuardar(wrap); return; }
+  const on = (sel, ev, fn) => wrap.querySelectorAll(sel).forEach(el => ligarUnaVez(el, ev, (e) => { if (STATE_polizaBorrador !== b || b.asistente !== a) return; fn(el, e); }));
+  on('.pza-origen', 'change', (el) => { a.origen = el.value; pzAsistenteRefrescar(wrap); });
+  on('.pza-total', 'change', (el) => { a.total = leerMonto(el.value); pzAsistenteRefrescar(wrap); });
+  on('.pza-ref', 'change', (el) => { a.referencia = el.value; pzAsistenteRefrescar(wrap); });
+  on('.pza-vertodas-chk', 'change', (el) => { a.verTodas = el.checked; renderizarBorradorPoliza(); });
+  const dest = (el) => a.destinos.find(d => d.id === el.dataset.id);
+  on('.pza-destino', 'change', (el) => { const d = dest(el); if (d) { d.subcuenta_id = el.value; pzAsistenteRefrescar(wrap); } });
+  on('.pza-monto-in', 'change', (el) => { const d = dest(el); if (d) { d.monto = leerMonto(el.value); d.manual = true; pzAsistenteRefrescar(wrap); } });
+  on('.pza-desc-in', 'change', (el) => { const d = dest(el); if (d) { d.descripcion = el.value; pzAsistenteRefrescar(wrap); } });
+  const agregar = () => {
+    a.destinos.forEach(d => { d.manual = true; });
+    const aplicado = a.destinos.reduce((s, d) => s + (Number(d.monto) || 0), 0), resto = Math.max(0, Math.round(((Number(a.total) || 0) - aplicado) * 100) / 100);
+    const nuevo = { id: pzIdNuevo(), subcuenta_id: '', monto: resto, manual: true, descripcion: '' };
+    a.destinos.push(nuevo); pzAsistenteGenerarLineas(); renderizarBorradorPoliza();
+    const sel = wrap.querySelector('.pza-destino[data-id="' + nuevo.id + '"]'), inp = sel && sel.parentNode.querySelector('.bs-input'); if (inp) inp.focus();
+  };
+  on('.pza-agregar', 'click', () => agregar());
+  on('.pza-quitar', 'click', (el) => { a.destinos = a.destinos.filter(d => d.id !== el.dataset.id); if (a.destinos.length === 1) a.destinos[0].manual = false; pzAsistenteGenerarLineas(); renderizarBorradorPoliza(); });
+  on('.pza-desc-in', 'keydown', (el, e) => {   // Enter en la descripción de la última cuenta agrega otra
+    if (e.key !== 'Enter' || e.isComposing) return; const ult = a.destinos[a.destinos.length - 1];
+    if (ult && ult.id === el.dataset.id && Number(ult.monto) > 0 && ult.subcuenta_id) { e.preventDefault(); el.dispatchEvent(new Event('change', { bubbles: true })); agregar(); }
+  });
+  wrap.querySelectorAll('.pza-destino').forEach(sel => hacerSelectBuscable(sel));
+  pzAsistenteRefrescar(wrap);
+}
+/* ===== fin 06.12 ===== */
+
 function wireBorradorPolizaHandlers(wrap) {
   const b = STATE_polizaBorrador;   // cada manejador se ignora si el borrador ya no es este: un campo viejo que se reemplaza con el cursor dentro dispara un «cambió» tardío y, sin esta guarda, escribía su valor en el borrador NUEVO
   // La fecha y el concepto no cambian nada más del editor: se guardan SIN redibujar. Antes se redibujaba todo el editor en cada cambio, y como el campo de fecha da por válido el valor al teclear el día,
@@ -28457,6 +28612,7 @@ function wireBorradorPolizaHandlers(wrap) {
       if (dest) { e.preventDefault(); dest.focus(); if (dest.select) { try { dest.select(); } catch (_) { /* tipo sin selección */ } } }
     });
   }
+  pzAsistenteWire(wrap);
   ligarUnaVez(wrap.querySelector('.poliza-ampliar'), 'click', () => { const m = wrap.closest('.modal-workspace'); if (m) { m.classList.toggle('pz-ampliada'); try { window.dispatchEvent(new Event('resize')); } catch (e) {} } });
   if (!wrap.dataset.pzEnter) {   // Enter en el Abono de la última línea agrega una línea nueva y deja el cursor en su Cuenta (ritmo de hoja de cálculo)
     wrap.dataset.pzEnter = '1';
