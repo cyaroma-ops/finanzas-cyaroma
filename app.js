@@ -1279,7 +1279,7 @@ function actualizarMenuPorModo() {
 }
 function marcarNavActivo(seccion) {
   document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
-  const seccionNav = SECCIONES_EN_CONFIGURACION.includes(seccion) ? 'configuracion' : seccion;
+  const seccionNav = (seccion !== 'catalogo' && SECCIONES_EN_CONFIGURACION.includes(seccion)) ? 'configuracion' : seccion;   // 06.21: «Catálogo de cuentas» tiene su propia entrada en el menú
   const item = document.querySelector(`.nav-item[data-section="${seccionNav}"]`);
   if (item) item.classList.add('active');
   navSincronizarGrupos();
@@ -18081,7 +18081,7 @@ async function renderProveedores() {
           <button class="btn btn-ghost btn-sm" id="addNcProvBtn" title="Registra una nota de crédito del proveedor (devolución, descuento o corrección)">+ Nota de crédito</button>
           <button class="btn btn-gold btn-sm" id="addProvBtn">+ Agregar factura</button>
     `)}
-    <div class="kpi-grid">
+    <div class="kpi-grid kpi-grid-estandar">
       <div class="kpi"><div class="label">Total pendiente</div><div class="value num red">${fmt(pendiente)}</div></div>
       <div class="kpi"><div class="label">Total pagado (histórico)</div><div class="value num green">${fmt(pagado)}</div></div>
       <div class="kpi"><div class="label">Facturas registradas</div><div class="value">${all.length}</div></div>
@@ -18446,7 +18446,7 @@ async function renderDirectorioProveedores(el, b) {
 
   el.innerHTML = `
     ${provTabsHtml()}
-    <div class="kpi-grid kpi-grid-mobile-compact" style="margin-bottom:14px;">
+    <div class="kpi-grid kpi-grid-mobile-compact kpi-grid-estandar" style="margin-bottom:14px;">
       <div class="kpi"><div class="label">Total por pagar (MXN)</div><div class="value num ${totalPorPagar>0.004?'red':''}">${fmt(totalPorPagar)}</div></div>
       <div class="kpi"><div class="label">Pagado este mes (MXN)</div><div class="value num green">${fmt(pagadoEsteMes)}</div></div>
       <div class="kpi"><div class="label">Facturas pendientes</div><div class="value">${escHtml(facturasPendientes)}</div></div>
@@ -18682,7 +18682,7 @@ async function renderProveedorDetalle(el, b) {
   el.innerHTML = `
     <button class="btn btn-ghost btn-sm" id="provDetalleVolver" style="margin-bottom:14px;">← Volver al directorio</button>
     ${bannerLigar}
-    <div class="kpi-grid kpi-grid-mobile-compact" style="margin-bottom:14px;">
+    <div class="kpi-grid kpi-grid-mobile-compact kpi-grid-estandar" style="margin-bottom:14px;">
       <div class="kpi"><div class="label">Total facturado</div><div class="value num">${hayDivisas ? kpiDivisa(f => f.importe) : fmt(totalFacturado)}</div></div>
       <div class="kpi"><div class="label">Total pagado</div><div class="value num green">${hayDivisas ? kpiDivisa(f => f.importe_pagado) : fmt(totalPagado)}</div></div>
       <div class="kpi"><div class="label">Saldo pendiente</div><div class="value num ${pendiente>0.004?'red':'green'}">${hayDivisas ? kpiDivisa(f => Number(f.importe||0) - Number(f.importe_pagado||0)) : fmt(pendiente)}</div></div>
@@ -19042,7 +19042,7 @@ async function renderClienteDetalle(el, b) {
 
   el.innerHTML = `
     <button class="btn btn-ghost btn-sm" id="clienteDetalleVolver" style="margin-bottom:14px;">← Volver al directorio</button>
-    <div class="kpi-grid kpi-grid-mobile-compact" style="margin-bottom:14px;">
+    <div class="kpi-grid kpi-grid-mobile-compact kpi-grid-estandar" style="margin-bottom:14px;">
       <div class="kpi"><div class="label">Total facturado</div><div class="value num">${hayDivisas ? kpiDivisa(f => f.total) : fmt(totalFacturado)}</div></div>
       <div class="kpi"><div class="label">Total pagado</div><div class="value num green">${hayDivisas ? kpiDivisa(f => f.importe_pagado) : fmt(totalPagado)}</div></div>
       <div class="kpi"><div class="label">Saldo pendiente</div><div class="value num ${pendiente>0.004?'red':'green'}">${hayDivisas ? kpiDivisa(f => Number(f.total||0) - Number(f.importe_pagado||0)) : fmt(pendiente)}</div></div>
@@ -19140,7 +19140,7 @@ async function renderDirectorioClientes(el, b) {
 
   el.innerHTML = `
     ${clientesTabsHtml()}
-    <div class="kpi-grid kpi-grid-mobile-compact" style="margin-bottom:14px;">
+    <div class="kpi-grid kpi-grid-mobile-compact kpi-grid-estandar" style="margin-bottom:14px;">
       <div class="kpi"><div class="label">Total por cobrar (MXN)</div><div class="value num">${fmt(totalPorCobrar)}</div></div>
       <div class="kpi"><div class="label">Vencido (MXN)</div><div class="value num ${totalVencido>0.004?'red':''}">${fmt(totalVencido)}</div></div>
       <div class="kpi"><div class="label">Cobrado este mes (MXN)</div><div class="value num green">${fmt(cobradoEsteMes)}</div></div>
@@ -26458,7 +26458,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.20';
+const APP_VERSION = '2026-11-06.21';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
@@ -28010,6 +28010,12 @@ async function renderFlujo() {
   const resumenMes = await computeResumenNegocio(b.id, monthBounds(STATE.currentMonth));
 
   el.innerHTML = `
+    <div style="font-size:12px;color:var(--muted);margin:0 0 6px;">Resumen del mes — ${STATE.currentMonth} · misma fuente que el Estado de Resultados</div>
+    <div class="kpi-grid kpi-grid-estandar">
+      <div class="kpi"><div class="label">Ventas del mes</div><div class="value num">${fmt(resumenMes.totalIngresos)}</div></div>
+      <div class="kpi"><div class="label">Gastos y costos del mes</div><div class="value num red">${fmt(resumenMes.totalGastos)}</div></div>
+      <div class="kpi"><div class="label">Utilidad del mes</div><div class="value num ${resumenMes.utilidad>=0?'green':'red'}">${fmt(resumenMes.utilidad)}</div></div>
+    </div>
     <div class="card">
       <div class="card-head"><div style="display:flex;align-items:center;gap:8px;"><h3 style="margin-bottom:0;">Cash Position — ${escHtml(b.name)}</h3>${infoTipRicoHtml(NOTAS_AYUDA.posicionNeta)}</div><span class="hint">Al día de hoy</span></div>
       <div class="table-wrap tabla-contable-wrap">
@@ -28025,15 +28031,6 @@ async function renderFlujo() {
       </table>
       </div>
       <p class="nota-solo-impresion" style="font-size:11px;color:var(--muted);margin-top:10px;">${NOTAS_AYUDA.posicionNeta}</p>
-    </div>
-    <div class="card">
-      <div class="card-head"><h3>Resumen del mes — ${STATE.currentMonth}</h3></div>
-      <div class="kpi-grid kpi-grid-compact">
-        <div class="kpi"><div class="label">Ventas del mes</div><div class="value num">${fmt(resumenMes.totalIngresos)}</div></div>
-        <div class="kpi"><div class="label">Total gastos y costos del mes</div><div class="value num red">${fmt(resumenMes.totalGastos)}</div></div>
-        <div class="kpi"><div class="label">Utilidad del mes</div><div class="value num ${resumenMes.utilidad>=0?'green':'red'}">${fmt(resumenMes.utilidad)}</div></div>
-      </div>
-      <p style="font-size:11px;color:var(--muted);margin-top:10px;">Ventas y Gastos usan exactamente la misma fuente que el Estado de Resultados — deben coincidir siempre.</p>
     </div>
   `;
   el.querySelectorAll('.flujo-link-efectivo').forEach(tr => tr.addEventListener('click', () => {
@@ -28127,7 +28124,7 @@ async function renderPolizas() {
   const celdaFacturasPoliza = (fs) => fs.length ? escHtml(fs[0]) + (fs.length > 1 ? ` <span title="${escAttr(fs.join(', '))}" style="color:var(--muted);font-size:11px;">+${fs.length - 1}</span>` : '') : '';
 
   el.innerHTML = `
-    <div class="kpi-grid">
+    <div class="kpi-grid kpi-grid-estandar">
       <div class="kpi"><div class="label">Pólizas registradas</div><div class="value">${todasPolizas.length}</div></div>
       <div class="kpi"><div class="label">Cuadradas</div><div class="value num green">${totalCuadradas}</div></div>
       <div class="kpi"><div class="label">Descuadradas</div><div class="value num ${todasPolizas.length-totalCuadradas>0?'red':''}">${todasPolizas.length - totalCuadradas}</div></div>

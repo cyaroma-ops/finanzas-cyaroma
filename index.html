@@ -1312,6 +1312,12 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 .cc-alta-pie .btn{white-space:nowrap;padding:9px 14px;font-size:13px;}
 .cc-lnk{border:0;background:none;color:#b98a2e;font:inherit;font-size:13px;font-weight:600;cursor:pointer;padding:0;}
 @media (max-width:560px){.card.cc-alta.abierta{padding:18px 16px;}.card.cc-alta .cc-alta-fila{grid-template-columns:1fr;}.cc-alta-pie .btn{flex:1;}}
+/* ===== 06.21 — Tamaño estándar de KPIs (Pólizas, Proveedores, Clientes, Flujo) ===== */
+.kpi-grid.kpi-grid-estandar{grid-template-columns:repeat(auto-fill,minmax(150px,200px));gap:10px;margin-bottom:14px;}
+.kpi-grid-estandar .kpi{padding:9px 14px;}
+.kpi-grid-estandar .kpi .label{font-size:10.5px;margin-bottom:3px;letter-spacing:.5px;line-height:1.2;}
+.kpi-grid-estandar .kpi .value{font-size:18px;line-height:1.2;}
+@media (max-width:640px){.kpi-grid.kpi-grid-estandar{grid-template-columns:repeat(2,1fr);gap:7px;margin-bottom:10px;}.kpi-grid-estandar .kpi{padding:6px 10px;}.kpi-grid-estandar .kpi .label{font-size:9.5px;margin-bottom:1px;}.kpi-grid-estandar .kpi .value{font-size:15px;}}
 </style>
 <style id="estiloModalProveedoresCat">
 /* ===== Modal «Catálogo de proveedores» — estilos acotados a ESTE modal (ningún otro modal cambia) ===== */
@@ -1579,6 +1585,10 @@ Transacciones recurrentes
         <div class="nav-item" data-section="diariospolizas">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>
           Diarios y Pólizas
+        </div>
+        <div class="nav-item" data-section="catalogo">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h10"/></svg>
+          Catálogo de cuentas
         </div>
         <div class="nav-grupo" data-grupo="fiscal">
           <div class="nav-grupo-cab" role="button" tabindex="0" aria-expanded="false" data-grupo="fiscal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18"/><path d="M9 8h6"/><path d="M9 12h6"/><path d="M9 16h4"/><path d="M5 21V5a2 2 0 012-2h6l6 6v12"/></svg><span>Reportes fiscales</span><svg class="nav-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg><span class="nav-cab-aviso" hidden></span></div>
@@ -3857,6 +3867,6 @@ Transacciones recurrentes
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-06.20"></script>
+<script src="/app.js?v=2026-11-06.21"></script>
 </body>
 </html>
