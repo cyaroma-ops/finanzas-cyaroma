@@ -405,6 +405,7 @@ window.AYUDA = {
       ],
       faq: [
         { q: '¿Qué revisa?', a: 'Entre otras cosas: traspasos incompletos o con movimientos repetidos, pólizas descuadradas y pagos sin factura. Cada bloque explica qué significa y cómo se corrige.' },
+        { q: '¿Qué es la campana junto a «Accesos directos»?', a: 'Es el aviso de esta misma revisión: aparece con un número rojo solo cuando hay algo que atender, y desaparece cuando todo está en orden. Al tocarla ves qué revisiones tienen pendientes y cuántos renglones, con un botón para abrir la Revisión de consistencia, donde están los botones para corregir. Si aparecen alertas nuevas mientras trabajas, la campana se mueve un momento.' },
         { q: '¿Para qué sirve «Centavos de Ventas»?', a: 'Suma por mes las diferencias de centavos de la columna «Dif.» de Ventas (recibido contra sistema). Esos centavos pasan al Estado de Resultados como faltante o sobrante de caja; si en un mes no se compensan, el Balance queda descuadrado por ese monto. Avisa desde $0.05 de neto en el mes y solo lee: no cambia nada.' },
         { q: '¿Qué hago con un traspaso incompleto?', a: 'Abre el movimiento en Bancos o Efectivo con **⋯ → Editar**, elige la cuenta contraria y guarda: se crea el movimiento que falta.' }
       ],

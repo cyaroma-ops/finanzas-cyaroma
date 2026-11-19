@@ -1456,6 +1456,7 @@ function setupNav() {
   document.getElementById('sidebarOverlay').addEventListener('click', cerrarMenuMovil);
   navGruposSetup();
   accesosDirectosSetup();
+  alertasTopbarSetup();
 }
 
 const SECCIONES_IMPRIMIBLES = ['efectivo', 'bancos', 'pl', 'flujo', 'balance', 'proveedores', 'clientes'];
@@ -26458,7 +26459,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.21';
+const APP_VERSION = '2026-11-06.22';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
@@ -30498,6 +30499,55 @@ async function renderRevisionConsistencia() {
 // ============================================================================================================================================
 const REV_BADGE = { ttlMs: 10 * 60 * 1000, minEntreCalculosMs: 20 * 1000, retrasoMs: 2500, retrasoEscrituraMs: 6000, maxTitulos: 6 };
 const REV_BADGE_ESTADO = { negocioId: null, estado: 'inicial', conAviso: 0, total: 0, renglones: 0, detalle: [], ts: 0 };
+/* ===== 06.22 — Alertas de la Revisión de consistencia junto a «Accesos directos». Solo MUESTRA lo que ya calcula el distintivo del menú (REV_BADGE_ESTADO):
+   no hace cálculos nuevos, no cambia datos. Se oculta cuando todo está en orden. Cada renglón lleva a la Revisión de consistencia, donde están los botones para corregir. ===== */
+let ALERTAS_PREV = { negocioId: null, n: 0 };
+function alertasCerrar() { const p = document.getElementById('alertasPanel'), b = document.getElementById('alertasBtn'); if (p) p.hidden = true; if (b) b.setAttribute('aria-expanded', 'false'); }
+function alertasConstruir() {
+  const p = document.getElementById('alertasPanel'); if (!p) return;
+  const e = REV_BADGE_ESTADO;
+  const filas = (e.detalle || []).map(d => `<button type="button" class="alertas-it" data-ir="revision"><span class="alertas-t">${escHtml(d.titulo)}</span><span class="alertas-n${d.error ? ' err' : ''}">${d.error ? 'no se pudo revisar' : d.n + (d.n === 1 ? ' renglón' : ' renglones')}</span></button>`).join('');
+  p.innerHTML = `<div class="alertas-cab"><strong>${e.conAviso} de ${e.total} revisiones con algo que atender</strong><span>Actualizado ${revBadgeTiempoRelativo(e.ts)}</span></div>
+    <div class="alertas-lista">${filas}</div>
+    <div class="alertas-pie"><button type="button" class="btn btn-ghost btn-sm" id="alertasRepetir">Volver a revisar</button><button type="button" class="btn btn-gold btn-sm" id="alertasAbrir">Abrir Revisión de consistencia</button></div>`;
+  p.querySelectorAll('.alertas-it').forEach(x => x.addEventListener('click', () => { alertasCerrar(); irASeccion('revision'); }));
+  p.querySelector('#alertasAbrir').addEventListener('click', () => { alertasCerrar(); irASeccion('revision'); });
+  p.querySelector('#alertasRepetir').addEventListener('click', () => { revBadgeActualizar({ forzar: true }); toast('Revisando…'); });
+}
+function alertasTopbarPintar() {
+  const btn = document.getElementById('alertasBtn'); if (!btn) return;
+  const e = REV_BADGE_ESTADO, b = (typeof biz === 'function') ? biz() : null;
+  const itemRev = document.querySelector('.nav-item[data-section="revision"]');
+  const hayRevision = !!itemRev && itemRev.style.display !== 'none';
+  const visible = !!b && hayRevision && e.negocioId === b.id && (e.estado === 'pendiente' || e.estado === 'error');
+  if (btn.hidden === visible) btn.hidden = !visible;
+  const cnt = btn.querySelector('.alertas-n'); if (!visible) { alertasCerrar(); ALERTAS_PREV = (b && e.negocioId === b.id && e.estado === 'ok') ? { negocioId: b.id, n: 0 } : { negocioId: null, n: 0 }; return; }   // solo una lectura real «en orden» cuenta como punto de partida
+  const n = e.estado === 'pendiente' ? e.conAviso : 0;
+  if (cnt) cnt.textContent = e.estado === 'error' ? '!' : (n > 99 ? '99+' : String(n));
+  btn.classList.toggle('alertas-err', e.estado === 'error');
+  btn.title = e.estado === 'error' ? 'No se pudo completar la revisión automática. Ábrela para ver el detalle.' : `${n} ${n === 1 ? 'revisión con algo que atender' : 'revisiones con algo que atender'} (${e.renglones} ${e.renglones === 1 ? 'renglón' : 'renglones'}). Clic para ver cuáles.`;
+  btn.setAttribute('aria-label', btn.title);
+  // «push» visual: si aparecen alertas nuevas mientras trabajas, la campana lo anuncia con una pulsación (solo después de la primera lectura del negocio)
+  if (ALERTAS_PREV.negocioId === b.id && n > ALERTAS_PREV.n) { btn.classList.remove('alertas-nueva'); void btn.offsetWidth; btn.classList.add('alertas-nueva'); }
+  ALERTAS_PREV = { negocioId: b.id, n };
+  const p = document.getElementById('alertasPanel'); if (p && !p.hidden) alertasConstruir();
+}
+function alertasAlternar() {
+  const p = document.getElementById('alertasPanel'), btn = document.getElementById('alertasBtn'); if (!p || !btn) return;
+  if (!p.hidden) { alertasCerrar(); return; }
+  if (typeof accesosCerrar === 'function') accesosCerrar();
+  alertasConstruir(); p.hidden = false; btn.setAttribute('aria-expanded', 'true');
+  const r = btn.getBoundingClientRect(), w = Math.min(380, window.innerWidth - 16);
+  p.style.width = w + 'px'; p.style.top = (r.bottom + 8) + 'px'; p.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + 'px';
+}
+function alertasTopbarSetup() {
+  const btn = document.getElementById('alertasBtn'); if (!btn || btn.dataset.listo) return; btn.dataset.listo = '1';
+  btn.addEventListener('click', (ev) => { ev.stopPropagation(); alertasAlternar(); });
+  document.addEventListener('click', (ev) => { const p = document.getElementById('alertasPanel'); if (p && !p.hidden && !p.contains(ev.target) && !btn.contains(ev.target)) alertasCerrar(); });
+  document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') alertasCerrar(); });
+  window.addEventListener('resize', alertasCerrar);
+  alertasTopbarPintar();
+}
 let revBadgeCalculando = false, revBadgeReintentar = false, revBadgeTimer = null, revBadgeVersion = 0;
 
 function revBadgeInyectarEstilos() {
@@ -30523,7 +30573,8 @@ function revBadgeTiempoRelativo(ts) {
   return min < 1 ? 'hace unos segundos' : (min === 1 ? 'hace 1 min' : (min < 60 ? `hace ${min} min` : `hace ${Math.floor(min / 60)} h`));
 }
 
-function revBadgePintar() {
+function revBadgePintar() { revBadgePintarBase(); try { alertasTopbarPintar(); } catch (_) { /* el aviso de la barra superior nunca debe romper el distintivo del menú */ } }
+function revBadgePintarBase() {
   const item = document.querySelector('.nav-item[data-section="revision"]');
   if (!item) return;
   revBadgeInyectarEstilos();

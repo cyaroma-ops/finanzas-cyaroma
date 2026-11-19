@@ -1318,6 +1318,27 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 .kpi-grid-estandar .kpi .label{font-size:10.5px;margin-bottom:3px;letter-spacing:.5px;line-height:1.2;}
 .kpi-grid-estandar .kpi .value{font-size:18px;line-height:1.2;}
 @media (max-width:640px){.kpi-grid.kpi-grid-estandar{grid-template-columns:repeat(2,1fr);gap:7px;margin-bottom:10px;}.kpi-grid-estandar .kpi{padding:6px 10px;}.kpi-grid-estandar .kpi .label{font-size:9.5px;margin-bottom:1px;}.kpi-grid-estandar .kpi .value{font-size:15px;}}
+/* ===== 06.22 — Alertas de Revisión junto a Accesos directos ===== */
+.alertas-btn{position:relative;display:inline-flex;align-items:center;gap:6px;background:#fff!important;color:var(--navy-1)!important;border:1px solid var(--line)!important;font-weight:700;}
+.alertas-btn[hidden]{display:none!important;}
+.alertas-btn .alertas-n{min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--red);color:#fff;font-size:11px;line-height:18px;text-align:center;font-weight:700;}
+.alertas-btn.alertas-err .alertas-n{background:#e3b85e;color:#3a2a00;}
+.alertas-btn[aria-expanded="true"]{box-shadow:0 0 0 3px rgba(185,138,46,.35);}
+.alertas-btn.alertas-nueva svg{animation:alertasSuena .9s ease-in-out 2;transform-origin:50% 10%;}
+@keyframes alertasSuena{0%,100%{transform:rotate(0)}20%{transform:rotate(16deg)}40%{transform:rotate(-14deg)}60%{transform:rotate(9deg)}80%{transform:rotate(-6deg)}}
+@media (prefers-reduced-motion:reduce){.alertas-btn.alertas-nueva svg{animation:none;}}
+.alertas-panel{position:fixed;z-index:960;background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 14px 40px rgba(10,31,61,.28);overflow:hidden;}
+.alertas-panel[hidden]{display:none;}
+.alertas-cab{padding:12px 14px 8px;display:flex;flex-direction:column;gap:2px;font-size:13px;color:var(--navy-1);}
+.alertas-cab span{font-size:11.5px;color:var(--muted);}
+.alertas-lista{max-height:50vh;overflow:auto;border-top:1px solid var(--line);}
+.alertas-it{display:flex;width:100%;justify-content:space-between;gap:10px;align-items:center;padding:10px 14px;border:0;border-bottom:1px solid var(--line);background:#fff;font:inherit;font-size:13px;text-align:left;cursor:pointer;color:var(--navy-1);}
+.alertas-it:hover{background:#f6f8fb;}
+.alertas-t{flex:1;}
+.alertas-n{white-space:nowrap;font-size:11.5px;color:var(--red);font-weight:700;}
+.alertas-it .alertas-n.err{color:#a87a00;}
+.alertas-pie{display:flex;gap:8px;justify-content:flex-end;padding:10px 12px;background:#f7f9fc;border-top:1px solid var(--line);flex-wrap:wrap;}
+@media (max-width:700px){.alertas-btn .alertas-n{margin:0;}}
 </style>
 <style id="estiloModalProveedoresCat">
 /* ===== Modal «Catálogo de proveedores» — estilos acotados a ESTE modal (ningún otro modal cambia) ===== */
@@ -1646,6 +1667,7 @@ Transacciones recurrentes
         </div>
         <div class="topbar-actions" id="topbarActions">
           <button type="button" class="btn btn-sm acc-btn" id="accesosBtn" aria-haspopup="dialog" aria-expanded="false" aria-controls="accesosPanel" title="Accesos directos a las operaciones y reportes frecuentes"><b>+</b><span class="acc-txt">Accesos directos</span></button>
+          <button type="button" class="btn btn-sm alertas-btn" id="alertasBtn" hidden aria-haspopup="dialog" aria-expanded="false" aria-controls="alertasPanel" title="Revisión de consistencia"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 01-3.4 0"/></svg><span class="alertas-n">0</span></button>
           <button type="button" class="btn btn-ghost btn-sm" id="busquedaGlobalBtn" title="Buscar en todo (Ctrl+K)" aria-label="Buscar en todo"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg><span class="bq-txt">Buscar</span><span class="bq-kbd">Ctrl K</span></button>
 <button type="button" class="btn btn-ghost btn-sm" id="ayudaBtn" aria-controls="ayudaPanel" aria-expanded="false" title="Ayuda de esta pantalla" aria-label="Abrir la ayuda de esta pantalla"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M9.6 9.4a2.6 2.6 0 1 1 3.7 2.3c-.8.4-1.3 1-1.3 1.9"></path><path d="M12 17.2v.01"></path></svg><span class="bq-txt">Ayuda</span></button>
           <select id="printOrientacion" style="display:none !important;width:auto;">
@@ -3867,6 +3889,7 @@ Transacciones recurrentes
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-06.21"></script>
+<script src="/app.js?v=2026-11-06.22"></script>
+<div id="alertasPanel" class="alertas-panel" role="dialog" aria-label="Alertas de la Revisión de consistencia" hidden></div>
 </body>
 </html>
