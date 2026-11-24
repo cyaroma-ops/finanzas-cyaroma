@@ -1357,6 +1357,8 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 .doc-adjunto-chip .doc-adjunto-ver,.doc-adjunto-chip .doc-adjunto-quitar{flex-shrink:0;}
 #movWorkspace #movCardSoporte.soporte-arriba,#movWorkspace.doc-workspace-split #movCardSoporte.soporte-arriba{order:0;}
 #movWorkspace .soporte-arriba .doc-adjunto-lista{max-height:120px;overflow-y:auto;}
+/* Catálogo de cuentas: la barra de herramientas (buscar, expandir, importar, nueva cuenta) queda fija al hacer scroll */
+#sec-catalogo .cc-barra{position:sticky;top:calc(var(--topbar-h,79px) - 1px);z-index:7;box-shadow:0 4px 10px -6px rgba(18,38,74,.25);}
 @media (max-width:700px){.visor-z-ayuda{display:none;}}
 </style>
 <style id="estiloModalProveedoresCat">
@@ -3908,7 +3910,7 @@ Transacciones recurrentes
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-06.23"></script>
+<script src="/app.js?v=2026-11-06.24"></script>
 <div id="alertasPanel" class="alertas-panel" role="dialog" aria-label="Alertas de la Revisión de consistencia" hidden></div>
 </body>
 </html>
