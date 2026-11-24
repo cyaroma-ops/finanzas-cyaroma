@@ -347,9 +347,7 @@ async function verAdjunto(path, nombre) {
   const ext = (path.split('.').pop() || '').toLowerCase();
   const esImagen = ['jpg','jpeg','png'].includes(ext);
   const body = document.getElementById('adjuntoPreviewBody');
-  body.innerHTML = esImagen
-    ? `<div style="display:flex;align-items:center;justify-content:center;min-height:100%;padding:20px;"><img src="${escAttr(data.signedUrl)}" style="max-width:100%;max-height:70vh;box-shadow:0 4px 20px rgba(0,0,0,.15);border-radius:6px;"></div>`
-    : `<iframe src="${escAttr(data.signedUrl)}" style="width:100%;height:100%;border:none;min-height:70vh;"></iframe>`;
+  visorMontar(body, data.signedUrl, esImagen);
   document.getElementById('adjuntoPreviewNombre').textContent = nombre || 'Adjunto';
   document.getElementById('adjuntoPreviewDescargar').href = data.signedUrl;
   document.getElementById('adjuntoPreviewOverlay').style.display = 'block';
@@ -389,9 +387,7 @@ function verArchivoPendiente(file) {
   const esImagen = ['jpg','jpeg','png'].includes(ext);
   const url = URL.createObjectURL(file);
   const body = document.getElementById('adjuntoPreviewBody');
-  body.innerHTML = esImagen
-    ? `<div style="display:flex;align-items:center;justify-content:center;min-height:100%;padding:20px;"><img src="${escAttr(url)}" style="max-width:100%;max-height:70vh;box-shadow:0 4px 20px rgba(0,0,0,.15);border-radius:6px;"></div>`
-    : `<iframe src="${escAttr(url)}" style="width:100%;height:100%;border:none;min-height:70vh;"></iframe>`;
+  visorMontar(body, url, esImagen);
   document.getElementById('adjuntoPreviewNombre').textContent = file.name + ' (aún no guardado)';
   document.getElementById('adjuntoPreviewDescargar').href = url;
   document.getElementById('adjuntoPreviewOverlay').style.display = 'block';
@@ -16238,25 +16234,133 @@ function actualizarPanelDocumentoEmbebido(ids, pendientes) {
     if (panel._archivoMostrado !== file || !embed.firstElementChild) {   // solo si cambió el archivo: recrear el visor recarga el PDF (parpadeo de varios segundos)
       if (panel._urlVista) { try { URL.revokeObjectURL(panel._urlVista); } catch (_) { /* nada */ } }
       const url = panel._urlVista = URL.createObjectURL(file); panel._archivoMostrado = file;
-      embed.innerHTML = esImagen ? `<img src="${escAttr(url)}">` : `<iframe src="${escAttr(url)}"></iframe>`;
+      visorMontar(embed, url, esImagen);
     }
     document.getElementById(ids.nombre).textContent = file.name;
   }
   // el archivo que se está viendo se marca en la lista
   workspace.querySelectorAll('.doc-adjunto-chip').forEach(chip => { const v = chip.querySelector('.doc-adjunto-ver'); chip.classList.toggle('doc-adjunto-sel', !oculto && !!v && pendientes[Number(v.dataset.idx)] === file); });
-  const btn = document.getElementById(ids.toggleBtn);
-  if (btn && !btn.dataset.wired) {
-    btn.dataset.wired = '1';
-    btn.addEventListener('click', () => {
-      panel.dataset.oculto = panel.dataset.oculto === '1' ? '0' : '1';
-      btn.textContent = panel.dataset.oculto === '1' ? 'Mostrar' : 'Ocultar';
-      actualizarPanelDocumentoEmbebido(ids, panel._pendientesActual || []);
-    });
-    // «Ampliar»: abre el visor grande con el archivo que se está viendo (antes el único camino al visor era «Ver», que ahora cambia el panel)
-    const amp = document.createElement('button'); amp.type = 'button'; amp.className = 'doc-panel-ampliar'; amp.textContent = 'Ampliar'; amp.title = 'Abrir el archivo en grande';
-    amp.addEventListener('click', () => { const l = panel._pendientesActual || [], f = l.includes(l._vista) ? l._vista : l[l.length - 1]; if (f) verArchivoPendiente(f); });
-    btn.parentNode.insertBefore(amp, btn);
+  panelDocCablear(ids);
+  panel._refrescar = () => actualizarPanelDocumentoEmbebido(ids, panel._pendientesActual || []);
+}
+// ===== 06.23 — Visor con zoom y adjuntos guardados siempre visibles =====
+// Visor: las imágenes se pueden acercar/alejar (botones, rueda del mouse, doble clic) y mover arrastrando; los PDF usan el visor del navegador (con su propio zoom).
+function visorMontar(cont, url, esImagen) {
+  if (!esImagen) { cont.innerHTML = `<iframe src="${escAttr(url)}"></iframe>`; return; }
+  cont.innerHTML = `<div class="visor-z"><div class="visor-z-barra" role="toolbar" aria-label="Zoom de la imagen">
+      <button type="button" data-z="out" title="Alejar" aria-label="Alejar">−</button><span class="visor-z-pct">100%</span><button type="button" data-z="in" title="Acercar" aria-label="Acercar">+</button>
+      <button type="button" data-z="fit" title="Ajustar a la ventana">Ajustar</button><button type="button" data-z="real" title="Tamaño real">1:1</button>
+      <span class="visor-z-ayuda">Rueda del mouse: zoom · arrastra para mover · doble clic: acercar</span></div>
+    <div class="visor-z-lienzo"><img src="${escAttr(url)}" alt="Vista del archivo" draggable="false"></div></div>`;
+  const lienzo = cont.querySelector('.visor-z-lienzo'), img = lienzo.querySelector('img'), pct = cont.querySelector('.visor-z-pct');
+  let z = 1;
+  const pintar = () => {
+    if (z === 1) { img.style.width = '100%'; img.style.height = '100%'; img.style.objectFit = 'contain'; }
+    else { img.style.width = (z * 100) + '%'; img.style.height = 'auto'; img.style.objectFit = ''; }
+    pct.textContent = Math.round(z * 100) + '%'; lienzo.classList.toggle('visor-z-mueve', z !== 1);
+  };
+  const zoomA = (nuevo, cx, cy) => {
+    nuevo = Math.max(0.25, Math.min(10, nuevo)); if (nuevo === z) return;
+    const fx = lienzo.scrollWidth ? (lienzo.scrollLeft + cx) / lienzo.scrollWidth : 0.5, fy = lienzo.scrollHeight ? (lienzo.scrollTop + cy) / lienzo.scrollHeight : 0.5;
+    z = nuevo; pintar();
+    lienzo.scrollLeft = fx * lienzo.scrollWidth - cx; lienzo.scrollTop = fy * lienzo.scrollHeight - cy;
+  };
+  const centro = () => [lienzo.clientWidth / 2, lienzo.clientHeight / 2];
+  cont.querySelector('.visor-z-barra').addEventListener('click', (e) => {
+    const t = e.target.closest('button'); if (!t) return; const [cx, cy] = centro();
+    if (t.dataset.z === 'in') zoomA(z * 1.25, cx, cy); else if (t.dataset.z === 'out') zoomA(z / 1.25, cx, cy);
+    else if (t.dataset.z === 'fit') { z = 1; pintar(); lienzo.scrollLeft = 0; lienzo.scrollTop = 0; }
+    else if (t.dataset.z === 'real') { const w = lienzo.clientWidth || 1; zoomA((img.naturalWidth || w) / w, cx, cy); }
+  });
+  lienzo.addEventListener('wheel', (e) => { e.preventDefault(); const r = lienzo.getBoundingClientRect(); zoomA(z * (e.deltaY < 0 ? 1.2 : 1 / 1.2), e.clientX - r.left, e.clientY - r.top); }, { passive: false });
+  lienzo.addEventListener('dblclick', (e) => { const r = lienzo.getBoundingClientRect(); if (z === 1) zoomA(2.5, e.clientX - r.left, e.clientY - r.top); else { z = 1; pintar(); lienzo.scrollLeft = 0; lienzo.scrollTop = 0; } });
+  let arr = null;
+  lienzo.addEventListener('mousedown', (e) => { if (e.button !== 0) return; arr = { x: e.clientX, y: e.clientY, l: lienzo.scrollLeft, t: lienzo.scrollTop }; lienzo.classList.add('visor-z-arrastra'); e.preventDefault(); });
+  window.addEventListener('mousemove', (e) => { if (!arr) return; lienzo.scrollLeft = arr.l - (e.clientX - arr.x); lienzo.scrollTop = arr.t - (e.clientY - arr.y); });
+  window.addEventListener('mouseup', () => { arr = null; lienzo.classList.remove('visor-z-arrastra'); });
+  pintar();
+}
+// Botones «Ocultar» y «Ampliar» del panel de al lado. «Ampliar» agranda el visor DENTRO de la misma ventana (ya no abre otra ventana encima que tapa el trabajo).
+function panelDocCablear(ids) {
+  const panel = document.getElementById(ids.panel), btn = document.getElementById(ids.toggleBtn);
+  if (!panel || !btn || btn.dataset.wired) return; btn.dataset.wired = '1';
+  btn.addEventListener('click', () => { panel.dataset.oculto = panel.dataset.oculto === '1' ? '0' : '1'; btn.textContent = panel.dataset.oculto === '1' ? 'Mostrar' : 'Ocultar'; if (panel._refrescar) panel._refrescar(); });
+  const amp = document.createElement('button'); amp.type = 'button'; amp.className = 'doc-panel-ampliar'; amp.textContent = 'Ampliar'; amp.title = 'Hacer más grande el visor dentro de esta ventana';
+  amp.addEventListener('click', () => { const ws = document.getElementById(ids.workspace); if (!ws) return; amp.textContent = ws.classList.toggle('doc-panel-grande') ? 'Reducir' : 'Ampliar'; });
+  btn.parentNode.insertBefore(amp, btn);
+}
+// Adjuntos YA GUARDADOS de un documento que se vuelve a abrir (póliza, factura, movimiento de banco/efectivo…): quedan a la vista —lista a la izquierda del panel y el archivo en el visor de al lado—,
+// sin pasar por una segunda ventana. Ahí mismo se agregan y se quitan. Usa las mismas tablas, rutas y auditoría que la ventana «Adjuntos» de siempre.
+async function adjuntosGuardadosMostrar(cfg, seleccionarUltimo) {
+  cfg.lista = await cargarAdjuntos(cfg.tabla, cfg.registroId);
+  if (seleccionarUltimo && cfg.lista.length) cfg.sel = cfg.lista[cfg.lista.length - 1].id;
+  adjuntosGuardadosPintar(cfg);
+  if (cfg.onCambio) cfg.onCambio(cfg.lista.length);
+}
+function adjuntosGuardadosPintar(cfg) {
+  const box = cfg.box(); if (!box) return;
+  const lista = cfg.lista || [];
+  const tarj = box.closest('.mov-card-soporte'); if (tarj) tarj.classList.add('soporte-arriba');   // en Bancos/Efectivo la lista de archivos sube al inicio de la columna: siempre a la vista
+  box.innerHTML = `<div class="doc-adjunto-bloque">
+    <div class="doc-adjunto-label">Documento soporte</div>
+    ${lista.length ? `<div class="doc-adjunto-lista">${lista.map(a => `<div class="doc-adjunto-chip" data-id="${escAttr(a.id)}">
+        <span class="doc-adjunto-icono">${iconoTipoArchivo(a.archivo_nombre)}</span>
+        <span class="doc-adjunto-nombre" title="${escAttr(a.archivo_nombre)}">${escHtml(a.archivo_nombre)}</span>
+        <button type="button" class="doc-adjunto-ver" data-id="${escAttr(a.id)}" title="Ver">Ver</button>
+        <button type="button" class="doc-adjunto-quitar" data-id="${escAttr(a.id)}" title="Quitar">✕</button></div>`).join('')}</div>` : `<p class="doc-adjunto-hint" style="margin:0 0 4px;">Aún no hay archivos adjuntos.</p>`}
+    <label class="doc-adjunto-agregar">+ ${lista.length ? 'Agregar otro archivo' : 'Seleccionar o arrastrar archivo'}<input type="file" accept=".pdf,.jpg,.jpeg,.png" multiple class="adj-guardado-input" style="display:none;"></label>
+    <p class="doc-adjunto-hint">PDF, JPG o PNG · máx. ${ADJUNTOS_MAX_MB} MB · se guarda al instante</p></div>`;
+  const panelListo = () => window.innerWidth > 880 && !!document.getElementById(cfg.ids.panel);
+  const elegir = (id) => {
+    const a = lista.find(x => x.id === id); if (!a) return; cfg.sel = id;
+    if (panelListo()) { const p = document.getElementById(cfg.ids.panel); if (p.dataset.oculto === '1') { p.dataset.oculto = '0'; const t = document.getElementById(cfg.ids.toggleBtn); if (t) t.textContent = 'Ocultar'; } adjuntosGuardadosPanel(cfg); }
+    else verAdjunto(a.archivo_path, a.archivo_nombre);
+  };
+  box.querySelectorAll('.doc-adjunto-ver').forEach(b => b.addEventListener('click', (e) => { e.preventDefault(); elegir(b.dataset.id); }));
+  box.querySelectorAll('.doc-adjunto-chip').forEach(ch => ch.addEventListener('click', (e) => { if (!e.target.closest('button')) elegir(ch.dataset.id); }));
+  box.querySelectorAll('.doc-adjunto-quitar').forEach(b => b.addEventListener('click', async (e) => {
+    e.preventDefault(); const a = lista.find(x => x.id === b.dataset.id); if (!a || !confirm('¿Quitar este archivo adjunto?')) return;
+    await sb.storage.from(ADJUNTOS_BUCKET).remove([a.archivo_path]);
+    await sb.from('fz_adjuntos').delete().eq('id', a.id);
+    registrarAuditoria(cfg.businessId, 'editar', TABLA_MODULO_LABEL[cfg.tabla] || cfg.tabla, 'Quitó archivo adjunto');
+    await adjuntosGuardadosMostrar(cfg);
+  }));
+  const agregar = async (files) => {
+    let subidos = 0;
+    for (const file of files) {
+      const subido = await subirAdjunto(cfg.tabla, cfg.registroId, cfg.businessId, file);
+      if (!subido) continue;
+      const { error } = await sb.from('fz_adjuntos').insert({ business_id: cfg.businessId, tabla: cfg.tabla, registro_id: cfg.registroId, archivo_path: subido.path, archivo_nombre: subido.nombre });
+      if (!error) { subidos++; registrarAuditoria(cfg.businessId, 'editar', TABLA_MODULO_LABEL[cfg.tabla] || cfg.tabla, `Adjuntó archivo "${subido.nombre}"`); }
+    }
+    await adjuntosGuardadosMostrar(cfg, subidos > 0);
+  };
+  const inp = box.querySelector('.adj-guardado-input'); if (inp) inp.addEventListener('change', () => { const fs = Array.from(inp.files); inp.value = ''; agregar(fs); });
+  const bloque = box.querySelector('.doc-adjunto-bloque'); if (bloque) habilitarDragDropAdjunto(bloque, agregar);
+  adjuntosGuardadosPanel(cfg);
+}
+async function adjuntosGuardadosPanel(cfg) {
+  const ids = cfg.ids, panel = document.getElementById(ids.panel), ws = document.getElementById(ids.workspace); if (!panel || !ws) return;
+  const lista = cfg.lista || [];
+  panelDocCablear(ids); panel._refrescar = () => adjuntosGuardadosPanel(cfg);
+  if (!lista.length || window.innerWidth <= 880) { panel.style.display = 'none'; ws.classList.remove('doc-workspace-split'); panel._archivoMostrado = null; return; }
+  const oculto = panel.dataset.oculto === '1';
+  ws.classList.toggle('doc-workspace-split', !oculto); panel.style.display = oculto ? 'none' : 'flex';
+  const a = lista.find(x => x.id === cfg.sel) || lista[lista.length - 1]; cfg.sel = a.id;
+  ws.querySelectorAll('.doc-adjunto-chip').forEach(ch => ch.classList.toggle('doc-adjunto-sel', !oculto && ch.dataset.id === a.id));
+  if (oculto) return;
+  document.getElementById(ids.nombre).textContent = a.archivo_nombre;
+  const embed = document.getElementById(ids.embed);
+  if (panel._archivoMostrado === 'g:' + a.id && embed.firstElementChild) return;     // mismo archivo ya visible: no recargarlo
+  panel._archivoMostrado = 'g:' + a.id;
+  if (!a._url) {
+    const { data, error } = await sb.storage.from(ADJUNTOS_BUCKET).createSignedUrl(a.archivo_path, 3600);
+    if (error || !data) { embed.innerHTML = '<p class="empty" style="padding:16px;">No se pudo abrir el archivo.</p>'; panel._archivoMostrado = null; return; }
+    a._url = data.signedUrl;
   }
+  if (cfg.sel !== a.id) return;       // mientras cargaba se eligió otro
+  const ext = (a.archivo_path.split('.').pop() || '').toLowerCase();
+  visorMontar(embed, a._url, ['jpg', 'jpeg', 'png'].includes(ext));
 }
 const IDS_PANEL_DOC_MOV = { workspace: 'movWorkspace', panel: 'movPanelDoc', nombre: 'movPanelDocNombre', embed: 'movPanelDocEmbed', toggleBtn: 'movTogglePanelDoc' };
 const IDS_PANEL_DOC_POL = { workspace: 'polWorkspace', panel: 'polPanelDoc', nombre: 'polPanelDocNombre', embed: 'polPanelDocEmbed', toggleBtn: 'polTogglePanelDoc' };
@@ -16771,12 +16875,11 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   const movAdjuntoWrap = document.getElementById('movAdjuntoWrap');
   const tablaAdjunto = contexto.tipo === 'efectivo' ? 'fz_efectivo_mov' : 'fz_bancos_mov';
   movAdjuntoWrap.style.display = '';
+  const tarjSoporte = document.getElementById('movCardSoporte'); if (tarjSoporte) tarjSoporte.classList.remove('soporte-arriba');
   if (movimientoExistente) {
-    const conteo = await contarAdjuntosPorRegistro(tablaAdjunto, [movimientoExistente.id]);
-    document.getElementById('movAdjuntoCell').innerHTML = adjuntosCellHtml(conteo[movimientoExistente.id], movimientoExistente.id);
-    wireAdjuntosHandlers(document.getElementById('movAdjuntoCell'), tablaAdjunto, contexto.businessId, () => {});
-    document.getElementById('movPanelDoc').style.display = 'none';
-    document.getElementById('movWorkspace').classList.remove('doc-workspace-split');
+    document.getElementById('movPanelDoc').dataset.oculto = '';
+    document.getElementById('movAdjuntoCell').innerHTML = '<p class="doc-adjunto-hint">Cargando archivos…</p>';
+    await adjuntosGuardadosMostrar({ tabla: tablaAdjunto, registroId: movimientoExistente.id, businessId: contexto.businessId, box: () => document.getElementById('movAdjuntoCell'), ids: IDS_PANEL_DOC_MOV });
   } else {
     STATE_movArchivosPendientes = [];
     document.getElementById('movPanelDoc').dataset.oculto = '';
@@ -21307,11 +21410,9 @@ async function openModalFacturaProveedor(factura, businessId, catalogo, opciones
   }
 
   if (factura) {
-    const conteo = await contarAdjuntosPorRegistro('fz_proveedores', [factura.id]);
-    document.getElementById('fpAdjuntoCell').innerHTML = adjuntosCellHtml(conteo[factura.id], factura.id);
-    wireAdjuntosHandlers(document.getElementById('fpAdjuntoCell'), 'fz_proveedores', businessId, () => {});
-    document.getElementById('fpPanelDoc').style.display = 'none';
-    document.getElementById('fpWorkspace').classList.remove('doc-workspace-split');
+    document.getElementById('fpPanelDoc').dataset.oculto = '';
+    document.getElementById('fpAdjuntoCell').innerHTML = '<p class="doc-adjunto-hint">Cargando archivos…</p>';
+    await adjuntosGuardadosMostrar({ tabla: 'fz_proveedores', registroId: factura.id, businessId, box: () => document.getElementById('fpAdjuntoCell'), ids: IDS_PANEL_DOC_FP });
   } else {
     STATE_provArchivosPendientes = [];
     document.getElementById('fpPanelDoc').dataset.oculto = '';
@@ -26459,7 +26560,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.22';
+const APP_VERSION = '2026-11-06.23';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
@@ -28454,7 +28555,7 @@ function polizaCardHtmlBorrador(borrador) {
     hayPendientesNueva = pendientes.length > 0;
     adjuntoHtml = documentoSoporteBloqueHtml(pendientes, 'adjunto-pendiente-input');
   } else {
-    adjuntoHtml = adjuntosCellHtml(borrador.conteoAdjuntos, p.id);
+    adjuntoHtml = '<div id="polAdjuntosGuardados"></div>';
   }
 
   return `
@@ -28844,11 +28945,10 @@ function wireBorradorPolizaHandlers(wrap) {
     if (bloqueDoc) habilitarDragDropAdjunto(bloqueDoc, agregarArchivosPoliza);
     if (window.innerWidth > 880) actualizarPanelDocumentoEmbebido(IDS_PANEL_DOC_POL, pendientes);
   } else {
-    wireAdjuntosHandlers(wrap, 'fz_polizas', STATE_polizaBorrador.businessId, () => refrescarAdjuntoBorrador());
-    const panelDoc = document.getElementById('polPanelDoc');
-    const workspacePol = document.getElementById('polWorkspace');
-    if (panelDoc) panelDoc.style.display = 'none';
-    if (workspacePol) workspacePol.classList.remove('doc-workspace-split');
+    if (!STATE_polizaBorrador._adjCfg) STATE_polizaBorrador._adjCfg = { tabla: 'fz_polizas', registroId: STATE_polizaBorrador.poliza.id, businessId: STATE_polizaBorrador.businessId, ids: IDS_PANEL_DOC_POL, lista: null, onCambio: (n) => { if (STATE_polizaBorrador) STATE_polizaBorrador.conteoAdjuntos = n; } };
+    const cfgPol = STATE_polizaBorrador._adjCfg; cfgPol.box = () => document.getElementById('polAdjuntosGuardados');
+    const pp = document.getElementById('polPanelDoc'); if (pp && pp.dataset.oculto === undefined) pp.dataset.oculto = '';
+    if (cfgPol.lista) adjuntosGuardadosPintar(cfgPol); else adjuntosGuardadosMostrar(cfgPol);   // la lista se carga una vez; los redibujos usan la misma
   }
   wireInputsMoneda(wrap);
 }

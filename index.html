@@ -1339,6 +1339,25 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 .alertas-it .alertas-n.err{color:#a87a00;}
 .alertas-pie{display:flex;gap:8px;justify-content:flex-end;padding:10px 12px;background:#f7f9fc;border-top:1px solid var(--line);flex-wrap:wrap;}
 @media (max-width:700px){.alertas-btn .alertas-n{margin:0;}}
+/* ===== 06.23 — Visor con zoom y panel de adjuntos ===== */
+.visor-z{display:flex;flex-direction:column;height:100%;min-height:0;}
+.visor-z-barra{display:flex;align-items:center;gap:6px;padding:6px 8px;background:#fff;border-bottom:1px solid var(--line);flex:0 0 auto;flex-wrap:wrap;}
+.visor-z-barra button{font:inherit;font-size:12.5px;border:1px solid var(--line);background:#fff;border-radius:6px;padding:3px 9px;cursor:pointer;min-width:30px;color:var(--navy-1);}
+.visor-z-barra button:hover{background:#f3f6fa;}
+.visor-z-pct{font-size:12px;min-width:44px;text-align:center;color:var(--navy-1);font-variant-numeric:tabular-nums;}
+.visor-z-ayuda{font-size:11px;color:var(--muted);margin-left:auto;}
+.visor-z-lienzo{flex:1;min-height:0;overflow:auto;display:flex;background:#f4f6f9;user-select:none;-webkit-user-select:none;}
+.visor-z-lienzo img{margin:auto;flex:none;display:block;max-width:none;}
+.visor-z-lienzo.visor-z-mueve{cursor:grab;}.visor-z-lienzo.visor-z-arrastra{cursor:grabbing;}
+.doc-workspace-panel-doc .doc-viewer-embed .visor-z-lienzo img{object-fit:contain;}
+#adjuntoPreviewBody{display:flex;flex-direction:column;}
+#adjuntoPreviewBody iframe{width:100%;height:100%;border:none;min-height:70vh;flex:1;}
+#adjuntoPreviewBody .visor-z{flex:1;min-height:62vh;}
+.modal-workspace .doc-workspace.doc-workspace-split.doc-panel-grande{grid-template-columns:minmax(0,72%) minmax(300px,28%);}
+.doc-adjunto-chip .doc-adjunto-ver,.doc-adjunto-chip .doc-adjunto-quitar{flex-shrink:0;}
+#movWorkspace #movCardSoporte.soporte-arriba,#movWorkspace.doc-workspace-split #movCardSoporte.soporte-arriba{order:0;}
+#movWorkspace .soporte-arriba .doc-adjunto-lista{max-height:120px;overflow-y:auto;}
+@media (max-width:700px){.visor-z-ayuda{display:none;}}
 </style>
 <style id="estiloModalProveedoresCat">
 /* ===== Modal «Catálogo de proveedores» — estilos acotados a ESTE modal (ningún otro modal cambia) ===== */
@@ -3889,7 +3908,7 @@ Transacciones recurrentes
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-06.22"></script>
+<script src="/app.js?v=2026-11-06.23"></script>
 <div id="alertasPanel" class="alertas-panel" role="dialog" aria-label="Alertas de la Revisión de consistencia" hidden></div>
 </body>
 </html>
