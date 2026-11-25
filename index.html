@@ -1360,6 +1360,10 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 /* Catálogo de cuentas: la barra de herramientas (buscar, expandir, importar, nueva cuenta) queda fija al hacer scroll */
 #sec-catalogo .cc-barra{position:sticky;top:calc(var(--topbar-h,79px) - 1px);z-index:7;box-shadow:0 4px 10px -6px rgba(18,38,74,.25);}
 @media (max-width:700px){.visor-z-ayuda{display:none;}}
+/* ===== 06.26 — Modo solo lectura ===== */
+.banner-solo-lectura{background:#fff6dd;border:1px solid #f0dc9c;color:#6b4e00;font-size:13px;padding:8px 14px;border-radius:8px;margin:0 32px 12px;}
+.sl-oculto{display:none!important;}
+@media (max-width:700px){.banner-solo-lectura{margin:0 12px 10px;}}
 </style>
 <style id="estiloModalProveedoresCat">
 /* ===== Modal «Catálogo de proveedores» — estilos acotados a ESTE modal (ningún otro modal cambia) ===== */
@@ -3910,7 +3914,7 @@ Transacciones recurrentes
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-06.25"></script>
+<script src="/app.js?v=2026-11-06.26"></script>
 <div id="alertasPanel" class="alertas-panel" role="dialog" aria-label="Alertas de la Revisión de consistencia" hidden></div>
 </body>
 </html>

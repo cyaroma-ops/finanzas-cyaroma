@@ -3,7 +3,54 @@
    Núcleo: auth, estado global, negocios, navegación, utilidades
    ============================================================ */
 
-const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const sbReal = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+/* ---------- 06.26 · Modo solo lectura por negocio ----------
+   Si la persona solo VE el negocio que tiene abierto, cualquier intento de guardar, editar, borrar o subir archivos se detiene aquí con un aviso claro.
+   Es la segunda barrera: la primera y definitiva está en la base de datos (políticas fz_solo_lectura_*). Escribir en la bitácora de auditoría sí se permite. */
+const SL_MENSAJE = 'Este negocio está en modo solo lectura: no se puede guardar ni modificar nada.';
+const SL_CADENA = new Proxy(function () {}, {
+  get(_, k) { if (k === 'then') return (ok, no) => Promise.resolve({ data: null, error: { message: SL_MENSAJE, code: 'SOLO_LECTURA' }, count: null, status: 403 }).then(ok, no); return () => SL_CADENA; },
+  apply() { return SL_CADENA; }
+});
+const sb = new Proxy(sbReal, {
+  get(t, k) {
+    if (k === 'from') return (tabla) => {
+      const q = t.from(tabla);
+      if (tabla === 'fz_auditoria') return q;
+      return new Proxy(q, { get(qt, m) { if (['insert', 'update', 'upsert', 'delete'].includes(m) && esSoloLecturaActual()) return () => SL_CADENA; const v = qt[m]; return typeof v === 'function' ? v.bind(qt) : v; } });
+    };
+    if (k === 'rpc') return (nombre, ...a) => (esSoloLecturaActual() && /^fn_(?!remanente)/.test(nombre)) ? SL_CADENA : t.rpc(nombre, ...a);
+    if (k === 'storage') return { from: (b) => { const s = t.storage.from(b); return new Proxy(s, { get(st, m) { if (['upload', 'remove', 'move', 'copy', 'update'].includes(m) && esSoloLecturaActual()) return () => SL_CADENA; const v = st[m]; return typeof v === 'function' ? v.bind(st) : v; } }); } };
+    const v = t[k]; return typeof v === 'function' ? v.bind(t) : v;
+  }
+});
+function nivelNegocio(id) {   // 'ver' | 'captura' | 'total' (administradores: siempre 'total'; sin dato: 'total' = como era antes de 06.26)
+  try { if (STATE.esAdministrador) return 'total'; return ((STATE.nivelesNegocio || {})[id]) || 'total'; } catch (_) { return 'total'; }
+}
+function esSoloLecturaActual() {
+  try { return !!STATE.currentBusinessId && nivelNegocio(STATE.currentBusinessId) === 'ver'; } catch (_) { return false; }
+}
+const SL_CAPTURA_RE = /guardar|agregar|añadir|nuev[oa]|crear|eliminar|borrar|quitar|editar|modificar|importar|registrar|pagar|cobrar|aplicar|cerrar periodo|reabrir|conciliar|generar|convertir|duplicar|anular|restaurar|subir|adjuntar|migrar|revertir|clasificar|vincular|desvincular|cargar|capturar|reparar|repartir|^\+|^✕$|^×$/i;
+const SL_CONSULTA_RE = /descargar|exportar|excel|pdf|imprimir|filtr|buscar|ver |^ver$|detalle|consultar/i;
+function soloLecturaOcultar(raiz) {
+  (raiz || document).querySelectorAll('button, a.btn, label.doc-adjunto-agregar, label.btn').forEach(el => {
+    if (el.classList.contains('sl-oculto') || el.closest('#modalUsuarios, #accesosPanel, #alertasPanel, .login-card, #bannerSoloLectura')) return;
+    const t = (el.textContent || '').trim(), cls = el.className || '';
+    const capt = /(^|\s)(btn-gold|btn-danger|row-del|doc-adjunto-quitar|doc-adjunto-agregar)(\s|$)/.test(cls) || SL_CAPTURA_RE.test(t);
+    if (capt && !SL_CONSULTA_RE.test(t) && !/(^|\s)(btn-ghost-keep|sl-keep)(\s|$)/.test(cls)) el.classList.add('sl-oculto');
+  });
+}
+let SL_OBSERVADOR = null;
+function soloLecturaActualizar() {
+  const sl = esSoloLecturaActual();
+  document.body.classList.toggle('solo-lectura', sl);
+  let b = document.getElementById('bannerSoloLectura');
+  if (!sl) { if (b) b.remove(); document.querySelectorAll('.sl-oculto').forEach(e => e.classList.remove('sl-oculto')); return; }
+  if (!b) { const c = document.getElementById('content'); if (!c) return; b = document.createElement('div'); b.id = 'bannerSoloLectura'; b.className = 'banner-solo-lectura'; c.parentNode.insertBefore(b, c); }
+  b.textContent = `Tienes acceso de solo lectura en ${(biz() || {}).name || 'este negocio'}: puedes consultar y descargar, pero no modificar.`;
+  soloLecturaOcultar(document.body);
+  if (!SL_OBSERVADOR) { let t = null; SL_OBSERVADOR = new MutationObserver(() => { if (!esSoloLecturaActual()) return; clearTimeout(t); t = setTimeout(() => soloLecturaOcultar(document.body), 60); }); SL_OBSERVADOR.observe(document.body, { childList: true, subtree: true }); }
+}
 
 /* ---------- PAGINACIÓN AUTOMÁTICA ----------
    Supabase corta CUALQUIER lista en 1,000 filas sin avisar ni dar error: un negocio con más de 1,000 movimientos veía
@@ -606,6 +653,7 @@ document.getElementById('cerrarModalAdjuntos').addEventListener('click', () => {
 
 /* ---------- Cierre de periodo ---------- */
 function puedeReabrirPeriodo() {
+  if (!STATE.esAdministrador && nivelNegocio(STATE.currentBusinessId) !== 'total') return false;   // 06.26: «Solo ve» y «Captura» no cierran ni reabren periodos
   return !!STATE.esAdministrador || !!STATE.rolUsuario;
 }
 const STATE_cierresCache = {}; // { 'businessId-YYYY-MM': true|false }
@@ -838,8 +886,11 @@ async function checkAcceso(email) {
   STATE.nombreUsuario = row.nombre || null;
   STATE.rolUsuario = row.rol || null;
   if (!STATE.esAdministrador) {
-    const { data: permisos } = await sb.from('fz_usuario_negocios').select('business_id').ilike('email', email);
+    let permisos = null;
+    { const r = await sb.from('fz_usuario_negocios').select('business_id,nivel').ilike('email', email);
+      if (r.error) { const r2 = await sb.from('fz_usuario_negocios').select('business_id').ilike('email', email); permisos = r2.data; } else permisos = r.data; }   // sin la columna «nivel» (antes de correr el SQL 06.26): todos con acceso total, como siempre
     STATE.negociosPermitidos = (permisos || []).map(p => p.business_id);
+    STATE.nivelesNegocio = {}; (permisos || []).forEach(p => { STATE.nivelesNegocio[p.business_id] = p.nivel || 'total'; });
   } else {
     STATE.negociosPermitidos = null; // null = sin restricción
   }
@@ -907,6 +958,13 @@ async function loadUsuarioNegocios(email) {
   const { data } = await sb.from('fz_usuario_negocios').select('business_id').ilike('email', email);
   return (data || []).map(r => r.business_id);
 }
+const NIVELES_NEGOCIO = { ver: 'Solo ve', captura: 'Captura', total: 'Acceso total' };
+async function loadUsuarioNiveles(email) {   // { business_id: 'ver'|'captura'|'total' }
+  let r = await sb.from('fz_usuario_negocios').select('business_id,nivel').ilike('email', email), conNivel = true;
+  if (r.error) { conNivel = false; r = await sb.from('fz_usuario_negocios').select('business_id').ilike('email', email); }
+  const m = {}; (r.data || []).forEach(x => { m[x.business_id] = conNivel ? (x.nivel || 'total') : 'total'; });
+  return m;
+}
 async function openUsuariosModal() {
   await renderUsuariosList();
   document.getElementById('modalUsuarios').classList.add('show');
@@ -931,7 +989,7 @@ async function renderUsuariosList() {
   if (!usuarios.length) { box.innerHTML = `<div class="empty" style="padding:16px;">Sin usuarios autorizados todavía.</div>`; return; }
 
   const bloques = await Promise.all(usuarios.map(async u => {
-    const negociosDe = u.es_administrador ? [] : await loadUsuarioNegocios(u.email);
+    const nivelesDe = u.es_administrador ? {} : await loadUsuarioNiveles(u.email);
     const editando = STATE_usuarioEditando.has(u.id);
     return `
     <div style="padding:14px 6px;border-bottom:1px solid var(--line);">
@@ -940,7 +998,7 @@ async function renderUsuariosList() {
           <strong style="font-size:14.5px;">${escHtml(u.nombre || u.email)}</strong>${u.email.toLowerCase()===STATE.user.email.toLowerCase()?' <span style="color:var(--muted);font-size:11px;">(tú)</span>':''}
           ${u.nombre ? `<div style="color:var(--muted);font-size:12px;margin-top:2px;">${escHtml(u.email)}</div>` : ''}
           <div style="margin-top:5px;display:flex;gap:6px;flex-wrap:wrap;">
-            <span class="badge ${u.es_administrador?'pag':''}" ${!u.es_administrador?'style="background:#eef1f6;color:var(--muted);"':''}>${etiquetaRol(u.es_administrador, u.rol)}</span>
+            <span class="badge ${u.es_administrador?'pag':''}" ${!u.es_administrador?'style="background:#eef1f6;color:var(--muted);"':''}>${u.es_principal ? 'Administrador principal' : etiquetaRol(u.es_administrador, u.rol)}</span>
             <span class="badge ${u.activo!==false?'pag':'pend'}">${u.activo!==false?'Activo':'Inactivo'}</span>
           </div>
         </div>
@@ -951,6 +1009,7 @@ async function renderUsuariosList() {
       ${editando ? `
         <div style="margin-top:10px;padding:12px 14px;background:#fff8ec;border:1px solid #f0e0bd;border-radius:8px;">
           <div style="font-size:11px;color:var(--muted);margin-bottom:10px;">⚠ Estos cambios afectan qué puede ver y hacer esta persona en el sistema.</div>
+          ${u.es_principal ? '<div style="font-size:12.5px;color:var(--navy-1);">Administrador principal: no se puede degradar, desactivar ni quitar. Ve y administra todos los negocios.</div>' : `
           <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:${u.es_administrador?'0':'12px'};">
             <label style="display:flex;align-items:center;gap:5px;font-size:12.5px;cursor:pointer;">
               <input type="checkbox" class="usuario-propietario" data-id="${u.id}" ${u.es_administrador?'checked':''}> Es administrador (ve todos los negocios)
@@ -968,14 +1027,22 @@ async function renderUsuariosList() {
                 <option value="gerencia" ${(!u.rol||u.rol==='gerencia')?'selected':''}>Gerencia</option>
               </select>
             </div>
-            <div style="font-size:11.5px;color:var(--muted);margin-bottom:8px;">Negocios que puede ver:</div>
-            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px 16px;margin-bottom:12px;">
+            <div style="font-size:11.5px;color:var(--muted);margin-bottom:8px;">Negocios y qué puede hacer en cada uno:</div>
+            <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:6px;">
               ${todosNegocios.map(n => `
-                <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer;">
-                  <input type="checkbox" class="usuario-negocio" data-email="${escAttr(u.email)}" data-negocio="${n.id}" ${negociosDe.includes(n.id)?'checked':''}> ${escHtml(n.name)}
-                </label>`).join('') || '<span style="font-size:12px;color:var(--muted);">Aún no hay negocios creados.</span>'}
-            </div>` : ''}
-          <button class="btn btn-ghost btn-sm usuario-del" data-id="${u.id}" style="color:var(--red);">Quitar acceso a este usuario</button>
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12.5px;border-bottom:1px solid var(--line);padding:4px 0;">
+                  <span>${escHtml(n.name)}</span>
+                  <select class="cell usuario-negocio-nivel" data-email="${escAttr(u.email)}" data-negocio="${n.id}" style="max-width:150px;">
+                    <option value="" ${!nivelesDe[n.id]?'selected':''}>Sin acceso</option>
+                    <option value="ver" ${nivelesDe[n.id]==='ver'?'selected':''}>Solo ve</option>
+                    <option value="captura" ${nivelesDe[n.id]==='captura'?'selected':''}>Captura</option>
+                    <option value="total" ${nivelesDe[n.id]==='total'?'selected':''}>Acceso total</option>
+                  </select>
+                </div>`).join('') || '<span style="font-size:12px;color:var(--muted);">Aún no hay negocios creados.</span>'}
+            </div>
+            <div style="font-size:11px;color:var(--muted);margin-bottom:12px;"><strong>Solo ve:</strong> consulta y descarga, no modifica. <strong>Captura:</strong> captura y edita, sin cerrar ni reabrir periodos. <strong>Acceso total:</strong> todo en ese negocio.</div>
+            ` : ''}`}
+          ${u.es_principal ? '' : `<button class="btn btn-ghost btn-sm usuario-del" data-id="${u.id}" style="color:var(--red);">Quitar acceso a este usuario</button>`}
         </div>` : ''}
     </div>`;
   }));
@@ -999,13 +1066,16 @@ async function renderUsuariosList() {
     await sb.from('fz_usuarios_autorizados').update({ activo: chk.checked }).eq('id', chk.dataset.id);
     renderUsuariosList();
   }));
-  box.querySelectorAll('.usuario-negocio').forEach(chk => chk.addEventListener('change', async () => {
-    const email = chk.dataset.email, negocioId = chk.dataset.negocio;
-    if (chk.checked) {
-      await sb.from('fz_usuario_negocios').insert({ email, business_id: negocioId });
-    } else {
-      await sb.from('fz_usuario_negocios').delete().ilike('email', email).eq('business_id', negocioId);
+  box.querySelectorAll('.usuario-negocio-nivel').forEach(sel => sel.addEventListener('change', async () => {
+    const email = sel.dataset.email, negocioId = sel.dataset.negocio, nivel = sel.value;
+    if (!nivel) { await sb.from('fz_usuario_negocios').delete().ilike('email', email).eq('business_id', negocioId); return; }
+    let up = await sb.from('fz_usuario_negocios').update({ nivel }).ilike('email', email).eq('business_id', negocioId).select('business_id');
+    if (up.error) { toast(/nivel/i.test(up.error.message) ? 'Falta correr SQL_06.26_1 en Supabase para poder guardar el nivel.' : 'Error: ' + up.error.message, 'error'); renderUsuariosList(); return; }
+    if (!up.data || !up.data.length) {
+      const ins = await sb.from('fz_usuario_negocios').insert({ email, business_id: negocioId, nivel });
+      if (ins.error) { toast('Error: ' + ins.error.message, 'error'); renderUsuariosList(); return; }
     }
+    registrarAuditoria(null, 'editar', 'Usuarios', `${email}: ${NIVELES_NEGOCIO[nivel]} en ${((STATE.businesses || []).find(x => x.id === negocioId) || {}).name || 'un negocio'}`);
   }));
   box.querySelectorAll('.usuario-del').forEach(btn => btn.addEventListener('click', async () => {
     if (usuarios.length <= 1) { toast('Debe quedar al menos un usuario autorizado.', 'error'); return; }
@@ -1589,6 +1659,7 @@ function programarAjusteCajasTabla() {
 })();
 
 async function renderCurrentSection() {
+  soloLecturaActualizar();
   if (esNegocioFinanciero(biz()) && SECCIONES_SOLO_FISCAL.includes(STATE.currentSection)) {
     const origen = STATE.currentSection;
     STATE.currentSection = 'balance';
@@ -6500,6 +6571,7 @@ function calcularEstadoDepreciacion(activo, periodoLimiteYm) {
 // (una póliza más, nunca un lote histórico). El catch-up de meses históricos pendientes es una
 // acción EXPLÍCITA y controlada del usuario, ver generarPolizasHistoricasPendientes más abajo.
 async function generarDepreciacionesSiCorresponde(businessId) {
+  if (esSoloLecturaActual()) return 0;   // 06.26: en solo lectura no se genera nada automático
   const hoy = todayStr();
   const periodoActual = hoy.slice(0, 7);
   const { data: activos } = await sb.from('fz_activos_fijos').select('*').eq('business_id', businessId).eq('activo', true);
@@ -10340,6 +10412,7 @@ async function renderPagosImpuestos() {
 // Crea solo (nunca duplica) el "IVA a cargo" Y las retenciones de ISR/IVA por categoría de cada mes
 // del año elegido que aún no tengan registro — usando el mismo cálculo de IVA y Retenciones.
 async function autoGenerarPagosImpuestos(b, anio) {
+  if (esSoloLecturaActual()) return;
   const { data: existentesIniciales } = await sb.from('fz_pagos_impuestos').select('id,periodo,tipo_impuesto,concepto,monto,fecha_pago').eq('business_id', b.id).like('periodo', `${anio}-%`);
   const existentes = existentesIniciales || [];
   const buscarExistente = (periodo, tipo, concepto) => existentes.find(p => p.periodo===periodo && p.tipo_impuesto===tipo && (p.concepto||null)===(concepto||null));
@@ -14863,6 +14936,7 @@ async function progCrearPoliza(p, fecha) {
 // ---- motor: crea lo que ya tocó (una vez por sesión y negocio; también a mano con «Crear las pendientes ahora»)
 async function progEjecutarNegocio(businessId) {
   const res = { creadas: 0, bloqueadas: 0, errores: 0, pausadas: 0 };
+  if (esSoloLecturaActual()) return res;
   let progs = [];
   try { const q = await sb.from('fz_programadas').select('*').eq('business_id', businessId).eq('tipo', 'poliza').eq('estatus', 'activa'); if (q.error) return res; progs = q.data || []; } catch (_) { return res; }
   const hoy = todayStr();
@@ -26561,7 +26635,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.25';
+const APP_VERSION = '2026-11-06.26';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
