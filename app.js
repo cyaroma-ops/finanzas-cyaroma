@@ -111,7 +111,7 @@ function activarPaginacionAutomatica(cliente) {
     return qb;
   };
 }
-activarPaginacionAutomatica(sb);
+activarPaginacionAutomatica(sbReal);
 
 /* ===== Hora del negocio (2026-11-06.2) =====
    La «fecha de hoy» de la app es la de la zona del negocio (Cancún, UTC−5 todo el año), NO la hora universal ni el reloj de cada computadora.
@@ -26635,7 +26635,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.26';
+const APP_VERSION = '2026-11-06.27';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
