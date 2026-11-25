@@ -13966,7 +13966,7 @@ async function openProveedoresCatModal(businessId, onClose) {
   mcpPrepararTeclado(document.getElementById('modalProveedoresCat'));
   if (bq0) bq0.oninput = () => pintarProveedoresCatList(businessId);
   ['newProveedorCatNombre', 'newProveedorCatRazonSocial', 'newProveedorCatRfc'].forEach(id => { const el = document.getElementById(id); if (el) el.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); document.getElementById('saveProveedorCat').click(); } }; });
-  document.getElementById('closeProveedoresCat').onclick = () => { document.getElementById('modalProveedoresCat').classList.remove('show'); if (onClose) onClose(); };
+  document.getElementById('closeProveedoresCat').onclick = () => { STATE_provCatEditando = null; document.getElementById('modalProveedoresCat').classList.remove('show'); if (onClose) onClose(); };
   document.getElementById('saveProveedorCat').onclick = async () => {
     const nombre = document.getElementById('newProveedorCatNombre').value.trim();
     const razon_social = document.getElementById('newProveedorCatRazonSocial').value.trim() || null;
@@ -13989,6 +13989,55 @@ async function openProveedoresCatModal(businessId, onClose) {
   document.getElementById('importProveedoresBtn').onclick = () => openImportExcelModal('proveedores', businessId, () => renderProveedoresCatList(businessId));
   if (document.getElementById('faltantesProveedoresBtn')) document.getElementById('faltantesProveedoresBtn').onclick = () => abrirProveedoresFaltantes({ id: businessId }, () => renderProveedoresCatList(businessId));
 }
+// ===== 06.32 — Editar y eliminar proveedores del catálogo =====
+// Cambiar nombre, razón social o RFC es solo corregir el registro del catálogo: no mueve facturas ni importes. «Eliminar» borra de verdad solo a un proveedor sin ninguna factura o póliza; si ya tiene historial se OCULTA del catálogo (como hace «Unificar duplicados») y todo su historial se conserva.
+async function provCatGuardarEdicion(businessId, p, provs, fila) {
+  const nombre = fila.querySelector('.provcat-ed-nombre').value.trim();
+  const razon = fila.querySelector('.provcat-ed-razon').value.trim() || null;
+  if (!nombre) { toast('Escribe el nombre comercial.', 'error'); return; }
+  const v = provValidarRfcCatalogo(fila.querySelector('.provcat-ed-rfc').value, provs, p.id);
+  if (!v.ok) { toast(v.error, 'error'); return; }
+  const nombreAntes = p.nombre_comercial || p.nombre || '', razonAntes = p.razon_social || null;
+  const actual = provRfcValido(p.rfc) ? provRfc(p.rfc) : null;
+  const cambioNombre = nombre !== nombreAntes, cambioRazon = razon !== razonAntes, cambioRfc = v.rfc !== actual && !(v.rfc === null && !p.rfc);
+  if (!cambioNombre && !cambioRazon && !cambioRfc) { STATE_provCatEditando = null; pintarProveedoresCatList(businessId); return; }
+  if (cambioNombre || cambioRazon) {
+    const otros = provs.filter(x => x.id !== p.id), parecido = provBuscarParecido(otros, nombre, razon, v.rfc);
+    if (parecido && !confirm(`Ya existe «${provNombreVisible(parecido)}» con un nombre parecido. Si es el mismo proveedor, mejor usa «Unificar duplicados» en Proveedores. ¿Guardar el cambio de todos modos?`)) return;
+  }
+  if (cambioRfc && actual && !confirm(`El RFC identifica al proveedor. ¿${v.rfc ? `Cambiar el RFC de «${provNombreVisible(p)}» de ${actual} a ${v.rfc}` : `Quitarle el RFC ${actual} a «${provNombreVisible(p)}»`}?`)) return;
+  const payload = { nombre_comercial: nombre, razon_social: razon };
+  if (cambioNombre) payload.nombre = nombre;
+  if (cambioRfc) payload.rfc = v.rfc;
+  const { error } = await sb.from('fz_proveedores_catalogo').update(payload).eq('id', p.id).eq('business_id', businessId);
+  if (error) { toast(/rfc/i.test(error.message) ? 'No se pudo guardar el RFC: falta correr migracion_cfdi_clasificar.sql en Supabase.' : 'Error: ' + error.message, 'error'); return; }
+  registrarAuditoria(businessId, 'editar', 'Proveedores', `Proveedor «${provNombreVisible(p)}» → «${razon ? razon + ' — ' : ''}${nombre}»${cambioRfc ? ` · RFC ${actual || '(sin RFC)'} → ${v.rfc || '(sin RFC)'}` : ''}`);
+  STATE_provCatEditando = null; toast('Proveedor guardado.'); renderProveedoresCatList(businessId);
+}
+async function provCatEliminar(businessId, p) {
+  const nombre = provNombreVisible(p) || 'este proveedor';
+  const cuenta = async (tabla, col) => { const r = await sb.from(tabla).select('id', { count: 'exact', head: true }).eq(col, p.id); return r.error ? null : (r.count || 0); };
+  const [nFact, nPol] = await Promise.all([cuenta('fz_proveedores', 'proveedor_id'), cuenta('fz_polizas_lineas', 'proveedor_catalogo_id')]);
+  const conHistorial = nFact === null || nPol === null || nFact > 0 || nPol > 0;   // si no se pudo comprobar, se actúa con cautela: solo ocultar
+  if (conHistorial) {
+    if (!confirm(`«${nombre}» ${nFact || nPol ? `ya tiene ${nFact ? nFact + ' factura(s)' : ''}${nFact && nPol ? ' y ' : ''}${nPol ? nPol + ' partida(s) de póliza' : ''}` : 'puede tener historial'}, así que no se borra: se OCULTA del catálogo y ya no aparecerá al capturar. Todo su historial se conserva y puedes volver a traerlo con «Traer los que faltan». ¿Ocultarlo?`)) return;
+    const { error } = await sb.from('fz_proveedores_catalogo').update({ activo: false }).eq('id', p.id).eq('business_id', businessId);
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
+    registrarAuditoria(businessId, 'editar', 'Proveedores', `Ocultó del catálogo a «${nombre}» (con historial)`);
+    toast('Proveedor oculto del catálogo.'); renderProveedoresCatList(businessId); return;
+  }
+  if (!confirm(`¿Eliminar a «${nombre}»? No tiene facturas ni pólizas; esta acción no se puede deshacer.`)) return;
+  const { error } = await sb.from('fz_proveedores_catalogo').delete().eq('id', p.id).eq('business_id', businessId);
+  if (error) {   // algo más lo usa (CFDI, etc.): se oculta en lugar de borrar
+    const r2 = await sb.from('fz_proveedores_catalogo').update({ activo: false }).eq('id', p.id).eq('business_id', businessId);
+    if (r2.error) { toast('Error: ' + r2.error.message, 'error'); return; }
+    registrarAuditoria(businessId, 'editar', 'Proveedores', `Ocultó del catálogo a «${nombre}» (otros registros lo usan)`);
+    toast('Tiene otros registros ligados: se ocultó del catálogo en lugar de borrarse.'); renderProveedoresCatList(businessId); return;
+  }
+  registrarAuditoria(businessId, 'eliminar', 'Proveedores', `Eliminó del catálogo a «${nombre}» (sin movimientos)`);
+  toast('Proveedor eliminado.'); renderProveedoresCatList(businessId);
+}
+let STATE_provCatEditando = null;   // 06.32: id del proveedor que se está editando en el catálogo
 let STATE_provCatLista = []; // última lista cargada: el buscador la filtra sin volver a consultar la base
 async function renderProveedoresCatList(businessId) { STATE_provCatLista = await loadProveedoresCatalogo(businessId); pintarProveedoresCatList(businessId); }
 function pintarProveedoresCatList(businessId) {
@@ -13999,11 +14048,38 @@ function pintarProveedoresCatList(businessId) {
   if (!provs.length) { box.innerHTML = `<div class="empty" style="padding:16px;">Aún no hay proveedores. Agrega el primero en «Agregar proveedor».</div>`; return; }
   if (!visibles.length) { box.innerHTML = `<div class="empty" style="padding:16px;">Sin resultados para «${revEsc(qTxt)}».</div>`; return; }
   // (ya no hay botón para quitar proveedores desde aquí: un proveedor repetido se resuelve con "Unificar duplicados" en Proveedores, que mueve sus facturas y no pierde nada)
-  box.innerHTML = visibles.map(p => `
+  box.innerHTML = visibles.map(p => {
+    if (STATE_provCatEditando === p.id) return `
+    <div class="provcat-item mcp-row mcp-row--edit" data-id="${p.id}">
+      <div class="mcp-edit-campos">
+        <label>Nombre comercial<input type="text" class="cell provcat-ed-nombre" value="${revEsc(p.nombre_comercial || p.nombre || '')}" autocomplete="off"></label>
+        <label>Razón social<input type="text" class="cell provcat-ed-razon" value="${revEsc(p.razon_social || '')}" autocomplete="off" placeholder="Opcional"></label>
+        <label>RFC (opcional)<input type="text" class="cell provcat-ed-rfc" value="${revEsc(provRfcValido(p.rfc) ? provRfc(p.rfc) : (p.rfc || ''))}" maxlength="13" autocomplete="off" placeholder="Vacío si no tiene"></label>
+      </div>
+      <div class="mcp-edit-acc"><button type="button" class="btn btn-gold btn-sm provcat-ed-guardar">Guardar</button><button type="button" class="btn btn-ghost btn-sm provcat-ed-cancelar">Cancelar</button></div>
+    </div>`;
+    return `
     <div class="provcat-item mcp-row" data-id="${p.id}">
       <div class="mcp-row-info"><strong>${revEsc(p.nombre_comercial || p.nombre)}</strong>${p.razon_social ? `<div class="mcp-razon">${revEsc(p.razon_social)}</div>` : ''}</div>
       <div class="provcat-rfc mcp-rfc">${provRfcValido(p.rfc) ? `<span style="color:var(--muted);">RFC:</span> <strong>${revEsc(provRfc(p.rfc))}</strong> <a href="#" class="provcat-rfc-edit" data-id="${p.id}" style="margin-left:6px;">cambiar</a>` : `<a href="#" class="provcat-rfc-edit" data-id="${p.id}" style="color:var(--red);">+ Agregar RFC</a>`}</div>
-    </div>`).join('');
+      <button type="button" class="cm-mas provcat-mas" data-id="${p.id}" aria-label="Acciones de ${revEsc(p.nombre_comercial || p.nombre)}" aria-haspopup="menu">⋯</button>
+    </div>`; }).join('');
+  box.querySelectorAll('.provcat-mas').forEach(btn => btn.addEventListener('click', () => {
+    const p = provs.find(x => x.id === btn.dataset.id); if (!p) return;
+    cmAbrirMenu(btn, [
+      { txt: 'Editar', fn: () => { STATE_provCatEditando = p.id; pintarProveedoresCatList(businessId); const f = document.querySelector('.provcat-ed-nombre'); if (f) { f.focus(); f.select(); } } },
+      { txt: 'Eliminar…', peligro: true, fn: () => provCatEliminar(businessId, p) },
+    ]);
+  }));
+  const edNombre = box.querySelector('.provcat-ed-nombre');
+  if (edNombre) {
+    const fila = edNombre.closest('.provcat-item'), p = provs.find(x => x.id === fila.dataset.id);
+    const cancelar = () => { STATE_provCatEditando = null; pintarProveedoresCatList(businessId); };
+    fila.querySelector('.provcat-ed-cancelar').addEventListener('click', cancelar);
+    fila.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); cancelar(); } else if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); fila.querySelector('.provcat-ed-guardar').click(); } });
+    fila.querySelector('.provcat-ed-guardar').addEventListener('click', () => provCatGuardarEdicion(businessId, p, provs, fila));
+    try { fila.scrollIntoView({ block: 'nearest' }); } catch (_) { /* sin scroll */ }
+  }
   box.querySelectorAll('.provcat-rfc-edit').forEach(a => a.addEventListener('click', (ev) => {
     ev.preventDefault();
     const p = provs.find(x => x.id === a.dataset.id), cont = a.closest('.provcat-rfc');
@@ -18932,6 +19008,7 @@ async function renderProveedorDetalle(el, b) {
         <div><h3>${escHtml(nombre)}</h3>${rfcProv === null ? '' : `<div class="hint" style="margin-top:2px;">RFC: ${rfcProv ? escHtml(rfcProv) : '<span style="color:var(--red);">sin registrar</span>'}</div>`}</div>
         <div style="display:flex;gap:8px;align-items:center;">
           <span class="hint">Todas las transacciones, más reciente primero</span>
+          ${catMatch && provVisibleEnCatalogo(catMatch) ? '<button class="btn btn-ghost btn-sm" id="provDetalleEditar" title="Cambiar nombre, razón social o RFC del proveedor">Editar proveedor</button>' : ''}
           <button class="btn btn-ghost btn-sm" id="provDetalleNuevaFactura">+ Nueva factura</button>
           <button class="btn btn-ghost btn-sm" id="provDetalleNotaCredito">+ Nota de crédito</button>
           <button class="btn btn-gold btn-sm" id="provDetalleRegistrarPago">Registrar pago</button>
@@ -18959,6 +19036,7 @@ async function renderProveedorDetalle(el, b) {
     </div>
   `;
   document.getElementById('provDetalleVolver').addEventListener('click', () => { STATE_provVista = 'directorio'; renderProveedores(); });
+  { const eb = document.getElementById('provDetalleEditar'); if (eb) eb.addEventListener('click', () => { STATE_provCatEditando = catMatch.id; openProveedoresCatModal(b.id, renderProveedores); }); }
   document.getElementById('provDetalleNuevaFactura').addEventListener('click', async () => {
     const opcionesPagoDesde = await construirOpcionesPagoDesde(b.id);
     await openModalFacturaProveedor(null, b.id, catalogo, opcionesPagoDesde, primeraFactura?.proveedor_id || null);
@@ -26860,7 +26938,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.31';
+const APP_VERSION = '2026-11-06.32';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.

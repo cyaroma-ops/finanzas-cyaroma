@@ -1422,6 +1422,14 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 .fac-buscar-inp{flex:1 1 260px;max-width:460px;border:1.5px solid var(--line);border-radius:9px;padding:8px 12px;font-size:13.5px;background:#fff;}
 .fac-buscar-inp:focus{outline:none;border-color:var(--navy-3);box-shadow:0 0 0 3px rgba(26,79,138,.12);}
 .fac-buscar-info{font-size:12px;color:var(--muted);}
+/* ===== 06.32 — Editar proveedor en el catálogo ===== */
+#modalProveedoresCat .mcp-row--edit{flex-direction:column;align-items:stretch;background:#f7f9fc;gap:8px;}
+#modalProveedoresCat .mcp-edit-campos{display:grid;grid-template-columns:1.3fr 1.3fr 150px;gap:8px;}
+#modalProveedoresCat .mcp-edit-campos label{display:flex;flex-direction:column;gap:3px;font-size:10.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);}
+#modalProveedoresCat .mcp-edit-campos input.cell{font-size:13px;text-transform:none;letter-spacing:0;font-weight:400;}
+#modalProveedoresCat .mcp-edit-acc{display:flex;gap:8px;justify-content:flex-end;}
+#modalProveedoresCat .mcp-row .cm-mas{flex-shrink:0;align-self:center;}
+@media (max-width:700px){#modalProveedoresCat .mcp-edit-campos{grid-template-columns:1fr;}}
 </style>
 <style id="estiloModalProveedoresCat">
 /* ===== Modal «Catálogo de proveedores» — estilos acotados a ESTE modal (ningún otro modal cambia) ===== */
@@ -3948,7 +3956,7 @@ Transacciones recurrentes
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-06.31"></script>
+<script src="/app.js?v=2026-11-06.32"></script>
 <div id="alertasPanel" class="alertas-panel" role="dialog" aria-label="Alertas de la Revisión de consistencia" hidden></div>
 </body>
 </html>
