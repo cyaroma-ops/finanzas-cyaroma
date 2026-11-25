@@ -17610,6 +17610,37 @@ async function getMonedaLedgerRows(businessId, moneda, conceptosEfectivo, mesFil
   return { saldoApertura, rows: delMes };
 }
 
+// ===== 06.34 — Efectivo: «Liquidez» en tres cifras (Pesos · Divisas en pesos · Total) en lugar de una tabla larga =====
+// Solo presentación. El total es el mismo del resumen anterior (cajas × su TC de reporte + saldos de bancos). Una cuenta de banco en divisa se convierte con el TC de la caja de esa misma divisa (si no hay, queda a 1.00, como antes).
+function efectivoLiquidezCalcular(monedasConSaldo, bancosConSaldo) {
+  const esDivisaCaja = m => codigoMonedaDeCaja(m.nombre, m.tc_reporte) !== 'MXN';
+  const tcDeDivisa = (cod) => { const c = monedasConSaldo.find(m => m.activo !== false && codigoMonedaDeCaja(m.nombre, m.tc_reporte) === cod); return c ? (Number(c.tc_reporte) || 1) : 1; };
+  const cajasPesos = monedasConSaldo.filter(m => m.activo !== false && !esDivisaCaja(m));
+  const cajasDivisa = monedasConSaldo.filter(m => esDivisaCaja(m) && (m.activo !== false || Math.abs(Number(m.saldo) || 0) > 0.004));
+  const bancosPesos = bancosConSaldo.filter(c => c.activo !== false && (c.moneda || 'MXN') === 'MXN');
+  const bancosDivisa = bancosConSaldo.filter(c => c.activo !== false && (c.moneda || 'MXN') !== 'MXN').map(c => ({ ...c, tc: tcDeDivisa(c.moneda), eq: (Number(c.saldo) || 0) * tcDeDivisa(c.moneda) }));
+  const pesosEfectivo = cajasPesos.reduce((s, m) => s + m.pesoEquiv, 0), pesosBancos = bancosPesos.reduce((s, c) => s + c.saldo, 0);
+  const divisasPesos = cajasDivisa.filter(m => m.activo !== false).reduce((s, m) => s + m.pesoEquiv, 0) + bancosDivisa.reduce((s, c) => s + c.eq, 0);
+  const pesos = pesosEfectivo + pesosBancos;
+  return { cajasDivisa, bancosDivisa, pesosEfectivo, pesosBancos, pesos, divisasPesos, total: pesos + divisasPesos };
+}
+function efectivoLiquidezHtml(b, monedasConSaldo, bancosConSaldo) {
+  const r = efectivoLiquidezCalcular(monedasConSaldo, bancosConSaldo);
+  const lineasDivisa = r.cajasDivisa.map(m => { const cod = codigoMonedaDeCaja(m.nombre, m.tc_reporte); return `<div class="liq-linea${m.activo === false ? ' liq-inactiva' : ''}">
+      <span>${escHtml(m.nombre)}${m.activo === false ? ' (inactiva)' : ''}</span>
+      <span class="num">${fmtMon(m.saldo, cod)} × <input class="cell tc-reporte-cell" type="text" inputmode="decimal" value="${m.tc_reporte}" data-id="${m.id}" aria-label="Tipo de cambio de ${escAttr(m.nombre)}"> = <strong>${fmt(m.pesoEquiv)}</strong></span></div>`; }).join('')
+    + r.bancosDivisa.map(c => `<div class="liq-linea"><span>Banco — ${escHtml(c.nombre)}</span><span class="num">${fmtMon(c.saldo, c.moneda)} × ${fmtNum(c.tc)} = <strong>${fmt(c.eq)}</strong></span></div>`).join('');
+  return `
+    <div class="card liq-resumen">
+      <div class="card-head"><h3>Liquidez — ${escHtml(b.name)}</h3><span class="hint">Al día de hoy · edita el TC si cambió</span></div>
+      <div class="liq-grid">
+        <div class="liq-kpi"><div class="label">Pesos</div><div class="value num">${fmt(r.pesos)}</div><div class="liq-sub">Efectivo ${fmt(r.pesosEfectivo)} · Bancos ${fmt(r.pesosBancos)}</div></div>
+        <div class="liq-kpi"><div class="label">Divisas (en pesos)</div><div class="value num">${fmt(r.divisasPesos)}</div>${lineasDivisa ? `<div class="liq-divisas">${lineasDivisa}</div>` : '<div class="liq-sub">Sin cajas en divisa</div>'}</div>
+        <div class="liq-kpi liq-total"><div class="label">Liquidez total (efectivo + bancos)</div><div class="value num" style="color:var(--green);">${fmt(r.total)}</div><div class="liq-sub">Pesos + divisas al TC de arriba</div></div>
+      </div>
+    </div>`;
+}
+
 async function renderEfectivo() {
   const el = document.getElementById('sec-efectivo');
   const b = biz();
@@ -17633,7 +17664,7 @@ async function renderEfectivo() {
   const bancosConSaldo = [];
   for (const c of cuentas) {
     const saldo = await computeBancoSaldo(b.id, c, conceptosTarjetas);
-    bancosConSaldo.push({ nombre: c.nombre, saldo, activo: c.activo !== false });
+    bancosConSaldo.push({ nombre: c.nombre, saldo, activo: c.activo !== false, moneda: c.moneda || 'MXN' });
   }
 
   const totalMonedas = monedasConSaldo.filter(m => m.activo !== false).reduce((s, m) => s + m.pesoEquiv, 0);
@@ -17643,25 +17674,7 @@ async function renderEfectivo() {
   navResolverCuenta('efectivo', monedasConSaldo); if (!STATE_monedaAbierta && monedasConSaldo.length) STATE_monedaAbierta = monedasConSaldo[0].id; navSincronizarRender();
 
   el.innerHTML = `
-    <div class="card">
-      <div class="card-head"><h3>Resumen de liquidez — ${escHtml(b.name)}</h3><span class="hint">Al día de hoy · edita el TC si cambió</span></div>
-      <table>
-        <tbody>
-          ${monedasConSaldo.map(m => `<tr>
-            <td>${escHtml(m.nombre)}${m.activo===false?' (inactiva)':''}</td>
-            <td class="num">${fmtNum(m.saldo)}</td>
-            <td class="num"><input class="cell tc-reporte-cell" type="text" inputmode="decimal" value="${m.tc_reporte}" data-id="${m.id}" style="width:75px;color:var(--muted);"></td>
-            <td class="num" style="font-weight:700;">${fmt(m.pesoEquiv)}</td>
-          </tr>`).join('')}
-          ${bancosConSaldo.map(c => `<tr>
-            <td>Banco — ${escHtml(c.nombre)}${c.activo===false?' (inactiva)':''}</td>
-            <td class="num">—</td><td class="num">—</td>
-            <td class="num" style="font-weight:700;">${fmt(c.saldo)}</td>
-          </tr>`).join('')}
-          <tr class="total-row"><td>TOTAL (efectivo + bancos)</td><td></td><td></td><td class="num">${fmt(totalGeneral)}</td></tr>
-        </tbody>
-      </table>
-    </div>
+    ${efectivoLiquidezHtml(b, monedasConSaldo, bancosConSaldo)}
 
     <div class="card">
       <div class="card-head">
@@ -26946,7 +26959,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.33';
+const APP_VERSION = '2026-11-06.34';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
