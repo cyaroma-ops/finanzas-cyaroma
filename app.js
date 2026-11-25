@@ -26813,7 +26813,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.29';
+const APP_VERSION = '2026-11-06.30';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
@@ -28755,6 +28755,7 @@ function refrescarFilaPolizaEnSitio(wrap, lineaId) {
   const label = labelDeLineaPoliza(catalogoCuentasUnificado(STATE_polizaBorrador.catalogos), l);
   wrap.querySelectorAll('[data-id]').forEach(el => { if (el.dataset.id !== lineaId) return; const f = el.dataset.field;
     if (f === 'cuenta') { el.value = label; el.title = label; } else if (f === 'cargo' || f === 'abono') el.value = fmtInputVal(l[f]); else if (f === 'proveedor') el.value = l.proveedor || ''; });
+  pzActualizarSubfila(wrap, lineaId);
 }
 const ligarUnaVez = (el, tipo, fn) => { const k = 'lig_' + tipo; if (!el || el.dataset[k]) return; el.dataset[k] = '1'; el.addEventListener(tipo, fn); };   // lo que se conserva entre redibujados no debe enlazarse dos veces
 
@@ -28796,11 +28797,59 @@ function renderizarBorradorPoliza() {
   }
 }
 
+// ===== 06.30 — Editor de pólizas: «Factura / referencia» en el encabezado y proveedor/referencia por partida como etiquetas =====
+// Solo presentación y captura: las partidas se guardan con los mismos campos de siempre (proveedor, referencia, descripción…). El encabezado NO se guarda por separado: solo copia su valor a las partidas
+// que estén vacías o que todavía tengan el valor anterior del encabezado; una partida con otro valor propio nunca se toca. Al abrir una póliza existente no se modifica ninguna partida.
+function pzRefEncInicial(lineas) {
+  const vals = (lineas || []).map(l => String(l.referencia || ''));
+  if (!vals.length) return { ref: '', varias: false };
+  return vals.every(v => v === vals[0]) ? { ref: vals[0], varias: false } : { ref: '', varias: true };
+}
+function pzSubfilaHtml(l, refEnc) {
+  const auto = l.cuenta_tipo === 'proveedor' || l.cuenta_tipo === 'proveedor_provision' || l.cuenta_tipo === 'cliente';
+  const rotulo = l.cuenta_tipo === 'cliente' ? 'Cliente' : 'Proveedor';
+  const prov = String(l.proveedor || '').trim()
+    ? `<button type="button" class="pz-chip ${auto ? 'pz-chip-auto' : ''}" data-id="${l.id}" data-field="proveedor" title="${auto ? 'Viene de la cuenta elegida. ' : ''}Clic para cambiarlo solo en esta partida">${rotulo}: ${escHtml(l.proveedor)}</button>`
+    : `<button type="button" class="pz-chip pz-chip-add" data-id="${l.id}" data-field="proveedor" title="Anotar a quién corresponde (opcional)">+ Proveedor</button>`;
+  const ref = String(l.referencia || '').trim()
+    ? `<button type="button" class="pz-chip ${String(l.referencia || '') !== String(refEnc || '') ? 'pz-chip-dif' : ''}" data-id="${l.id}" data-field="referencia" title="Clic para cambiar la referencia solo de esta partida">Ref.: ${escHtml(l.referencia)}</button>`
+    : `<button type="button" class="pz-chip pz-chip-add" data-id="${l.id}" data-field="referencia" title="Referencia o factura de esta partida (opcional)">+ Ref.</button>`;
+  return prov + ref;
+}
+function pzActualizarSubfila(wrap, lineaId) {
+  const b = STATE_polizaBorrador; if (!b || !wrap) return;
+  const l = b.lineas.find(x => x.id === lineaId); if (!l) return;
+  wrap.querySelectorAll('.pz-sub').forEach(el => { if (el.dataset.sub === lineaId && !el.querySelector('.pz-chip-input')) el.innerHTML = pzSubfilaHtml(l, b.refEnc); });
+}
+function pzAplicarRefEncabezado(wrap, nuevo) {
+  const b = STATE_polizaBorrador; if (!b) return;
+  const prev = String(b.refEnc || ''); nuevo = String(nuevo || ''); b.refEnc = nuevo; if (nuevo === prev) return;
+  b.lineas.forEach(l => { const v = String(l.referencia || ''); if (v === '' || v === prev) l.referencia = nuevo; });
+  b.lineas.forEach(l => pzActualizarSubfila(wrap, l.id));
+}
+function pzCablearChips(wrap) {
+  if (wrap.dataset.pzChips) return; wrap.dataset.pzChips = '1';
+  wrap.addEventListener('click', (e) => {
+    const chip = e.target.closest && e.target.closest('.pz-chip'); if (!chip || !wrap.contains(chip)) return;
+    const b = STATE_polizaBorrador; if (!b) return;
+    const l = b.lineas.find(x => x.id === chip.dataset.id); if (!l) return;
+    const campo = chip.dataset.field, sub = chip.closest('.pz-sub');
+    const inp = document.createElement('input'); inp.type = 'text'; inp.className = 'pz-chip-input'; inp.value = l[campo] || '';
+    inp.placeholder = campo === 'proveedor' ? 'Proveedor' : 'Referencia / factura'; inp.setAttribute('enterkeyhint', 'done');
+    let listo = false;
+    const cerrar = (guardar) => { if (listo) return; listo = true; if (guardar && STATE_polizaBorrador === b) l[campo] = inp.value.trim(); if (inp.parentNode) inp.remove(); if (sub) sub.innerHTML = pzSubfilaHtml(l, b.refEnc); };
+    inp.addEventListener('blur', () => cerrar(true));
+    inp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); ev.stopPropagation(); cerrar(true); } else if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); cerrar(false); } });
+    chip.replaceWith(inp); inp.focus(); inp.select();
+  });
+}
+
 function polizaCardHtmlBorrador(borrador) {
   const { poliza: p, lineas: lineasPoliza, catalogos } = borrador;
   const { totalCargo, totalAbono, diff, cuadrada } = totalesPolizaBorrador(lineasPoliza);
   const catalogoItems = catalogoCuentasUnificado(catalogos);
   const labelDeLinea = (l) => labelDeLineaPoliza(catalogoItems, l);
+  if (borrador.refEnc === undefined) { const ri = pzRefEncInicial(lineasPoliza); borrador.refEnc = ri.ref; borrador.refEncVarias = ri.varias; }
 
   let adjuntoHtml, hayPendientesNueva = false;
   if (borrador.esNueva) {
@@ -28821,6 +28870,7 @@ function polizaCardHtmlBorrador(borrador) {
         </div>
         <label class="pz-campo pz-fecha"><span>Fecha</span><input class="cell poliza-cell" type="date" value="${p.fecha}" data-field="fecha"></label>
         <label class="pz-campo pz-concepto"><span>Concepto general</span><input class="cell poliza-cell" type="text" placeholder="Ej. Pago a proveedor, gasto de la semana…" value="${escAttr(p.concepto || '')}" data-field="concepto" enterkeyhint="next"></label>
+        <label class="pz-campo pz-ref"><span>Factura / referencia</span><input class="cell poliza-cell" type="text" placeholder="${borrador.refEncVarias ? 'Varias (por partida)' : 'Ej. FXA-1250'}" value="${escAttr(borrador.refEnc || '')}" data-field="__ref" enterkeyhint="next"></label>
         <button type="button" class="pz-ampliar poliza-ampliar" title="Ampliar o reducir la ventana" aria-label="Ampliar ventana">⤢</button>
       </div>
       <div class="doc-workspace" id="polWorkspace">
@@ -28828,19 +28878,17 @@ function polizaCardHtmlBorrador(borrador) {
       <div class="pz-soporte"><div class="pz-soporte-tit">Documentos de soporte</div>${adjuntoHtml}</div>
       <div class="table-wrap scroll-sticky">
         <table class="pz-tabla">
-          <thead><tr><th>Cuenta</th><th>Proveedor</th><th>Referencia/Factura</th><th>Descripción</th><th>Cargo</th><th>Abono</th><th></th></tr></thead>
+          <thead><tr><th>Cuenta contable</th><th>Descripción</th><th>Cargo</th><th>Abono</th><th></th></tr></thead>
           <tbody>
             ${lineasPoliza.map(l => `<tr>
-              <td data-label="Cuenta"><input class="cell linea-cuenta-buscar" autocomplete="off" placeholder="Escribe para buscar…" value="${escAttr(labelDeLinea(l))}" title="${escAttr(labelDeLinea(l))}" data-id="${l.id}" data-field="cuenta" enterkeyhint="next"></td>
-              <td data-label="Proveedor"><input class="cell linea-cell" type="text" value="${escAttr(l.proveedor || '')}" placeholder="Nombre (opcional)" data-id="${l.id}" data-field="proveedor" enterkeyhint="next"></td>
-              <td data-label="Referencia / Factura"><input class="cell linea-cell" type="text" value="${escAttr(l.referencia || '')}" data-id="${l.id}" data-field="referencia" enterkeyhint="next"></td>
+              <td data-label="Cuenta"><input class="cell linea-cuenta-buscar" autocomplete="off" placeholder="Escribe para buscar…" value="${escAttr(labelDeLinea(l))}" title="${escAttr(labelDeLinea(l))}" data-id="${l.id}" data-field="cuenta" enterkeyhint="next"><div class="pz-sub" data-sub="${l.id}">${pzSubfilaHtml(l, borrador.refEnc)}</div></td>
               <td data-label="Descripción"><input class="cell linea-cell" type="text" value="${escAttr(l.descripcion || '')}" data-id="${l.id}" data-field="descripcion" enterkeyhint="next"></td>
               <td data-label="Cargo"><input class="cell linea-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(l.cargo)}" data-id="${l.id}" data-field="cargo" enterkeyhint="next"></td>
               <td data-label="Abono"><input class="cell linea-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(l.abono)}" data-id="${l.id}" data-field="abono" enterkeyhint="next"></td>
               <td class="pz-del"><button class="row-del linea-del" tabindex="-1" title="Quitar línea" data-id="${l.id}">✕</button></td>
             </tr>`).join('')}
             <tr class="total-row">
-              <td colspan="4">Totales</td>
+              <td colspan="2">Totales</td>
               <td class="num">${fmt(totalCargo)}</td>
               <td class="num">${fmt(totalAbono)}</td>
               <td></td>
@@ -29067,9 +29115,10 @@ function wireBorradorPolizaHandlers(wrap) {
   const b = STATE_polizaBorrador;   // cada manejador se ignora si el borrador ya no es este: un campo viejo que se reemplaza con el cursor dentro dispara un «cambió» tardío y, sin esta guarda, escribía su valor en el borrador NUEVO
   // La fecha y el concepto no cambian nada más del editor: se guardan SIN redibujar. Antes se redibujaba todo el editor en cada cambio, y como el campo de fecha da por válido el valor al teclear el día,
   // se reemplazaba el campo y se perdía el cursor (había que volver a hacer clic para seguir con el mes y el año).
-  wrap.querySelectorAll('.poliza-cell').forEach(inp => { const guardar = () => { if (STATE_polizaBorrador !== b) return; STATE_polizaBorrador.poliza[inp.dataset.field] = inp.value; }; ligarUnaVez(inp, 'input', guardar); ligarUnaVez(inp, 'change', guardar); });
+  wrap.querySelectorAll('.poliza-cell').forEach(inp => { const guardar = () => { if (STATE_polizaBorrador !== b) return; if (inp.dataset.field === '__ref') { pzAplicarRefEncabezado(wrap, inp.value); return; } STATE_polizaBorrador.poliza[inp.dataset.field] = inp.value; }; ligarUnaVez(inp, 'input', guardar); ligarUnaVez(inp, 'change', guardar); });
   // Teclado del editor (se enlaza una sola vez: el contenedor se conserva). Entre las celdas de la TABLA ya avanza el Enter global de la app (hoja de cálculo; ver arriba, «Enter avanza a la siguiente celda»):
   // lo que lo rompía era el redibujado, que destruía la celda destino. Aquí solo se cubre la CABECERA (fecha → concepto → primera cuenta), que está fuera de la tabla, y se recuerda la última tecla para saber cómo se salió de la cuenta.
+  pzCablearChips(wrap);
   if (!wrap.dataset.tecladoPoliza) {
     wrap.dataset.tecladoPoliza = '1';
     wrap.addEventListener('mousedown', () => { wrap._ultimaTecla = null; });
@@ -29098,7 +29147,7 @@ function wireBorradorPolizaHandlers(wrap) {
     const linea = STATE_polizaBorrador.lineas.find(l => l.id === inp.dataset.id);
     if (!linea) return;
     // se actualiza SOLO esta fila y los totales; si la cuenta se eligió de la lista o con Enter, el cursor pasa a «Proveedor» (con Tab o clic lo mueve el navegador)
-    const terminar = (avanzar) => { refrescarFilaPolizaEnSitio(wrap, inp.dataset.id); actualizarTotalesPolizaEnSitio(wrap); if (avanzar && (inp._porLista || wrap._ultimaTecla === 'Enter')) { const sig = wrap.querySelector(`.linea-cell[data-id="${inp.dataset.id}"][data-field="proveedor"]`); if (sig) { sig.focus(); if (sig.select) sig.select(); } } inp._porLista = false; };
+    const terminar = (avanzar) => { refrescarFilaPolizaEnSitio(wrap, inp.dataset.id); actualizarTotalesPolizaEnSitio(wrap); if (avanzar && (inp._porLista || wrap._ultimaTecla === 'Enter')) { const sig = wrap.querySelector(`.linea-cell[data-id="${inp.dataset.id}"][data-field="descripcion"]`); if (sig) { sig.focus(); if (sig.select) sig.select(); } } inp._porLista = false; };
     const catalogoItems = catalogoCuentasUnificado(STATE_polizaBorrador.catalogos);
     const texto = inp.value.trim();
     if (!texto) { linea.cuenta_tipo = 'subcuenta'; linea.subcuenta_id = null; linea.cuenta_ref_id = null; linea.proveedor_factura_id = null; linea.cliente_factura_id = null; terminar(false); return; }
@@ -29141,7 +29190,7 @@ function wireBorradorPolizaHandlers(wrap) {
   const addBtn = wrap.querySelector('.addLineaBtn');
   if (addBtn) addBtn.addEventListener('click', () => {
     const siguienteOrden = Math.max(-1, ...STATE_polizaBorrador.lineas.map(l => l.orden || 0)) + 1;
-    STATE_polizaBorrador.lineas.push({ id: 'tmp_' + Date.now() + '_' + Math.random().toString(36).slice(2,6), subcuenta_id: null, cuenta_tipo: 'subcuenta', cuenta_ref_id: null, cargo: 0, abono: 0, descripcion: '', referencia: '', orden: siguienteOrden });
+    STATE_polizaBorrador.lineas.push({ id: 'tmp_' + Date.now() + '_' + Math.random().toString(36).slice(2,6), subcuenta_id: null, cuenta_tipo: 'subcuenta', cuenta_ref_id: null, cargo: 0, abono: 0, descripcion: '', referencia: STATE_polizaBorrador.refEnc || '', orden: siguienteOrden });
     renderizarBorradorPoliza();
   });
   const guardarBtn = wrap.querySelector('.poliza-guardar');

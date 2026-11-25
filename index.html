@@ -792,7 +792,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 .cm-nota{font-size:11.5px;color:var(--muted);margin:10px 0 0;}
 /* 06.11 — Editor de pólizas de diario (solo presentación) */
 #modalPolizaBody .card{padding:16px 18px 0;}
-.pz-head{display:grid!important;grid-template-columns:auto 170px minmax(220px,1fr) auto;align-items:end;gap:10px 14px;margin:0 36px 12px 0!important;padding-bottom:12px;border-bottom:1px solid var(--line);}
+.pz-head{display:grid!important;grid-template-columns:auto 150px minmax(200px,1.5fr) minmax(150px,.9fr) auto;align-items:end;gap:10px 14px;margin:0 36px 12px 0!important;padding-bottom:12px;border-bottom:1px solid var(--line);}
 .pz-titulo{display:flex;flex-direction:column;gap:2px;padding-bottom:6px;}
 .pz-num{font-family:'Cormorant Garamond',serif;font-size:22px;font-weight:700;color:var(--navy-1);line-height:1.1;}
 .pz-prov{font-size:11px;color:var(--muted);}
@@ -812,7 +812,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 .pz-tabla input.cell{border:1.5px solid var(--line);background:#fff;padding:8px 10px;border-radius:8px;min-width:0;}
 .pz-tabla input.cell:hover{border-color:#c6d0e0;}
 .pz-tabla input.cell:focus{border-color:var(--navy-3);box-shadow:0 0 0 3px rgba(26,79,138,.12);}
-.pz-tabla td:nth-child(1){width:34%;}.pz-tabla td:nth-child(2){width:15%;}.pz-tabla td:nth-child(3){width:13%;}.pz-tabla td:nth-child(5),.pz-tabla td:nth-child(6){width:118px;}.pz-tabla td.pz-del{width:34px;text-align:center;}
+.pz-tabla td:nth-child(1){width:56%;}.pz-tabla td:nth-child(2){width:20%;}.pz-tabla td:nth-child(3),.pz-tabla td:nth-child(4){width:112px;}.pz-tabla td.pz-del{width:34px;text-align:center;}
 .pz-tabla .total-row{display:none;}
 .poliza-barra{flex-shrink:0;position:sticky;bottom:0;z-index:5;display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin:10px -18px 0;padding:12px 18px;background:#fff;border-top:2px solid var(--line);box-shadow:0 -6px 16px rgba(10,31,61,.07);border-radius:0 0 12px 12px;}
 .pb-tot{display:flex;flex-direction:column;gap:1px;}
@@ -824,7 +824,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 @media (max-width:880px){
   .pz-head{grid-template-columns:1fr 1fr;}
   .pz-titulo{grid-column:1/-1;}
-  .pz-concepto{grid-column:1/-1;}
+  .pz-concepto,.pz-ref{grid-column:1/-1;}
   .pz-ampliar{display:none;}
   .pz-soporte{max-width:none;}
   .pz-tabla thead{display:none;}
@@ -832,7 +832,7 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   .pz-tabla tbody tr:not(.total-row){display:grid;grid-template-columns:1fr 1fr;gap:8px;border:1.5px solid var(--line);border-radius:12px;padding:10px;margin-bottom:10px;position:relative;background:#fbfcfe;}
   .pz-tabla tbody tr:not(.total-row) td{display:block;width:auto!important;padding:0;}
   .pz-tabla td::before{content:attr(data-label);display:block;font-size:10.5px;font-weight:700;color:var(--muted);margin-bottom:2px;}
-  .pz-tabla td:nth-child(1),.pz-tabla td:nth-child(4){grid-column:1/-1;}
+  .pz-tabla td:nth-child(1),.pz-tabla td:nth-child(2){grid-column:1/-1;}
   .pz-tabla td.pz-del{position:absolute;top:2px;right:2px;}.pz-tabla td.pz-del::before{display:none;}
   .poliza-barra{gap:10px 14px;margin:10px -14px 0;padding:10px 14px;}
   .pb-acc{width:100%;margin-left:0;}.pb-acc .btn{flex:1;}
@@ -1405,6 +1405,14 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 .dup-marca{margin-top:4px;font-size:11px;color:#8a5a00;background:#fff3d6;border-radius:6px;padding:2px 6px;display:inline-block;}
 .dup-banner{display:flex;align-items:center;justify-content:space-between;gap:12px;background:#fff6dd;border:1px solid #f0dc9c;color:#6b4e00;font-size:13px;padding:10px 14px;border-radius:10px;margin:0 0 14px;flex-wrap:wrap;}
 @media (max-width:700px){.dup-par-cols{grid-template-columns:1fr;}}
+/* ===== 06.30 — Póliza: referencia en el encabezado y etiquetas por partida ===== */
+.pz-sub{display:flex;flex-wrap:wrap;gap:4px;margin:3px 0 2px 2px;align-items:center;}
+.pz-chip{border:none;background:#eef1f6;color:#4b5a73;font-size:11px;line-height:1.3;padding:2px 8px;border-radius:6px;cursor:pointer;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:inherit;}
+.pz-chip:hover{background:#e0e7f2;}
+.pz-chip-auto{background:#e6f0fb;color:#1a4f8a;}
+.pz-chip-dif{background:#fff3d6;color:#8a5a00;}
+.pz-chip-add{background:transparent;color:#8a97ab;border:1px dashed #cfd7e4;}
+.pz-chip-input{font-size:12px;padding:3px 8px;border:1.5px solid var(--navy-3);border-radius:6px;min-width:150px;max-width:100%;background:#fff;}
 </style>
 <style id="estiloModalProveedoresCat">
 /* ===== Modal «Catálogo de proveedores» — estilos acotados a ESTE modal (ningún otro modal cambia) ===== */
@@ -3931,7 +3939,7 @@ Transacciones recurrentes
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-06.29"></script>
+<script src="/app.js?v=2026-11-06.30"></script>
 <div id="alertasPanel" class="alertas-panel" role="dialog" aria-label="Alertas de la Revisión de consistencia" hidden></div>
 </body>
 </html>
