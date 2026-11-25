@@ -1413,6 +1413,15 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 .pz-chip-dif{background:#fff3d6;color:#8a5a00;}
 .pz-chip-add{background:transparent;color:#8a97ab;border:1px dashed #cfd7e4;}
 .pz-chip-input{font-size:12px;padding:3px 8px;border:1.5px solid var(--navy-3);border-radius:6px;min-width:150px;max-width:100%;background:#fff;}
+/* ===== 06.31 — Orden por columna y buscador de facturas ===== */
+.th-ord{cursor:pointer;user-select:none;white-space:nowrap;}
+.th-ord:hover{color:var(--navy-1);}
+.th-ord .fl{font-size:9px;margin-left:5px;color:#a3aec0;}
+.th-ord.act,.th-ord.act .fl{color:var(--navy-1);}
+.fac-buscar{display:flex;align-items:center;gap:10px;margin:2px 0 10px;flex-wrap:wrap;}
+.fac-buscar-inp{flex:1 1 260px;max-width:460px;border:1.5px solid var(--line);border-radius:9px;padding:8px 12px;font-size:13.5px;background:#fff;}
+.fac-buscar-inp:focus{outline:none;border-color:var(--navy-3);box-shadow:0 0 0 3px rgba(26,79,138,.12);}
+.fac-buscar-info{font-size:12px;color:var(--muted);}
 </style>
 <style id="estiloModalProveedoresCat">
 /* ===== Modal «Catálogo de proveedores» — estilos acotados a ESTE modal (ningún otro modal cambia) ===== */
@@ -3939,7 +3948,7 @@ Transacciones recurrentes
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-06.30"></script>
+<script src="/app.js?v=2026-11-06.31"></script>
 <div id="alertasPanel" class="alertas-panel" role="dialog" aria-label="Alertas de la Revisión de consistencia" hidden></div>
 </body>
 </html>

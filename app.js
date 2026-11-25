@@ -18315,6 +18315,7 @@ async function renderProveedores() {
       <div class="tag-row">
         ${['Pendiente','Todos','Pagado'].map(f => `<div class="tag prov-tab ${STATE_provFiltro===f?'active':''}" data-f="${f}">${f}</div>`).join('')}
       </div>
+      ${facBuscarHtml('provFacBuscar', STATE_provFacBusqueda, 'Buscar en estas facturas: proveedor, factura, folio, importe…')}
       <div class="table-wrap scroll-sticky">
         <table class="tabla-operativa tabla-operativa--scroll">
           <thead><tr><th>Fecha</th><th>Folio</th><th>No. Factura</th><th>Proveedor</th><th>Moneda</th><th>TC</th><th>Total</th><th>Pagado</th><th>Saldo</th><th>Vencimiento</th><th>Días retraso</th><th>Desglose</th><th>Estatus</th><th>Fecha pago</th><th>Pagado desde</th><th>Adjunto</th><th></th></tr></thead>
@@ -18341,6 +18342,7 @@ async function renderProveedores() {
     STATE_provExpandido = STATE_provExpandido === tr.dataset.prov ? null : tr.dataset.prov;
     renderProveedores();
   }));
+  facBuscarCablear(el, 'provFacBuscar', () => STATE_provFacBusqueda, v => { STATE_provFacBusqueda = v; }, () => STATE_provFiltro !== 'Todos' ? `Solo se busca en «${STATE_provFiltro}»; prueba en «Todos».` : '');
   wireInputsMoneda(el);
   el.querySelectorAll('.prov-cell').forEach(inp => {
     inp.addEventListener('change', async () => {
@@ -18594,6 +18596,42 @@ document.getElementById('cerrarModalPagosFactura').addEventListener('click', () 
   document.getElementById('modalPagosFactura').classList.remove('show');
 });
 
+// ===== 06.31 — Directorios: encabezados que ordenan, y buscador propio en las listas de Facturas =====
+// Solo presentación: ordenar y filtrar lo que ya está en pantalla. No cambia ningún dato ni cálculo.
+function thOrdHtml(col, label, st) {
+  const act = st.col === col;
+  return `<th class="th-ord ${act ? 'act' : ''}" data-ord="${col}" aria-sort="${act ? (st.dir === 'asc' ? 'ascending' : 'descending') : 'none'}" title="Clic para ordenar; otro clic invierte el orden">${label}<span class="fl">${act ? (st.dir === 'asc' ? '▲' : '▼') : '↕'}</span></th>`;
+}
+function ordenClicColumna(st, col, dirInicial) {   // misma columna: invierte; otra columna: empieza en su orden natural
+  if (st.col === col) st.dir = st.dir === 'asc' ? 'desc' : 'asc'; else { st.col = col; st.dir = dirInicial; }
+}
+let STATE_provDirOrden = { col: 'saldo', dir: 'desc' };   // por defecto: el que más se debe, primero (como siempre)
+function provDirComparar(a, b) {
+  const o = STATE_provDirOrden;
+  const k = { nombre: g => String(g.nombre || '').toLowerCase(), cantidad: g => g.cantidad, facturado: g => g.facMxn, pagado: g => g.pagMxn, saldo: g => g.pendienteMxn }[o.col] || (g => g.pendienteMxn);
+  const x = k(a), y = k(b); const r = typeof x === 'string' ? x.localeCompare(y, 'es') : x - y;
+  if (r !== 0) return o.dir === 'asc' ? r : -r;
+  return String(a.nombre || '').localeCompare(String(b.nombre || ''), 'es');
+}
+let STATE_cliDirOrden = { col: null, dir: 'desc' };   // null = lo decide el par de botones de siempre («por nombre» / «por saldo»)
+function busqNorm(t) { return String(t == null ? '' : t).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim(); }
+function busqImporte(n) { const v = Number(n) || 0, f = fmt(v); return f + ' ' + f.replace(/,/g, '') + ' ' + v.toFixed(2); }
+function provBusquedaTexto(p, nombreMostrado, saldo) { return busqNorm([nombreMostrado, p.proveedor, p.factura, p.folio ? '#' + p.folio + ' ' + p.folio : '', p.fecha, p.estatus, p.notas, p.concepto, p.referencia, busqImporte(p.importe), busqImporte(p.importe_pagado), busqImporte(saldo)].join(' ')); }
+function cliFacBusquedaTexto(f, nombres) { return busqNorm([nombres, f.numero_factura, f.folio ? '#' + f.folio + ' ' + f.folio : '', f.fecha, f.estatus, f.notas, f.folio_fiscal, busqImporte(f.total), busqImporte(f.importe_pagado), busqImporte(Math.max(0, (Number(f.total) || 0) - (Number(f.importe_pagado) || 0)))].join(' ')); }
+function facBuscarHtml(id, valor, placeholder) { return `<div class="fac-buscar"><input type="search" id="${id}" class="fac-buscar-inp" placeholder="${escAttr(placeholder)}" value="${escAttr(valor || '')}" autocomplete="off" aria-label="${escAttr(placeholder)}"><span class="fac-buscar-info"></span></div>`; }
+function facBuscarAplicar(cont, texto, pistaSinResultados) {
+  const toks = busqNorm(texto).split(' ').filter(Boolean), filas = [...cont.querySelectorAll('tr[data-q]')]; let n = 0;
+  filas.forEach(tr => { const ok = !toks.length || toks.every(t => tr.dataset.q.includes(t)); tr.style.display = ok ? '' : 'none'; if (ok) n++; });
+  const info = cont.querySelector('.fac-buscar-info'); if (info) info.textContent = !toks.length ? '' : (n ? `${n} de ${filas.length}` : ('Sin resultados' + (pistaSinResultados ? '. ' + pistaSinResultados : '')));
+  return n;
+}
+function facBuscarCablear(cont, inputId, leer, guardar, pista) {
+  const inp = cont.querySelector('#' + inputId); if (!inp) return;
+  inp.addEventListener('input', () => { guardar(inp.value); facBuscarAplicar(cont, inp.value, pista && pista()); });
+  facBuscarAplicar(cont, leer(), pista && pista());
+}
+let STATE_provFacBusqueda = '', STATE_cliFacBusqueda = '';
+
 async function renderDirectorioProveedores(el, b) {
   const scrollY = window.scrollY;
   const [{ data: all }, { data: catalogo }] = await Promise.all([
@@ -18609,7 +18647,7 @@ async function renderDirectorioProveedores(el, b) {
   const grupos = {};
   (all || []).forEach(f => {
     const key = claveProveedor(f);
-    if (!grupos[key]) grupos[key] = { key, nombre: nombreProveedor(f), facturado: 0, pagado: 0, cantidad: 0, porMoneda: {}, facPorMon: {}, pagPorMon: {}, pendienteMxn: 0 };
+    if (!grupos[key]) grupos[key] = { key, nombre: nombreProveedor(f), facturado: 0, pagado: 0, cantidad: 0, porMoneda: {}, facPorMon: {}, pagPorMon: {}, pendienteMxn: 0, facMxn: 0, pagMxn: 0 };
     grupos[key].facturado += Number(f.importe) || 0;
     grupos[key].pagado += Number(f.importe_pagado) || 0;
     grupos[key].cantidad += 1;
@@ -18618,13 +18656,14 @@ async function renderDirectorioProveedores(el, b) {
     grupos[key].facPorMon[monF] = (grupos[key].facPorMon[monF] || 0) + (Number(f.importe) || 0);
     grupos[key].pagPorMon[monF] = (grupos[key].pagPorMon[monF] || 0) + (Number(f.importe_pagado) || 0);
     grupos[key].pendienteMxn += ((Number(f.importe) || 0) - (Number(f.importe_pagado) || 0)) * tcF;
+    grupos[key].facMxn += (Number(f.importe) || 0) * tcF; grupos[key].pagMxn += (Number(f.importe_pagado) || 0) * tcF;
     const pendFactura = redondearMoneda((Number(f.importe)||0) - (Number(f.importe_pagado)||0));
     if (Math.abs(pendFactura) > 0.004) {
       const mon = f.moneda || 'MXN';
       grupos[key].porMoneda[mon] = (grupos[key].porMoneda[mon] || 0) + pendFactura;
     }
   });
-  const lista = Object.values(grupos).map(g => ({ ...g, pendiente: g.facturado - g.pagado })).sort((a,b) => b.pendienteMxn - a.pendienteMxn);
+  const lista = Object.values(grupos).map(g => ({ ...g, pendiente: g.facturado - g.pagado })).sort(provDirComparar);
   const gruposDupDir = proveedoresDuplicados(catalogo || [], provConteosDe(all));
   const faltantesDir = proveedoresFaltantes({ facturas: all || [], catalogo: catalogo || [], cfdis: [] }); const nFaltDir = faltantesDir.sinVinculo.length + faltantesDir.inactivos.length;
   let faltanRfc = false; // hay proveedores sin RFC y CFDI recibidos de los que se podría tomar
@@ -18655,7 +18694,7 @@ async function renderDirectorioProveedores(el, b) {
       <div class="card-head">
         <h3>Directorio de proveedores</h3>
         <div style="display:flex;gap:8px;align-items:center;">
-          <span class="hint">Clic en un proveedor para ver todo su historial</span>
+          <span class="hint">Clic en un proveedor para ver todo su historial · clic en el título de una columna para ordenar</span>
           ${nFaltDir ? `<button class="btn btn-ghost btn-sm" id="faltantesProvBtn" title="Hay proveedores con facturas que no están en el catálogo">Completar catálogo (${nFaltDir})</button>` : ''}
           ${gruposDupDir.length || faltanRfc ? `<button class="btn btn-ghost btn-sm" id="unificarProvBtn" title="Unificar proveedores dados de alta más de una vez y completar los RFC que faltan">${gruposDupDir.length ? `Unificar duplicados (${gruposDupDir.length})` : 'Completar RFC'}</button>` : ''}
           <div style="position:relative;">
@@ -18670,7 +18709,7 @@ async function renderDirectorioProveedores(el, b) {
       </div>
       <div class="table-wrap scroll-sticky">
         <table class="tabla-operativa tabla-operativa--scroll">
-          <thead><tr><th>Proveedor</th><th>No. facturas</th><th>Moneda</th><th>Total facturado</th><th>Total pagado</th><th>Saldo pendiente / Por pagar</th></tr></thead>
+          <thead><tr>${thOrdHtml('nombre', 'Proveedor', STATE_provDirOrden)}${thOrdHtml('cantidad', 'No. facturas', STATE_provDirOrden)}<th>Moneda</th>${thOrdHtml('facturado', 'Total facturado', STATE_provDirOrden)}${thOrdHtml('pagado', 'Total pagado', STATE_provDirOrden)}${thOrdHtml('saldo', 'Saldo pendiente / Por pagar', STATE_provDirOrden)}</tr></thead>
           <tbody>
             ${lista.length ? lista.map(g => {
               const monedas = Object.keys(g.porMoneda);
@@ -18692,6 +18731,7 @@ async function renderDirectorioProveedores(el, b) {
     </div>
   `;
   wireProvTabs(el);
+  el.querySelectorAll('.th-ord').forEach(th => th.addEventListener('click', () => { ordenClicColumna(STATE_provDirOrden, th.dataset.ord, th.dataset.ord === 'nombre' ? 'asc' : 'desc'); renderProveedores(); }));
   const fbtn = document.getElementById('faltantesProvBtn'); if (fbtn) fbtn.addEventListener('click', () => abrirProveedoresFaltantes(b, () => renderProveedores()));
   const ubtn = document.getElementById('unificarProvBtn'); if (ubtn) ubtn.addEventListener('click', () => abrirUnificarProveedores(b));
   document.getElementById('nuevaTransaccionProvBtn').addEventListener('click', (e) => {
@@ -19306,9 +19346,12 @@ async function renderDirectorioClientes(el, b) {
 
   const clientes = await loadClientes(b.id);
   const conSaldo = await Promise.all(clientes.map(async c => ({ ...c, saldo: await computeSaldoCliente(c.id) })));
+  const stOrdCli = STATE_cliDirOrden.col ? STATE_cliDirOrden : { col: STATE_clienteOrden === 'saldo' ? 'saldo' : 'nombre', dir: STATE_clienteOrden === 'saldo' ? 'desc' : 'asc' };
   const ordenados = [...conSaldo].sort((a, b2) => {
-    if (STATE_clienteOrden === 'saldo') return b2.saldo - a.saldo;
-    return (a.nombre_comercial || '').localeCompare(b2.nombre_comercial || '');
+    const k = { razon: c => String(c.razon_social || '').toLowerCase(), nombre: c => String(c.nombre_comercial || '').toLowerCase(), saldo: c => Number(c.saldo) || 0 }[stOrdCli.col];
+    const x = k(a), y = k(b2), r = typeof x === 'string' ? x.localeCompare(y, 'es') : x - y;
+    if (r !== 0) return stOrdCli.dir === 'asc' ? r : -r;
+    return (a.nombre_comercial || '').localeCompare(b2.nombre_comercial || '', 'es');
   });
 
   // Resumen general: por cobrar, vencido, cobrado este mes, pendientes de facturar fiscalmente
@@ -19369,7 +19412,7 @@ async function renderDirectorioClientes(el, b) {
       </div>
       <div class="table-wrap scroll-sticky">
         <table class="tabla-operativa tabla-operativa--scroll">
-          <thead><tr><th>Razón social</th><th>Nombre comercial</th><th>Teléfono</th><th>Moneda</th><th>Open Balance</th><th></th></tr></thead>
+          <thead><tr>${thOrdHtml('razon', 'Razón social', stOrdCli)}${thOrdHtml('nombre', 'Nombre comercial', stOrdCli)}<th>Teléfono</th><th>Moneda</th>${thOrdHtml('saldo', 'Open Balance', stOrdCli)}<th></th></tr></thead>
           <tbody>
             ${ordenados.length ? ordenados.map(c => {
               const desglose = saldosPorClienteYMoneda[c.id] || {};
@@ -19398,8 +19441,9 @@ async function renderDirectorioClientes(el, b) {
     </div>
   `;
 
-  document.getElementById('clienteOrdenNombre').addEventListener('click', () => { STATE_clienteOrden = 'nombre'; renderClientes(); });
-  document.getElementById('clienteOrdenSaldo').addEventListener('click', () => { STATE_clienteOrden = 'saldo'; renderClientes(); });
+  document.getElementById('clienteOrdenNombre').addEventListener('click', () => { STATE_clienteOrden = 'nombre'; STATE_cliDirOrden = { col: null, dir: 'desc' }; renderClientes(); });
+  document.getElementById('clienteOrdenSaldo').addEventListener('click', () => { STATE_clienteOrden = 'saldo'; STATE_cliDirOrden = { col: null, dir: 'desc' }; renderClientes(); });
+  el.querySelectorAll('.th-ord').forEach(th => th.addEventListener('click', () => { const st = { col: stOrdCli.col, dir: stOrdCli.dir }; ordenClicColumna(st, th.dataset.ord, th.dataset.ord === 'saldo' ? 'desc' : 'asc'); STATE_cliDirOrden = st; renderClientes(); }));
   document.getElementById('addClienteBtn').addEventListener('click', () => openModalCliente(null));
   document.getElementById('openProductosBtn').addEventListener('click', () => openModalProductos(b.id));
   document.getElementById('nuevaTransaccionBtn').addEventListener('click', (e) => {
@@ -20454,6 +20498,7 @@ async function renderFacturasClientes(el, b) {
         <h3>Facturas de clientes</h3>
         <div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-ghost btn-sm" id="addNcCliBtn" title="Registra una nota de crédito a un cliente (devolución, descuento o corrección)">+ Nota de crédito</button><button class="btn btn-gold btn-sm" id="addFacturaBtn">+ Nueva factura</button></div>
       </div>
+      ${facBuscarHtml('cliFacBuscar', STATE_cliFacBusqueda, 'Buscar en facturas: cliente, factura, folio, importe…')}
       <div class="table-wrap scroll-sticky">
         <table class="tabla-operativa tabla-operativa--scroll">
           <thead><tr>
@@ -20468,7 +20513,8 @@ async function renderFacturasClientes(el, b) {
               const saldo = redondearMoneda(Math.max(0, Number(f.total) - Number(f.importe_pagado||0)));
               const diasRetraso = calcularDiasRetraso(f.fecha_vencimiento, saldo);
               const esMxn = !f.moneda || f.moneda === 'MXN';
-              return `<tr>
+              const cliF = clientes.find(c => c.id === f.cliente_id);
+              return `<tr data-q="${escAttr(cliFacBusquedaTexto(f, (cliF ? [cliF.nombre_comercial, cliF.razon_social].join(' ') : '')))}">
               <td data-rol="principal">${fechaCorta(f.fecha)}</td>
               <td data-rol="secundario">#${escHtml(f.folio)}</td>
               <td data-rol="secundario">${escHtml(f.numero_factura || '—')}</td>
@@ -20493,6 +20539,7 @@ async function renderFacturasClientes(el, b) {
   document.getElementById('addNcCliBtn').addEventListener('click', () => abrirNotaCreditoCliente(b, null, () => renderFacturasClientes(el, b)));
   wireFacturaMenu(el, b.id, () => renderFacturasClientes(el, b));
   wireClientesTabs();
+  facBuscarCablear(el, 'cliFacBuscar', () => STATE_cliFacBusqueda, v => { STATE_cliFacBusqueda = v; });
   window.scrollTo(0, scrollY);
 }
 
@@ -21957,7 +22004,7 @@ function provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntos, todasFactur
     ? (catMatch.razon_social ? `${catMatch.razon_social}${catMatch.nombre_comercial ? ' — ' + catMatch.nombre_comercial : ''}` : (catMatch.nombre_comercial || catMatch.nombre))
     : (p.proveedor || '(sin proveedor)');
   const esMxnProv = !p.moneda || p.moneda === 'MXN';
-  return `<tr style="${esCredito?'background:#f2fbf5;':''}">
+  return `<tr data-q="${escAttr(provBusquedaTexto(p, nombreMostrado, saldoPendiente))}" style="${esCredito?'background:#f2fbf5;':''}">
     <td data-rol="principal"><input class="cell prov-cell" type="date" value="${p.fecha}" data-id="${p.id}" data-field="fecha"></td>
     <td data-rol="secundario">${p.folio ? '#'+escHtml(p.folio) : '—'}</td>
     <td data-rol="secundario"><input class="cell prov-cell" type="text" value="${escAttr(p.factura||'')}" data-id="${p.id}" data-field="factura">${p.dup_revision === 'pendiente' ? '<div class="dup-marca" title="Se guardó con aviso de posible duplicado. Resuélvela en «Por revisar».">Por revisar: posible duplicado</div>' : ''}</td>
@@ -26813,7 +26860,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.30';
+const APP_VERSION = '2026-11-06.31';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
