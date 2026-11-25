@@ -23551,18 +23551,22 @@ async function enriquecerFilasConDocumento(businessId, filas) {
   if (!lista.length) return filas;
   try {
     const de = (t) => lista.filter(f => f.tipoOrigen === t);
-    const [lineas, provs0, clis0, bancos, efectivos] = await Promise.all([
+    const polizaIdsAux = _unicosIds(de('poliza').map(f => f.id));
+    const [lineas, provs0, clis0, bancos, efectivos, hermanas] = await Promise.all([
       _traerPorIds('fz_polizas_lineas', 'id,proveedor,descripcion,referencia,proveedor_factura_id,cliente_factura_id', null, de('poliza').map(f => f.lineaId)),
       _traerPorIds('fz_proveedores', 'id,proveedor,factura,cfdi_uuid,desglose', 'id,proveedor,factura,desglose', de('factura_proveedor').map(f => f.id)),
       _traerPorIds('fz_facturas_clientes', 'id,folio,numero_factura,folio_fiscal', 'id,folio,numero_factura', de('factura_cliente').map(f => f.id)),
       _traerPorIds('fz_bancos_mov', 'id,proveedor,concepto,descripcion,referencia,proveedor_factura_id,proveedor_factura_ids,cliente_factura_id,cliente_factura_ids', 'id,concepto,descripcion,referencia,proveedor_factura_id,proveedor_factura_ids', de('banco_mov').map(f => f.id)),
       _traerPorIds('fz_efectivo_mov', 'id,proveedor,descripcion,factura,proveedor_factura_id,proveedor_factura_ids,cliente_factura_id,cliente_factura_ids', 'id,proveedor,descripcion,factura', de('efectivo_mov').map(f => f.id)),
+      // 06.33 — las demás partidas de esas mismas pólizas: sirven para mostrar el proveedor cuando la partida de esta cuenta no lo trae (solo lectura)
+      (async () => { const out = []; for (let i = 0; i < polizaIdsAux.length; i += 100) { try { const r = await sb.from('fz_polizas_lineas').select('id,poliza_id,proveedor,proveedor_factura_id').in('poliza_id', polizaIdsAux.slice(i, i + 100)); if (!r.error) out.push(...(r.data || [])); } catch (_) { /* presentación opcional */ } } return out; })(),
     ]);
     const provMap = Object.fromEntries(provs0.map(x => [x.id, x])), cliMap = Object.fromEntries(clis0.map(x => [x.id, x]));
     const lineaMap = Object.fromEntries(lineas.map(x => [x.id, x])), bancoMap = Object.fromEntries(bancos.map(x => [x.id, x])), efecMap = Object.fromEntries(efectivos.map(x => [x.id, x]));
     // facturas vinculadas a líneas de póliza y a movimientos de banco/efectivo (segunda ronda, solo las que faltan)
     const idsProvVinc = [], idsCliVinc = [];
     lineas.forEach(l => { idsProvVinc.push(l.proveedor_factura_id); idsCliVinc.push(l.cliente_factura_id); });
+    hermanas.forEach(l => { idsProvVinc.push(l.proveedor_factura_id); });
     [...bancos, ...efectivos].forEach(m => { idsProvVinc.push(m.proveedor_factura_id, ..._idsDe(m.proveedor_factura_ids)); idsCliVinc.push(m.cliente_factura_id, ..._idsDe(m.cliente_factura_ids)); });
     const faltanProv = _unicosIds(idsProvVinc).filter(id => !provMap[id]), faltanCli = _unicosIds(idsCliVinc).filter(id => !cliMap[id]);
     const [provs1, clis1] = await Promise.all([
@@ -23584,12 +23588,16 @@ async function enriquecerFilasConDocumento(businessId, filas) {
       const una = mismas.length === 1 ? mismas[0] : mismas.find(l => Math.abs((Number(l.monto) || 0) - (Number(f.cargo) || 0)) < 0.01);
       return String((una && una.descripcion) || '').trim();
     };
+    // proveedor de una póliza: solo si TODAS las partidas que lo traen (o su factura ligada) apuntan al mismo; con dos o más distintos se deja vacío en lugar de adivinar
+    const provPorPoliza = {};
+    hermanas.forEach(x => { const nom = String(x.proveedor || '').trim() || String((provMap[x.proveedor_factura_id] || {}).proveedor || '').trim(); if (!nom) return; const m = (provPorPoliza[x.poliza_id] = provPorPoliza[x.poliza_id] || new Map()); const k = nom.toLowerCase().replace(/\s+/g, ' '); if (!m.has(k)) m.set(k, nom); });
+    const provDePoliza = (polizaId) => { const m = provPorPoliza[polizaId]; return m && m.size === 1 ? [...m.values()][0] : ''; };
     lista.forEach(f => {
       let prov = '', conc = '', fac = '', uu = '';
       if (f.tipoOrigen === 'poliza') {
         const l = lineaMap[f.lineaId];
         const v = l ? vinculadas(l.proveedor_factura_id ? [l.proveedor_factura_id] : [], l.cliente_factura_id ? [l.cliente_factura_id] : []) : { numero: '', uuid: '' };
-        prov = (l && l.proveedor) || '';
+        prov = (l && l.proveedor) || provDePoliza(f.id);
         conc = (l && l.descripcion) || f.detalle || '';
         fac = (l && l.referencia) || v.numero || '';
         uu = v.uuid;
@@ -26938,7 +26946,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.32';
+const APP_VERSION = '2026-11-06.33';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
@@ -29507,10 +29515,16 @@ async function guardarBorradorPolizaInterno() {
     }
   }
 
+  // 06.33 — póliza NUEVA con un solo proveedor: las partidas que quedaron sin proveedor lo heredan (solo el texto; nunca cambia una partida que ya traiga uno, ni pólizas ya guardadas)
+  let provUnicoPoliza = '';
+  if (borrador.esNueva) {
+    const nombres = new Map(); borrador.lineas.forEach(x => { const n = String(x.proveedor || '').trim(); if (n) nombres.set(n.toLowerCase().replace(/\s+/g, ' '), n); });
+    if (nombres.size === 1) provUnicoPoliza = [...nombres.values()][0];
+  }
   let huboError = false;
   const idsFinales = []; // ids reales (ya sea existentes o recién creados) que deben permanecer
   for (const l of borrador.lineas) {
-    const payload = { subcuenta_id: l.subcuenta_id || null, cuenta_tipo: l.cuenta_tipo || 'subcuenta', cuenta_ref_id: l.cuenta_ref_id || null, proveedor_factura_id: l.cuenta_tipo === 'proveedor' ? (l.proveedor_factura_id || null) : null, cliente_factura_id: l.cuenta_tipo === 'cliente' ? (l.cliente_factura_id || null) : null, cargo: Number(l.cargo) || 0, abono: Number(l.abono) || 0, descripcion: l.descripcion || null, referencia: l.referencia || null, proveedor: l.proveedor || null, orden: l.orden || 0 };
+    const payload = { subcuenta_id: l.subcuenta_id || null, cuenta_tipo: l.cuenta_tipo || 'subcuenta', cuenta_ref_id: l.cuenta_ref_id || null, proveedor_factura_id: l.cuenta_tipo === 'proveedor' ? (l.proveedor_factura_id || null) : null, cliente_factura_id: l.cuenta_tipo === 'cliente' ? (l.cliente_factura_id || null) : null, cargo: Number(l.cargo) || 0, abono: Number(l.abono) || 0, descripcion: l.descripcion || null, referencia: l.referencia || null, proveedor: l.proveedor || provUnicoPoliza || null, orden: l.orden || 0 };
     if (String(l.id).startsWith('tmp_')) {
       const { data, error } = await sb.from('fz_polizas_lineas').insert({ business_id: businessId, poliza_id: polizaId, ...payload }).select().single();
       if (error) { toast('Error guardando una línea: ' + error.message, 'error'); huboError = true; }
