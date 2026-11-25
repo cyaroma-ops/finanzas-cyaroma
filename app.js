@@ -18283,6 +18283,7 @@ async function renderProveedores() {
       <div class="kpi"><div class="label">Total pagado (histórico)</div><div class="value num green">${fmt(pagado)}</div></div>
       <div class="kpi"><div class="label">Facturas registradas</div><div class="value">${all.length}</div></div>
     </div>
+    ${(() => { const nd = all.filter(x => x.dup_revision === 'pendiente').length; return nd ? `<div class="dup-banner"><span><strong>${nd} nota(s) por revisar:</strong> se guardaron con aviso de posible duplicado y mientras tanto cuentan en tus reportes.</span><button type="button" class="btn btn-gold btn-sm" id="dupBannerAbrir">Revisar ahora</button></div>` : ''; })()}
     <div class="card">
       <div class="card-head"><h3>Adeudo por proveedor</h3><span class="hint">Clic en un proveedor para ver sus facturas pendientes (incluye créditos a favor, en verde)</span></div>
       <div class="table-wrap scroll-sticky">
@@ -18425,6 +18426,7 @@ async function renderProveedores() {
     if (info) await openModalFacturaProveedor(info, b.id, catalogo, opcionesPagoDesde);
   }));
   wireAdjuntosHandlers(el, 'fz_proveedores', b.id, renderProveedores);
+  { const bd = el.querySelector('#dupBannerAbrir'); if (bd) bd.addEventListener('click', () => dupAbrirRevision(b)); }
   wireProvTabs(el);
   window.scrollTo(0, scrollY);
 }
@@ -21404,6 +21406,7 @@ function renderFpAdjuntoPendiente() {
 
 async function openModalFacturaProveedor(factura, businessId, catalogo, opcionesPagoDesde, proveedorPreseleccionadoId) {
   STATE_facturaProveedorEditandoId = factura ? factura.id : null;
+  fpDupAvisoLimpiar();
   document.getElementById('modalFacturaProveedorTitulo').textContent = factura ? 'Editar factura de proveedor' : 'Nueva factura de proveedor';
   const selProv = document.getElementById('fpProveedor');
   const proveedorAPreseleccionar = factura?.proveedor_id || proveedorPreseleccionadoId || null;
@@ -21666,6 +21669,139 @@ document.getElementById('fpDesgloseImporte').addEventListener('input', fpSumarIm
 document.getElementById('fpDesgloseIva').addEventListener('input', fpSumarImporteIva);
 document.getElementById('fpDesgloseMonto').addEventListener('input', renderFpDesgloseList);
 document.getElementById('fpImporte').addEventListener('input', renderFpDesgloseList);
+// ===== 06.29 — Posibles duplicados en Proveedores =====
+// Al guardar una factura/nota NUEVA se busca algo parecido ya capturado en ese negocio y se avisa. No cambia ningún cálculo contable.
+//   · Mismo proveedor y mismo folio (sin límite de fecha).
+//   · Mismo proveedor, mismo importe y fecha a ≤ 7 días (si los dos traen folio y son distintos, son documentos distintos: no se avisa).
+//   · Mismo importe, fecha a ≤ 3 días y nombre de proveedor parecido (cuando el contador lo escribe distinto).
+const DUP_DIAS_MISMO_PROV = 7, DUP_DIAS_PARECIDO = 3, DUP_DIAS_REVISION = 3;
+function dupNorm(t) { return String(t == null ? '' : t).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim(); }
+const DUP_RUIDO = new Set(['sa', 'de', 'cv', 'rl', 'sas', 'la', 'el', 'los', 'las', 'del', 'y', 'srl', 'sapi']);
+function dupTokens(t) { return dupNorm(t).split(' ').filter(w => w.length > 1 && !DUP_RUIDO.has(w)); }
+function dupNombresParecidos(a, b) {
+  const A = dupTokens(a), B = dupTokens(b); if (!A.length || !B.length) return false;
+  const sb2 = new Set(B); let inter = 0; new Set(A).forEach(w => { if (sb2.has(w)) inter++; });
+  if (inter / new Set([...A, ...B]).size >= 0.5) return true;
+  const na = A.join(' '), nb = B.join(' '); return na.includes(nb) || nb.includes(na);
+}
+function dupDias(f1, f2) { return Math.abs((new Date(String(f1).slice(0, 10) + 'T00:00:00') - new Date(String(f2).slice(0, 10) + 'T00:00:00')) / 86400000); }
+function dupEvaluarPar(a, b, diasMismoProv) {   // → null | { motivo, nivel }
+  if (!a || !b || (a.id && a.id === b.id)) return null;
+  if ((a.moneda || 'MXN') !== (b.moneda || 'MXN')) return null;
+  if (a.tipo_documento === 'nota_credito' || b.tipo_documento === 'nota_credito') return null;
+  const nomA = dupTokens(a.proveedor).join(' '), nomB = dupTokens(b.proveedor).join(' ');
+  const mismoProv = (a.proveedor_id && b.proveedor_id) ? a.proveedor_id === b.proveedor_id : (nomA !== '' && nomA === nomB);
+  const fA = dupNorm(a.factura), fB = dupNorm(b.factura);
+  const impA = Number(a.importe) || 0, impB = Number(b.importe) || 0;
+  const mismoImporte = impA > 0 && Math.abs(impA - impB) < 0.005;
+  if (mismoProv && fA && fB && fA === fB) return { motivo: 'Mismo proveedor y mismo folio', nivel: 1 };
+  const dias = dupDias(a.fecha, b.fecha);
+  if (mismoProv && mismoImporte && dias <= (diasMismoProv == null ? DUP_DIAS_MISMO_PROV : diasMismoProv) && !(fA && fB && fA !== fB)) return { motivo: 'Mismo proveedor y mismo importe', nivel: 2 };
+  if (!mismoProv && mismoImporte && dias <= DUP_DIAS_PARECIDO && dupNombresParecidos(a.proveedor, b.proveedor) && !(fA && fB && fA !== fB)) return { motivo: 'Mismo importe, nombre de proveedor parecido', nivel: 3 };
+  return null;
+}
+async function provBuscarSimilares(b, p, excluirId) {
+  if (!b || !p || !(Number(p.importe) > 0 || dupNorm(p.factura))) return [];
+  const cols = 'id,fecha,proveedor,proveedor_id,factura,folio,importe,moneda,estatus,tipo_documento,created_at,dup_revision,dup_de';
+  const colsBase = 'id,fecha,proveedor,proveedor_id,factura,folio,importe,moneda,estatus,tipo_documento,created_at';
+  const ref = new Date(String(p.fecha || todayStr()).slice(0, 10) + 'T00:00:00');
+  const mas = (d) => { const x = new Date(ref); x.setDate(x.getDate() + d); return x.toISOString().slice(0, 10); };
+  const consulta = async (c) => {
+    let q1 = sb.from('fz_proveedores').select(c).eq('business_id', b.id).gte('fecha', mas(-DUP_DIAS_MISMO_PROV - 1)).lte('fecha', mas(DUP_DIAS_MISMO_PROV + 1)).limit(500);
+    const out = [await q1];
+    if (dupNorm(p.factura)) { let q2 = sb.from('fz_proveedores').select(c).eq('business_id', b.id).eq('factura', String(p.factura).trim()).limit(100); if (p.proveedor_id) q2 = q2.eq('proveedor_id', p.proveedor_id); out.push(await q2); }
+    return out;
+  };
+  let res = await consulta(cols);
+  if (res.some(r => r.error)) res = await consulta(colsBase);   // todavía no se corre el SQL 06.29: se busca igual, sin las marcas de revisión
+  const vistos = new Map(); res.forEach(r => (r.data || []).forEach(f => vistos.set(f.id, f)));
+  const out = [];
+  vistos.forEach(f => { if (excluirId && f.id === excluirId) return; const ev = dupEvaluarPar(p, f); if (ev) out.push({ f, ...ev }); });
+  out.sort((x, y) => x.nivel - y.nivel || dupDias(p.fecha, x.f.fecha) - dupDias(p.fecha, y.f.fecha));
+  return out;
+}
+function dupLineaHtml(f, motivo) {
+  return `<div class="dup-fila"><div><strong>${f.factura ? 'Nota/factura ' + escHtml(f.factura) : 'Sin folio'}</strong> · ${escHtml(f.proveedor || '(sin proveedor)')}<br><span class="dup-sub">${fechaCorta(f.fecha)}${f.created_at ? ' · capturada el ' + fechaCorta(String(f.created_at).slice(0, 10)) : ''} · ${escHtml(f.estatus || '')}</span></div>
+    <div style="text-align:right;"><strong>${prefijoMoneda(f.moneda)} ${fmt(f.importe)}</strong>${motivo ? `<br><span class="dup-motivo">${escHtml(motivo)}</span>` : ''}</div></div>`;
+}
+// Ventana de decisión: 'volver' | 'abrir:<id>' | 'revision' | 'guardar'
+function dupPreguntar(p, coincidencias) {
+  return new Promise(resolve => {
+    const bg = document.createElement('div'); bg.className = 'dup-bg';
+    const top = coincidencias[0];
+    bg.innerHTML = `<div class="dup-caja" role="dialog" aria-modal="true" aria-label="Posible duplicado">
+      <div class="dup-titulo">Esto se parece a algo que ya está registrado</div>
+      <p class="dup-intro">Estás guardando ${p.factura ? 'la nota/factura <strong>' + escHtml(p.factura) + '</strong>' : 'un documento sin folio'} de <strong>${escHtml(p.proveedor || '(sin proveedor)')}</strong> por <strong>${prefijoMoneda(p.moneda)} ${fmt(p.importe)}</strong> con fecha ${fechaCorta(p.fecha)}.</p>
+      <div class="dup-lista">${coincidencias.slice(0, 4).map(c => dupLineaHtml(c.f, c.motivo)).join('')}${coincidencias.length > 4 ? `<div class="dup-sub" style="padding:8px 12px;">…y ${coincidencias.length - 4} más.</div>` : ''}</div>
+      <div class="dup-acciones">
+        <button type="button" class="btn btn-ghost btn-sm" data-r="volver">Volver a la captura</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-r="abrir">Es la misma: abrir la existente</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-r="revision">Guardar y mandar a revisión</button>
+        <button type="button" class="btn btn-gold btn-sm" data-r="guardar">Guardar de todos modos</button>
+      </div></div>`;
+    const fin = (r) => { document.removeEventListener('keydown', esc, true); bg.remove(); resolve(r); };
+    const esc = (e) => { if (e.key === 'Escape') { e.stopPropagation(); fin('volver'); } };
+    document.addEventListener('keydown', esc, true);
+    bg.addEventListener('click', (e) => { const r = e.target.closest('[data-r]'); if (r) fin(r.dataset.r === 'abrir' ? 'abrir:' + top.f.id : r.dataset.r); else if (e.target === bg) fin('volver'); });
+    document.body.appendChild(bg); const g = bg.querySelector('[data-r="volver"]'); if (g) g.focus();
+  });
+}
+// Franja amarilla mientras capturan (solo en facturas nuevas)
+let DUP_AVISO_T = null;
+function fpDupAvisoLimpiar() { const e = document.getElementById('fpDupAviso'); if (e) { e.style.display = 'none'; e.innerHTML = ''; } clearTimeout(DUP_AVISO_T); }
+function fpDupAvisoProgramar() {
+  clearTimeout(DUP_AVISO_T);
+  DUP_AVISO_T = setTimeout(async () => {
+    const e = document.getElementById('fpDupAviso'), b = biz(); if (!e || !b) return;
+    if (STATE_facturaProveedorEditandoId || !document.getElementById('modalFacturaProveedor').classList.contains('show')) { fpDupAvisoLimpiar(); return; }
+    const sel = document.getElementById('fpProveedor'), op = sel.selectedOptions[0];
+    const p = { proveedor_id: sel.value || null, proveedor: sel.value ? (op ? op.textContent : '') : '', factura: document.getElementById('fpFactura').value.trim(), fecha: document.getElementById('fpFecha').value || todayStr(),
+      importe: leerMonto(document.getElementById('fpImporte').value) || 0, moneda: document.getElementById('fpMoneda').value };
+    const r = await provBuscarSimilares(b, p, null);
+    if (!r.length) { fpDupAvisoLimpiar(); return; }
+    e.style.display = ''; const f = r[0].f;
+    e.innerHTML = `<strong>Ojo: parece que ya existe.</strong> ${escHtml(r[0].motivo)} — ${f.factura ? escHtml(f.factura) + ' · ' : ''}${escHtml(f.proveedor || '')} · ${fechaCorta(f.fecha)} · ${prefijoMoneda(f.moneda)} ${fmt(f.importe)}${r.length > 1 ? ` (y ${r.length - 1} más)` : ''}. Al guardar podrás compararlas y decidir.`;
+  }, 450);
+}
+['fpProveedor', 'fpFactura', 'fpFecha', 'fpImporte', 'fpMoneda'].forEach(id => { const el = document.getElementById(id); if (el) { el.addEventListener('input', fpDupAvisoProgramar); el.addEventListener('change', fpDupAvisoProgramar); } });
+// Lista «Por revisar»: notas guardadas con la marca de posible duplicado
+async function dupAbrirRevision(b) {
+  const bg = document.createElement('div'); bg.className = 'dup-bg'; document.body.appendChild(bg);
+  const cerrar = () => { document.removeEventListener('keydown', esc, true); bg.remove(); renderProveedores(); };
+  const esc = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cerrar(); } };
+  document.addEventListener('keydown', esc, true);
+  const pintar = async () => {
+    const { data: pend } = await sb.from('fz_proveedores').select('*').eq('business_id', b.id).eq('dup_revision', 'pendiente').order('fecha', { ascending: false });
+    const ids = [...new Set((pend || []).map(x => x.dup_de).filter(Boolean))];
+    const orig = {}; if (ids.length) { const { data } = await sb.from('fz_proveedores').select('*').in('id', ids); (data || []).forEach(x => { orig[x.id] = x; }); }
+    bg.innerHTML = `<div class="dup-caja dup-ancha" role="dialog" aria-modal="true" aria-label="Por revisar">
+      <div class="dup-titulo">Notas por revisar (posible duplicado)</div>
+      ${(pend || []).length ? (pend || []).map(x => { const o = orig[x.dup_de]; return `<div class="dup-par">
+          <div class="dup-par-cols"><div><div class="dup-etq">La nueva${x.dup_marcada_por ? ' · la mandó ' + escHtml(x.dup_marcada_por) : ''}</div>${dupLineaHtml(x, '')}</div>
+          <div><div class="dup-etq">${o ? 'Parece ser la misma que' : 'Ya no existe la original'}</div>${o ? dupLineaHtml(o, '') : '<div class="dup-sub">Se eliminó o ya no se encuentra.</div>'}</div></div>
+          <div class="dup-acciones"><button type="button" class="btn btn-ghost btn-sm dup-r-ver" data-id="${x.id}">Abrir la nueva</button>
+            <button type="button" class="btn btn-ghost btn-sm dup-r-no" data-id="${x.id}">No es duplicado</button>
+            <button type="button" class="btn btn-gold btn-sm dup-r-si" data-id="${x.id}" style="background:var(--red);border-color:var(--red);">Es duplicado: eliminar la nueva</button></div></div>`; }).join('')
+        : '<p class="dup-intro">No hay notas por revisar.</p>'}
+      <div class="dup-acciones"><button type="button" class="btn btn-ghost btn-sm" id="dupRevCerrar">Cerrar</button></div></div>`;
+    bg.querySelector('#dupRevCerrar').onclick = cerrar;
+    bg.querySelectorAll('.dup-r-no').forEach(btn => btn.addEventListener('click', async () => {
+      const x = (pend || []).find(z => z.id === btn.dataset.id);
+      const { error } = await sb.from('fz_proveedores').update({ dup_revision: 'descartada' }).eq('id', btn.dataset.id);
+      if (error) { toast('Error: ' + error.message, 'error'); return; }
+      registrarAuditoria(b.id, 'editar', 'Proveedores', `Revisó: no es duplicado — ${(x && x.proveedor) || ''} · ${(x && x.factura) || 's/f'} · ${fmt((x && x.importe) || 0)}`); await pintar();
+    }));
+    bg.querySelectorAll('.dup-r-si').forEach(btn => btn.addEventListener('click', async () => {
+      const r = await eliminarFacturaProveedorConCascada(btn.dataset.id, b.id); if (r.ok) await pintar();
+    }));
+    bg.querySelectorAll('.dup-r-ver').forEach(btn => btn.addEventListener('click', async () => {
+      const x = (pend || []).find(z => z.id === btn.dataset.id); if (!x) return;
+      const [cat, opc] = await Promise.all([loadProveedoresCatalogo(b.id), construirOpcionesPagoDesde(b.id)]);
+      bg.style.display = 'none'; await openModalFacturaProveedor(x, b.id, cat, opc);
+    }));
+  };
+  await pintar();
+}
 document.getElementById('saveFacturaProveedor').addEventListener('click', async () => {
   const b = biz();
   if (!b) return;
@@ -21713,14 +21849,38 @@ document.getElementById('saveFacturaProveedor').addEventListener('click', async 
 
   const idEditando = STATE_facturaProveedorEditandoId;
   let facturaId = idEditando;
+  let dupDecision = null, dupParecida = null;
+  if (!idEditando) {   // 06.29: ¿se parece a algo ya registrado?
+    const similares = await provBuscarSimilares(b, payload, null);
+    if (similares.length) {
+      const dec = await dupPreguntar(payload, similares);
+      if (dec === 'volver') return;
+      if (dec.startsWith('abrir:')) {
+        const idX = dec.slice(6); document.getElementById('modalFacturaProveedor').classList.remove('show');
+        const { data: ex } = await sb.from('fz_proveedores').select('*').eq('id', idX).maybeSingle();
+        if (ex) { const [cat, opc] = await Promise.all([loadProveedoresCatalogo(b.id), construirOpcionesPagoDesde(b.id)]); await openModalFacturaProveedor(ex, b.id, cat, opc); }
+        else renderProveedores();
+        return;
+      }
+      dupDecision = dec; dupParecida = similares[0].f;
+      if (dec === 'revision') { payload.dup_revision = 'pendiente'; payload.dup_de = dupParecida.id; payload.dup_marcada_por = (STATE.user && STATE.user.email) || null; payload.dup_marcada_en = new Date().toISOString(); }
+    }
+  }
   if (idEditando) {
     const { error } = await sb.from('fz_proveedores').update(payload).eq('id', idEditando);
     if (error) { toast('Error: ' + error.message, 'error'); return; }
   } else {
     payload.folio = await siguienteFolio(b.id, 'factura_proveedor');
-    const { data, error } = await sb.from('fz_proveedores').insert(payload).select().single();
+    let ins = await sb.from('fz_proveedores').insert(payload).select().single();
+    if (ins.error && /dup_/.test(ins.error.message || '')) {   // falta correr SQL_06.29: se guarda igual, sin la marca
+      ['dup_revision', 'dup_de', 'dup_marcada_por', 'dup_marcada_en'].forEach(k => delete payload[k]);
+      ins = await sb.from('fz_proveedores').insert(payload).select().single();
+      if (!ins.error && dupDecision === 'revision') toast('Se guardó, pero NO quedó marcada para revisión: falta correr SQL_06.29 en Supabase.', 'error');
+    }
+    const { data, error } = ins;
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     facturaId = data.id;
+    if (dupDecision) registrarAuditoria(b.id, 'crear', 'Proveedores', `${dupDecision === 'revision' ? 'Mandó a revisión' : 'Guardó de todos modos'} (posible duplicado de ${dupParecida.factura || 's/f'} del ${fechaCorta(dupParecida.fecha)} por ${fmt(dupParecida.importe)}): ${payload.proveedor} · ${payload.factura || 's/f'} · ${fmt(payload.importe)}`);
     for (const file of STATE_provArchivosPendientes) {
       const subido = await subirAdjunto('fz_proveedores', facturaId, b.id, file);
       if (subido) await sb.from('fz_adjuntos').insert({ business_id: b.id, tabla: 'fz_proveedores', registro_id: facturaId, archivo_path: subido.path, archivo_nombre: subido.nombre });
@@ -21800,7 +21960,7 @@ function provRowHtml(p, catalogo, opcionesPagoDesde, conteoAdjuntos, todasFactur
   return `<tr style="${esCredito?'background:#f2fbf5;':''}">
     <td data-rol="principal"><input class="cell prov-cell" type="date" value="${p.fecha}" data-id="${p.id}" data-field="fecha"></td>
     <td data-rol="secundario">${p.folio ? '#'+escHtml(p.folio) : '—'}</td>
-    <td data-rol="secundario"><input class="cell prov-cell" type="text" value="${escAttr(p.factura||'')}" data-id="${p.id}" data-field="factura"></td>
+    <td data-rol="secundario"><input class="cell prov-cell" type="text" value="${escAttr(p.factura||'')}" data-id="${p.id}" data-field="factura">${p.dup_revision === 'pendiente' ? '<div class="dup-marca" title="Se guardó con aviso de posible duplicado. Resuélvela en «Por revisar».">Por revisar: posible duplicado</div>' : ''}</td>
     <td data-rol="secundario">${escHtml(nombreMostrado)}</td>
     <td data-rol="meta">${escHtml(p.moneda || 'MXN')}</td>
     <td class="num" data-rol="meta">${esMxnProv ? '—' : fmtTC(p.tipo_cambio || 1)}</td>
@@ -26653,7 +26813,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.28';
+const APP_VERSION = '2026-11-06.29';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
@@ -29309,6 +29469,42 @@ function revVentasCategorias(ctx) {
 // ese neto pasa al Estado de Resultados como faltante/sobrante de caja y, si el mes no se compensa, es lo que deja el Balance descuadrado por unos centavos.
 // Avisa cuando el neto de un mes llega a $0.05; por debajo de eso solo deja una nota. Las diferencias de $1 o más son faltantes reales y ya se ven en las columnas «Dif.».
 const REV_CENTAVOS_UMBRAL = 0.05;
+// 06.29 — Posibles facturas/notas duplicadas en Proveedores: (1) las que se guardaron con la marca «por revisar»; (2) parejas ya capturadas que se parecen
+// (mismo proveedor y folio, o mismo proveedor e importe con ≤ 3 días). Solo avisa; no cambia nada. Las que se descartaron («No es duplicado») no vuelven a salir.
+function revDuplicadosProveedor(ctx) {
+  const fac = (ctx.proveedores || []).filter(f => !f.origen_venta_id && f.tipo_documento !== 'nota_credito' && Number(f.importe) > 0);
+  const items = []; const usados = new Set();
+  const nom = (f) => f.proveedor || '?';
+  fac.filter(f => f.dup_revision === 'pendiente').forEach(f => {
+    const o = fac.find(x => x.id === f.dup_de);
+    items.push({ fecha: f.fecha, monto: Number(f.importe), texto: `${fechaCorta(f.fecha)} · ${nom(f)} · ${f.factura || 's/f'} — mandada a revisión${o ? ' (parece la misma que la del ' + fechaCorta(o.fecha) + ' · ' + (o.factura || 's/f') + ')' : ''}` });
+    usados.add(f.id); if (f.dup_de) usados.add(f.dup_de);
+  });
+  const descartado = (a, b) => (a.dup_revision === 'descartada' && a.dup_de === b.id) || (b.dup_revision === 'descartada' && b.dup_de === a.id);
+  const grupos = new Map();
+  fac.forEach(f => { const k = (f.proveedor_id || dupNorm(f.proveedor)) + '|' + (f.moneda || 'MXN') + '|' + Math.round(Number(f.importe) * 100); (grupos.get(k) || grupos.set(k, []).get(k)).push(f); });
+  const vistosPar = new Set();
+  grupos.forEach(g => { for (let i = 0; i < g.length; i++) for (let j = i + 1; j < g.length; j++) {
+    const a = g[i], b = g[j]; if (usados.has(a.id) && usados.has(b.id)) continue; if (descartado(a, b)) continue;
+    const ev = dupEvaluarPar(a, b, DUP_DIAS_REVISION); if (!ev) continue;
+    const par = [a.id, b.id].sort().join('|'); if (vistosPar.has(par)) continue; vistosPar.add(par);
+    const [x, y] = a.fecha <= b.fecha ? [a, b] : [b, a];
+    items.push({ fecha: y.fecha, monto: Number(y.importe), texto: `${nom(y)} · ${fmt(y.importe)} — ${ev.motivo.toLowerCase()}: ${x.factura || 's/f'} del ${fechaCorta(x.fecha)} y ${y.factura || 's/f'} del ${fechaCorta(y.fecha)}` });
+  } });
+  // mismo folio con proveedor escrito distinto pero ligado al mismo catálogo ya entra arriba (proveedor_id); aquí solo lo que comparte proveedor y folio
+  const porFolio = new Map();
+  fac.forEach(f => { const fo = dupNorm(f.factura); if (!fo) return; const k = (f.proveedor_id || dupNorm(f.proveedor)) + '|' + fo; (porFolio.get(k) || porFolio.set(k, []).get(k)).push(f); });
+  porFolio.forEach(g => { if (g.length < 2) return; for (let i = 0; i < g.length; i++) for (let j = i + 1; j < g.length; j++) {
+    const a = g[i], b = g[j]; if (descartado(a, b)) continue; if ((a.moneda || 'MXN') !== (b.moneda || 'MXN')) continue;
+    const par = [a.id, b.id].sort().join('|'); if (vistosPar.has(par) || (usados.has(a.id) && usados.has(b.id))) continue; vistosPar.add(par);
+    const [x, y] = a.fecha <= b.fecha ? [a, b] : [b, a];
+    items.push({ fecha: y.fecha, monto: Number(y.importe), texto: `${nom(y)} · folio ${y.factura} repetido: ${fmt(x.importe)} del ${fechaCorta(x.fecha)} y ${fmt(y.importe)} del ${fechaCorta(y.fecha)}` });
+  } });
+  items.sort((a, z) => a.fecha.localeCompare(z.fecha));
+  return { id: 'proveedores_duplicados', titulo: 'Posibles facturas o notas duplicadas en Proveedores',
+    ayuda: 'Un mismo gasto provisionado dos veces cuenta doble en Estado de Resultados y en lo que se debe al proveedor. Aquí salen las notas que se mandaron a revisión y las parejas ya capturadas que se parecen (mismo proveedor y folio, o mismo proveedor e importe con pocos días de diferencia). Revisa cada una en Proveedores; si no es duplicado, abre «Por revisar» o elimina la sobrante.',
+    items };
+}
 function revCentavosRecibido(ctx) {
   const { ventas, conceptosVenta, porCat, conceptosSistema } = ctx;
   const porMes = new Map();
@@ -30608,7 +30804,7 @@ function revTraspasosCompletos(ctx) {
 
 async function ejecutarRevisionConsistencia(b) {
   const ctx = await cargarContextoRevision(b);
-  const checks = [revVentasCategorias, revCentavosRecibido, revPropinas, revPropinasSinMarca, revPropinasDuplicadas, revDepositosVentas, revPagosProveedor, revPagosReubicables, revGruposConFaltante, revCreditosDuplicados, revFacturasPagoIncoherente, revDescuadreLibro, revVinculosPagoFactura, revCreditosClientes, revVinculosCobroFactura, revDevolucionesCliente, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar, revTcCierre, revCfdiClasificados, revTraspasosCompletos];
+  const checks = [revVentasCategorias, revCentavosRecibido, revDuplicadosProveedor, revPropinas, revPropinasSinMarca, revPropinasDuplicadas, revDepositosVentas, revPagosProveedor, revPagosReubicables, revGruposConFaltante, revCreditosDuplicados, revFacturasPagoIncoherente, revDescuadreLibro, revVinculosPagoFactura, revCreditosClientes, revVinculosCobroFactura, revDevolucionesCliente, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar, revTcCierre, revCfdiClasificados, revTraspasosCompletos];
   const out = [];
   for (const fn of checks) {
     try { const r = fn(ctx); if (r) out.push(r); }

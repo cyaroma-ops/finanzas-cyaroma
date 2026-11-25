@@ -1387,6 +1387,24 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 .up-det-fila{display:flex;align-items:center;gap:22px;flex-wrap:wrap;font-size:13px;}.up-det-fila label{display:flex;align-items:center;gap:6px;cursor:pointer;}
 .up-leyenda{display:flex;gap:22px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:14px;}
 @media (max-width:700px){.up-head,.up-alta,.up-cuerpo{padding-left:12px;padding-right:12px;}.up-buscar{width:100%;margin-left:0;}}
+/* ===== 06.29 — Posibles duplicados en Proveedores ===== */
+.dup-aviso{background:#fff6dd;border:1px solid #f0dc9c;color:#6b4e00;font-size:12.5px;padding:8px 12px;border-radius:8px;margin:6px 0 10px;}
+.dup-bg{position:fixed;inset:0;background:rgba(10,20,40,.55);z-index:620;display:flex;align-items:center;justify-content:center;padding:16px;}
+.dup-caja{background:#fff;border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.35);width:min(620px,100%);max-height:92vh;overflow:auto;padding:20px 22px;}
+.dup-caja.dup-ancha{width:min(900px,100%);}
+.dup-titulo{font-size:17px;font-weight:700;color:var(--navy-1);margin-bottom:8px;}
+.dup-intro{font-size:13.5px;color:var(--muted);margin:0 0 12px;}
+.dup-lista{border:1px solid var(--line);border-radius:10px;overflow:hidden;}
+.dup-fila{display:flex;justify-content:space-between;gap:12px;padding:9px 12px;font-size:13px;border-bottom:1px solid var(--line);}
+.dup-fila:last-child{border-bottom:none;}.dup-fila:first-child{background:#fff6dd;}
+.dup-sub{font-size:12px;color:var(--muted);}.dup-motivo{font-size:12px;color:#8a5a00;}
+.dup-acciones{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:14px;}
+.dup-par{border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px;}
+.dup-par-cols{display:grid;grid-template-columns:1fr 1fr;gap:12px;}.dup-par-cols .dup-fila{border:1px solid var(--line);border-radius:8px;}
+.dup-etq{font-size:11.5px;font-weight:600;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.03em;}
+.dup-marca{margin-top:4px;font-size:11px;color:#8a5a00;background:#fff3d6;border-radius:6px;padding:2px 6px;display:inline-block;}
+.dup-banner{display:flex;align-items:center;justify-content:space-between;gap:12px;background:#fff6dd;border:1px solid #f0dc9c;color:#6b4e00;font-size:13px;padding:10px 14px;border-radius:10px;margin:0 0 14px;flex-wrap:wrap;}
+@media (max-width:700px){.dup-par-cols{grid-template-columns:1fr;}}
 </style>
 <style id="estiloModalProveedoresCat">
 /* ===== Modal «Catálogo de proveedores» — estilos acotados a ESTE modal (ningún otro modal cambia) ===== */
@@ -2885,6 +2903,7 @@ Transacciones recurrentes
       </div>
     </div>
     <div id="fpCreditoHint" class="fp-hint"></div>
+    <div id="fpDupAviso" class="dup-aviso" style="display:none;"></div>
     <div id="fpEquivalenteMxnWrap" style="display:none;font-size:11.5px;color:var(--muted);margin:-4px 0 12px;">Equivalente MXN al TC <span id="fpEquivalenteTcTxt"></span>: <strong id="fpEquivalenteMxnTxt"></strong></div>
     <div id="fpIvaWrap" style="display:none;border:1.5px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:12px;">
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;margin-bottom:8px;">
@@ -3912,7 +3931,7 @@ Transacciones recurrentes
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-06.28"></script>
+<script src="/app.js?v=2026-11-06.29"></script>
 <div id="alertasPanel" class="alertas-panel" role="dialog" aria-label="Alertas de la Revisión de consistencia" hidden></div>
 </body>
 </html>
