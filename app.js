@@ -34,7 +34,7 @@ const SL_CAPTURA_RE = /guardar|agregar|añadir|nuev[oa]|crear|eliminar|borrar|qu
 const SL_CONSULTA_RE = /descargar|exportar|excel|pdf|imprimir|filtr|buscar|ver |^ver$|detalle|consultar/i;
 function soloLecturaOcultar(raiz) {
   (raiz || document).querySelectorAll('button, a.btn, label.doc-adjunto-agregar, label.btn').forEach(el => {
-    if (el.classList.contains('sl-oculto') || el.closest('#modalUsuarios, #accesosPanel, #alertasPanel, .login-card, #bannerSoloLectura')) return;
+    if (el.classList.contains('sl-oculto') || el.closest('#modalUsuarios, #usuariosPantalla, #accesosPanel, #alertasPanel, .login-card, #bannerSoloLectura')) return;
     const t = (el.textContent || '').trim(), cls = el.className || '';
     const capt = /(^|\s)(btn-gold|btn-danger|row-del|doc-adjunto-quitar|doc-adjunto-agregar)(\s|$)/.test(cls) || SL_CAPTURA_RE.test(t);
     if (capt && !SL_CONSULTA_RE.test(t) && !/(^|\s)(btn-ghost-keep|sl-keep)(\s|$)/.test(cls)) el.classList.add('sl-oculto');
@@ -965,122 +965,140 @@ async function loadUsuarioNiveles(email) {   // { business_id: 'ver'|'captura'|'
   const m = {}; (r.data || []).forEach(x => { m[x.business_id] = conNivel ? (x.nivel || 'total') : 'total'; });
   return m;
 }
+// ===== 06.28 — Usuarios y permisos: pantalla completa con matriz usuario × negocio =====
+let STATE_usuarioEditando = new Set();   // usuarios con el detalle abierto
+let STATE_usuariosBuscar = '';
+async function loadTodosNiveles() {      // { correo_en_minusculas: { business_id: 'ver'|'captura'|'total' } } en UNA sola consulta
+  let r = await sb.from('fz_usuario_negocios').select('email,business_id,nivel'), conNivel = true;
+  if (r.error) { conNivel = false; r = await sb.from('fz_usuario_negocios').select('email,business_id'); }
+  const m = {}; (r.data || []).forEach(x => { const k = String(x.email || '').toLowerCase(); (m[k] = m[k] || {})[x.business_id] = conNivel ? (x.nivel || 'total') : 'total'; });
+  return m;
+}
+function cerrarUsuariosPantalla() {
+  const ov = document.getElementById('usuariosPantalla'); if (ov) ov.style.display = 'none';
+  document.removeEventListener('keydown', usuariosPantallaEsc);
+}
+function usuariosPantallaEsc(e) { if (e.key === 'Escape' && !e.target.closest('input, select, textarea')) cerrarUsuariosPantalla(); }
 async function openUsuariosModal() {
+  let ov = document.getElementById('usuariosPantalla');
+  if (!ov) { ov = document.createElement('div'); ov.id = 'usuariosPantalla'; ov.className = 'usuarios-pantalla'; document.body.appendChild(ov); }
+  ov.style.display = 'flex'; STATE_usuariosBuscar = ''; STATE_usuarioEditando.clear();
+  document.addEventListener('keydown', usuariosPantallaEsc);
   await renderUsuariosList();
-  document.getElementById('modalUsuarios').classList.add('show');
-  document.getElementById('closeUsuarios').onclick = () => document.getElementById('modalUsuarios').classList.remove('show');
-  document.getElementById('saveUsuario').onclick = async () => {
-    const email = document.getElementById('newUsuarioEmail').value.trim().toLowerCase();
-    const nombre = document.getElementById('newUsuarioNombre').value.trim();
-    const esAdministrador = document.getElementById('newUsuarioPropietario').checked;
+}
+function usuariosAplicarBusqueda() {
+  const ov = document.getElementById('usuariosPantalla'); if (!ov) return;
+  const q = (STATE_usuariosBuscar || '').trim().toLowerCase(); let n = 0;
+  ov.querySelectorAll('tr.up-fila').forEach(tr => {
+    const ver = !q || (tr.dataset.q || '').includes(q); tr.style.display = ver ? '' : 'none'; if (ver) n++;
+    const det = ov.querySelector(`tr.up-detalle[data-id="${tr.dataset.id}"]`); if (det) det.style.display = ver ? '' : 'none';
+  });
+  const vacio = ov.querySelector('#upSinResultados'); if (vacio) vacio.style.display = (q && !n) ? '' : 'none';
+}
+async function renderUsuariosList() {
+  const ov = document.getElementById('usuariosPantalla'); if (!ov) return;
+  const [usuarios, negocios, niveles] = await Promise.all([loadUsuariosAutorizados(), loadTodosNegociosSinFiltro(), loadTodosNiveles()]);
+  const scrollY = (ov.querySelector('.up-cuerpo') || {}).scrollTop || 0;
+  const altaAbierta = ov.querySelector('#upAlta') && ov.querySelector('#upAlta').style.display !== 'none';
+  const yo = (STATE.user && STATE.user.email || '').toLowerCase();
+  const pill = (txt, tipo) => `<span class="up-pill up-pill-${tipo}">${escHtml(txt)}</span>`;
+  const nCols = negocios.length;
+  const filas = usuarios.map(u => {
+    const abierto = STATE_usuarioEditando.has(u.id), mios = niveles[String(u.email).toLowerCase()] || {};
+    const tipo = u.es_principal ? pill('Administrador principal', 'warn') : pill(etiquetaRol(u.es_administrador, u.rol), 'neutro');
+    const celdas = u.es_administrador
+      ? `<td colspan="${nCols || 1}" class="up-todos">Todos los negocios${u.es_principal ? ' · no se puede quitar' : ''}</td>`
+      : (negocios.map(n => `<td><select class="cell up-nivel usuario-negocio-nivel" data-email="${escAttr(u.email)}" data-negocio="${n.id}">
+            <option value="" ${!mios[n.id] ? 'selected' : ''}>Sin acceso</option><option value="ver" ${mios[n.id] === 'ver' ? 'selected' : ''}>Solo ve</option>
+            <option value="captura" ${mios[n.id] === 'captura' ? 'selected' : ''}>Captura</option><option value="total" ${mios[n.id] === 'total' ? 'selected' : ''}>Acceso total</option></select></td>`).join('') || '<td></td>');
+    const detalle = !abierto ? '' : `<tr class="up-detalle" data-id="${u.id}"><td colspan="${nCols + 3}">
+        <div class="up-det-caja"><div class="up-det-aviso">Estos cambios afectan qué puede ver y hacer esta persona en el sistema.</div>
+        ${u.es_principal ? '<div style="font-size:13px;color:var(--navy-1);">Administrador principal: no se puede degradar, desactivar ni quitar. Ve y administra todos los negocios.</div>' : `
+        <div class="up-det-fila">
+          <label><input type="checkbox" class="usuario-propietario" data-id="${u.id}" ${u.es_administrador ? 'checked' : ''}> Es administrador (ve todos los negocios)</label>
+          <label><input type="checkbox" class="usuario-activo" data-id="${u.id}" ${u.activo !== false ? 'checked' : ''}> Activo (puede entrar)</label>
+          ${!u.es_administrador ? `<label>Rol (solo para identificarlo): <select class="cell usuario-rol" data-id="${u.id}">
+              <option value="propietario" ${u.rol === 'propietario' ? 'selected' : ''}>Propietario</option><option value="socio" ${u.rol === 'socio' ? 'selected' : ''}>Socio</option>
+              <option value="gerencia" ${(!u.rol || u.rol === 'gerencia') ? 'selected' : ''}>Gerencia</option></select></label>` : ''}
+          <button class="btn btn-ghost btn-sm usuario-del" data-id="${u.id}" style="color:var(--red);margin-left:auto;">Quitar acceso a este usuario</button>
+        </div>`}
+        </div></td></tr>`;
+    return `<tr class="up-fila" data-id="${u.id}" data-q="${escAttr((String(u.nombre || '') + ' ' + u.email).toLowerCase())}">
+        <td class="up-usuario"><button type="button" class="up-nombre usuario-editar-btn" data-id="${u.id}" title="Ver y cambiar el detalle">
+          <strong>${escHtml(u.nombre || u.email)}</strong>${String(u.email).toLowerCase() === yo ? ' <span class="up-tu">(tú)</span>' : ''}<span class="up-correo">${escHtml(u.email)}</span></button></td>
+        <td>${tipo}</td>${celdas}<td>${u.activo !== false ? pill('Activo', 'ok') : pill('Inactivo', 'warn')}</td></tr>${detalle}`;
+  }).join('');
+  ov.innerHTML = `
+    <div class="up-head">
+      <button type="button" class="btn btn-ghost btn-sm" id="upVolver">← Configuración</button>
+      <div><h2>Usuarios y permisos</h2><div class="up-res">${usuarios.length} usuario(s) · ${negocios.length} negocio(s)</div></div>
+      <input type="text" id="upBuscar" class="up-buscar" placeholder="Buscar usuario…" value="${escAttr(STATE_usuariosBuscar)}" autocomplete="off">
+      <button type="button" class="btn btn-gold btn-sm" id="upAgregarBtn">+ Agregar usuario</button>
+    </div>
+    <div class="up-alta" id="upAlta" style="display:${altaAbierta ? 'flex' : 'none'};">
+      <div class="field" style="margin:0;"><label>Correo</label><input type="email" id="newUsuarioEmail" placeholder="correo@cyaroma.com.mx" style="width:260px;"></div>
+      <div class="field" style="margin:0;"><label>Nombre (opcional)</label><input type="text" id="newUsuarioNombre" placeholder="Ej. Rodolfo Arcos" style="width:220px;"></div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;margin-bottom:9px;"><input type="checkbox" id="newUsuarioPropietario"> Es administrador (ve todos los negocios)</label>
+      <button type="button" class="btn btn-gold btn-sm" id="saveUsuario" style="margin-bottom:4px;">Agregar</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="upAltaCancelar" style="margin-bottom:4px;">Cancelar</button>
+    </div>
+    <div class="up-cuerpo">
+      <table class="up-tabla"><thead><tr><th>Usuario</th><th>Tipo</th>${negocios.map(n => `<th title="${escAttr(n.name)}">${escHtml(n.name)}${n.active === false ? ' <span class="up-tu">(inactivo)</span>' : ''}</th>`).join('') || '<th></th>'}<th>Estado</th></tr></thead>
+        <tbody>${filas || `<tr><td colspan="${nCols + 3}" class="empty">Sin usuarios autorizados todavía.</td></tr>`}<tr id="upSinResultados" style="display:none;"><td colspan="${nCols + 3}" class="empty">Ningún usuario coincide con la búsqueda.</td></tr></tbody></table>
+      <div class="up-leyenda"><span><strong>Solo ve:</strong> consulta y descarga, no modifica.</span><span><strong>Captura:</strong> captura y edita, sin cerrar ni reabrir periodos.</span><span><strong>Acceso total:</strong> todo en ese negocio.</span><span>Los cambios de nivel se guardan al instante. Solo los administradores ven esta pantalla.</span></div>
+    </div>`;
+  const cuerpo = ov.querySelector('.up-cuerpo'); if (cuerpo) cuerpo.scrollTop = scrollY;
+  usuariosAplicarBusqueda();
+  ov.querySelector('#upVolver').onclick = cerrarUsuariosPantalla;
+  ov.querySelector('#upBuscar').addEventListener('input', (e) => { STATE_usuariosBuscar = e.target.value; usuariosAplicarBusqueda(); });
+  ov.querySelector('#upAgregarBtn').onclick = () => { const a = ov.querySelector('#upAlta'); a.style.display = a.style.display === 'none' ? 'flex' : 'none'; if (a.style.display !== 'none') ov.querySelector('#newUsuarioEmail').focus(); };
+  ov.querySelector('#upAltaCancelar').onclick = () => { ov.querySelector('#upAlta').style.display = 'none'; };
+  ov.querySelector('#saveUsuario').onclick = async () => {
+    const email = ov.querySelector('#newUsuarioEmail').value.trim().toLowerCase();
+    const nombre = ov.querySelector('#newUsuarioNombre').value.trim();
+    const esAdministrador = ov.querySelector('#newUsuarioPropietario').checked;
     if (!email) { toast('Escribe un correo.', 'error'); return; }
     const { error } = await sb.from('fz_usuarios_autorizados').insert({ email, nombre: nombre || null, es_administrador: esAdministrador });
     if (error) { toast('Error: ' + error.message, 'error'); return; }
-    document.getElementById('newUsuarioEmail').value = '';
-    document.getElementById('newUsuarioNombre').value = '';
-    document.getElementById('newUsuarioPropietario').checked = false;
-    renderUsuariosList();
+    registrarAuditoria(null, 'crear', 'Usuarios', `Agregó a ${email}${esAdministrador ? ' como administrador' : ''}`);
+    ov.querySelector('#upAlta').style.display = 'none'; await renderUsuariosList();
+    toast(esAdministrador ? 'Usuario agregado.' : 'Usuario agregado. Elige abajo a qué negocios entra y con qué nivel.');
   };
-}
-let STATE_usuarioEditando = new Set();
-async function renderUsuariosList() {
-  const [usuarios, todosNegocios] = await Promise.all([loadUsuariosAutorizados(), loadTodosNegociosSinFiltro()]);
-  const box = document.getElementById('usuariosList');
-  if (!usuarios.length) { box.innerHTML = `<div class="empty" style="padding:16px;">Sin usuarios autorizados todavía.</div>`; return; }
-
-  const bloques = await Promise.all(usuarios.map(async u => {
-    const nivelesDe = u.es_administrador ? {} : await loadUsuarioNiveles(u.email);
-    const editando = STATE_usuarioEditando.has(u.id);
-    return `
-    <div style="padding:14px 6px;border-bottom:1px solid var(--line);">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
-        <div style="min-width:0;">
-          <strong style="font-size:14.5px;">${escHtml(u.nombre || u.email)}</strong>${u.email.toLowerCase()===STATE.user.email.toLowerCase()?' <span style="color:var(--muted);font-size:11px;">(tú)</span>':''}
-          ${u.nombre ? `<div style="color:var(--muted);font-size:12px;margin-top:2px;">${escHtml(u.email)}</div>` : ''}
-          <div style="margin-top:5px;display:flex;gap:6px;flex-wrap:wrap;">
-            <span class="badge ${u.es_administrador?'pag':''}" ${!u.es_administrador?'style="background:#eef1f6;color:var(--muted);"':''}>${u.es_principal ? 'Administrador principal' : etiquetaRol(u.es_administrador, u.rol)}</span>
-            <span class="badge ${u.activo!==false?'pag':'pend'}">${u.activo!==false?'Activo':'Inactivo'}</span>
-          </div>
-        </div>
-        <div style="flex-shrink:0;">
-          <button class="btn btn-ghost btn-sm usuario-editar-btn" data-id="${u.id}">${editando?'Listo':'Editar'}</button>
-        </div>
-      </div>
-      ${editando ? `
-        <div style="margin-top:10px;padding:12px 14px;background:#fff8ec;border:1px solid #f0e0bd;border-radius:8px;">
-          <div style="font-size:11px;color:var(--muted);margin-bottom:10px;">⚠ Estos cambios afectan qué puede ver y hacer esta persona en el sistema.</div>
-          ${u.es_principal ? '<div style="font-size:12.5px;color:var(--navy-1);">Administrador principal: no se puede degradar, desactivar ni quitar. Ve y administra todos los negocios.</div>' : `
-          <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:${u.es_administrador?'0':'12px'};">
-            <label style="display:flex;align-items:center;gap:5px;font-size:12.5px;cursor:pointer;">
-              <input type="checkbox" class="usuario-propietario" data-id="${u.id}" ${u.es_administrador?'checked':''}> Es administrador (ve todos los negocios)
-            </label>
-            <label style="display:flex;align-items:center;gap:5px;font-size:12.5px;cursor:pointer;">
-              <input type="checkbox" class="usuario-activo" data-id="${u.id}" ${u.activo!==false?'checked':''}> Activo (puede entrar)
-            </label>
-          </div>
-          ${!u.es_administrador ? `
-            <div style="margin-bottom:12px;">
-              <label style="font-size:11.5px;color:var(--muted);display:block;margin-bottom:5px;">Rol (solo para identificarlo, no cambia lo que puede ver o hacer):</label>
-              <select class="cell usuario-rol" data-id="${u.id}" style="max-width:200px;">
-                <option value="propietario" ${u.rol==='propietario'?'selected':''}>Propietario</option>
-                <option value="socio" ${u.rol==='socio'?'selected':''}>Socio</option>
-                <option value="gerencia" ${(!u.rol||u.rol==='gerencia')?'selected':''}>Gerencia</option>
-              </select>
-            </div>
-            <div style="font-size:11.5px;color:var(--muted);margin-bottom:8px;">Negocios y qué puede hacer en cada uno:</div>
-            <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:6px;">
-              ${todosNegocios.map(n => `
-                <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12.5px;border-bottom:1px solid var(--line);padding:4px 0;">
-                  <span>${escHtml(n.name)}</span>
-                  <select class="cell usuario-negocio-nivel" data-email="${escAttr(u.email)}" data-negocio="${n.id}" style="max-width:150px;">
-                    <option value="" ${!nivelesDe[n.id]?'selected':''}>Sin acceso</option>
-                    <option value="ver" ${nivelesDe[n.id]==='ver'?'selected':''}>Solo ve</option>
-                    <option value="captura" ${nivelesDe[n.id]==='captura'?'selected':''}>Captura</option>
-                    <option value="total" ${nivelesDe[n.id]==='total'?'selected':''}>Acceso total</option>
-                  </select>
-                </div>`).join('') || '<span style="font-size:12px;color:var(--muted);">Aún no hay negocios creados.</span>'}
-            </div>
-            <div style="font-size:11px;color:var(--muted);margin-bottom:12px;"><strong>Solo ve:</strong> consulta y descarga, no modifica. <strong>Captura:</strong> captura y edita, sin cerrar ni reabrir periodos. <strong>Acceso total:</strong> todo en ese negocio.</div>
-            ` : ''}`}
-          ${u.es_principal ? '' : `<button class="btn btn-ghost btn-sm usuario-del" data-id="${u.id}" style="color:var(--red);">Quitar acceso a este usuario</button>`}
-        </div>` : ''}
-    </div>`;
-  }));
-  box.innerHTML = bloques.join('');
-
-  box.querySelectorAll('.usuario-editar-btn').forEach(btn => btn.addEventListener('click', () => {
-    if (STATE_usuarioEditando.has(btn.dataset.id)) STATE_usuarioEditando.delete(btn.dataset.id);
-    else STATE_usuarioEditando.add(btn.dataset.id);
+  ov.querySelectorAll('.usuario-editar-btn').forEach(btn => btn.addEventListener('click', () => {
+    if (STATE_usuarioEditando.has(btn.dataset.id)) STATE_usuarioEditando.delete(btn.dataset.id); else STATE_usuarioEditando.add(btn.dataset.id);
     renderUsuariosList();
   }));
-  box.querySelectorAll('.usuario-rol').forEach(sel => sel.addEventListener('change', async () => {
+  ov.querySelectorAll('.usuario-rol').forEach(sel => sel.addEventListener('change', async () => {
     await sb.from('fz_usuarios_autorizados').update({ rol: sel.value }).eq('id', sel.dataset.id);
     renderUsuariosList();
   }));
-  box.querySelectorAll('.usuario-propietario').forEach(chk => chk.addEventListener('change', async () => {
+  ov.querySelectorAll('.usuario-propietario').forEach(chk => chk.addEventListener('change', async () => {
     if (!confirm(chk.checked ? '¿Convertir a esta persona en administrador? Podrá ver TODOS los negocios y el dashboard consolidado.' : '¿Quitarle el rol de administrador a esta persona?')) { chk.checked = !chk.checked; return; }
-    await sb.from('fz_usuarios_autorizados').update({ es_administrador: chk.checked }).eq('id', chk.dataset.id);
+    const { error } = await sb.from('fz_usuarios_autorizados').update({ es_administrador: chk.checked }).eq('id', chk.dataset.id);
+    if (error) toast('Error: ' + error.message, 'error');
     renderUsuariosList();
   }));
-  box.querySelectorAll('.usuario-activo').forEach(chk => chk.addEventListener('change', async () => {
-    await sb.from('fz_usuarios_autorizados').update({ activo: chk.checked }).eq('id', chk.dataset.id);
+  ov.querySelectorAll('.usuario-activo').forEach(chk => chk.addEventListener('change', async () => {
+    const { error } = await sb.from('fz_usuarios_autorizados').update({ activo: chk.checked }).eq('id', chk.dataset.id);
+    if (error) toast('Error: ' + error.message, 'error');
     renderUsuariosList();
   }));
-  box.querySelectorAll('.usuario-negocio-nivel').forEach(sel => sel.addEventListener('change', async () => {
+  ov.querySelectorAll('.usuario-negocio-nivel').forEach(sel => sel.addEventListener('change', async () => {
     const email = sel.dataset.email, negocioId = sel.dataset.negocio, nivel = sel.value;
     if (!nivel) { await sb.from('fz_usuario_negocios').delete().ilike('email', email).eq('business_id', negocioId); return; }
-    let up = await sb.from('fz_usuario_negocios').update({ nivel }).ilike('email', email).eq('business_id', negocioId).select('business_id');
+    const up = await sb.from('fz_usuario_negocios').update({ nivel }).ilike('email', email).eq('business_id', negocioId).select('business_id');
     if (up.error) { toast(/nivel/i.test(up.error.message) ? 'Falta correr SQL_06.26_1 en Supabase para poder guardar el nivel.' : 'Error: ' + up.error.message, 'error'); renderUsuariosList(); return; }
     if (!up.data || !up.data.length) {
       const ins = await sb.from('fz_usuario_negocios').insert({ email, business_id: negocioId, nivel });
       if (ins.error) { toast('Error: ' + ins.error.message, 'error'); renderUsuariosList(); return; }
     }
-    registrarAuditoria(null, 'editar', 'Usuarios', `${email}: ${NIVELES_NEGOCIO[nivel]} en ${((STATE.businesses || []).find(x => x.id === negocioId) || {}).name || 'un negocio'}`);
+    registrarAuditoria(null, 'editar', 'Usuarios', `${email}: ${NIVELES_NEGOCIO[nivel]} en ${((negocios.find(x => x.id === negocioId)) || {}).name || 'un negocio'}`);
   }));
-  box.querySelectorAll('.usuario-del').forEach(btn => btn.addEventListener('click', async () => {
+  ov.querySelectorAll('.usuario-del').forEach(btn => btn.addEventListener('click', async () => {
     if (usuarios.length <= 1) { toast('Debe quedar al menos un usuario autorizado.', 'error'); return; }
     if (!confirm('¿Seguro que quieres quitarle el acceso a este usuario? Ya no podrá entrar a Finanzas.')) return;
-    await sb.from('fz_usuarios_autorizados').delete().eq('id', btn.dataset.id);
+    const { error } = await sb.from('fz_usuarios_autorizados').delete().eq('id', btn.dataset.id);
+    if (error) { toast('Error: ' + error.message, 'error'); return; }
     STATE_usuarioEditando.delete(btn.dataset.id);
     renderUsuariosList();
   }));
@@ -26635,7 +26653,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.27';
+const APP_VERSION = '2026-11-06.28';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.

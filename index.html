@@ -1364,6 +1364,29 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 .banner-solo-lectura{background:#fff6dd;border:1px solid #f0dc9c;color:#6b4e00;font-size:13px;padding:8px 14px;border-radius:8px;margin:0 32px 12px;}
 .sl-oculto{display:none!important;}
 @media (max-width:700px){.banner-solo-lectura{margin:0 12px 10px;}}
+/* ===== 06.28 — Usuarios y permisos (pantalla completa) ===== */
+.usuarios-pantalla{position:fixed;inset:0;z-index:350;background:var(--paper,#f4f6f9);display:none;flex-direction:column;}
+.up-head{display:flex;align-items:center;gap:16px;padding:14px 28px;background:#fff;border-bottom:1px solid var(--line);flex-wrap:wrap;}
+.up-head h2{font-size:22px;color:var(--navy-1);margin:0;}.up-res{font-size:12.5px;color:var(--muted);margin-top:2px;}
+.up-buscar{margin-left:auto;width:240px;padding:9px 12px;border:1.5px solid var(--line);border-radius:9px;font:inherit;font-size:13px;background:#fff;}
+.up-alta{background:#fff8ec;border-bottom:1px solid #f0e0bd;padding:12px 28px;gap:14px;align-items:flex-end;flex-wrap:wrap;}
+.up-cuerpo{flex:1;overflow:auto;padding:18px 28px 40px;}
+.up-tabla{width:100%;border-collapse:separate;border-spacing:0;background:#fff;border:1px solid var(--line);border-radius:12px;font-size:13.5px;}
+.up-tabla th{position:sticky;top:0;z-index:2;background:#f7f9fc;text-align:left;font-size:12px;font-weight:600;color:var(--muted);padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap;}
+.up-tabla td{padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:middle;}
+.up-tabla th:first-child,.up-tabla td.up-usuario{position:sticky;left:0;background:#fff;z-index:1;min-width:230px;}
+.up-tabla th:first-child{z-index:3;background:#f7f9fc;}
+.up-nombre{all:unset;cursor:pointer;display:block;}.up-nombre:hover strong{text-decoration:underline;}
+.up-correo{display:block;font-size:12px;color:var(--muted);margin-top:2px;}.up-tu{font-size:11px;color:var(--muted);font-weight:400;}
+.up-todos{color:var(--muted);font-size:12.5px;}
+.up-nivel{min-width:118px;}
+.up-pill{display:inline-block;font-size:12px;padding:2px 10px;border-radius:999px;white-space:nowrap;}
+.up-pill-ok{background:#e4f6ea;color:#1e7a3d;}.up-pill-warn{background:#fff3d6;color:#8a5a00;}.up-pill-neutro{background:#eef1f6;color:var(--muted);}
+.up-detalle td{background:#fffaf0;}
+.up-det-caja{padding:4px 2px;}.up-det-aviso{font-size:11.5px;color:var(--muted);margin-bottom:8px;}
+.up-det-fila{display:flex;align-items:center;gap:22px;flex-wrap:wrap;font-size:13px;}.up-det-fila label{display:flex;align-items:center;gap:6px;cursor:pointer;}
+.up-leyenda{display:flex;gap:22px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:14px;}
+@media (max-width:700px){.up-head,.up-alta,.up-cuerpo{padding-left:12px;padding-right:12px;}.up-buscar{width:100%;margin-left:0;}}
 </style>
 <style id="estiloModalProveedoresCat">
 /* ===== Modal «Catálogo de proveedores» — estilos acotados a ESTE modal (ningún otro modal cambia) ===== */
@@ -3881,31 +3904,6 @@ Transacciones recurrentes
 </div>
 
 <!-- Modal: usuarios autorizados -->
-<div class="modal-bg" id="modalUsuarios">
-  <div class="modal" style="width:min(720px,95vw);">
-    <h3>Usuarios autorizados</h3>
-    <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px;">Solo estos correos pueden entrar a Finanzas. Un <strong>propietario</strong> ve todos los negocios y el dashboard consolidado; un usuario normal solo ve los negocios que le asignes (y su dashboard se limita a esos).</p>
-    <div id="usuariosList" style="max-height:55vh;overflow-y:auto;margin-bottom:16px;"></div>
-    <div class="grid-2">
-      <div class="field" style="margin-bottom:0;">
-        <label>Correo</label>
-        <input type="email" id="newUsuarioEmail" placeholder="correo@cyaroma.com.mx">
-      </div>
-      <div class="field" style="margin-bottom:0;">
-        <label>Nombre (opcional)</label>
-        <input type="text" id="newUsuarioNombre" placeholder="Ej. Rodolfo Arcos">
-      </div>
-    </div>
-    <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);cursor:pointer;margin:10px 0;">
-      <input type="checkbox" id="newUsuarioPropietario"> Es administrador (ve todos los negocios)
-    </label>
-    <div class="modal-actions">
-      <button class="btn btn-ghost" id="closeUsuarios">Cerrar</button>
-      <button class="btn btn-gold" id="saveUsuario">+ Agregar usuario</button>
-    </div>
-  </div>
-</div>
-
 <!-- Modal: captura de póliza de diario (fijo, no se mueve con la lista) -->
 <div class="modal-bg" id="modalPoliza">
   <div class="modal modal-workspace" style="resize:both;overflow:hidden;">
@@ -3914,7 +3912,7 @@ Transacciones recurrentes
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-06.27"></script>
+<script src="/app.js?v=2026-11-06.28"></script>
 <div id="alertasPanel" class="alertas-panel" role="dialog" aria-label="Alertas de la Revisión de consistencia" hidden></div>
 </body>
 </html>
