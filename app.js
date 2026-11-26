@@ -1846,17 +1846,17 @@ async function repConstruirPL(b, S) {
   const start = S.desde + '-01', end = monthBounds(S.hasta).end;
   const h = await repCapturarPantalla('sec-pl', () => { STATE.currentMonth = S.hasta; STATE_plVista = 'mensual'; STATE_plRangoDesde = start; STATE_plRangoHasta = end; STATE_plComparacion = 'ninguna'; }, renderPLCuerpo,
     () => { STATE.currentMonth = g.m; STATE_plVista = g.v; STATE_plRangoDesde = g.d; STATE_plRangoHasta = g.h; STATE_plComparacion = g.c; });
-  return { k: 'pl', kind: 'dom', titulo: 'Estado de resultados', subtitulo: `${b.razon_social && b.razon_social !== b.name ? b.razon_social + ' · ' : ''}Del ${fechaCorta(start)} al ${fechaCorta(end)}`, orient: 'portrait', holder: h, secId: 'sec-pl' };
+  return repFormalizar({ k: 'pl', kind: 'dom', titulo: 'Estado de resultados', subtitulo: `${b.razon_social && b.razon_social !== b.name ? b.razon_social + ' · ' : ''}Del ${fechaCorta(start)} al ${fechaCorta(end)}`, periodo: `Del ${fechaCorta(start)} al ${fechaCorta(end)}`, orient: 'portrait', holder: h, secId: 'sec-pl' });
 }
 async function repConstruirBalanza(b, S) {
   const mes = repMesElegido(S, 'balanza'), g = { m: STATE.currentMonth };
   const h = await repCapturarPantalla('sec-balanza', () => { STATE.currentMonth = mes; }, renderBalanzaCuerpo, () => { STATE.currentMonth = g.m; });
-  return { k: 'balanza', kind: 'dom', titulo: 'Balanza de comprobación', subtitulo: `Al cierre de ${repEtiquetaMes(mes)}`, orient: 'landscape', holder: h, secId: 'sec-balanza' };
+  return repFormalizar({ k: 'balanza', kind: 'dom', titulo: 'Balanza de comprobación', subtitulo: `Al cierre de ${repEtiquetaMes(mes)}`, periodo: `Al cierre de ${repEtiquetaMes(mes)}`, orient: 'landscape', holder: h, secId: 'sec-balanza' });
 }
 async function repConstruirBalance(b, S) {
   const mes = repMesElegido(S, 'balance'), g = { m: STATE.currentMonth, y: STATE_balanceHastaYm };
   const h = await repCapturarPantalla('sec-balance', () => { STATE.currentMonth = mes; STATE_balanceHastaYm = mes; }, renderBalanceGeneralCuerpo, () => { STATE.currentMonth = g.m; STATE_balanceHastaYm = g.y; });
-  return { k: 'balance', kind: 'dom', titulo: 'Balance general', subtitulo: `Al cierre de ${repEtiquetaMes(mes)}`, orient: 'portrait', holder: h, secId: 'sec-balance' };
+  return repFormalizar({ k: 'balance', kind: 'dom', titulo: 'Balance general', subtitulo: `Al cierre de ${repEtiquetaMes(mes)}`, periodo: `Al cierre de ${repEtiquetaMes(mes)}`, orient: 'portrait', holder: h, secId: 'sec-balance' });
 }
 async function repConstruirPolizas(b, S) {
   const start = S.desde + '-01', end = monthBounds(S.hasta).end;
@@ -1977,11 +1977,167 @@ function repBloqueHtml(bl, limite) {
   };
   return `${bl.titulo ? `<h4 class="rep-bloque-t">${escHtml(bl.titulo)}</h4>` : ''}<div class="table-wrap"><table class="tabla-contable"><thead><tr>${cols.map(c => `<th class="${c.num ? 'num' : ''}">${escHtml(c.h)}</th>`).join('')}</tr></thead><tbody>${filas.map(tr).join('')}</tbody></table></div>${bl.rows.length > limite ? `<p class="hint">Vista previa: se muestran ${limite} de ${bl.rows.length} renglones; el archivo trae todo.</p>` : ''}`;
 }
+
+// ===== 06.42 — Presentación formal de reportes (Estado de resultados, Balanza, Balance general) =====
+// Toma EXACTAMENTE las cifras que ya dibujó la pantalla (no recalcula nada) y las reordena en formato de estado financiero.
+const REP_GRAN_TOTAL = /^(utilidad|p[ée]rdida|total pasivo\s*(\+|y)\s*capital|total activo|totales?\b|sumas?\b)/i;
+function repFormalFmt(n) {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return n === undefined || n === null ? '' : String(n);
+  if (Math.abs(n) < 0.005) return '-';
+  const t = Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return n < 0 ? `(${t})` : t;
+}
+function repFormalizar(it) {
+  try { it.formal = repFormalDeHolder(it.holder, it); it.kind = 'formal'; } catch (e) { /* si algo no cuadra, se queda el formato anterior */ }
+  return it;
+}
+function repFormalDeHolder(h, it) {
+  const secciones = []; let cols = null;
+  [...h.querySelectorAll('table')].forEach(t => {
+    if (it.k !== 'balanza' && !t.classList.contains('report-table')) return;   // solo las tablas de cifras; las de captura (ajustes manuales) no son reporte
+    if (t.querySelector('input, select, textarea')) return;
+    const card = t.closest('.card'), h3 = card && card.querySelector('h3');
+    let titulo = h3 ? h3.textContent.replace(/\s+/g, ' ').trim().replace(/\s+—\s+.*$/, '') : '';
+    if (it.k !== 'pl') titulo = '';
+    if (it.k === 'balanza' && t.tHead && !cols) {
+      const tr = t.tHead.rows[t.tHead.rows.length - 1];
+      cols = [...tr.cells].map(c => ({ h: c.textContent.replace(/\s+/g, ' ').trim() }));
+    }
+    const rows = [];
+    [...t.tBodies].forEach(tb => [...tb.rows].forEach(tr => {
+      const tds = [...tr.cells].filter(td => !td.classList.contains('td-vacia-reporte'));
+      if (!tds.length) return;
+      let celdas = [];
+      tds.forEach(td => {
+        const c = td.cloneNode(true); c.querySelectorAll(PDF_OMITIR + ', ' + PDF_SOLO_MOVIL + ', .pl-flecha, svg').forEach(x => x.remove());
+        let txt = c.textContent.replace(/[▸▾›»↗⤴]/g, '').replace(/\s+/g, ' ').trim();
+        txt = txt.replace(/\s*\(\s*(ver|ocultar) detalle\s*\)$/i, '').replace(/\s*(ver|ocultar) detalle$/i, '').trim();
+        const n = td.classList.contains('num') ? repNumero(txt) : null;
+        celdas.push(n !== null ? n : txt);
+        for (let i = 1; i < (td.colSpan || 1); i++) celdas.push('');
+      });
+      if (!celdas.some(v => (typeof v === 'number') || String(v).trim() !== '')) return;
+      const first = tds[0], etq = String(celdas[0] || '');
+      let tipo = 'cuenta', nivel = 0;
+      if (tr.classList.contains('total-row')) tipo = REP_GRAN_TOTAL.test(etq) ? 'gran' : 'total';
+      else if (tds.length === 1 && (first.colSpan || 1) >= 2) tipo = (tr.style.background || tr.style.backgroundColor) ? 'grupo' : 'texto';
+      else if (/^subtotal\b/i.test(etq) || tr.style.fontStyle === 'italic') tipo = 'sub';
+      else {
+        const pl = parseInt(first.style.paddingLeft, 10) || 0; nivel = pl <= 4 ? 0 : Math.max(1, Math.round((pl - 4) / 18));
+        if (/^(font-weight:\s*(6|7)00)/.test((first.getAttribute('style') || '').replace(/.*?(font-weight:\s*\d+).*/, '$1'))) tipo = 'cuenta';
+      }
+      const negr = /font-weight:\s*(600|700)/.test(first.getAttribute('style') || '');
+      rows.push({ tipo, nivel, negr, celdas });
+    }));
+    if (rows.length) secciones.push({ titulo, rows });
+  });
+  if (!secciones.length) throw new Error('sin tablas');
+  const n = Math.max(cols ? cols.length : 0, ...secciones.flatMap(s => s.rows.map(r => r.celdas.length)));
+  if (!cols) cols = [{ h: 'Concepto' }, { h: 'Importe' }];
+  while (cols.length < n) cols.push({ h: '' });
+  cols = cols.slice(0, n);
+  // % sobre ingresos (solo Estado de resultados)
+  if (it.k === 'pl') {
+    let ing = null;
+    secciones.forEach(s => s.rows.forEach(r => { if (ing === null && /^total ingresos/i.test(String(r.celdas[0])) && typeof r.celdas[1] === 'number') ing = r.celdas[1]; }));
+    cols = [cols[0], { h: 'Importe' }, { h: '% s/ingresos' }];
+    secciones.forEach(s => s.rows.forEach(r => {
+      const v = r.celdas[1]; r.celdas = [r.celdas[0], v === undefined ? '' : v, ''];
+      if (['cuenta', 'sub', 'total', 'gran'].includes(r.tipo) && typeof v === 'number' && ing) r.celdas[2] = { pct: v / ing * 100 };
+    }));
+  }
+  cols.forEach((c, i) => { c.num = i > 0 && secciones.some(s => s.rows.some(r => typeof r.celdas[i] === 'number' || (r.celdas[i] && r.celdas[i].pct !== undefined))); });
+  return { cols, secciones };
+}
+const repFormalCelda = (v) => (v && typeof v === 'object' && v.pct !== undefined) ? (Math.abs(v.pct) < 0.05 ? '-' : (v.pct < 0 ? `(${Math.abs(v.pct).toFixed(1)}%)` : v.pct.toFixed(1) + '%')) : (typeof v === 'number' ? repFormalFmt(v) : (v === undefined || v === null ? '' : String(v)));
+function repFormalEnc(b, it) {
+  return { razon: String(b.razon_social || b.name || ''), titulo: String(it.titulo).toUpperCase(), periodo: String(it.periodo || it.subtitulo || ''), moneda: 'Cifras en pesos mexicanos' };
+}
+function repFormalHtml(it, b) {
+  const f = it.formal, e = repFormalEnc(b, it), n = f.cols.length;
+  const filas = f.secciones.map(s => (s.titulo ? `<tr class="rf-sec"><td colspan="${n}">${escHtml(s.titulo.toUpperCase())}</td></tr>` : '') + s.rows.map(r => {
+    if (r.tipo === 'grupo') return `<tr class="rf-grupo"><td colspan="${n}">${escHtml(String(r.celdas[0]).toUpperCase())}</td></tr>`;
+    if (r.tipo === 'texto') return `<tr class="rf-texto"><td colspan="${n}">${escHtml(String(r.celdas[0]))}</td></tr>`;
+    return `<tr class="rf-${r.tipo}${r.negr ? ' rf-neg' : ''}">${f.cols.map((c, i) => `<td class="${c.num && i ? 'num' : ''}"${i === 0 && r.nivel ? ` style="padding-left:${8 + r.nivel * 16}px"` : ''}>${escHtml(repFormalCelda(r.celdas[i]))}</td>`).join('')}</tr>`;
+  }).join('')).join('');
+  return `<article class="rep-hoja"><header class="rf-enc"><div class="rf-razon">${escHtml(e.razon)}</div><div class="rf-titulo">${escHtml(e.titulo)}</div><div class="rf-per">${escHtml(e.periodo)}</div><div class="rf-mon">${e.moneda}</div></header><div class="table-wrap"><table class="rf-tabla"><thead><tr>${f.cols.map((c, i) => `<th class="${c.num && i ? 'num' : ''}">${escHtml(c.h)}</th>`).join('')}</tr></thead><tbody>${filas}</tbody></table></div><footer class="rf-pie">Generado el ${new Date().toLocaleString('es-MX')}${STATE.nombreUsuario ? ' · ' + escHtml(STATE.nombreUsuario) : ''}</footer></article>`;
+}
+function repHojaFormal(it, b) {
+  const f = it.formal, e = repFormalEnc(b, it), aoa = [], fmts = {}, n = f.cols.length;
+  [e.razon, e.titulo, e.periodo, e.moneda, ''].forEach(t => aoa.push([t]));
+  const hdr = aoa.length; aoa.push(f.cols.map(c => c.h));
+  f.secciones.forEach(s => {
+    if (s.titulo) { aoa.push([]); aoa.push([s.titulo.toUpperCase()]); }
+    s.rows.forEach(r => {
+      if (r.tipo === 'grupo') { aoa.push([String(r.celdas[0]).toUpperCase()]); return; }
+      if (r.tipo === 'texto') { aoa.push([String(r.celdas[0])]); return; }
+      const ri = aoa.length;
+      aoa.push(f.cols.map((c, i) => {
+        const v = r.celdas[i];
+        if (i === 0) return '    '.repeat(r.nivel || 0) + String(v === undefined ? '' : v);
+        if (typeof v === 'number') { fmts[ri + ':' + i] = '#,##0.00;(#,##0.00);"-"'; return v; }
+        if (v && typeof v === 'object' && v.pct !== undefined) { fmts[ri + ':' + i] = '0.0%;(0.0%);"-"'; return v.pct / 100; }
+        return v === undefined ? '' : v;
+      }));
+    });
+  });
+  aoa.push([]); aoa.push(['Generado: ' + new Date().toLocaleString('es-MX') + (STATE.nombreUsuario ? ' · ' + STATE.nombreUsuario : '')]);
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  Object.keys(fmts).forEach(k => { const [r, c] = k.split(':').map(Number); const cel = ws[XLSX.utils.encode_cell({ r, c })]; if (cel) cel.z = fmts[k]; });
+  ws['!merges'] = [0, 1, 2, 3].map(r => ({ s: { r, c: 0 }, e: { r, c: Math.max(0, n - 1) } }));
+  const ancho0 = Math.min(60, Math.max(28, ...aoa.slice(hdr).map(r => (typeof r[0] === 'string' && r.length > 1) ? r[0].length + 2 : 0)));
+  ws['!cols'] = f.cols.map((c, i) => ({ wch: i === 0 ? ancho0 : (c.num ? 16 : 12) }));
+  ws['!freeze'] = { xSplit: 0, ySplit: hdr + 1 };
+  ws['!views'] = [{ state: 'frozen', ySplit: hdr + 1 }];
+  ws['!margins'] = { left: 0.6, right: 0.6, top: 0.7, bottom: 0.7, header: 0.3, footer: 0.3 };
+  return ws;
+}
+function repPdfFormal(doc, b, it) {
+  const { jsPDF } = window.jspdf, orient = it.orient || 'portrait', f = it.formal, e = repFormalEnc(b, it);
+  let d = doc; if (d) d.addPage('letter', orient); else d = new jsPDF({ unit: 'pt', format: 'letter', orientation: orient });
+  const W = d.internal.pageSize.getWidth(), margin = 48; let y = 56;
+  d.setTextColor(10, 31, 61); d.setFont('helvetica', 'bold'); d.setFontSize(14); d.text(pdfLimpiaTexto(e.razon), W / 2, y, { align: 'center' });
+  d.setFontSize(11); d.text(pdfLimpiaTexto(e.titulo), W / 2, y + 18, { align: 'center' });
+  d.setFont('helvetica', 'normal'); d.setFontSize(9.5); d.setTextColor(60, 70, 90); d.text(pdfLimpiaTexto(e.periodo), W / 2, y + 33, { align: 'center' });
+  d.setFont('helvetica', 'italic'); d.setFontSize(8.5); d.setTextColor(110, 118, 135); d.text(e.moneda, W / 2, y + 46, { align: 'center' });
+  d.setDrawColor(10, 31, 61); d.setLineWidth(0.8); d.line(margin, y + 56, W - margin, y + 56);
+  y += 64;
+  const n = f.cols.length, metas = [], body = [];
+  f.secciones.forEach(s => {
+    if (s.titulo) { metas.push({ tipo: 'sec' }); body.push([{ content: pdfLimpiaTexto(s.titulo.toUpperCase()), colSpan: n, styles: { fontStyle: 'bold', fontSize: 9, textColor: [10, 31, 61], cellPadding: { top: 10, bottom: 3, left: 2, right: 2 } } }]); }
+    s.rows.forEach(r => {
+      metas.push(r);
+      if (r.tipo === 'grupo') { body.push([{ content: pdfLimpiaTexto(String(r.celdas[0]).toUpperCase()), colSpan: n, styles: { fontStyle: 'bold', textColor: [10, 31, 61], cellPadding: { top: 8, bottom: 2, left: 2, right: 2 } } }]); return; }
+      if (r.tipo === 'texto') { body.push([{ content: pdfLimpiaTexto(String(r.celdas[0])), colSpan: n, styles: { fontStyle: 'italic', textColor: [110, 118, 135] } }]); return; }
+      const neg = r.negr || ['sub', 'total', 'gran'].includes(r.tipo);
+      body.push(f.cols.map((c, i) => ({ content: pdfLimpiaTexto(i === 0 ? String(r.celdas[0] === undefined ? '' : r.celdas[0]) : repFormalCelda(r.celdas[i])), styles: Object.assign({ fontStyle: neg ? 'bold' : 'normal' }, i === 0 ? { cellPadding: { top: 2.2, bottom: 2.2, left: 2 + (r.nivel || 0) * 12, right: 2 } } : {}) })));
+    });
+  });
+  const numIdx = f.cols.map((c, i) => c.num && i ? i : -1).filter(i => i >= 0), colSt = {};
+  f.cols.forEach((c, i) => { if (i && c.num) colSt[i] = { halign: 'right', cellWidth: orient === 'landscape' ? 74 : (it.k === 'pl' ? (i === 2 ? 70 : 105) : 120) }; else if (i) colSt[i] = { cellWidth: 50 }; });
+  d.autoTable({
+    startY: y, margin: { left: margin, right: margin, top: 40, bottom: 44 }, theme: 'plain', head: [f.cols.map(c => c.h)], body, columnStyles: colSt, showHead: 'everyPage',
+    styles: { fontSize: orient === 'landscape' ? 8 : 9, cellPadding: { top: 2.2, bottom: 2.2, left: 2, right: 2 }, textColor: [30, 41, 59], overflow: 'linebreak' },
+    headStyles: { fontStyle: 'bold', textColor: [10, 31, 61], fillColor: false, halign: 'left', lineWidth: 0 },
+    didParseCell: (data) => { if (data.section === 'head' && numIdx.includes(data.column.index)) data.cell.styles.halign = 'right'; if (data.section === 'body') { const m = metas[data.row.index]; if (m && m.tipo !== 'grupo' && m.tipo !== 'texto' && m.tipo !== 'sec' && numIdx.includes(data.column.index)) data.cell.styles.halign = 'right'; } },
+    didDrawCell: (data) => {
+      const c = data.cell, x = c.x, w = c.width;
+      if (data.section === 'head' && data.column.index === 0) { d.setDrawColor(10, 31, 61); d.setLineWidth(0.8); d.line(margin, c.y + c.height, W - margin, c.y + c.height); }
+      if (data.section !== 'body') return;
+      const m = metas[data.row.index]; if (!m || !['sub', 'total', 'gran'].includes(m.tipo) || !numIdx.includes(data.column.index)) return;
+      d.setDrawColor(40, 50, 70); d.setLineWidth(0.6); d.line(x + 2, c.y, x + w - 2, c.y);
+      if (m.tipo === 'gran') { d.line(x + 2, c.y + c.height - 2.2, x + w - 2, c.y + c.height - 2.2); d.line(x + 2, c.y + c.height, x + w - 2, c.y + c.height); }
+    },
+  });
+  return d;
+}
+
 function reportesAbrirVista(b, S, build) {
   document.getElementById('modalReportesVista')?.remove();
   const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalReportesVista';
   const cuerpo = build.items.map(it => {
     let inner;
+    if (it.kind === 'formal') return repFormalHtml(it, b);
     if (it.kind === 'dom') { inner = it.holder.innerHTML; }
     else inner = it.bloques.length ? it.bloques.map(bl => repBloqueHtml(bl, 300)).join('') : `<p class="hint">${escHtml(it.vacioGeneral || 'Sin datos.')}</p>`;
     return `<section class="rep-vista-bloque"><h3>${escHtml(it.titulo)}</h3><div class="hint" style="margin-bottom:8px;">${escHtml(it.subtitulo)}</div>${inner}</section>`;
@@ -2012,6 +2168,7 @@ function repTablasDeHolder(h) {
   });
 }
 function repHojaDeItem(it, b, S) {
+  if (it.kind === 'formal') return repHojaFormal(it, b);
   const aoa = [], fmts = {}, merges = [], enc = [b.razon_social || b.name, it.titulo, it.subtitulo, 'Generado: ' + new Date().toLocaleString('es-MX')];
   enc.forEach((t, i) => { aoa.push([t]); });
   aoa.push([]);
@@ -2079,13 +2236,14 @@ function reportesDescargarPdf(b, S, build) {
     doc.setFont('helvetica', 'normal'); doc.setTextColor(30, 41, 59); items.forEach((it, i) => doc.text(`${i + 1}. ${pdfLimpiaTexto(it.titulo)} — ${pdfLimpiaTexto(it.subtitulo)}`, 56, 282 + i * 17));
   }
   items.forEach(it => {
+    if (it.kind === 'formal') { doc = repPdfFormal(doc, b, it); return; }
     if (it.kind === 'dom') {
       it.holder.id = it.secId;
       try { const d = pdfDePantalla(it.holder, { titulo: it.titulo, subtitulo: it.subtitulo, orientacion: it.orient, doc }); if (!doc) doc = d; } finally { it.holder.removeAttribute('id'); }
     } else doc = repPdfBloques(doc, b, it);
   });
   if (multi || items[0].kind !== 'dom') {
-    const n = doc.getNumberOfPages(); for (let i = 1; i <= n; i++) { doc.setPage(i); const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(); doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(150, 150, 150); doc.text(`Página ${i} de ${n}`, W / 2, H - 14, { align: 'center' }); }
+    const n = doc.getNumberOfPages(); for (let i = 1; i <= n; i++) { doc.setPage(i); const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(); doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(150, 150, 150); doc.text(`Página ${i} de ${n}`, W / 2, H - 14, { align: 'center' }); doc.text('Generado: ' + new Date().toLocaleString('es-MX'), 48, H - 14); }
   }
   doc.save(repNombreArchivo(b, S, 'pdf'));
 }
@@ -27866,7 +28024,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.41';
+const APP_VERSION = '2026-11-06.42';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
