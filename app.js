@@ -1022,7 +1022,8 @@ async function renderUsuariosList() {
     const celdas = u.es_administrador
       ? `<td colspan="${nCols || 1}" class="up-todos">Todos los negocios${u.es_principal ? ' · no se puede quitar' : ''}</td>`
       : (negocios.map(n => { const pm = (permisosTodos[String(u.email).toLowerCase()] || {})[n.id], valor = pm ? 'p:' + pm.perfil : (mios[n.id] || '');
-          return `<td><select class="cell up-nivel usuario-negocio-nivel" data-email="${escAttr(u.email)}" data-negocio="${n.id}">
+          const kc = valor === '' ? 'sin' : (valor.startsWith('p:') ? 'perfil' : valor);
+          return `<td class="up-celda up-c-${kc}"><select class="cell up-nivel usuario-negocio-nivel" data-email="${escAttr(u.email)}" data-negocio="${n.id}">
             <option value="" ${valor === '' ? 'selected' : ''}>Sin acceso</option><option value="ver" ${valor === 'ver' ? 'selected' : ''}>Solo ve</option>
             <option value="captura" ${valor === 'captura' ? 'selected' : ''}>Captura</option><option value="total" ${valor === 'total' ? 'selected' : ''}>Acceso total</option>
             <optgroup label="Perfiles">${Object.keys(PERFILES).map(k => `<option value="p:${k}" ${valor === 'p:' + k ? 'selected' : ''}>${escHtml(PERFILES[k].t)}</option>`).join('')}<option value="p:personalizado" ${valor === 'p:personalizado' ? 'selected' : ''}>Personalizado</option></optgroup></select>
@@ -1061,7 +1062,7 @@ async function renderUsuariosList() {
     <div class="up-cuerpo">
       <table class="up-tabla"><thead><tr><th>Usuario</th><th>Tipo</th>${negocios.map(n => `<th title="${escAttr(n.name)}">${escHtml(n.name)}${n.active === false ? ' <span class="up-tu">(inactivo)</span>' : ''}</th>`).join('') || '<th></th>'}<th>Estado</th></tr></thead>
         <tbody>${filas || `<tr><td colspan="${nCols + 3}" class="empty">Sin usuarios autorizados todavía.</td></tr>`}<tr id="upSinResultados" style="display:none;"><td colspan="${nCols + 3}" class="empty">Ningún usuario coincide con la búsqueda.</td></tr></tbody></table>
-      <div class="up-leyenda"><span><strong>Solo ve:</strong> consulta y descarga, no modifica.</span><span><strong>Captura:</strong> captura y edita, sin cerrar ni reabrir periodos.</span><span><strong>Acceso total:</strong> todo en ese negocio.</span><span><strong>Perfiles:</strong> combinan capacidades concretas (solo reportes, solo caja y efectivo, contador…); «Capacidades…» permite ajustarlas una por una.</span><span>Los cambios de nivel se guardan al instante. Solo los administradores ven esta pantalla.</span></div>
+      <div class="up-leyenda"><span><i class="up-sw up-c-ver"></i><strong>Solo ve:</strong> consulta y descarga, no modifica.</span><span><i class="up-sw up-c-captura"></i><strong>Captura:</strong> captura y edita, sin cerrar ni reabrir periodos.</span><span><i class="up-sw up-c-total"></i><strong>Acceso total:</strong> todo en ese negocio.</span><span><i class="up-sw up-c-perfil"></i><strong>Perfiles:</strong> combinan capacidades concretas (solo reportes, solo caja y efectivo, contador…); «Capacidades…» permite ajustarlas una por una.</span><span>Los cambios de nivel se guardan al instante. Solo los administradores ven esta pantalla.</span></div>
     </div>`;
   const cuerpo = ov.querySelector('.up-cuerpo'); if (cuerpo) cuerpo.scrollTop = scrollY;
   usuariosAplicarBusqueda();
@@ -18064,16 +18065,19 @@ function efectivoLiquidezCalcular(monedasConSaldo, bancosConSaldo) {
 function efectivoLiquidezHtml(b, monedasConSaldo, bancosConSaldo) {
   const r = efectivoLiquidezCalcular(monedasConSaldo, bancosConSaldo);
   const lineasDivisa = r.cajasDivisa.map(m => { const cod = codigoDeCaja(m); return `<div class="liq-linea${m.activo === false ? ' liq-inactiva' : ''}">
-      <span>${escHtml(m.nombre)}${m.activo === false ? ' (inactiva)' : ''}</span>
-      <span class="num">${fmtMon(m.saldo, cod)} × <span class="tc-reporte-fijo" title="Tipo de cambio operativo vigente. Se cambia en Configuración › Divisas y tipos de cambio.">${fmtTc(m.tc_reporte)}</span>${puede('capturar_tc') ? ' <a href="#" class="tc-reporte-ir">Cambiar</a>' : ''} = <strong>${fmt(m.pesoEquiv)}</strong></span></div>`; }).join('')
-    + r.bancosDivisa.map(c => `<div class="liq-linea"><span>Banco — ${escHtml(c.nombre)}</span><span class="num">${fmtMon(c.saldo, c.moneda)} × ${fmtNum(c.tc)} = <strong>${fmt(c.eq)}</strong></span></div>`).join('');
+      <span class="liq-nom">${escHtml(m.nombre)}${m.activo === false ? ' (inactiva)' : ''}</span>
+      <span class="num">${fmtMon(m.saldo, cod)}</span>
+      <span class="num liq-tc"><span class="tc-reporte-fijo" title="Tipo de cambio operativo vigente. Se cambia en Configuración › Divisas y tipos de cambio.">${fmtTc(m.tc_reporte)}</span>${puede('capturar_tc') ? ' <a href="#" class="tc-reporte-ir">Cambiar</a>' : ''}</span>
+      <span class="num"><strong>${fmt(m.pesoEquiv)}</strong></span></div>`; }).join('')
+    + r.bancosDivisa.map(c => `<div class="liq-linea"><span class="liq-nom">Banco — ${escHtml(c.nombre)}</span><span class="num">${fmtMon(c.saldo, c.moneda)}</span><span class="num liq-tc">${fmtTc(c.tc)}</span><span class="num"><strong>${fmt(c.eq)}</strong></span></div>`).join('');
+  const encabezadoDivisas = (r.cajasDivisa.length + r.bancosDivisa.length) ? '<div class="liq-linea liq-head"><span class="liq-nom">Cuenta</span><span class="num">Saldo</span><span class="num liq-tc">TC</span><span class="num">En pesos</span></div>' : '';
   return `
     ${bannerMonedasCajasHtml(monedasConSaldo)}
     <div class="card liq-resumen">
       <div class="card-head"><h3>Liquidez — ${escHtml(b.name)}</h3><span class="hint">Al día de hoy · el tipo de cambio operativo se cambia en Configuración › Divisas y tipos de cambio</span></div>
       <div class="liq-grid">
         <div class="liq-kpi"><div class="label">Pesos</div><div class="value num">${fmt(r.pesos)}</div><div class="liq-sub">Efectivo ${fmt(r.pesosEfectivo)} · Bancos ${fmt(r.pesosBancos)}</div></div>
-        <div class="liq-kpi"><div class="label">Divisas (en pesos)</div><div class="value num">${fmt(r.divisasPesos)}</div>${lineasDivisa ? `<div class="liq-divisas">${lineasDivisa}</div>` : '<div class="liq-sub">Sin cajas en divisa</div>'}</div>
+        <div class="liq-kpi"><div class="label">Divisas (en pesos)</div><div class="value num">${fmt(r.divisasPesos)}</div>${lineasDivisa ? `<div class="liq-divisas">${encabezadoDivisas}${lineasDivisa}</div>` : '<div class="liq-sub">Sin cajas en divisa</div>'}</div>
         <div class="liq-kpi liq-total"><div class="label">Liquidez total (efectivo + bancos)</div><div class="value num" style="color:var(--green);">${fmt(r.total)}</div><div class="liq-sub">Pesos + divisas al TC de arriba</div></div>
       </div>
     </div>`;
@@ -27862,7 +27866,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.40';
+const APP_VERSION = '2026-11-06.41';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
