@@ -8,6 +8,10 @@ const sbReal = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
    Si la persona solo VE el negocio que tiene abierto, cualquier intento de guardar, editar, borrar o subir archivos se detiene aquí con un aviso claro.
    Es la segunda barrera: la primera y definitiva está en la base de datos (políticas fz_solo_lectura_*). Escribir en la bitácora de auditoría sí se permite. */
 const SL_MENSAJE = 'Este negocio está en modo solo lectura: no se puede guardar ni modificar nada.';
+const SC_CADENA = new Proxy(function () {}, {
+  get(_, k) { if (k === 'then') return (ok, no) => Promise.resolve({ data: null, error: { message: 'Tu perfil no permite modificar esta información. Pídelo a quien administra los permisos.', code: 'SIN_CAPACIDAD' }, count: null, status: 403 }).then(ok, no); return () => SC_CADENA; },
+  apply() { return SC_CADENA; }
+});
 const SL_CADENA = new Proxy(function () {}, {
   get(_, k) { if (k === 'then') return (ok, no) => Promise.resolve({ data: null, error: { message: SL_MENSAJE, code: 'SOLO_LECTURA' }, count: null, status: 403 }).then(ok, no); return () => SL_CADENA; },
   apply() { return SL_CADENA; }
@@ -17,7 +21,7 @@ const sb = new Proxy(sbReal, {
     if (k === 'from') return (tabla) => {
       const q = t.from(tabla);
       if (tabla === 'fz_auditoria') return q;
-      return new Proxy(q, { get(qt, m) { if (['insert', 'update', 'upsert', 'delete'].includes(m) && esSoloLecturaActual()) return () => SL_CADENA; const v = qt[m]; return typeof v === 'function' ? v.bind(qt) : v; } });
+      return new Proxy(q, { get(qt, m) { if (['insert', 'update', 'upsert', 'delete'].includes(m)) { if (esSoloLecturaActual()) return () => SL_CADENA; if (capacidadBloqueaTabla(tabla)) return () => SC_CADENA; } const v = qt[m]; return typeof v === 'function' ? v.bind(qt) : v; } });
     };
     if (k === 'rpc') return (nombre, ...a) => (esSoloLecturaActual() && /^fn_(?!remanente)/.test(nombre)) ? SL_CADENA : t.rpc(nombre, ...a);
     if (k === 'storage') return { from: (b) => { const s = t.storage.from(b); return new Proxy(s, { get(st, m) { if (['upload', 'remove', 'move', 'copy', 'update'].includes(m) && esSoloLecturaActual()) return () => SL_CADENA; const v = st[m]; return typeof v === 'function' ? v.bind(st) : v; } }); } };
@@ -41,15 +45,16 @@ function soloLecturaOcultar(raiz) {
   });
 }
 let SL_OBSERVADOR = null;
+function esSoloLecturaPantalla() { return esSoloLecturaActual() || seccionSoloLectura(); }
 function soloLecturaActualizar() {
-  const sl = esSoloLecturaActual();
+  const sl = esSoloLecturaPantalla();
   document.body.classList.toggle('solo-lectura', sl);
   let b = document.getElementById('bannerSoloLectura');
   if (!sl) { if (b) b.remove(); document.querySelectorAll('.sl-oculto').forEach(e => e.classList.remove('sl-oculto')); return; }
   if (!b) { const c = document.getElementById('content'); if (!c) return; b = document.createElement('div'); b.id = 'bannerSoloLectura'; b.className = 'banner-solo-lectura'; c.parentNode.insertBefore(b, c); }
-  b.textContent = `Tienes acceso de solo lectura en ${(biz() || {}).name || 'este negocio'}: puedes consultar y descargar, pero no modificar.`;
+  b.textContent = esSoloLecturaActual() ? `Tienes acceso de solo lectura en ${(biz() || {}).name || 'este negocio'}: puedes consultar y descargar, pero no modificar.` : `Tu perfil permite consultar esta pantalla en ${(biz() || {}).name || 'este negocio'}, pero no modificarla.`;
   soloLecturaOcultar(document.body);
-  if (!SL_OBSERVADOR) { let t = null; SL_OBSERVADOR = new MutationObserver(() => { if (!esSoloLecturaActual()) return; clearTimeout(t); t = setTimeout(() => soloLecturaOcultar(document.body), 60); }); SL_OBSERVADOR.observe(document.body, { childList: true, subtree: true }); }
+  if (!SL_OBSERVADOR) { let t = null; SL_OBSERVADOR = new MutationObserver(() => { if (!esSoloLecturaPantalla()) return; clearTimeout(t); t = setTimeout(() => soloLecturaOcultar(document.body), 60); }); SL_OBSERVADOR.observe(document.body, { childList: true, subtree: true }); }
 }
 
 /* ---------- PAGINACIÓN AUTOMÁTICA ----------
@@ -654,6 +659,7 @@ document.getElementById('cerrarModalAdjuntos').addEventListener('click', () => {
 
 /* ---------- Cierre de periodo ---------- */
 function puedeReabrirPeriodo() {
+  if (!STATE.esAdministrador && permisoDeNegocio()) return puede('reabrir_periodos');   // 06.38: con perfil, lo decide la capacidad
   if (!STATE.esAdministrador && nivelNegocio(STATE.currentBusinessId) !== 'total') return false;   // 06.26: «Solo ve» y «Captura» no cierran ni reabren periodos
   return !!STATE.esAdministrador || !!STATE.rolUsuario;
 }
@@ -892,6 +898,7 @@ async function checkAcceso(email) {
       if (r.error) { const r2 = await sb.from('fz_usuario_negocios').select('business_id').ilike('email', email); permisos = r2.data; } else permisos = r.data; }   // sin la columna «nivel» (antes de correr el SQL 06.26): todos con acceso total, como siempre
     STATE.negociosPermitidos = (permisos || []).map(p => p.business_id);
     STATE.nivelesNegocio = {}; (permisos || []).forEach(p => { STATE.nivelesNegocio[p.business_id] = p.nivel || 'total'; });
+    STATE.permisosNegocio = await cargarPermisosPropios(email);   // 06.38: perfiles por negocio (sin perfil = como siempre)
   } else {
     STATE.negociosPermitidos = null; // null = sin restricción
   }
@@ -998,7 +1005,7 @@ function usuariosAplicarBusqueda() {
 }
 async function renderUsuariosList() {
   const ov = document.getElementById('usuariosPantalla'); if (!ov) return;
-  const [usuarios, negocios, niveles] = await Promise.all([loadUsuariosAutorizados(), loadTodosNegociosSinFiltro(), loadTodosNiveles()]);
+  const [usuarios, negocios, niveles, permisosTodos] = await Promise.all([loadUsuariosAutorizados(), loadTodosNegociosSinFiltro(), loadTodosNiveles(), loadTodosPermisos()]);
   const scrollY = (ov.querySelector('.up-cuerpo') || {}).scrollTop || 0;
   const altaAbierta = ov.querySelector('#upAlta') && ov.querySelector('#upAlta').style.display !== 'none';
   const yo = (STATE.user && STATE.user.email || '').toLowerCase();
@@ -1009,9 +1016,12 @@ async function renderUsuariosList() {
     const tipo = u.es_principal ? pill('Administrador principal', 'warn') : pill(etiquetaRol(u.es_administrador, u.rol), 'neutro');
     const celdas = u.es_administrador
       ? `<td colspan="${nCols || 1}" class="up-todos">Todos los negocios${u.es_principal ? ' · no se puede quitar' : ''}</td>`
-      : (negocios.map(n => `<td><select class="cell up-nivel usuario-negocio-nivel" data-email="${escAttr(u.email)}" data-negocio="${n.id}">
-            <option value="" ${!mios[n.id] ? 'selected' : ''}>Sin acceso</option><option value="ver" ${mios[n.id] === 'ver' ? 'selected' : ''}>Solo ve</option>
-            <option value="captura" ${mios[n.id] === 'captura' ? 'selected' : ''}>Captura</option><option value="total" ${mios[n.id] === 'total' ? 'selected' : ''}>Acceso total</option></select></td>`).join('') || '<td></td>');
+      : (negocios.map(n => { const pm = (permisosTodos[String(u.email).toLowerCase()] || {})[n.id], valor = pm ? 'p:' + pm.perfil : (mios[n.id] || '');
+          return `<td><select class="cell up-nivel usuario-negocio-nivel" data-email="${escAttr(u.email)}" data-negocio="${n.id}">
+            <option value="" ${valor === '' ? 'selected' : ''}>Sin acceso</option><option value="ver" ${valor === 'ver' ? 'selected' : ''}>Solo ve</option>
+            <option value="captura" ${valor === 'captura' ? 'selected' : ''}>Captura</option><option value="total" ${valor === 'total' ? 'selected' : ''}>Acceso total</option>
+            <optgroup label="Perfiles">${Object.keys(PERFILES).map(k => `<option value="p:${k}" ${valor === 'p:' + k ? 'selected' : ''}>${escHtml(PERFILES[k].t)}</option>`).join('')}<option value="p:personalizado" ${valor === 'p:personalizado' ? 'selected' : ''}>Personalizado</option></optgroup></select>
+            ${mios[n.id] ? `<button type="button" class="up-cap-btn usuario-cap" data-email="${escAttr(u.email)}" data-negocio="${n.id}">Capacidades…</button>` : ''}</td>`; }).join('') || '<td></td>');
     const detalle = !abierto ? '' : `<tr class="up-detalle" data-id="${u.id}"><td colspan="${nCols + 3}">
         <div class="up-det-caja"><div class="up-det-aviso">Estos cambios afectan qué puede ver y hacer esta persona en el sistema.</div>
         ${u.es_principal ? '<div style="font-size:13px;color:var(--navy-1);">Administrador principal: no se puede degradar, desactivar ni quitar. Ve y administra todos los negocios.</div>' : `
@@ -1046,7 +1056,7 @@ async function renderUsuariosList() {
     <div class="up-cuerpo">
       <table class="up-tabla"><thead><tr><th>Usuario</th><th>Tipo</th>${negocios.map(n => `<th title="${escAttr(n.name)}">${escHtml(n.name)}${n.active === false ? ' <span class="up-tu">(inactivo)</span>' : ''}</th>`).join('') || '<th></th>'}<th>Estado</th></tr></thead>
         <tbody>${filas || `<tr><td colspan="${nCols + 3}" class="empty">Sin usuarios autorizados todavía.</td></tr>`}<tr id="upSinResultados" style="display:none;"><td colspan="${nCols + 3}" class="empty">Ningún usuario coincide con la búsqueda.</td></tr></tbody></table>
-      <div class="up-leyenda"><span><strong>Solo ve:</strong> consulta y descarga, no modifica.</span><span><strong>Captura:</strong> captura y edita, sin cerrar ni reabrir periodos.</span><span><strong>Acceso total:</strong> todo en ese negocio.</span><span>Los cambios de nivel se guardan al instante. Solo los administradores ven esta pantalla.</span></div>
+      <div class="up-leyenda"><span><strong>Solo ve:</strong> consulta y descarga, no modifica.</span><span><strong>Captura:</strong> captura y edita, sin cerrar ni reabrir periodos.</span><span><strong>Acceso total:</strong> todo en ese negocio.</span><span><strong>Perfiles:</strong> combinan capacidades concretas (solo reportes, solo caja y efectivo, contador…); «Capacidades…» permite ajustarlas una por una.</span><span>Los cambios de nivel se guardan al instante. Solo los administradores ven esta pantalla.</span></div>
     </div>`;
   const cuerpo = ov.querySelector('.up-cuerpo'); if (cuerpo) cuerpo.scrollTop = scrollY;
   usuariosAplicarBusqueda();
@@ -1085,15 +1095,38 @@ async function renderUsuariosList() {
     renderUsuariosList();
   }));
   ov.querySelectorAll('.usuario-negocio-nivel').forEach(sel => sel.addEventListener('change', async () => {
-    const email = sel.dataset.email, negocioId = sel.dataset.negocio, nivel = sel.value;
-    if (!nivel) { await sb.from('fz_usuario_negocios').delete().ilike('email', email).eq('business_id', negocioId); return; }
+    const email = sel.dataset.email, negocioId = sel.dataset.negocio, valor = sel.value, nomNeg = ((negocios.find(x => x.id === negocioId)) || {}).name || 'un negocio';
+    if (valor.startsWith('p:')) {   // perfil del catálogo
+      const k = valor.slice(2), actuales = ((permisosTodos[String(email).toLowerCase()] || {})[negocioId] || {}).capacidades;
+      let caps = PERFILES[k] ? PERFILES[k].caps : null;
+      if (!caps) { caps = await abrirCapacidades(email, negocios.find(x => x.id === negocioId) || { name: nomNeg }, actuales || []); if (!caps) { renderUsuariosList(); return; } }
+      const r = await guardarPermisoNegocio(email, negocioId, caps);
+      if (r.error) { toast(/fz_usuario_permisos|relation|schema cache/i.test(r.error.message) ? 'Falta correr SQL_06.38_1 en Supabase para guardar perfiles.' : 'Error: ' + r.error.message, 'error'); renderUsuariosList(); return; }
+      registrarAuditoria(null, 'editar', 'Usuarios', `${email}: perfil ${(PERFILES[r.perfil] || { t: 'Personalizado' }).t} en ${nomNeg}`);
+      renderUsuariosList(); return;
+    }
+    const nivel = valor;
+    if (!nivel) { await quitarPermisoNegocio(email, negocioId); await sb.from('fz_usuario_negocios').delete().ilike('email', email).eq('business_id', negocioId); renderUsuariosList(); return; }
+    const q = await quitarPermisoNegocio(email, negocioId); if (q.error) { toast('Error: ' + q.error.message, 'error'); renderUsuariosList(); return; }
     const up = await sb.from('fz_usuario_negocios').update({ nivel }).ilike('email', email).eq('business_id', negocioId).select('business_id');
     if (up.error) { toast(/nivel/i.test(up.error.message) ? 'Falta correr SQL_06.26_1 en Supabase para poder guardar el nivel.' : 'Error: ' + up.error.message, 'error'); renderUsuariosList(); return; }
     if (!up.data || !up.data.length) {
       const ins = await sb.from('fz_usuario_negocios').insert({ email, business_id: negocioId, nivel });
       if (ins.error) { toast('Error: ' + ins.error.message, 'error'); renderUsuariosList(); return; }
     }
-    registrarAuditoria(null, 'editar', 'Usuarios', `${email}: ${NIVELES_NEGOCIO[nivel]} en ${((negocios.find(x => x.id === negocioId)) || {}).name || 'un negocio'}`);
+    registrarAuditoria(null, 'editar', 'Usuarios', `${email}: ${NIVELES_NEGOCIO[nivel]} en ${nomNeg}`);
+    renderUsuariosList();
+  }));
+  ov.querySelectorAll('.usuario-cap').forEach(btn => btn.addEventListener('click', async () => {
+    const email = btn.dataset.email, negocioId = btn.dataset.negocio, neg = negocios.find(x => x.id === negocioId) || { name: 'un negocio' };
+    const pm = (permisosTodos[String(email).toLowerCase()] || {})[negocioId];
+    const nivelAct = (niveles[String(email).toLowerCase()] || {})[negocioId];
+    const base = pm ? pm.capacidades : (nivelAct === 'ver' ? CAP_CONSULTA : (nivelAct === 'captura' ? CAP_TODAS.filter(k => !['cerrar_periodos', 'reabrir_periodos'].includes(k)) : CAP_TODAS));
+    const caps = await abrirCapacidades(email, neg, base); if (!caps) return;
+    const r = await guardarPermisoNegocio(email, negocioId, caps);
+    if (r.error) { toast(/fz_usuario_permisos|relation|schema cache/i.test(r.error.message) ? 'Falta correr SQL_06.38_1 en Supabase para guardar perfiles.' : 'Error: ' + r.error.message, 'error'); return; }
+    registrarAuditoria(null, 'editar', 'Usuarios', `${email}: capacidades de ${neg.name} (${(PERFILES[r.perfil] || { t: 'Personalizado' }).t})`);
+    renderUsuariosList();
   }));
   ov.querySelectorAll('.usuario-del').forEach(btn => btn.addEventListener('click', async () => {
     if (usuarios.length <= 1) { toast('Debe quedar al menos un usuario autorizado.', 'error'); return; }
@@ -2050,6 +2083,7 @@ function reportesDescargarPdf(b, S, build) {
 
 
 async function renderCurrentSection() {
+  permisosAplicarNav();   // 06.38: oculta lo que el perfil no ve
   soloLecturaActualizar();
   if (esNegocioFinanciero(biz()) && SECCIONES_SOLO_FISCAL.includes(STATE.currentSection)) {
     const origen = STATE.currentSection;
@@ -22849,7 +22883,7 @@ function pedirVigenciaTC(caja, tcNuevo) {
       <h3 style="margin-bottom:6px;">Tipo de cambio de ${escHtml(caja.nombre)}</h3>
       <p class="hint" style="margin:0 0 12px;">${escHtml(cod)}: ${fmtNum(caja.tc_reporte)} → <b>${fmtNum(tcNuevo)}</b></p>
       <div class="field"><label>Rige desde</label><input type="date" id="vtcDesde" value="${hoy}"></div>
-      <div class="field"><label>Nota (opcional)</label><input type="text" id="vtcNota" placeholder="Ej. TC publicado por el DOF"></div>
+      <div class="field"><label>Nota (opcional)</label><input type="text" id="vtcNota" placeholder="Ej. TC acordado para la operación"></div>
       <p class="hint" id="vtcAviso" style="margin:0 0 12px;">Los movimientos y periodos anteriores a esa fecha se quedan con el TC que tenían.</p>
       <div style="display:flex;gap:8px;justify-content:flex-end;"><button class="btn btn-ghost" id="vtcCancelar">Cancelar</button><button class="btn btn-gold" id="vtcGuardar">Guardar</button></div></div>`;
     document.body.appendChild(bg);
@@ -22875,14 +22909,6 @@ async function cambiarTcCajaConVigencia(businessId, caja, tcNuevo) {
 // Antes de la primera vigencia de una moneda, cada caja de esa moneda recibe su fila «base» con el TC que ya tenía,
 // para que ningún periodo anterior cambie. «Todos los negocios» (fila general) solo lo puede hacer un administrador.
 const fmtTc = (n) => (Number(n) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
-// Capacidad «capturar tipos de cambio». Misma regla de siempre (cualquiera que podía editar cajas); el catálogo de permisos la amplía.
-function puede(cap, businessId) {
-  try {
-    if (STATE.esAdministrador) return true;
-    if (cap === 'capturar_tc') return nivelNegocio(businessId || STATE.currentBusinessId) !== 'ver';
-    return false;
-  } catch (_) { return false; }
-}
 function tcFmtHoyDeMoneda(vigencias, cajas, moneda, fecha) {   // TC vigente de una moneda en una fecha, o null si no hay de dónde tomarlo
   const delaMoneda = (cajas || []).filter(c => codigoMonedaDeCaja(c.nombre, c.tc_reporte) === moneda);
   if (delaMoneda.length) return tcVigenteDeCaja(vigencias, delaMoneda[0], fecha);
@@ -22972,7 +22998,7 @@ async function renderDivisas() {
         <div class="field"><label>Pesos por 1 unidad</label><input type="number" step="0.0001" min="0" id="dvTc" placeholder="Ej. 18.4500"></div>
         <div class="field"><label>Rige desde</label><input type="date" id="dvDesde" value="${hoy}"></div>
         <div class="field"><label>Se aplica a</label><select id="dvAlcance"><option value="negocio">Este negocio (${escHtml(b.name)})</option>${esAdm ? '<option value="general">Todos los negocios</option>' : ''}</select></div>
-        <div class="field" style="flex:2;"><label>Nota (opcional)</label><input type="text" id="dvNota" placeholder="Ej. TC publicado por el DOF"></div>
+        <div class="field" style="flex:2;"><label>Nota (opcional)</label><input type="text" id="dvNota" placeholder="Ej. TC acordado para la operación"></div>
         <button class="btn btn-gold" id="dvGuardar">Guardar</button></div>
       <p class="hint" id="dvAviso" style="margin:8px 0 0;"></p></div>` : '<p class="hint">Tu perfil solo permite consultar los tipos de cambio.</p>'}
     <div class="card" style="margin-bottom:16px;"><div class="card-head"><h3>Calendario de vigencias</h3></div>
@@ -23014,6 +23040,166 @@ async function renderDivisas() {
     registrarAuditoria(b.id, 'eliminar', 'Divisas', `Se eliminó el TC ${fila.tc} de ${fila.moneda} (desde ${fila.vigente_desde})`);
     renderDivisas();
   }));
+}
+
+// ===== 06.38 — Catálogo de permisos (capacidades y perfiles) =====
+// Capa ADICIONAL a los niveles «Solo ve / Captura / Acceso total»: quien no tiene un perfil asignado en un negocio se queda exactamente como estaba.
+// Los motores contables no leen permisos; esto solo decide qué pantallas se ven, qué botones salen y qué escrituras se aceptan
+// (aquí en el sistema y, para las tablas de abajo, también en la base de datos con las políticas fz_cap_*).
+const CAPACIDADES = [
+  { k: 'ver_reportes', g: 'Consulta', t: 'Ver reportes', d: 'Dashboard, estados financieros, balanza, flujo, auxiliares y Reportes' },
+  { k: 'ver_operacion', g: 'Consulta', t: 'Ver ventas, bancos, efectivo, proveedores y clientes', d: 'Solo consulta de la operación' },
+  { k: 'ver_contabilidad', g: 'Consulta', t: 'Ver pólizas, catálogo e impuestos', d: 'Solo consulta de la contabilidad y lo fiscal' },
+  { k: 'capturar_ventas', g: 'Operación', t: 'Capturar ventas', d: 'Ventas y su conciliación' },
+  { k: 'capturar_facturas', g: 'Operación', t: 'Capturar facturas de proveedores y clientes', d: 'Altas y cambios de facturas, clientes y proveedores' },
+  { k: 'pagar_cobrar', g: 'Operación', t: 'Registrar pagos y cobros', d: 'Pagar proveedores y cobrar a clientes' },
+  { k: 'clasificar_xml', g: 'Operación', t: 'Provisionar y clasificar proveedores desde los XML', d: 'Bandeja CFDI y alta de facturas desde XML' },
+  { k: 'editar_efectivo', g: 'Efectivo y bancos', t: 'Ver y editar caja y efectivo', d: 'Movimientos y cajas de efectivo y divisas' },
+  { k: 'editar_bancos', g: 'Efectivo y bancos', t: 'Ver y editar bancos', d: 'Cuentas y movimientos bancarios, conciliación' },
+  { k: 'capturar_tc', g: 'Efectivo y bancos', t: 'Capturar tipos de cambio', d: 'Divisas y tipos de cambio, revaluación' },
+  { k: 'editar_tc_operacion', g: 'Efectivo y bancos', t: 'Editar el tipo de cambio en la operación', d: 'Excepción para desbloquear el tipo de cambio sugerido' },
+  { k: 'polizas', g: 'Contabilidad', t: 'Pólizas y diarios', d: 'Crear y editar pólizas' },
+  { k: 'catalogo_cuentas', g: 'Contabilidad', t: 'Catálogo de cuentas', d: 'Cuentas mayor y subcuentas' },
+  { k: 'fiscal', g: 'Contabilidad', t: 'Impuestos y papeles de trabajo', d: 'Declaraciones, papeles, parámetros fiscales' },
+  { k: 'cerrar_periodos', g: 'Contabilidad', t: 'Cerrar periodos', d: 'Bloquear meses ya revisados' },
+  { k: 'reabrir_periodos', g: 'Contabilidad', t: 'Reabrir periodos', d: 'Reabrir meses cerrados y otras acciones de supervisión' }
+];
+const CAP_TODAS = CAPACIDADES.map(c => c.k);
+const PERFILES = {
+  contador: { t: 'Contador', caps: CAP_TODAS },
+  auxiliar: { t: 'Auxiliar contable', caps: CAP_TODAS.filter(k => !['cerrar_periodos', 'reabrir_periodos', 'catalogo_cuentas', 'editar_tc_operacion'].includes(k)) },
+  reportes: { t: 'Solo ve reportes', caps: ['ver_reportes'] },
+  caja: { t: 'Solo caja y efectivo', caps: ['editar_efectivo'] },
+  bancos: { t: 'Solo bancos', caps: ['editar_bancos'] },
+  xml: { t: 'Solo proveedores y XML', caps: ['clasificar_xml'] }
+};
+const CAP_CONSULTA = ['ver_reportes', 'ver_operacion', 'ver_contabilidad'];
+const OPERA_CAPS = ['capturar_facturas', 'pagar_cobrar', 'capturar_ventas', 'clasificar_xml'];
+// Tablas protegidas por capacidad (mismo mapa que las políticas fz_cap_* del SQL 06.38). Donde una operación escribe en varias tablas
+// (un pago mueve banco o caja, una factura nace de un XML) se aceptan TODAS las capacidades que intervienen, para no dejar nada a medias.
+const TABLA_CAPS = {
+  fz_efectivo_mov: ['editar_efectivo', 'editar_bancos', ...OPERA_CAPS], fz_bancos_mov: ['editar_efectivo', 'editar_bancos', ...OPERA_CAPS],
+  fz_efectivo_monedas: ['editar_efectivo', 'capturar_tc'], fz_bancos_cuentas: ['editar_bancos', 'pagar_cobrar'], fz_conciliaciones_bancarias: ['editar_bancos'],
+  fz_ventas: ['capturar_ventas'], fz_conceptos_venta: ['capturar_ventas'],
+  fz_proveedores: ['capturar_facturas', 'clasificar_xml', 'pagar_cobrar'], fz_proveedores_catalogo: ['capturar_facturas', 'clasificar_xml'],
+  fz_facturas_clientes: ['capturar_facturas', 'pagar_cobrar', 'clasificar_xml'], fz_clientes: ['capturar_facturas'], fz_productos_servicios: ['capturar_facturas'],
+  fz_pagos_aplicados: ['pagar_cobrar', 'capturar_facturas'], fz_cobros_aplicados: ['pagar_cobrar', 'capturar_facturas'],
+  fz_pagos_por_clasificar: ['pagar_cobrar', 'editar_bancos', 'editar_efectivo'],
+  fz_cfdi: ['clasificar_xml', 'capturar_facturas'], fz_cfdi_bitacora: ['clasificar_xml', 'capturar_facturas'],
+  fz_tipos_cambio_vigencia: ['capturar_tc'], fz_tc_cierre: ['capturar_tc'], fz_tipos_cambio_cierre: ['capturar_tc'],
+  fz_cierres_periodo: ['cerrar_periodos', 'reabrir_periodos']
+};
+const SECCION_ESCRIBE = {
+  ventas: ['capturar_ventas'], efectivo: ['editar_efectivo'], bancos: ['editar_bancos'], divisas: ['capturar_tc'],
+  proveedores: ['capturar_facturas', 'pagar_cobrar', 'clasificar_xml'], clientes: ['capturar_facturas', 'pagar_cobrar'], recurrentes: ['capturar_facturas', 'pagar_cobrar'],
+  cfdi: ['clasificar_xml', 'capturar_facturas'], pagosclasificar: ['pagar_cobrar', 'editar_bancos', 'editar_efectivo'],
+  polizas: ['polizas'], diariospolizas: ['polizas'], catalogo: ['catalogo_cuentas'],
+  impuestos: ['fiscal'], papelestrabajo: ['fiscal'], cedulasmaestras: ['fiscal'], parametrosfiscales: ['fiscal'], fuentesfiscales: ['fiscal'], saldosfavoriva: ['fiscal'], recargos: ['fiscal']
+};
+const SECCION_CONSULTA = {
+  dashboard: 'ver_reportes', pl: 'ver_reportes', balance: 'ver_reportes', balanza: 'ver_reportes', flujo: 'ver_reportes', auxiliares: 'ver_reportes', revision: 'ver_reportes', reportes: 'ver_reportes', comparativo: 'ver_reportes', librodiario: 'ver_reportes',
+  ventas: 'ver_operacion', efectivo: 'ver_operacion', bancos: 'ver_operacion', divisas: 'ver_operacion', proveedores: 'ver_operacion', clientes: 'ver_operacion', recurrentes: 'ver_operacion', cfdi: 'ver_operacion', pagosclasificar: 'ver_operacion',
+  polizas: 'ver_contabilidad', diariospolizas: 'ver_contabilidad', catalogo: 'ver_contabilidad', impuestos: 'ver_contabilidad', papelestrabajo: 'ver_contabilidad', cedulasmaestras: 'ver_contabilidad', parametrosfiscales: 'ver_contabilidad', fuentesfiscales: 'ver_contabilidad', saldosfavoriva: 'ver_contabilidad', recargos: 'ver_contabilidad', activosfijos: 'ver_contabilidad'
+};
+function permisoDeNegocio(id) { try { return (STATE.permisosNegocio || {})[id || STATE.currentBusinessId] || null; } catch (_) { return null; } }
+// ¿Puede esta persona hacer esto en este negocio? Administradores: siempre. Con perfil asignado: lo que marque el perfil.
+// Sin perfil: como siempre (los niveles). Las capacidades de consulta las tiene todo el que tiene acceso.
+function puede(cap, businessId) {
+  try {
+    if (STATE.esAdministrador) return true;
+    const id = businessId || STATE.currentBusinessId, p = permisoDeNegocio(id);
+    if (p) return (p.capacidades || []).includes(cap);
+    if (CAP_CONSULTA.includes(cap)) return true;
+    return nivelNegocio(id) !== 'ver';
+  } catch (_) { return false; }
+}
+function capacidadBloqueaTabla(tabla) {
+  try {
+    const caps = TABLA_CAPS[tabla], p = permisoDeNegocio();
+    if (!caps || !p || STATE.esAdministrador) return false;
+    return !caps.some(c => (p.capacidades || []).includes(c));
+  } catch (_) { return false; }
+}
+function seccionPermitida(sec, businessId) {
+  const p = permisoDeNegocio(businessId); if (!p || STATE.esAdministrador) return true;
+  const cons = SECCION_CONSULTA[sec], esc = SECCION_ESCRIBE[sec] || [];
+  if (!cons && !esc.length) return true;
+  return [cons, ...esc].filter(Boolean).some(c => (p.capacidades || []).includes(c));
+}
+function seccionSoloLectura() {   // el perfil deja VER esta pantalla pero no modificarla
+  try {
+    const p = permisoDeNegocio(); if (!p || STATE.esAdministrador) return false;
+    const esc = SECCION_ESCRIBE[STATE.currentSection]; if (!esc) return false;
+    return !esc.some(c => (p.capacidades || []).includes(c));
+  } catch (_) { return false; }
+}
+function permisosAplicarNav() {
+  const items = [...document.querySelectorAll('.nav-item[data-section]')];
+  items.forEach(it => { it.style.display = seccionPermitida(it.dataset.section) ? '' : 'none'; });
+  if (!seccionPermitida(STATE.currentSection)) {
+    const primera = items.map(i => i.dataset.section).find(s => seccionPermitida(s));
+    if (primera) {
+      STATE.currentSection = primera; marcarNavActivo(primera);
+      document.querySelectorAll('.section').forEach(x => x.classList.remove('active'));
+      const el = document.getElementById('sec-' + primera); if (el) el.classList.add('active');
+      updateTopbar();
+    }
+  }
+}
+async function cargarPermisosPropios(email) {   // { business_id: { perfil, capacidades } } — sin la tabla (antes del SQL 06.38) queda vacío = todo como antes
+  try {
+    const r = await sb.from('fz_usuario_permisos').select('business_id,perfil,capacidades').ilike('email', email);
+    const m = {}; if (!r.error) (r.data || []).forEach(x => { m[x.business_id] = { perfil: x.perfil, capacidades: Array.isArray(x.capacidades) ? x.capacidades : [] }; });
+    return m;
+  } catch (_) { return {}; }
+}
+async function loadTodosPermisos() {   // { correo: { business_id: { perfil, capacidades } } }
+  try {
+    const r = await sb.from('fz_usuario_permisos').select('email,business_id,perfil,capacidades');
+    const m = {}; if (!r.error) (r.data || []).forEach(x => { const k = String(x.email || '').toLowerCase(); (m[k] = m[k] || {})[x.business_id] = { perfil: x.perfil, capacidades: Array.isArray(x.capacidades) ? x.capacidades : [] }; });
+    return m;
+  } catch (_) { return {}; }
+}
+function perfilDeCapacidades(caps) {
+  const s = [...new Set(caps)].sort().join('|');
+  const k = Object.keys(PERFILES).find(x => [...new Set(PERFILES[x].caps)].sort().join('|') === s);
+  return k || 'personalizado';
+}
+async function guardarPermisoNegocio(email, businessId, caps) {   // asigna perfil/capacidades; el nivel se ajusta para que las barreras de siempre sigan coherentes
+  const lista = [...new Set(caps)].filter(c => CAP_TODAS.includes(c));
+  const escribe = lista.some(c => !CAP_CONSULTA.includes(c));
+  const nivel = !escribe ? 'ver' : (lista.includes('cerrar_periodos') || lista.includes('reabrir_periodos') ? 'total' : 'captura');
+  const up = await sb.from('fz_usuario_negocios').update({ nivel }).ilike('email', email).eq('business_id', businessId).select('business_id');
+  if (up.error) return { error: up.error };
+  if (!up.data || !up.data.length) { const ins = await sb.from('fz_usuario_negocios').insert({ email, business_id: businessId, nivel }); if (ins.error) return { error: ins.error }; }
+  const del = await sb.from('fz_usuario_permisos').delete().ilike('email', email).eq('business_id', businessId);
+  if (del.error) return { error: del.error };
+  const ins2 = await sb.from('fz_usuario_permisos').insert({ email: String(email).toLowerCase(), business_id: businessId, perfil: perfilDeCapacidades(lista), capacidades: lista, updated_by: STATE.user?.email || null });
+  if (ins2.error) return { error: ins2.error };
+  return { ok: true, nivel, perfil: perfilDeCapacidades(lista) };
+}
+async function quitarPermisoNegocio(email, businessId) {   // vuelve a los niveles de siempre (sin perfil)
+  const del = await sb.from('fz_usuario_permisos').delete().ilike('email', email).eq('business_id', businessId);
+  return del.error && !/does not exist|relation|schema cache/i.test(del.error.message || '') ? { error: del.error } : { ok: true };
+}
+function abrirCapacidades(email, negocio, actuales) {
+  return new Promise((resolve) => {
+    document.getElementById('modalCapacidades')?.remove();
+    const sel = new Set(actuales || []);
+    const grupos = [...new Set(CAPACIDADES.map(c => c.g))];
+    const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalCapacidades'; bg.style.zIndex = 10050;
+    bg.innerHTML = `<div class="modal" style="max-width:620px;max-height:88vh;overflow:auto;">
+      <h3 style="margin-bottom:4px;">Capacidades de ${escHtml(email)}</h3>
+      <p class="hint" style="margin:0 0 10px;">En ${escHtml(negocio.name)}. Elige un perfil para marcar lo habitual y ajusta lo que haga falta.</p>
+      <div class="field"><label>Perfil base</label><select id="capPerfil"><option value="">— elegir —</option>${Object.keys(PERFILES).map(k => `<option value="${k}">${escHtml(PERFILES[k].t)}</option>`).join('')}</select></div>
+      ${grupos.map(g => `<div class="cap-grupo"><strong>${escHtml(g)}</strong>${CAPACIDADES.filter(c => c.g === g).map(c => `<label class="cap-item"><input type="checkbox" class="cap-chk" value="${c.k}" ${sel.has(c.k) ? 'checked' : ''}> <span>${escHtml(c.t)}<small>${escHtml(c.d)}</small></span></label>`).join('')}</div>`).join('')}
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;"><button class="btn btn-ghost" id="capCancelar">Cancelar</button><button class="btn btn-gold" id="capGuardar">Guardar</button></div></div>`;
+    document.body.appendChild(bg);
+    const cerrar = (v) => { bg.remove(); resolve(v); };
+    bg.querySelector('#capPerfil').addEventListener('change', (e) => { const p = PERFILES[e.target.value]; if (!p) return; bg.querySelectorAll('.cap-chk').forEach(ch => { ch.checked = p.caps.includes(ch.value); }); });
+    bg.querySelector('#capCancelar').addEventListener('click', () => cerrar(null));
+    bg.querySelector('#capGuardar').addEventListener('click', () => { const caps = [...bg.querySelectorAll('.cap-chk')].filter(c => c.checked).map(c => c.value); if (!caps.length) { toast('Marca al menos una capacidad, o quita el perfil para volver a los niveles de siempre.', 'error'); return; } cerrar(caps); });
+  });
 }
 
 async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha = null, opciones = {}) {
@@ -27564,7 +27750,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.37';
+const APP_VERSION = '2026-11-06.38';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
