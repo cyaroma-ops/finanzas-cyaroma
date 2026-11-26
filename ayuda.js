@@ -360,6 +360,19 @@ window.AYUDA = {
       auditoria: '',
       relacionadas: ['revision', 'balanza', 'guia_cierre']
     },
+    divisas: {
+      resumen: 'Aquí capturas el tipo de cambio de cada moneda y desde qué fecha rige. Los periodos y movimientos anteriores a esa fecha no cambian.',
+      pasos: [
+        'Revisa en las tarjetas el tipo de cambio que rige hoy y si hay uno programado.',
+        'En **Nuevo tipo de cambio** elige la moneda, escribe los pesos por unidad y la fecha desde la que rige (por omisión, hoy).',
+        'Si eres administrador puedes aplicarlo a **todos los negocios** que tengan cajas en esa moneda.',
+        'En el **Calendario de vigencias** ves y puedes eliminar los cambios capturados. El **Convertidor** calcula pesos a cualquier fecha.'
+      ],
+      faq: [{ q: '¿Esto es la revaluación?', a: 'No. La revaluación de divisas al cierre se captura aparte; este tipo de cambio es el operativo, el que usan las cajas y sus resultados.' }],
+      cuidado: ['Una fecha anterior a hoy sí cambia los movimientos de esa moneda desde esa fecha y, con ello, los resultados de esos periodos.'],
+      auditoria: '',
+      relacionadas: ['efectivo', 'reportes']
+    },
     reportes: {
       resumen: 'Un solo lugar para pedir varios reportes de un periodo y bajarlos en Excel o PDF, sin entrar a cada pantalla.',
       pasos: [

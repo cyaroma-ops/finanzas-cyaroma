@@ -1327,6 +1327,7 @@ const SECTION_META = {
   librodiario: { title: 'Libro Diario', sub: '', showMonth: false, needsBiz: true },
   diariospolizas: { title: 'Diarios y Pólizas', sub: '', showMonth: true, needsBiz: true },
   auxiliares: { title: 'Auxiliares', sub: '', showMonth: true, needsBiz: true },
+  divisas: { title: 'Divisas y tipos de cambio', sub: 'Qué tipo de cambio rige desde cuándo', showMonth: false, needsBiz: true },
   comparativo: { title: 'Comparativo entre negocios', sub: '', showMonth: true, needsBiz: false },
   recargos: { title: 'Recargos y Actualización', sub: '', showMonth: false, needsBiz: false },
   fuentesfiscales: { title: 'Fuentes Fiscales', sub: 'Mapeo entre contabilidad y conceptos de los Papeles de Trabajo', showMonth: false, needsBiz: true },
@@ -1349,7 +1350,7 @@ const SECTION_META = {
 };
 // Estas viven "dentro" de Configuración: ya no tienen su propio ítem en el menú principal,
 // pero conservan su sección y su función de render tal cual, solo cambia cómo se llega ahí.
-const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos', 'pagosclasificar', 'saldosfavoriva', 'comparativo'];
+const SECCIONES_EN_CONFIGURACION = ['catalogo', 'auditoria', 'negocios', 'activosfijos', 'pagosclasificar', 'saldosfavoriva', 'comparativo', 'divisas'];
 // Pantallas que SOLO aplican a negocios Fiscal Contable. En un negocio Financiero se quitan los accesos (menú y
 // Configuración): no les corresponden, y la Balanza de Comprobación solo se calcula en Fiscal Contable. Solo se ocultan
 // accesos — no se borra ni se cambia ningún dato, y al volver a un negocio fiscal todo reaparece igual.
@@ -2082,6 +2083,7 @@ async function renderCurrentSection() {
   if (s === 'librodiario') return renderLibroDiario();
   if (s === 'diariospolizas') return renderDiariosPolizasWrapper();
   if (s === 'auxiliares') return renderAuxiliares();
+  if (s === 'divisas') return renderDivisas();
   if (s === 'comparativo') return renderComparativo();
   if (s === 'recargos') return renderRecargos();
   if (s === 'fuentesfiscales') return renderFuentesFiscales();
@@ -13113,6 +13115,7 @@ async function renderConfiguracion() {
       ${tarjetaConfigHtml('cfgCatalogo', 'Catálogo de Cuentas', b ? `Cuenta mayor, subcuentas y su estructura contable para ${escHtml(b.name)}.` : 'Selecciona un negocio para configurar su catálogo.')}
       ${tarjetaConfigHtml('cfgCierre', 'Cierre de periodo', b ? `Bloquea la captura de meses ya cerrados en ${escHtml(b.name)}.` : 'Selecciona un negocio para gestionar sus cierres.')}
       ${tarjetaConfigHtml('cfgTcCierre', 'Revaluación de divisas', b ? `Activa la revaluación al cierre de lo que debes, te deben y tienes en divisas en ${escHtml(b.name)}. Los tipos de cambio se capturan una sola vez en Parámetros fiscales.` : 'Selecciona un negocio.')}
+      ${tarjetaConfigHtml('cfgDivisas', 'Divisas y tipos de cambio', b ? `Tipo de cambio de dólares, euros y otras monedas con la fecha desde la que rige, en ${escHtml(b.name)}. Lo anterior no se mueve.` : 'Selecciona un negocio para ver sus divisas.')}
       ${tarjetaConfigHtml('cfgActivosFijos', 'Activos Fijos', b ? `Equipo, mobiliario y su depreciación mensual automática en ${escHtml(b.name)}.` : 'Selecciona un negocio para gestionar sus activos.')}
       ${tarjetaConfigHtml('cfgPagosClasificar', 'Pagos por clasificar', b ? `Salidas de dinero pendientes de asignar a proveedor/factura y/o de clasificar hacia Banco/Efectivo en ${escHtml(b.name)}.` : 'Selecciona un negocio.')}
       ${esFin ? '' : tarjetaConfigHtml('cfgSaldosFavorIVA', 'Control de saldos a favor IVA', b ? `Confirmar, acreditar y solicitar devolución de saldos a favor de IVA declarados en ${escHtml(b.name)}.` : 'Selecciona un negocio.')}
@@ -13149,6 +13152,7 @@ async function renderConfiguracion() {
   if (cierreBtn) cierreBtn.addEventListener('click', () => { if (b) abrirModalCierrePeriodo(b.id); else toast('Selecciona un negocio primero.', 'error'); });
   const tcCierreBtn = document.getElementById('cfgTcCierre');
   if (tcCierreBtn) tcCierreBtn.addEventListener('click', () => { if (b) abrirModalTcCierre(b.id); else toast('Selecciona un negocio primero.', 'error'); });
+  ir('cfgDivisas', 'divisas');
   ir('cfgActivosFijos', 'activosfijos');
   ir('cfgPagosClasificar', 'pagosclasificar');
   ir('cfgSaldosFavorIVA', 'saldosfavoriva');
@@ -22857,12 +22861,159 @@ function pedirVigenciaTC(caja, tcNuevo) {
   });
 }
 async function cambiarTcCajaConVigencia(businessId, caja, tcNuevo) {
+  if (!puede('capturar_tc', businessId)) { toast('Tu perfil no permite cambiar tipos de cambio.', 'error'); return false; }
   const r = await pedirVigenciaTC(caja, tcNuevo); if (!r) return false;
   const res = await guardarTcCajaVigencia(businessId, caja, tcNuevo, r.desde, r.nota);
   if (res.error) { toast('No se pudo guardar el tipo de cambio: ' + res.error.message + ' (¿ya corriste el SQL 06.36?)', 'error'); return false; }
   registrarAuditoria(businessId, 'editar', 'Efectivo', `Tipo de cambio de "${caja.nombre}": ${caja.tc_reporte} → ${tcNuevo}, rige desde ${r.desde}${r.nota ? ' · ' + r.nota : ''}`);
   toast('Tipo de cambio guardado: rige desde ' + fechaCorta(r.desde) + '.');
   return true;
+}
+
+// ===== 06.37 — Divisas y tipos de cambio (pantalla de Configuración) =====
+// Captura del tipo de cambio POR MONEDA con fecha de vigencia. Guarda en fz_tipos_cambio_vigencia (06.36); no toca el motor.
+// Antes de la primera vigencia de una moneda, cada caja de esa moneda recibe su fila «base» con el TC que ya tenía,
+// para que ningún periodo anterior cambie. «Todos los negocios» (fila general) solo lo puede hacer un administrador.
+const fmtTc = (n) => (Number(n) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+// Capacidad «capturar tipos de cambio». Misma regla de siempre (cualquiera que podía editar cajas); el catálogo de permisos la amplía.
+function puede(cap, businessId) {
+  try {
+    if (STATE.esAdministrador) return true;
+    if (cap === 'capturar_tc') return nivelNegocio(businessId || STATE.currentBusinessId) !== 'ver';
+    return false;
+  } catch (_) { return false; }
+}
+function tcFmtHoyDeMoneda(vigencias, cajas, moneda, fecha) {   // TC vigente de una moneda en una fecha, o null si no hay de dónde tomarlo
+  const delaMoneda = (cajas || []).filter(c => codigoMonedaDeCaja(c.nombre, c.tc_reporte) === moneda);
+  if (delaMoneda.length) return tcVigenteDeCaja(vigencias, delaMoneda[0], fecha);
+  const filas = (vigencias || []).filter(v => !v.caja_id && String(v.moneda || '').toUpperCase() === moneda);
+  return filas.length ? tcVigenteDeCaja(vigencias, { id: null, nombre: moneda, tc_reporte: 1 }, fecha) : null;
+}
+async function espejarTcCajas(cajas) {   // «TC de referencia» de cada caja = el vigente hoy (lo que ven Efectivo y el Dashboard)
+  for (const c of cajas) {
+    const vig = await cargarVigenciasTC(c.business_id);
+    const hoyTc = tcVigenteDeCaja(vig, c, todayStr());
+    if (Number(c.tc_reporte) !== hoyTc) await sb.from('fz_efectivo_monedas').update({ tc_reporte: hoyTc }).eq('id', c.id);
+  }
+}
+async function cajasDeMoneda(businessId, moneda) {
+  let q = sb.from('fz_efectivo_monedas').select('*'); if (businessId) q = q.eq('business_id', businessId);
+  const r = await q; if (r.error) return { error: r.error };
+  return { cajas: (r.data || []).filter(c => codigoMonedaDeCaja(c.nombre, c.tc_reporte) === moneda) };
+}
+async function guardarTcMonedaVigencia(businessId, moneda, tc, desde, nota) {
+  const rc = await cajasDeMoneda(businessId, moneda); if (rc.error) return { error: rc.error };
+  const cajas = rc.cajas, email = STATE.user?.email || null;
+  if (cajas.length) {
+    const ex = await sb.from('fz_tipos_cambio_vigencia').select('caja_id').in('caja_id', cajas.map(c => c.id));
+    if (ex.error) return { error: ex.error };
+    const conFilas = new Set((ex.data || []).map(x => x.caja_id));
+    const bases = cajas.filter(c => !conFilas.has(c.id)).map(c => ({ business_id: c.business_id, caja_id: c.id, moneda, tc: Number(c.tc_reporte) || 1, vigente_desde: '1900-01-01', fuente: 'base', nota: 'TC que tenía la caja antes de manejar vigencias', created_by: email }));
+    if (bases.length) { const ib = await sb.from('fz_tipos_cambio_vigencia').insert(bases); if (ib.error) return { error: ib.error }; }
+  }
+  let d = sb.from('fz_tipos_cambio_vigencia').delete().eq('moneda', moneda).eq('vigente_desde', desde).is('caja_id', null);
+  d = businessId ? d.eq('business_id', businessId) : d.is('business_id', null);
+  const del = await d; if (del.error) return { error: del.error };
+  const ins = await sb.from('fz_tipos_cambio_vigencia').insert({ business_id: businessId || null, caja_id: null, moneda, tc, vigente_desde: desde, fuente: 'manual', nota: nota || null, created_by: email });
+  if (ins.error) return { error: ins.error };
+  await espejarTcCajas(cajas);
+  return { ok: true, cajas: cajas.length };
+}
+async function eliminarVigenciaTC(fila) {
+  if (!fila || fila.fuente === 'base') return { error: { message: 'La fila base no se puede eliminar.' } };
+  const del = await sb.from('fz_tipos_cambio_vigencia').delete().eq('id', fila.id);
+  if (del.error) return { error: del.error };
+  const rc = await cajasDeMoneda(fila.business_id || null, fila.moneda);
+  const cajas = fila.caja_id ? ((rc.cajas || []).filter(c => c.id === fila.caja_id)) : (rc.cajas || []);
+  await espejarTcCajas(cajas);
+  return { ok: true };
+}
+async function renderDivisas() {
+  const el = document.getElementById('sec-divisas'); const b = biz(); if (!el || !b) return;
+  const [rc, rb, vigencias] = await Promise.all([
+    sb.from('fz_efectivo_monedas').select('*').eq('business_id', b.id).order('orden'),
+    sb.from('fz_bancos_cuentas').select('id,nombre,moneda,activo').eq('business_id', b.id),
+    cargarVigenciasTC(b.id)]);
+  const cajas = rc.data || [], bancos = rb.data || [], hoy = todayStr();
+  const puedeCap = puede('capturar_tc', b.id), esAdm = !!STATE.esAdministrador;
+  const cod = (c) => codigoMonedaDeCaja(c.nombre, c.tc_reporte);
+  const monedas = new Set();
+  cajas.forEach(c => { if (cod(c) !== 'MXN') monedas.add(cod(c)); });
+  bancos.forEach(x => { const m = String(x.moneda || 'MXN').toUpperCase(); if (m !== 'MXN') monedas.add(m); });
+  vigencias.forEach(v => { if (v.moneda && String(v.moneda).toUpperCase() !== 'MXN') monedas.add(String(v.moneda).toUpperCase()); });
+  const lista = [...monedas].sort();
+  const nombreMon = (m) => (MONEDAS_CUENTA_DINERO.find(x => x[0] === m) || [m, m])[1];
+  const tarjetas = lista.map(m => {
+    const delas = cajas.filter(c => cod(c) === m);
+    const tcs = [...new Set(delas.map(c => tcVigenteDeCaja(vigencias, c, hoy)))];
+    const tcTxt = tcs.length === 1 ? fmtTc(tcs[0]) : (tcs.length ? tcs.map(fmtTc).join(' / ') : (tcFmtHoyDeMoneda(vigencias, cajas, m, hoy) ? fmtTc(tcFmtHoyDeMoneda(vigencias, cajas, m, hoy)) : '—'));
+    const aplica = vigencias.filter(v => String(v.moneda || '').toUpperCase() === m && (!v.caja_id || delas.some(c => c.id === v.caja_id)) && v.fuente !== 'base');
+    const pasadas = aplica.filter(v => String(v.vigente_desde) <= hoy).sort((a, z) => String(z.vigente_desde).localeCompare(String(a.vigente_desde)));
+    const futuras = aplica.filter(v => String(v.vigente_desde) > hoy).sort((a, z) => String(a.vigente_desde).localeCompare(String(z.vigente_desde)));
+    return `<div class="dv-card"><div class="dv-mon">${escHtml(m)}<span>${escHtml(nombreMon(m))}</span></div>
+      <div class="dv-tc">${tcTxt}</div>
+      <div class="dv-sub">${pasadas.length ? 'Rige desde ' + fechaCorta(pasadas[0].vigente_desde) : 'Sin cambios con vigencia todavía'}</div>
+      ${futuras.length ? `<div class="dv-sub dv-prox">Próximo: ${fmtTc(futuras[0].tc)} desde ${fechaCorta(futuras[0].vigente_desde)}</div>` : ''}
+      <div class="dv-sub">${delas.length ? 'Cajas: ' + delas.map(c => escHtml(c.nombre)).join(', ') : 'Sin caja de efectivo en esta moneda'}</div></div>`;
+  }).join('');
+  const nombreCaja = (id) => (cajas.find(c => c.id === id) || {}).nombre || '';
+  const filas = [...vigencias].sort((a, z) => String(z.vigente_desde).localeCompare(String(a.vigente_desde)) || String(a.moneda).localeCompare(String(z.moneda))).map(v => `<tr>
+      <td>${escHtml(v.moneda || '')}</td><td class="num">${fmtTc(v.tc)}</td><td>${v.fuente === 'base' ? 'Desde el inicio' : fechaCorta(v.vigente_desde)}</td>
+      <td>${v.caja_id ? 'Caja: ' + escHtml(nombreCaja(v.caja_id)) : (v.business_id ? 'Este negocio' : 'Todos los negocios')}</td>
+      <td>${escHtml(v.nota || '')}${v.fuente === 'base' ? '<span class="dv-base">TC que ya tenía</span>' : ''}</td>
+      <td>${v.fuente !== 'base' && puedeCap && (v.business_id || esAdm) ? `<button class="btn btn-ghost btn-sm dv-del" data-id="${v.id}" style="color:var(--red);">Eliminar</button>` : ''}</td></tr>`).join('');
+  const opcMon = [...new Set([...lista, ...MONEDAS_CUENTA_DINERO.map(x => x[0]).filter(m => m !== 'MXN')])];
+  el.innerHTML = `
+    <p class="hint" style="margin:0 0 12px;">Un tipo de cambio nuevo rige desde la fecha que elijas: lo anterior no se mueve. Es independiente de la revaluación de divisas al cierre.</p>
+    <div class="dv-grid">${tarjetas || '<div class="empty">Este negocio no tiene cajas de efectivo ni cuentas en divisas.</div>'}</div>
+    ${puedeCap ? `<div class="card" style="margin-bottom:16px;"><div class="card-head"><h3>Nuevo tipo de cambio</h3></div>
+      <div class="dv-form">
+        <div class="field"><label>Moneda</label><select id="dvMon">${opcMon.map(m => `<option value="${m}">${m}</option>`).join('')}</select></div>
+        <div class="field"><label>Pesos por 1 unidad</label><input type="number" step="0.0001" min="0" id="dvTc" placeholder="Ej. 18.4500"></div>
+        <div class="field"><label>Rige desde</label><input type="date" id="dvDesde" value="${hoy}"></div>
+        <div class="field"><label>Se aplica a</label><select id="dvAlcance"><option value="negocio">Este negocio (${escHtml(b.name)})</option>${esAdm ? '<option value="general">Todos los negocios</option>' : ''}</select></div>
+        <div class="field" style="flex:2;"><label>Nota (opcional)</label><input type="text" id="dvNota" placeholder="Ej. TC publicado por el DOF"></div>
+        <button class="btn btn-gold" id="dvGuardar">Guardar</button></div>
+      <p class="hint" id="dvAviso" style="margin:8px 0 0;"></p></div>` : '<p class="hint">Tu perfil solo permite consultar los tipos de cambio.</p>'}
+    <div class="card" style="margin-bottom:16px;"><div class="card-head"><h3>Calendario de vigencias</h3></div>
+      <div class="table-wrap"><table><thead><tr><th>Moneda</th><th>Tipo de cambio</th><th>Rige desde</th><th>Aplica a</th><th>Nota</th><th></th></tr></thead>
+      <tbody>${filas || '<tr><td colspan="6" class="empty">Todavía no hay vigencias capturadas.</td></tr>'}</tbody></table></div></div>
+    <div class="card"><div class="card-head"><h3>Convertidor</h3></div>
+      <div class="dv-form"><div class="field"><label>Monto</label><input type="number" step="0.01" id="dvCvMonto" value="1"></div>
+        <div class="field"><label>Moneda</label><select id="dvCvMon">${opcMon.map(m => `<option value="${m}">${m}</option>`).join('')}</select></div>
+        <div class="field"><label>A la fecha</label><input type="date" id="dvCvFecha" value="${hoy}"></div>
+        <div class="dv-res" id="dvCvRes"></div></div></div>`;
+  agregarBotonVolverConfig(el);
+  const convertir = () => {
+    const m = el.querySelector('#dvCvMon').value, f = el.querySelector('#dvCvFecha').value || hoy, monto = Number(el.querySelector('#dvCvMonto').value) || 0;
+    const tc = tcFmtHoyDeMoneda(vigencias, cajas, m, f), r = el.querySelector('#dvCvRes');
+    r.textContent = tc ? `${fmtNum(monto)} ${m} = $${fmtNum(monto * tc)} MXN  (TC ${fmtTc(tc)})` : `Sin tipo de cambio capturado para ${m}.`;
+  };
+  ['#dvCvMonto', '#dvCvMon', '#dvCvFecha'].forEach(s => el.querySelector(s).addEventListener('input', convertir)); convertir();
+  const fe = el.querySelector('#dvDesde'), av = el.querySelector('#dvAviso');
+  if (fe) fe.addEventListener('input', () => { const pasada = fe.value && fe.value < hoy; av.style.color = pasada ? 'var(--red)' : ''; av.textContent = pasada ? 'Atención: con una fecha anterior a hoy SÍ cambian los movimientos de esa moneda desde esa fecha (y sus resultados).' : ''; });
+  const gu = el.querySelector('#dvGuardar');
+  if (gu) gu.addEventListener('click', async () => {
+    const m = el.querySelector('#dvMon').value, tc = Number(el.querySelector('#dvTc').value), desde = fe.value, nota = el.querySelector('#dvNota').value.trim();
+    const general = esAdm && el.querySelector('#dvAlcance').value === 'general';
+    if (!(tc > 0)) { toast('Escribe un tipo de cambio mayor a cero.', 'error'); return; }
+    if (!desde) { toast('Indica desde qué fecha rige.', 'error'); return; }
+    if (desde < hoy && !confirm('La fecha es anterior a hoy: cambiarán los movimientos de ' + m + ' desde ' + fechaCorta(desde) + ' y sus resultados. ¿Continuar?')) return;
+    if (general && !confirm('Se aplicará a TODOS los negocios con cajas en ' + m + '. ¿Continuar?')) return;
+    const res = await guardarTcMonedaVigencia(general ? null : b.id, m, tc, desde, nota);
+    if (res.error) { toast('No se pudo guardar el tipo de cambio: ' + res.error.message, 'error'); return; }
+    registrarAuditoria(b.id, 'editar', 'Divisas', `Tipo de cambio ${m}: ${tc}, rige desde ${desde}${general ? ' (todos los negocios)' : ''}${nota ? ' · ' + nota : ''}`);
+    toast('Tipo de cambio guardado: rige desde ' + fechaCorta(desde) + '.');
+    renderDivisas();
+  });
+  el.querySelectorAll('.dv-del').forEach(btn => btn.addEventListener('click', async () => {
+    const fila = vigencias.find(v => String(v.id) === btn.dataset.id); if (!fila) return;
+    if (!confirm('Eliminar el tipo de cambio ' + fmtTc(fila.tc) + ' de ' + fila.moneda + ' (desde ' + fechaCorta(fila.vigente_desde) + ')? Los movimientos desde esa fecha volverán al TC anterior.')) return;
+    const res = await eliminarVigenciaTC(fila);
+    if (res.error) { toast('No se pudo eliminar: ' + res.error.message, 'error'); return; }
+    registrarAuditoria(b.id, 'eliminar', 'Divisas', `Se eliminó el TC ${fila.tc} de ${fila.moneda} (desde ${fila.vigente_desde})`);
+    renderDivisas();
+  }));
 }
 
 async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha = null, opciones = {}) {
@@ -27413,7 +27564,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.36';
+const APP_VERSION = '2026-11-06.37';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.

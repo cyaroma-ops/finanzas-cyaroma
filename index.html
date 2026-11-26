@@ -1442,6 +1442,14 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 .liq-linea .tc-reporte-cell{width:62px;color:var(--muted);text-align:right;padding:2px 6px;}
 .liq-inactiva{opacity:.6;}
 @media (max-width:820px){.liq-grid{grid-template-columns:1fr;}}
+/* ===== 06.37 — Divisas y tipos de cambio ===== */
+.dv-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px;margin-bottom:16px;}
+.dv-card{border:1.5px solid var(--line);border-radius:10px;padding:14px;background:#fff;}
+.dv-mon{font-weight:700;color:var(--navy-1);font-size:15px;}.dv-mon span{font-weight:400;color:var(--muted);font-size:12px;margin-left:6px;}
+.dv-tc{font-size:26px;font-weight:700;color:var(--navy-1);margin:6px 0 2px;}
+.dv-sub{font-size:12px;color:var(--muted);margin-top:2px;}.dv-prox{color:var(--navy-1);font-weight:600;}
+.dv-form{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;}.dv-form .field{margin:0;}
+.dv-res{font-weight:700;color:var(--navy-1);padding-bottom:8px;}.dv-base{display:inline-block;margin-left:6px;font-size:11px;color:var(--muted);}
 /* ===== 06.35 — Reportes ===== */
 .rep-atajos{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;}
 .rep-periodo{display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap;}
@@ -1841,6 +1849,7 @@ Transacciones recurrentes
         </section>
         <section class="section" id="sec-auxiliares"></section>
         <section class="section" id="sec-comparativo"></section>
+        <section class="section" id="sec-divisas"></section>
         <section class="section" id="sec-recargos"></section>
         <section class="section" id="sec-diasinhabiles"></section>
         <section class="section" id="sec-impuestos">
@@ -3998,7 +4007,7 @@ Transacciones recurrentes
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-06.36"></script>
+<script src="/app.js?v=2026-11-06.37"></script>
 <div id="alertasPanel" class="alertas-panel" role="dialog" aria-label="Alertas de la Revisión de consistencia" hidden></div>
 </body>
 </html>
