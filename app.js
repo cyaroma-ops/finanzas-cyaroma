@@ -1615,8 +1615,8 @@ function updateTopbar() {
   const printOrientacion = document.getElementById('printOrientacion');
   const printOrientacionToggle = document.getElementById('printOrientacionToggle');
   const printExcelBtn = document.getElementById('printExcelBtn');
-  const conExcelFormal = ['pl', 'balance'].includes(STATE.currentSection) && !(STATE.currentSection === 'pl' && STATE_plVista === 'anual');
-  if (printExcelBtn) { printExcelBtn.style.display = conExcelFormal ? 'inline-flex' : 'none'; printExcelBtn.onclick = async () => { if (!(await pantallaFormalExportar(STATE.currentSection, 'excel'))) toast('No se pudo generar el Excel de esta pantalla.', 'error'); }; }
+  const conExcelFormal = ['pl', 'balance'].includes(STATE.currentSection);
+  if (printExcelBtn) { printExcelBtn.style.display = conExcelFormal ? 'inline-flex' : 'none'; printExcelBtn.onclick = async () => { if (!(await pantallaFormalExportar(STATE.currentSection === 'pl' && STATE_plVista === 'anual' ? 'plAnual' : STATE.currentSection, 'excel'))) toast('No se pudo generar el Excel de esta pantalla.', 'error'); }; }
   if (SECCIONES_IMPRIMIBLES.includes(STATE.currentSection)) {
     printBtn.style.display = 'inline-flex';
     printOrientacionToggle.style.display = 'inline-flex';
@@ -1634,7 +1634,7 @@ function updateTopbar() {
       }));
     }
     printBtn.onclick = async () => {
-      if (['pl', 'balance'].includes(STATE.currentSection) && !(STATE.currentSection === 'pl' && STATE_plVista === 'anual') && await pantallaFormalExportar(STATE.currentSection, 'pdf', printOrientacion.value)) return;   // 06.46: presentación formal
+      if (['pl', 'balance'].includes(STATE.currentSection) && await pantallaFormalExportar(STATE.currentSection === 'pl' && STATE_plVista === 'anual' ? 'plAnual' : STATE.currentSection, 'pdf', STATE_plVista === 'anual' && STATE.currentSection === 'pl' ? 'landscape' : printOrientacion.value)) return;   // 06.46: presentación formal
       document.body.dataset.printSection = STATE.currentSection;
       let tituloImpresion = titulo;
       if (STATE.currentSection === 'pl') {
@@ -2013,12 +2013,13 @@ function repFormalizarBloques(it) {
 function repFormalDeHolder(h, it) {
   const secciones = []; let cols = null;
   [...h.querySelectorAll('table')].forEach(t => {
-    if (it.k !== 'balanza' && !t.classList.contains('report-table')) return;   // solo tablas de cifras; las de captura (ajustes manuales) no son reporte
+    const anchoTabla = it.k === 'balanza' || it.k === 'plAnual';   // tablas con encabezado de columnas propio (balanza; estado de resultados mes por mes)
+    if (!anchoTabla && !t.classList.contains('report-table')) return;   // solo tablas de cifras; las de captura (ajustes manuales) no son reporte
     if (t.querySelector('input, select, textarea')) return;
     const card = t.closest('.card'), h3 = card && card.querySelector('h3');
     let titulo = h3 ? h3.textContent.replace(/\s+/g, ' ').trim().replace(/\s+—\s+.*$/, '') : '';
     if (it.k !== 'pl') titulo = '';
-    if (it.k === 'balanza' && t.tHead && !cols) cols = [...t.tHead.rows[t.tHead.rows.length - 1].cells].map(c => ({ h: c.textContent.replace(/\s+/g, ' ').trim() }));
+    if (anchoTabla && t.tHead && !cols) cols = [...t.tHead.rows[t.tHead.rows.length - 1].cells].map(c => ({ h: c.textContent.replace(/\s+/g, ' ').trim() }));
     const rows = [];
     [...t.tBodies].concat(t.tFoot ? [t.tFoot] : []).forEach(tb => [...tb.rows].forEach(tr => {
       const tds = [...tr.cells].filter(td => !td.classList.contains('td-vacia-reporte'));
@@ -2137,7 +2138,7 @@ function repPdfEnc(d, e, W, margin) {
 function repPdfFormal(doc, b, it) {
   const { jsPDF } = window.jspdf, orient = it.orient || 'portrait', f = it.formal, e = repFormalEnc(b, it);
   let d = doc; if (d) d.addPage('letter', orient); else d = new jsPDF({ unit: 'pt', format: 'letter', orientation: orient });
-  const W = d.internal.pageSize.getWidth(), H = d.internal.pageSize.getHeight(), margin = 48, land = orient === 'landscape';
+  const W = d.internal.pageSize.getWidth(), H = d.internal.pageSize.getHeight(), land = orient === 'landscape', ancha = f.cols.length > 8, margin = ancha ? 32 : 48;   // ancha: 12 meses + acumulado
   const mayus = (t) => f.mayus ? String(t).toUpperCase() : String(t);
   let y = repPdfEnc(d, e, W, margin);
   const unidades = f.porSeccion ? f.secciones.map(s => ({ titulo: s.titulo, cols: s.cols || f.cols, secs: [{ titulo: '', rows: s.rows }] })) : [{ titulo: '', cols: f.cols, secs: f.secciones }];
@@ -2157,14 +2158,14 @@ function repPdfFormal(doc, b, it) {
     });
     const numIdx = cols.map((c, i) => c.num && i ? i : -1).filter(i => i >= 0), colSt = {};
     cols.forEach((c, i) => {
-      if (c.num && i) colSt[i] = { halign: 'right', cellWidth: land ? 74 : (c.pct ? 80 : 108) };
-      else colSt[i] = { minCellWidth: MIN[c.h] || (i === 0 ? 60 : 40) };
+      if (c.num && i) colSt[i] = { halign: 'right', cellWidth: ancha ? Math.floor((W - 2 * margin - 138) / (n - 1)) : (land ? 74 : (c.pct ? 80 : 108)) };
+      else colSt[i] = { minCellWidth: ancha && i === 0 ? 138 : (MIN[c.h] || (i === 0 ? 60 : 40)) };
       if (c.pct) colSt[i].textColor = [110, 118, 135];
     });
     const iniPag = d.internal.getCurrentPageInfo().pageNumber, primera = {};
     d.autoTable({
       startY: y, margin: { left: margin, right: margin, top: 44, bottom: 46 }, theme: 'plain', head: [cols.map(c => c.h)], body, columnStyles: colSt, showHead: 'everyPage',
-      styles: { fontSize: land ? 8 : 9, cellPadding: { top: 2.2, bottom: 2.2, left: 2, right: 2 }, textColor: [30, 41, 59], overflow: 'linebreak' },
+      styles: { fontSize: ancha ? 6.5 : (land ? 8 : 9), cellPadding: { top: 2.2, bottom: 2.2, left: ancha ? 1.5 : 2, right: ancha ? 1.5 : 2 }, textColor: [30, 41, 59], overflow: 'linebreak' },
       headStyles: { fontStyle: 'bold', textColor: [10, 31, 61], fillColor: false, halign: 'left', lineWidth: 0, cellPadding: { top: 4, bottom: 4, left: 2, right: 2 } },
       didParseCell: (data) => {
         if (data.section === 'head' && numIdx.includes(data.column.index)) data.cell.styles.halign = 'right';
@@ -2263,6 +2264,10 @@ async function pantallaFormalItem(k) {
     finally { if (g !== 'ninguna') await renderPLCuerpo(); }   // el comparativo es de la pantalla; el reporte formal lleva un solo periodo
     const txt = `Del ${fechaCorta(per.start)} al ${fechaCorta(per.end)}`;
     return repFormalizar({ k: 'pl', kind: 'dom', titulo: 'Estado de resultados', subtitulo: txt, periodo: txt, orient: 'portrait', holder: h, secId: 'sec-pl' });
+  }
+  if (k === 'plAnual') {
+    const h = await repCapturarPantalla('sec-pl', () => {}, renderPLCuerpo, () => {}, true), txt = `Ejercicio ${STATE.currentMonth.slice(0, 4)} · mes por mes${STATE_plAnualModo === 'ejecutivo' ? ' · resumen ejecutivo' : ''}`;
+    return repFormalizar({ k: 'plAnual', kind: 'dom', titulo: 'Estado de resultados', subtitulo: txt, periodo: txt, orient: 'landscape', holder: h, secId: 'sec-pl' });
   }
   if (k === 'balanza') {
     const h = await repCapturarPantalla('sec-balanza', () => {}, renderBalanzaCuerpo, () => {}, true), txt = `Al cierre de ${repEtiquetaMes(STATE.currentMonth)}`;
@@ -28179,7 +28184,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.46';
+const APP_VERSION = '2026-11-06.47';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
