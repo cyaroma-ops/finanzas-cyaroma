@@ -1943,7 +1943,7 @@ async function reportesConstruirTodo(b, S, estado) {
   const elegidos = REPORTES_CATALOGO.filter(r => S.sel[r.k]); const items = [];
   for (let i = 0; i < elegidos.length; i++) {
     estado(`Generando ${i + 1} de ${elegidos.length}: ${elegidos[i].t}…`);
-    items.push(await REPORTES_CONSTRUCTORES[elegidos[i].k](b, S));
+    { const it = await REPORTES_CONSTRUCTORES[elegidos[i].k](b, S); items.push(it.kind === 'tabla' ? repFormalizarBloques(it) : it); }
   }
   S.ultimo = { items, b: b.id };
   return S.ultimo;
@@ -1978,8 +1978,8 @@ function repBloqueHtml(bl, limite) {
   return `${bl.titulo ? `<h4 class="rep-bloque-t">${escHtml(bl.titulo)}</h4>` : ''}<div class="table-wrap"><table class="tabla-contable"><thead><tr>${cols.map(c => `<th class="${c.num ? 'num' : ''}">${escHtml(c.h)}</th>`).join('')}</tr></thead><tbody>${filas.map(tr).join('')}</tbody></table></div>${bl.rows.length > limite ? `<p class="hint">Vista previa: se muestran ${limite} de ${bl.rows.length} renglones; el archivo trae todo.</p>` : ''}`;
 }
 
-// ===== 06.42 — Presentación formal de reportes (Estado de resultados, Balanza, Balance general) =====
-// Toma EXACTAMENTE las cifras que ya dibujó la pantalla (no recalcula nada) y las reordena en formato de estado financiero.
+// ===== 06.42/06.43 — Presentación formal de reportes =====
+// Toma EXACTAMENTE las cifras que ya dibujó la pantalla o el reporte (no recalcula nada) y las ordena como estado financiero.
 const REP_GRAN_TOTAL = /^(utilidad|p[ée]rdida|total pasivo\s*(\+|y)\s*capital|total activo|totales?\b|sumas?\b)/i;
 function repFormalFmt(n) {
   if (typeof n !== 'number' || !Number.isFinite(n)) return n === undefined || n === null ? '' : String(n);
@@ -1991,143 +1991,193 @@ function repFormalizar(it) {
   try { it.formal = repFormalDeHolder(it.holder, it); it.kind = 'formal'; } catch (e) { /* si algo no cuadra, se queda el formato anterior */ }
   return it;
 }
+function repFormalizarBloques(it) {
+  const secs = [];
+  (it.bloques || []).forEach(bl => {
+    const cols = bl.cols.map(c => ({ h: c.h, num: !!c.num, fecha: !!c.fecha }));
+    const rows = bl.rows.length ? bl.rows.map(r => {
+      if (r.tipo === 'grupo') return { tipo: 'grupo', nivel: 0, celdas: [r.celdas[0]] };
+      const tipo = r.tipo === 'total' ? (it.k === 'polizas' ? 'gran' : 'total') : (r.tipo === 'subtotal' ? 'sub' : 'cuenta');
+      return { tipo, nivel: 0, negr: false, celdas: cols.map((c, i) => { const v = r.celdas[i]; if (v === '' || v === null || v === undefined) return ''; if (c.fecha) return { f: v }; if (c.num) { const x = Number(v); return Number.isFinite(x) ? x : String(v); } return String(v); }) };
+    }) : [{ tipo: 'texto', nivel: 0, celdas: [bl.vacio || 'Sin movimientos.'] }];
+    secs.push({ titulo: bl.titulo || '', cols, rows });
+  });
+  if (!secs.length) secs.push({ titulo: '', cols: [{ h: '' }], rows: [{ tipo: 'texto', nivel: 0, celdas: [it.vacioGeneral || 'Sin datos.'] }] });
+  it.periodo = it.subtitulo; it.formal = { cols: secs[0].cols, secciones: secs, porSeccion: true, mayus: false }; it.kind = 'formal';
+  return it;
+}
 function repFormalDeHolder(h, it) {
   const secciones = []; let cols = null;
   [...h.querySelectorAll('table')].forEach(t => {
-    if (it.k !== 'balanza' && !t.classList.contains('report-table')) return;   // solo las tablas de cifras; las de captura (ajustes manuales) no son reporte
+    if (it.k !== 'balanza' && !t.classList.contains('report-table')) return;   // solo tablas de cifras; las de captura (ajustes manuales) no son reporte
     if (t.querySelector('input, select, textarea')) return;
     const card = t.closest('.card'), h3 = card && card.querySelector('h3');
     let titulo = h3 ? h3.textContent.replace(/\s+/g, ' ').trim().replace(/\s+—\s+.*$/, '') : '';
     if (it.k !== 'pl') titulo = '';
-    if (it.k === 'balanza' && t.tHead && !cols) {
-      const tr = t.tHead.rows[t.tHead.rows.length - 1];
-      cols = [...tr.cells].map(c => ({ h: c.textContent.replace(/\s+/g, ' ').trim() }));
-    }
+    if (it.k === 'balanza' && t.tHead && !cols) cols = [...t.tHead.rows[t.tHead.rows.length - 1].cells].map(c => ({ h: c.textContent.replace(/\s+/g, ' ').trim() }));
     const rows = [];
-    [...t.tBodies].forEach(tb => [...tb.rows].forEach(tr => {
+    [...t.tBodies].concat(t.tFoot ? [t.tFoot] : []).forEach(tb => [...tb.rows].forEach(tr => {
       const tds = [...tr.cells].filter(td => !td.classList.contains('td-vacia-reporte'));
       if (!tds.length) return;
-      let celdas = [];
+      const celdas = [];
       tds.forEach(td => {
         const c = td.cloneNode(true); c.querySelectorAll(PDF_OMITIR + ', ' + PDF_SOLO_MOVIL + ', .pl-flecha, svg').forEach(x => x.remove());
         let txt = c.textContent.replace(/[▸▾›»↗⤴]/g, '').replace(/\s+/g, ' ').trim();
         txt = txt.replace(/\s*\(\s*(ver|ocultar) detalle\s*\)$/i, '').replace(/\s*(ver|ocultar) detalle$/i, '').trim();
-        const n = td.classList.contains('num') ? repNumero(txt) : null;
-        celdas.push(n !== null ? n : txt);
-        for (let i = 1; i < (td.colSpan || 1); i++) celdas.push('');
+        const n = td.classList.contains('num') ? repNumero(txt) : null, span = td.colSpan || 1;
+        if (n !== null) { for (let i = 1; i < span; i++) celdas.push(''); celdas.push(n); }   // la cifra de celdas combinadas queda en la última columna que ocupa
+        else { celdas.push(txt); for (let i = 1; i < span; i++) celdas.push(''); }
       });
       if (!celdas.some(v => (typeof v === 'number') || String(v).trim() !== '')) return;
-      const first = tds[0], etq = String(celdas[0] || '');
-      let tipo = 'cuenta', nivel = 0;
-      if (tr.classList.contains('total-row')) tipo = REP_GRAN_TOTAL.test(etq) ? 'gran' : 'total';
-      else if (tds.length === 1 && (first.colSpan || 1) >= 2) tipo = (tr.style.background || tr.style.backgroundColor) ? 'grupo' : 'texto';
+      const first = tds[0], st = first.getAttribute('style') || '';
+      let etq = String(celdas[0] || ''), nota = '', tipo = 'cuenta', nivel = 0;
+      if (tr.classList.contains('total-row')) {
+        const m = etq.match(/^(.*?)\s*\((.*)\)\s*$/); if (m && /^totales?\b/i.test(etq)) { etq = m[1]; nota = m[2]; celdas[0] = etq; }
+        tipo = REP_GRAN_TOTAL.test(etq) ? 'gran' : 'total';
+      } else if (tds.length === 1 && (first.colSpan || 1) >= 2) tipo = (tr.style.background || tr.style.backgroundColor || /font-weight:\s*(6|7)00/.test(st)) ? 'grupo' : 'texto';
       else if (/^subtotal\b/i.test(etq) || tr.style.fontStyle === 'italic') tipo = 'sub';
-      else {
-        const pl = parseInt(first.style.paddingLeft, 10) || 0; nivel = pl <= 4 ? 0 : Math.max(1, Math.round((pl - 4) / 18));
-        if (/^(font-weight:\s*(6|7)00)/.test((first.getAttribute('style') || '').replace(/.*?(font-weight:\s*\d+).*/, '$1'))) tipo = 'cuenta';
-      }
-      const negr = /font-weight:\s*(600|700)/.test(first.getAttribute('style') || '');
-      rows.push({ tipo, nivel, negr, celdas });
+      else { const pl = parseInt(first.style.paddingLeft, 10) || 0; nivel = pl <= 4 ? 0 : Math.max(1, Math.round((pl - 4) / 18)); }
+      rows.push({ tipo, nivel, negr: /font-weight:\s*(600|700)/.test(st), celdas });
+      if (nota) rows.push({ tipo: 'texto', nivel: 0, celdas: [nota.charAt(0).toUpperCase() + nota.slice(1) + '.'] });
     }));
     if (rows.length) secciones.push({ titulo, rows });
   });
   if (!secciones.length) throw new Error('sin tablas');
-  const n = Math.max(cols ? cols.length : 0, ...secciones.flatMap(s => s.rows.map(r => r.celdas.length)));
+  const n = Math.max(cols ? cols.length : 0, ...secciones.flatMap(s => s.rows.filter(r => r.tipo !== 'grupo' && r.tipo !== 'texto').map(r => r.celdas.length)));
   if (!cols) cols = [{ h: 'Concepto' }, { h: 'Importe' }];
   while (cols.length < n) cols.push({ h: '' });
   cols = cols.slice(0, n);
-  // % sobre ingresos (solo Estado de resultados)
   if (it.k === 'pl') {
     let ing = null;
     secciones.forEach(s => s.rows.forEach(r => { if (ing === null && /^total ingresos/i.test(String(r.celdas[0])) && typeof r.celdas[1] === 'number') ing = r.celdas[1]; }));
-    cols = [cols[0], { h: 'Importe' }, { h: '% s/ingresos' }];
+    cols = [cols[0], { h: 'Importe' }, { h: '% s/ingresos', pct: true }];
     secciones.forEach(s => s.rows.forEach(r => {
+      if (r.tipo === 'grupo' || r.tipo === 'texto') return;
       const v = r.celdas[1]; r.celdas = [r.celdas[0], v === undefined ? '' : v, ''];
       if (['cuenta', 'sub', 'total', 'gran'].includes(r.tipo) && typeof v === 'number' && ing) r.celdas[2] = { pct: v / ing * 100 };
     }));
   }
   cols.forEach((c, i) => { c.num = i > 0 && secciones.some(s => s.rows.some(r => typeof r.celdas[i] === 'number' || (r.celdas[i] && r.celdas[i].pct !== undefined))); });
-  return { cols, secciones };
+  return { cols, secciones, mayus: true };
 }
-const repFormalCelda = (v) => (v && typeof v === 'object' && v.pct !== undefined) ? (Math.abs(v.pct) < 0.05 ? '-' : (v.pct < 0 ? `(${Math.abs(v.pct).toFixed(1)}%)` : v.pct.toFixed(1) + '%')) : (typeof v === 'number' ? repFormalFmt(v) : (v === undefined || v === null ? '' : String(v)));
+const repFormalCelda = (v) => {
+  if (v && typeof v === 'object') {
+    if (v.f !== undefined) return fechaCorta(v.f);
+    if (v.pct !== undefined) return Math.abs(v.pct) < 0.05 ? '-' : (v.pct < 0 ? `(${Math.abs(v.pct).toFixed(1)}%)` : v.pct.toFixed(1) + '%');
+  }
+  return typeof v === 'number' ? repFormalFmt(v) : (v === undefined || v === null ? '' : String(v));
+};
 function repFormalEnc(b, it) {
-  return { razon: String(b.razon_social || b.name || ''), titulo: String(it.titulo).toUpperCase(), periodo: String(it.periodo || it.subtitulo || ''), moneda: 'Cifras en pesos mexicanos' };
+  const razon = String(b.razon_social || b.name || ''), nc = (b.razon_social && b.razon_social !== b.name) ? b.name : '';
+  return { razon, ident: [b.rfc ? 'RFC ' + b.rfc : '', nc ? 'Nombre comercial: ' + nc : ''].filter(Boolean).join('  ·  '), titulo: String(it.titulo).toUpperCase(), periodo: String(it.periodo || it.subtitulo || ''), moneda: 'Cifras en pesos mexicanos' };
 }
-function repFormalHtml(it, b) {
-  const f = it.formal, e = repFormalEnc(b, it), n = f.cols.length;
-  const filas = f.secciones.map(s => (s.titulo ? `<tr class="rf-sec"><td colspan="${n}">${escHtml(s.titulo.toUpperCase())}</td></tr>` : '') + s.rows.map(r => {
-    if (r.tipo === 'grupo') return `<tr class="rf-grupo"><td colspan="${n}">${escHtml(String(r.celdas[0]).toUpperCase())}</td></tr>`;
+function repFormalHtml(it, b, limite = 400) {
+  const f = it.formal, e = repFormalEnc(b, it); let cuenta = 0, cortado = false;
+  const mayus = (t) => f.mayus ? String(t).toUpperCase() : String(t);
+  const fila = (r, cols) => {
+    if (cuenta >= limite) { cortado = true; return ''; } cuenta++;
+    const n = cols.length;
+    if (r.tipo === 'grupo') return `<tr class="rf-grupo"><td colspan="${n}">${escHtml(mayus(r.celdas[0]))}</td></tr>`;
     if (r.tipo === 'texto') return `<tr class="rf-texto"><td colspan="${n}">${escHtml(String(r.celdas[0]))}</td></tr>`;
-    return `<tr class="rf-${r.tipo}${r.negr ? ' rf-neg' : ''}">${f.cols.map((c, i) => `<td class="${c.num && i ? 'num' : ''}"${i === 0 && r.nivel ? ` style="padding-left:${8 + r.nivel * 16}px"` : ''}>${escHtml(repFormalCelda(r.celdas[i]))}</td>`).join('')}</tr>`;
-  }).join('')).join('');
-  return `<article class="rep-hoja"><header class="rf-enc"><div class="rf-razon">${escHtml(e.razon)}</div><div class="rf-titulo">${escHtml(e.titulo)}</div><div class="rf-per">${escHtml(e.periodo)}</div><div class="rf-mon">${e.moneda}</div></header><div class="table-wrap"><table class="rf-tabla"><thead><tr>${f.cols.map((c, i) => `<th class="${c.num && i ? 'num' : ''}">${escHtml(c.h)}</th>`).join('')}</tr></thead><tbody>${filas}</tbody></table></div><footer class="rf-pie">Generado el ${new Date().toLocaleString('es-MX')}${STATE.nombreUsuario ? ' · ' + escHtml(STATE.nombreUsuario) : ''}</footer></article>`;
+    return `<tr class="rf-${r.tipo}${r.negr ? ' rf-neg' : ''}">${cols.map((c, i) => `<td class="${c.num && i ? 'num' : ''}${c.pct ? ' rf-pct' : ''}"${i === 0 && r.nivel ? ` style="padding-left:${8 + r.nivel * 16}px"` : ''}>${escHtml(repFormalCelda(r.celdas[i]))}</td>`).join('')}</tr>`;
+  };
+  const thead = (cols) => `<thead><tr>${cols.map((c, i) => `<th class="${c.num && i ? 'num' : ''}${c.pct ? ' rf-pct' : ''}">${escHtml(c.h)}</th>`).join('')}</tr></thead>`;
+  let cuerpo;
+  if (f.porSeccion) cuerpo = f.secciones.map(s => { const cols = s.cols || f.cols; return `${s.titulo ? `<h4 class="rf-sec-t">${escHtml(s.titulo)}</h4>` : ''}<div class="table-wrap"><table class="rf-tabla">${thead(cols)}<tbody>${s.rows.map(r => fila(r, cols)).join('')}</tbody></table></div>`; }).join('');
+  else cuerpo = `<div class="table-wrap"><table class="rf-tabla">${thead(f.cols)}<tbody>${f.secciones.map(s => (s.titulo ? `<tr class="rf-sec"><td colspan="${f.cols.length}">${escHtml(s.titulo.toUpperCase())}</td></tr>` : '') + s.rows.map(r => fila(r, f.cols)).join('')).join('')}</tbody></table></div>`;
+  return `<article class="rep-hoja"><header class="rf-enc"><div class="rf-razon">${escHtml(e.razon)}</div>${e.ident ? `<div class="rf-ident">${escHtml(e.ident)}</div>` : ''}<div class="rf-titulo">${escHtml(e.titulo)}</div><div class="rf-per">${escHtml(e.periodo)}</div><div class="rf-mon">${e.moneda}</div></header>${cuerpo}${cortado ? `<p class="hint">Vista previa: se muestran los primeros ${limite} renglones; el PDF y el Excel traen todo.</p>` : ''}<footer class="rf-pie">Generado el ${new Date().toLocaleString('es-MX')}${STATE.nombreUsuario ? ' · ' + escHtml(STATE.nombreUsuario) : ''}</footer></article>`;
 }
 function repHojaFormal(it, b) {
-  const f = it.formal, e = repFormalEnc(b, it), aoa = [], fmts = {}, n = f.cols.length;
-  [e.razon, e.titulo, e.periodo, e.moneda, ''].forEach(t => aoa.push([t]));
-  const hdr = aoa.length; aoa.push(f.cols.map(c => c.h));
-  f.secciones.forEach(s => {
-    if (s.titulo) { aoa.push([]); aoa.push([s.titulo.toUpperCase()]); }
-    s.rows.forEach(r => {
-      if (r.tipo === 'grupo') { aoa.push([String(r.celdas[0]).toUpperCase()]); return; }
-      if (r.tipo === 'texto') { aoa.push([String(r.celdas[0])]); return; }
-      const ri = aoa.length;
-      aoa.push(f.cols.map((c, i) => {
-        const v = r.celdas[i];
-        if (i === 0) return '    '.repeat(r.nivel || 0) + String(v === undefined ? '' : v);
-        if (typeof v === 'number') { fmts[ri + ':' + i] = '#,##0.00;(#,##0.00);"-"'; return v; }
-        if (v && typeof v === 'object' && v.pct !== undefined) { fmts[ri + ':' + i] = '0.0%;(0.0%);"-"'; return v.pct / 100; }
-        return v === undefined ? '' : v;
-      }));
-    });
-  });
+  const f = it.formal, e = repFormalEnc(b, it), aoa = [], fmts = {}, ncols = Math.max(...f.secciones.map(s => (s.cols || f.cols).length), f.cols.length);
+  const enc = [e.razon].concat(e.ident ? [e.ident] : [], [e.titulo, e.periodo, e.moneda]);
+  enc.forEach(t => aoa.push([t])); aoa.push([]);
+  const mayus = (t) => f.mayus ? String(t).toUpperCase() : String(t);
+  const poner = (r, cols) => {
+    if (r.tipo === 'grupo') { aoa.push([mayus(r.celdas[0])]); return; }
+    if (r.tipo === 'texto') { aoa.push([String(r.celdas[0])]); return; }
+    const ri = aoa.length;
+    aoa.push(cols.map((c, i) => {
+      const v = r.celdas[i];
+      if (i === 0 && !f.porSeccion) return '    '.repeat(r.nivel || 0) + String(v === undefined ? '' : v);
+      if (typeof v === 'number') { fmts[ri + ':' + i] = '#,##0.00;(#,##0.00);"-"'; return v; }
+      if (v && typeof v === 'object' && v.pct !== undefined) { fmts[ri + ':' + i] = '0.0%;(0.0%);"-"'; return v.pct / 100; }
+      if (v && typeof v === 'object' && v.f !== undefined) { const sr = (typeof _serieExcelISO === 'function') ? _serieExcelISO(v.f) : null; if (sr !== null) { fmts[ri + ':' + i] = 'dd/mm/yyyy'; return sr; } return String(v.f); }
+      return v === undefined ? '' : v;
+    }));
+  };
+  let hdr = null;
+  if (f.porSeccion) f.secciones.forEach((s, i) => { const cols = s.cols || f.cols; if (i) aoa.push([]); if (s.titulo) aoa.push([s.titulo]); if (cols.some(c => c.h)) aoa.push(cols.map(c => c.h)); s.rows.forEach(r => poner(r, cols)); });
+  else {
+    hdr = aoa.length; aoa.push(f.cols.map(c => c.h));
+    f.secciones.forEach(s => { if (s.titulo) { aoa.push([]); aoa.push([s.titulo.toUpperCase()]); } s.rows.forEach(r => poner(r, f.cols)); });
+  }
   aoa.push([]); aoa.push(['Generado: ' + new Date().toLocaleString('es-MX') + (STATE.nombreUsuario ? ' · ' + STATE.nombreUsuario : '')]);
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   Object.keys(fmts).forEach(k => { const [r, c] = k.split(':').map(Number); const cel = ws[XLSX.utils.encode_cell({ r, c })]; if (cel) cel.z = fmts[k]; });
-  ws['!merges'] = [0, 1, 2, 3].map(r => ({ s: { r, c: 0 }, e: { r, c: Math.max(0, n - 1) } }));
-  const ancho0 = Math.min(60, Math.max(28, ...aoa.slice(hdr).map(r => (typeof r[0] === 'string' && r.length > 1) ? r[0].length + 2 : 0)));
-  ws['!cols'] = f.cols.map((c, i) => ({ wch: i === 0 ? ancho0 : (c.num ? 16 : 12) }));
-  ws['!freeze'] = { xSplit: 0, ySplit: hdr + 1 };
-  ws['!views'] = [{ state: 'frozen', ySplit: hdr + 1 }];
+  ws['!merges'] = enc.map((_, r) => ({ s: { r, c: 0 }, e: { r, c: Math.max(0, ncols - 1) } }));
+  ws['!cols'] = Array.from({ length: ncols }, (_, i) => { const col = (f.cols[i] || {}); let w = col.num ? 16 : 10; aoa.slice(enc.length).forEach(r => { const v = r[i]; if (r.length > 1 && typeof v === 'string') w = Math.max(w, Math.min(i === 0 && !f.porSeccion ? 60 : 50, v.length + 2)); }); return { wch: w }; });
+  if (hdr !== null) { ws['!views'] = [{ state: 'frozen', ySplit: hdr + 1 }]; }
   ws['!margins'] = { left: 0.6, right: 0.6, top: 0.7, bottom: 0.7, header: 0.3, footer: 0.3 };
   return ws;
 }
 function repPdfFormal(doc, b, it) {
   const { jsPDF } = window.jspdf, orient = it.orient || 'portrait', f = it.formal, e = repFormalEnc(b, it);
   let d = doc; if (d) d.addPage('letter', orient); else d = new jsPDF({ unit: 'pt', format: 'letter', orientation: orient });
-  const W = d.internal.pageSize.getWidth(), margin = 48; let y = 56;
-  d.setTextColor(10, 31, 61); d.setFont('helvetica', 'bold'); d.setFontSize(14); d.text(pdfLimpiaTexto(e.razon), W / 2, y, { align: 'center' });
-  d.setFontSize(11); d.text(pdfLimpiaTexto(e.titulo), W / 2, y + 18, { align: 'center' });
-  d.setFont('helvetica', 'normal'); d.setFontSize(9.5); d.setTextColor(60, 70, 90); d.text(pdfLimpiaTexto(e.periodo), W / 2, y + 33, { align: 'center' });
-  d.setFont('helvetica', 'italic'); d.setFontSize(8.5); d.setTextColor(110, 118, 135); d.text(e.moneda, W / 2, y + 46, { align: 'center' });
-  d.setDrawColor(10, 31, 61); d.setLineWidth(0.8); d.line(margin, y + 56, W - margin, y + 56);
-  y += 64;
-  const n = f.cols.length, metas = [], body = [];
-  f.secciones.forEach(s => {
-    if (s.titulo) { metas.push({ tipo: 'sec' }); body.push([{ content: pdfLimpiaTexto(s.titulo.toUpperCase()), colSpan: n, styles: { fontStyle: 'bold', fontSize: 9, textColor: [10, 31, 61], cellPadding: { top: 10, bottom: 3, left: 2, right: 2 } } }]); }
-    s.rows.forEach(r => {
-      metas.push(r);
-      if (r.tipo === 'grupo') { body.push([{ content: pdfLimpiaTexto(String(r.celdas[0]).toUpperCase()), colSpan: n, styles: { fontStyle: 'bold', textColor: [10, 31, 61], cellPadding: { top: 8, bottom: 2, left: 2, right: 2 } } }]); return; }
-      if (r.tipo === 'texto') { body.push([{ content: pdfLimpiaTexto(String(r.celdas[0])), colSpan: n, styles: { fontStyle: 'italic', textColor: [110, 118, 135] } }]); return; }
-      const neg = r.negr || ['sub', 'total', 'gran'].includes(r.tipo);
-      body.push(f.cols.map((c, i) => ({ content: pdfLimpiaTexto(i === 0 ? String(r.celdas[0] === undefined ? '' : r.celdas[0]) : repFormalCelda(r.celdas[i])), styles: Object.assign({ fontStyle: neg ? 'bold' : 'normal' }, i === 0 ? { cellPadding: { top: 2.2, bottom: 2.2, left: 2 + (r.nivel || 0) * 12, right: 2 } } : {}) })));
+  const W = d.internal.pageSize.getWidth(), H = d.internal.pageSize.getHeight(), margin = 48, land = orient === 'landscape';
+  const mayus = (t) => f.mayus ? String(t).toUpperCase() : String(t);
+  let y = 60;
+  d.setTextColor(10, 31, 61); d.setFont('helvetica', 'bold'); d.setFontSize(15); d.text(pdfLimpiaTexto(e.razon), W / 2, y, { align: 'center' });
+  if (e.ident) { y += 16; d.setFont('helvetica', 'normal'); d.setFontSize(9); d.setTextColor(90, 100, 120); d.text(pdfLimpiaTexto(e.ident), W / 2, y, { align: 'center' }); }
+  y += 24; d.setFont('helvetica', 'bold'); d.setFontSize(12); d.setTextColor(10, 31, 61); d.text(pdfLimpiaTexto(e.titulo), W / 2, y, { align: 'center' });
+  y += 17; d.setFont('helvetica', 'normal'); d.setFontSize(10); d.setTextColor(60, 70, 90); d.text(pdfLimpiaTexto(e.periodo), W / 2, y, { align: 'center' });
+  y += 14; d.setFont('helvetica', 'italic'); d.setFontSize(8.5); d.setTextColor(110, 118, 135); d.text(e.moneda, W / 2, y, { align: 'center' });
+  y += 14; d.setDrawColor(10, 31, 61); d.setLineWidth(0.8); d.line(margin, y, W - margin, y); y += 20;
+  const unidades = f.porSeccion ? f.secciones.map(s => ({ titulo: s.titulo, cols: s.cols || f.cols, secs: [{ titulo: '', rows: s.rows }] })) : [{ titulo: '', cols: f.cols, secs: f.secciones }];
+  const MIN = { Cuenta: it.k === 'balanza' ? 170 : 150, Tipo: 78, Tercero: 100, Documento: 90, 'Factura o Nota': 84, Fecha: 58, 'Concepto o descripción': 150, 'Descripción': 150 };
+  unidades.forEach((u, ui) => {
+    if (f.porSeccion && u.titulo) { if (y > H - 110) { d.addPage('letter', orient); y = 56; } d.setFont('helvetica', 'bold'); d.setFontSize(10); d.setTextColor(10, 31, 61); d.text(pdfLimpiaTexto(u.titulo), margin, y); y += 8; }
+    const cols = u.cols, n = cols.length, metas = [], body = []; let grp = u.titulo || '';
+    u.secs.forEach(s => {
+      if (s.titulo) { grp = s.titulo.toUpperCase(); metas.push({ tipo: 'sec', grp }); body.push([{ content: pdfLimpiaTexto(grp), colSpan: n, styles: { fontStyle: 'bold', fontSize: 9, textColor: [10, 31, 61], cellPadding: { top: 12, bottom: 3, left: 2, right: 2 } } }]); }
+      s.rows.forEach(r => {
+        if (r.tipo === 'grupo') { grp = mayus(r.celdas[0]); metas.push({ tipo: 'grupo', grp }); body.push([{ content: pdfLimpiaTexto(grp), colSpan: n, styles: { fontStyle: 'bold', textColor: [10, 31, 61], cellPadding: { top: 9, bottom: 2.5, left: 2, right: 2 } } }]); return; }
+        if (r.tipo === 'texto') { metas.push({ tipo: 'texto', grp }); body.push([{ content: pdfLimpiaTexto(String(r.celdas[0])), colSpan: n, styles: { fontStyle: 'italic', textColor: [110, 118, 135] } }]); return; }
+        metas.push(Object.assign({}, r, { grp }));
+        const neg = r.negr || ['sub', 'total', 'gran'].includes(r.tipo);
+        body.push(cols.map((c, i) => ({ content: pdfLimpiaTexto(i === 0 ? String(r.celdas[0] === undefined ? '' : r.celdas[0]) : repFormalCelda(r.celdas[i])), styles: Object.assign({ fontStyle: neg ? 'bold' : 'normal' }, i === 0 && r.nivel ? { cellPadding: { top: 2.2, bottom: 2.2, left: 2 + r.nivel * 12, right: 2 } } : {}) })));
+      });
     });
-  });
-  const numIdx = f.cols.map((c, i) => c.num && i ? i : -1).filter(i => i >= 0), colSt = {};
-  f.cols.forEach((c, i) => { if (i && c.num) colSt[i] = { halign: 'right', cellWidth: orient === 'landscape' ? 74 : (it.k === 'pl' ? (i === 2 ? 70 : 105) : 120) }; else if (i) colSt[i] = { cellWidth: 50 }; });
-  d.autoTable({
-    startY: y, margin: { left: margin, right: margin, top: 40, bottom: 44 }, theme: 'plain', head: [f.cols.map(c => c.h)], body, columnStyles: colSt, showHead: 'everyPage',
-    styles: { fontSize: orient === 'landscape' ? 8 : 9, cellPadding: { top: 2.2, bottom: 2.2, left: 2, right: 2 }, textColor: [30, 41, 59], overflow: 'linebreak' },
-    headStyles: { fontStyle: 'bold', textColor: [10, 31, 61], fillColor: false, halign: 'left', lineWidth: 0 },
-    didParseCell: (data) => { if (data.section === 'head' && numIdx.includes(data.column.index)) data.cell.styles.halign = 'right'; if (data.section === 'body') { const m = metas[data.row.index]; if (m && m.tipo !== 'grupo' && m.tipo !== 'texto' && m.tipo !== 'sec' && numIdx.includes(data.column.index)) data.cell.styles.halign = 'right'; } },
-    didDrawCell: (data) => {
-      const c = data.cell, x = c.x, w = c.width;
-      if (data.section === 'head' && data.column.index === 0) { d.setDrawColor(10, 31, 61); d.setLineWidth(0.8); d.line(margin, c.y + c.height, W - margin, c.y + c.height); }
-      if (data.section !== 'body') return;
-      const m = metas[data.row.index]; if (!m || !['sub', 'total', 'gran'].includes(m.tipo) || !numIdx.includes(data.column.index)) return;
-      d.setDrawColor(40, 50, 70); d.setLineWidth(0.6); d.line(x + 2, c.y, x + w - 2, c.y);
-      if (m.tipo === 'gran') { d.line(x + 2, c.y + c.height - 2.2, x + w - 2, c.y + c.height - 2.2); d.line(x + 2, c.y + c.height, x + w - 2, c.y + c.height); }
-    },
+    const numIdx = cols.map((c, i) => c.num && i ? i : -1).filter(i => i >= 0), colSt = {};
+    cols.forEach((c, i) => {
+      if (c.num && i) colSt[i] = { halign: 'right', cellWidth: land ? 74 : (c.pct ? 80 : 108) };
+      else colSt[i] = { minCellWidth: MIN[c.h] || (i === 0 ? 60 : 40) };
+      if (c.pct) colSt[i].textColor = [110, 118, 135];
+    });
+    const iniPag = d.internal.getCurrentPageInfo().pageNumber, primera = {};
+    d.autoTable({
+      startY: y, margin: { left: margin, right: margin, top: 44, bottom: 46 }, theme: 'plain', head: [cols.map(c => c.h)], body, columnStyles: colSt, showHead: 'everyPage',
+      styles: { fontSize: land ? 8 : 9, cellPadding: { top: 2.2, bottom: 2.2, left: 2, right: 2 }, textColor: [30, 41, 59], overflow: 'linebreak' },
+      headStyles: { fontStyle: 'bold', textColor: [10, 31, 61], fillColor: false, halign: 'left', lineWidth: 0, cellPadding: { top: 4, bottom: 4, left: 2, right: 2 } },
+      didParseCell: (data) => {
+        if (data.section === 'head' && numIdx.includes(data.column.index)) data.cell.styles.halign = 'right';
+        if (data.section === 'body') { const m = metas[data.row.index]; if (m && !['grupo', 'texto', 'sec'].includes(m.tipo) && numIdx.includes(data.column.index)) data.cell.styles.halign = 'right'; if (m && cols[data.column.index] && cols[data.column.index].pct) data.cell.styles.textColor = [110, 118, 135]; }
+      },
+      didDrawCell: (data) => {
+        const c = data.cell;
+        if (data.section === 'head' && data.column.index === 0) { d.setDrawColor(10, 31, 61); d.setLineWidth(0.8); d.line(margin, c.y + c.height, W - margin, c.y + c.height); }
+        if (data.section !== 'body') return;
+        const pg = d.internal.getCurrentPageInfo().pageNumber; if (primera[pg] === undefined && data.column.index === 0) primera[pg] = data.row.index;
+        const m = metas[data.row.index]; if (!m || !['sub', 'total', 'gran'].includes(m.tipo) || !numIdx.includes(data.column.index)) return;
+        d.setDrawColor(40, 50, 70); d.setLineWidth(0.6); d.line(c.x + 2, c.y, c.x + c.width - 2, c.y);
+        if (m.tipo === 'gran') { d.line(c.x + 2, c.y + c.height - 2.2, c.x + c.width - 2, c.y + c.height - 2.2); d.line(c.x + 2, c.y + c.height, c.x + c.width - 2, c.y + c.height); }
+      },
+      didDrawPage: () => {
+        const pg = d.internal.getCurrentPageInfo().pageNumber; if (pg <= iniPag) return;
+        const m = metas[primera[pg]]; if (!m || ['grupo', 'sec'].includes(m.tipo) || !m.grp) return;
+        d.setFont('helvetica', 'italic'); d.setFontSize(8); d.setTextColor(110, 118, 135); d.text(pdfLimpiaTexto(m.grp) + ' (continúa)', margin, 32);
+      },
+    });
+    y = d.lastAutoTable.finalY + (f.porSeccion ? 18 : 0);
   });
   return d;
 }
@@ -28024,7 +28074,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.42';
+const APP_VERSION = '2026-11-06.43';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
