@@ -368,7 +368,7 @@ window.AYUDA = {
         'Si eres administrador puedes aplicarlo a **todos los negocios** que tengan cajas en esa moneda.',
         'En el **Calendario de vigencias** ves y puedes eliminar los cambios capturados. El **Convertidor** calcula pesos a cualquier fecha.'
       ],
-      faq: [{ q: '¿Esto es la revaluación?', a: 'No. La revaluación de divisas al cierre se captura aparte; este tipo de cambio es el operativo, el que usan las cajas y sus resultados.' }],
+      faq: [{ q: '¿Dónde se usa este tipo de cambio?', a: 'En las cajas de efectivo y en la conciliación de Ventas se muestra y se llena solo, y no se edita ahí. En facturas, pagos y cobros se sugiere, pero puedes escribir el del día o el del proveedor.' }, { q: '¿Esto es la revaluación?', a: 'No. La revaluación de divisas al cierre se captura aparte; este tipo de cambio es el operativo, el que usan las cajas y sus resultados.' }],
       cuidado: ['Una fecha anterior a hoy sí cambia los movimientos de esa moneda desde esa fecha y, con ello, los resultados de esos periodos.'],
       auditoria: '',
       relacionadas: ['efectivo', 'reportes']

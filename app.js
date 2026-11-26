@@ -2725,6 +2725,7 @@ async function renderVentas() {
       if (row && await bloqueadoPorCierre(b.id, row.fecha)) { renderVentas(); return; }
       const rd = { ...(row.recon_data || {}) };
       const montoVal = leerMonto(inp.value);
+      if (field === 'tc') registrarAuditoria(b.id, 'editar', 'Ventas', `Tipo de cambio de la venta del ${row.fecha} (${(conceptos.find(c => c.id === conceptoId) || {}).nombre || ''}): ${((rd[conceptoId] || {}).tc) ?? 'vigente'} → ${montoVal}`);
       rd[conceptoId] = { ...(rd[conceptoId] || {}), [field]: montoVal };
       const { error: e4 } = await sb.from('fz_ventas').update({ recon_data: rd }).eq('id', ventaId);
       if (e4) { toast('Error guardando: ' + e4.message, 'error'); return; }
@@ -2861,7 +2862,7 @@ function ventasRowHtml(r, conceptosVenta, porCat, recibidoCats, conceptosSistema
     if (c.es_moneda) {
       return `<td><div style="display:flex;flex-direction:column;gap:2px;">
         <input class="cell recon-cell num num-fmt" type="text" inputmode="decimal" placeholder="monto" value="${entry.monto != null ? fmtInputVal(entry.monto) : ''}" data-venta-id="${r.id}" data-concepto="${c.id}" data-field="monto" style="width:70px;">
-        <input class="cell recon-cell num num-fmt" type="text" inputmode="decimal" placeholder="TC" value="${entry.tc != null ? fmtInputVal(entry.tc) : ''}" data-venta-id="${r.id}" data-concepto="${c.id}" data-field="tc" style="width:70px;color:var(--muted);font-size:11.5px;">
+        <input class="cell recon-cell num num-fmt${(c.moneda_id && !puede('editar_tc_operacion')) ? ' tc-bloqueado' : ''}" type="text" inputmode="decimal" placeholder="TC vigente" ${(c.moneda_id && !puede('editar_tc_operacion')) ? 'readonly title="Tipo de cambio operativo (si está vacío se usa el vigente en la fecha). Para cambiarlo: Configuración › Divisas y tipos de cambio."' : ''} value="${entry.tc != null ? fmtInputVal(entry.tc) : ''}" data-venta-id="${r.id}" data-concepto="${c.id}" data-field="tc" style="width:70px;color:var(--muted);font-size:11.5px;">
       </div></td>`;
     }
     return `<td><input class="cell recon-cell num num-fmt" type="text" inputmode="decimal" value="${fmtInputVal(entry.monto)}" data-venta-id="${r.id}" data-concepto="${c.id}" data-field="monto"></td>`;
@@ -15073,6 +15074,21 @@ async function openVentaDiaModal(businessId, onDone) {
 
   document.getElementById('modalVentaDia').classList.add('show');
   wireInputsMoneda(form);
+  // 06.39: el tipo de cambio de la conciliación es el operativo vigente en la fecha del día; solo se desbloquea con la capacidad «Editar el tipo de cambio en la operación»
+  const [cajasTc, vigTc] = await Promise.all([sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId).then(r => r.data || []), cargarVigenciasTC(businessId)]);
+  const tcSug = {}, desbloquea = puede('editar_tc_operacion', businessId);
+  const llenarTc = () => {
+    const fch = document.getElementById('vdFecha').value || todayStr();
+    form.querySelectorAll('.vd-recon-tc').forEach(inp => {
+      const c = Object.values(porCat).flat().find(x => x.id === inp.dataset.id), caja = c && cajasTc.find(x => x.id === c.moneda_id);
+      if (!caja) return;   // sin caja de esa divisa no hay de dónde sugerirlo: queda editable como antes
+      tcSug[inp.dataset.id] = tcVigenteDeCaja(vigTc, caja, fch);
+      if (!desbloquea) { inp.value = fmtInputVal(tcSug[inp.dataset.id]); inp.readOnly = true; inp.title = 'Tipo de cambio operativo. Para cambiarlo: Configuración › Divisas y tipos de cambio.'; inp.classList.add('tc-bloqueado'); }
+      else if (!inp.dataset.tocado) inp.value = fmtInputVal(tcSug[inp.dataset.id]);
+    });
+  };
+  form.querySelectorAll('.vd-recon-tc').forEach(inp => inp.addEventListener('input', () => { inp.dataset.tocado = '1'; }));
+  document.getElementById('vdFecha').addEventListener('change', llenarTc); llenarTc();
   document.getElementById('closeVentaDia').onclick = () => document.getElementById('modalVentaDia').classList.remove('show');
   document.getElementById('saveVentaDia').onclick = async () => {
     const fecha = document.getElementById('vdFecha').value || todayStr();
@@ -15084,6 +15100,7 @@ async function openVentaDiaModal(businessId, onDone) {
       const monto = leerMonto(inp.value);
       const tcInput = form.querySelector(`.vd-recon-tc[data-id="${inp.dataset.id}"]`);
       recon_data[inp.dataset.id] = tcInput ? { monto, tc: leerMonto(tcInput.value) } : { monto };
+      if (tcInput && tcSug[inp.dataset.id] && Math.abs((leerMonto(tcInput.value) || 0) - tcSug[inp.dataset.id]) > 0.00005) registrarAuditoria(businessId, 'editar', 'Ventas', `Tipo de cambio operativo editado en la venta del ${fecha}: sugerido ${tcSug[inp.dataset.id]}, usado ${leerMonto(tcInput.value)}`);
     });
     const payload = {
       business_id: businessId, fecha, venta_data,
@@ -18040,11 +18057,11 @@ function efectivoLiquidezHtml(b, monedasConSaldo, bancosConSaldo) {
   const r = efectivoLiquidezCalcular(monedasConSaldo, bancosConSaldo);
   const lineasDivisa = r.cajasDivisa.map(m => { const cod = codigoMonedaDeCaja(m.nombre, m.tc_reporte); return `<div class="liq-linea${m.activo === false ? ' liq-inactiva' : ''}">
       <span>${escHtml(m.nombre)}${m.activo === false ? ' (inactiva)' : ''}</span>
-      <span class="num">${fmtMon(m.saldo, cod)} × <input class="cell tc-reporte-cell" type="text" inputmode="decimal" value="${m.tc_reporte}" data-id="${m.id}" aria-label="Tipo de cambio de ${escAttr(m.nombre)}"> = <strong>${fmt(m.pesoEquiv)}</strong></span></div>`; }).join('')
+      <span class="num">${fmtMon(m.saldo, cod)} × <span class="tc-reporte-fijo" title="Tipo de cambio operativo vigente. Se cambia en Configuración › Divisas y tipos de cambio.">${fmtTc(m.tc_reporte)}</span>${puede('capturar_tc') ? ' <a href="#" class="tc-reporte-ir">Cambiar</a>' : ''} = <strong>${fmt(m.pesoEquiv)}</strong></span></div>`; }).join('')
     + r.bancosDivisa.map(c => `<div class="liq-linea"><span>Banco — ${escHtml(c.nombre)}</span><span class="num">${fmtMon(c.saldo, c.moneda)} × ${fmtNum(c.tc)} = <strong>${fmt(c.eq)}</strong></span></div>`).join('');
   return `
     <div class="card liq-resumen">
-      <div class="card-head"><h3>Liquidez — ${escHtml(b.name)}</h3><span class="hint">Al día de hoy · si el TC cambió, edítalo: el nuevo rige desde la fecha que elijas y lo anterior no se mueve</span></div>
+      <div class="card-head"><h3>Liquidez — ${escHtml(b.name)}</h3><span class="hint">Al día de hoy · el tipo de cambio operativo se cambia en Configuración › Divisas y tipos de cambio</span></div>
       <div class="liq-grid">
         <div class="liq-kpi"><div class="label">Pesos</div><div class="value num">${fmt(r.pesos)}</div><div class="liq-sub">Efectivo ${fmt(r.pesosEfectivo)} · Bancos ${fmt(r.pesosBancos)}</div></div>
         <div class="liq-kpi"><div class="label">Divisas (en pesos)</div><div class="value num">${fmt(r.divisasPesos)}</div>${lineasDivisa ? `<div class="liq-divisas">${lineasDivisa}</div>` : '<div class="liq-sub">Sin cajas en divisa</div>'}</div>
@@ -18105,14 +18122,7 @@ async function renderEfectivo() {
     </div>
   `;
 
-  el.querySelectorAll('.tc-reporte-cell').forEach(inp => {
-    inp.addEventListener('change', async () => {
-      const val = leerMonto(inp.value) || 1;
-      const caja = monedasConSaldo.find(m => m.id === inp.dataset.id);
-      if (caja && Math.abs((Number(caja.tc_reporte) || 1) - val) > 0.0000001) await cambiarTcCajaConVigencia(b.id, caja, val);   // 06.36: el TC nuevo rige desde la fecha que elijas; lo anterior no cambia
-      renderEfectivo();
-    });
-  });
+  el.querySelectorAll('.tc-reporte-ir').forEach(a => a.addEventListener('click', (e) => { e.preventDefault(); irASeccion('divisas'); }));   // 06.39: el TC ya no se edita aquí
   document.getElementById('traspasoBtnEfvo').addEventListener('click', () => openTraspasoModal(b.id, renderEfectivo));
   const filasEfvo = filasCuentasDinero('efectivo', monedasConSaldo);
   const alTerminarEfvo = (idNuevo) => { if (idNuevo) STATE_monedaAbierta = idNuevo; renderEfectivo(); };
@@ -21093,6 +21103,7 @@ async function openModalFactura(factura, businessId) {
   }
   actualizarTcWrap();
   document.getElementById('facturaFecha').value = factura?.fecha || todayStr();
+  if (!factura) tcSugerirEnFactura(businessId, selMoneda, inputTc, document.getElementById('facturaFecha'), 'facturaTcAviso');   // 06.39: sugiere el operativo; editable
   document.getElementById('facturaVencimiento').value = factura?.fecha_vencimiento || '';
   document.getElementById('facturaAplicaIva').checked = factura ? !!factura.aplica_iva : true;
   document.getElementById('facturaIvaPorcentaje').value = factura?.iva_porcentaje ?? 16;
@@ -21991,6 +22002,7 @@ async function openModalFacturaProveedor(factura, businessId, catalogo, opciones
   selMonedaFp.value = factura?.moneda || 'MXN'; // sin suposición por nacionalidad — MXN solo como default neutro
   inputTcFp.value = fmtInputVal(factura?.tipo_cambio || 1);
   actualizarTcWrapFp();
+  if (!factura) tcSugerirEnFactura(businessId, selMonedaFp, inputTcFp, document.getElementById('fpFecha'), 'fpTcAviso');   // 06.39: sugiere el operativo; editable
   document.getElementById('fpImporte').value = fmtInputVal(factura?.importe || 0);
   if (typeof actualizarEquivalenteMxnProveedor === 'function') setTimeout(actualizarEquivalenteMxnProveedor, 0);
   document.getElementById('fpEstatus').value = factura?.estatus || 'Pendiente';
@@ -23200,6 +23212,45 @@ function abrirCapacidades(email, negocio, actuales) {
     bg.querySelector('#capCancelar').addEventListener('click', () => cerrar(null));
     bg.querySelector('#capGuardar').addEventListener('click', () => { const caps = [...bg.querySelectorAll('.cap-chk')].filter(c => c.checked).map(c => c.value); if (!caps.length) { toast('Marca al menos una capacidad, o quita el perfil para volver a los niveles de siempre.', 'error'); return; } cerrar(caps); });
   });
+}
+
+// ===== 06.39 — Tipo de cambio operativo único (sugerido, no editable salvo excepción) =====
+// El tipo de cambio operativo se fija UNA vez en Configuración › Divisas y tipos de cambio. En Efectivo y en la conciliación de Ventas
+// se muestra y se llena solo (el vigente en la fecha de la operación). Quien tenga la capacidad «Editar el tipo de cambio en la operación» puede
+// desbloquearlo y cada cambio queda en Auditoría. Facturas, pagos y cobros conservan su tipo de cambio editable: ahí es el del día o el del proveedor.
+async function tcOperativoMoneda(businessId, moneda, fecha) {   // TC operativo vigente de una moneda en una fecha (null si no hay de dónde tomarlo)
+  try {
+    if (!businessId || !moneda || moneda === 'MXN') return null;
+    const [rc, vig] = await Promise.all([sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId), cargarVigenciasTC(businessId)]);
+    const cajas = rc.data || [];
+    const hay = cajas.some(c => codigoMonedaDeCaja(c.nombre, c.tc_reporte) === moneda) || vig.some(v => String(v.moneda || '').toUpperCase() === moneda);
+    return hay ? tcFmtHoyDeMoneda(vig, cajas, moneda, fecha || todayStr()) : null;
+  } catch (_) { return null; }
+}
+function tcAvisoTexto(valor, sugerido) {
+  const v = Number(valor), s = Number(sugerido);
+  if (!(v > 0) || !(s > 0)) return '';
+  return Math.abs(v - s) / s > 0.05 ? `Es distinto al tipo de cambio operativo (${fmtTc(s)}). Está bien si usas el del día o el que puso el proveedor.` : '';
+}
+// Sugiere el TC operativo en el formulario de una factura NUEVA y avisa si el valor capturado se aleja más de 5 %. Nunca bloquea ni cambia lo que la persona escribió.
+function tcSugerirEnFactura(businessId, selMoneda, inputTc, inputFecha, avisoId) {
+  let tocado = leerMonto(inputTc.value) > 1, sug = null;   // si el cliente ya trae un TC propio, se respeta y solo se avisa
+  const aviso = () => {
+    let el = document.getElementById(avisoId);
+    if (!el) { inputTc.insertAdjacentHTML('afterend', `<small id="${avisoId}" class="tc-aviso"></small>`); el = document.getElementById(avisoId); }
+    el.textContent = selMoneda.value === 'MXN' ? '' : tcAvisoTexto(leerMonto(inputTc.value), sug);
+  };
+  const sugerir = async () => {
+    if (selMoneda.value === 'MXN') { sug = null; aviso(); return; }
+    sug = await tcOperativoMoneda(businessId, selMoneda.value, inputFecha && inputFecha.value);
+    if (sug && !tocado) inputTc.value = fmtInputVal(sug);
+    aviso();
+  };
+  inputTc.addEventListener('input', () => { tocado = true; aviso(); });
+  const prevMon = selMoneda.onchange;
+  selMoneda.onchange = (e) => { if (prevMon) prevMon.call(selMoneda, e); tocado = false; sugerir(); };
+  if (inputFecha) inputFecha.addEventListener('change', sugerir);
+  setTimeout(sugerir, 0);
 }
 
 async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha = null, opciones = {}) {
@@ -27750,7 +27801,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.38';
+const APP_VERSION = '2026-11-06.39';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
