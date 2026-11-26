@@ -10236,7 +10236,8 @@ document.getElementById('cierrePeriodoMes').addEventListener('change', (e) => {
 /* ---------- Balanza de Comprobación (solo Fiscal Contable) ---------- */
 async function computeSaldosEspecialesBalanza(b, hastaFecha, subcuentas, mayores, monedas, cuentasBanco, conceptosEfectivo, conceptosTarjetas) {
   let totalEfectivo = 0;
-  for (const m of monedas) totalEfectivo += (await computeMonedaSaldo(b.id, m, conceptosEfectivo, hastaFecha)) * (Number(m.tc_reporte) || 1);
+  const vigsBalanza = await cargarVigenciasTC(b.id);
+  for (const m of monedas) totalEfectivo += (await computeMonedaSaldo(b.id, m, conceptosEfectivo, hastaFecha)) * tcVigenteDeCaja(vigsBalanza, m, hastaFecha || todayStr());
   let totalBancos = 0;
   for (const c of cuentasBanco) totalBancos += await computeBancoSaldo(b.id, c, conceptosTarjetas, hastaFecha);
 
@@ -18005,7 +18006,7 @@ function efectivoLiquidezHtml(b, monedasConSaldo, bancosConSaldo) {
     + r.bancosDivisa.map(c => `<div class="liq-linea"><span>Banco — ${escHtml(c.nombre)}</span><span class="num">${fmtMon(c.saldo, c.moneda)} × ${fmtNum(c.tc)} = <strong>${fmt(c.eq)}</strong></span></div>`).join('');
   return `
     <div class="card liq-resumen">
-      <div class="card-head"><h3>Liquidez — ${escHtml(b.name)}</h3><span class="hint">Al día de hoy · edita el TC si cambió</span></div>
+      <div class="card-head"><h3>Liquidez — ${escHtml(b.name)}</h3><span class="hint">Al día de hoy · si el TC cambió, edítalo: el nuevo rige desde la fecha que elijas y lo anterior no se mueve</span></div>
       <div class="liq-grid">
         <div class="liq-kpi"><div class="label">Pesos</div><div class="value num">${fmt(r.pesos)}</div><div class="liq-sub">Efectivo ${fmt(r.pesosEfectivo)} · Bancos ${fmt(r.pesosBancos)}</div></div>
         <div class="liq-kpi"><div class="label">Divisas (en pesos)</div><div class="value num">${fmt(r.divisasPesos)}</div>${lineasDivisa ? `<div class="liq-divisas">${lineasDivisa}</div>` : '<div class="liq-sub">Sin cajas en divisa</div>'}</div>
@@ -18069,7 +18070,8 @@ async function renderEfectivo() {
   el.querySelectorAll('.tc-reporte-cell').forEach(inp => {
     inp.addEventListener('change', async () => {
       const val = leerMonto(inp.value) || 1;
-      await sb.from('fz_efectivo_monedas').update({ tc_reporte: val }).eq('id', inp.dataset.id);
+      const caja = monedasConSaldo.find(m => m.id === inp.dataset.id);
+      if (caja && Math.abs((Number(caja.tc_reporte) || 1) - val) > 0.0000001) await cambiarTcCajaConVigencia(b.id, caja, val);   // 06.36: el TC nuevo rige desde la fecha que elijas; lo anterior no cambia
       renderEfectivo();
     });
   });
@@ -18409,13 +18411,17 @@ async function abrirModalCuentaDinero({ tipo, businessId, fila, filas, alTermina
         if (nombreFinal !== fila.nombre) { payload.nombre = nombreFinal; cambios.push(`nombre "${fila.nombre}" → "${nombreFinal}"`); }
         if (cambiaSaldo) { payload.saldo_inicial = saldoInicial; cambios.push(`saldo inicial ${fmtNum(fila.saldoInicial)} → ${fmtNum(saldoInicial)}`); }
         if (esBanco && !monedaBloqueada && moneda !== fila.moneda) { payload.moneda = moneda; cambios.push(`moneda ${fila.moneda} → ${moneda}`); }
-        if (!esBanco && Math.abs(tc - fila.tc) > 0.000001) { payload.tc_reporte = tc; cambios.push(`tipo de cambio ${fila.tc} → ${tc}`); }
+        let cambioTc = null;
+        if (!esBanco && Math.abs(tc - fila.tc) > 0.000001) { cambioTc = tc; cambios.push(`tipo de cambio ${fila.tc} → ${tc} (rige desde la fecha que elijas)`); }   // 06.36: ya no se pisa el TC de la caja; se guarda como vigencia
         if (activa !== fila.activo) { payload.activo = activa; cambios.push(activa ? 'reactivada' : 'desactivada'); }
         if (!cambios.length) { toast('No hay cambios que guardar.'); cerrar(); return; }
-        const { error } = await sb.from(esBanco ? 'fz_bancos_cuentas' : 'fz_efectivo_monedas').update(payload).eq('id', fila.id);
+        let error = null;
+        if (Object.keys(payload).length) ({ error } = await sb.from(esBanco ? 'fz_bancos_cuentas' : 'fz_efectivo_monedas').update(payload).eq('id', fila.id));
         if (error) { toast('Error: ' + error.message, 'error'); return; }
-        registrarAuditoria(businessId, 'editar', modulo, `${nombreTipo} "${fila.nombre}": ${cambios.join('; ')}`);
-        toast('Guardado.');
+        const otrosCambios = cambios.filter(c => !c.startsWith('tipo de cambio'));
+        if (otrosCambios.length) registrarAuditoria(businessId, 'editar', modulo, `${nombreTipo} "${fila.nombre}": ${otrosCambios.join('; ')}`);
+        if (cambioTc !== null) { const okTc = await cambiarTcCajaConVigencia(businessId, { id: fila.id, nombre: fila.nombre, tc_reporte: fila.tc }, cambioTc); if (!okTc) toast('El tipo de cambio no se cambió; lo demás sí se guardó.'); }
+        else toast('Guardado.');
       }
       cerrar();
       alTerminar(idResultado);
@@ -22787,6 +22793,78 @@ async function fetchTodasLasPaginas(queryBuilderFn) {
   return { data: todas, error: null };
 }
 
+// ===== 06.36 — Tipo de cambio por VIGENCIA (un TC nuevo rige desde su fecha; lo anterior no se mueve) =====
+// Antes la caja en divisa tenía UN solo «TC de reporte»: al editarlo, el motor lo aplicaba también a movimientos y saldos de
+// periodos anteriores (saldo inicial, depósitos sin TC propio, ventas conciliadas sin TC del día) y movía la ganancia o pérdida cambiaria.
+// Ahora cada cambio se guarda con su fecha en fz_tipos_cambio_vigencia y el motor toma el TC vigente EN LA FECHA de cada movimiento.
+// Sin filas de vigencia (o sin la tabla) todo se calcula exactamente como antes, con el TC de la caja.
+async function cargarVigenciasTC(businessId) {
+  try {
+    const { data, error } = await sb.from('fz_tipos_cambio_vigencia').select('*').or(`business_id.eq.${businessId},business_id.is.null`);
+    return error ? [] : (data || []);
+  } catch (_) { return []; }
+}
+// fecha vacía = saldo inicial de la caja: toma el TC más antiguo (el que tenía la caja antes de manejar vigencias).
+function tcVigenteDeCaja(vigencias, caja, fecha) {
+  const tcBase = Number(caja && caja.tc_reporte) || 1;
+  const cod = codigoMonedaDeCaja(caja && caja.nombre, caja && caja.tc_reporte);
+  const aplica = (Array.isArray(vigencias) ? vigencias : []).filter(v => v.caja_id ? v.caja_id === caja.id : String(v.moneda || '').toUpperCase() === cod);
+  if (!aplica.length) return tcBase;
+  const prio = (v) => v.caja_id ? 3 : (v.business_id ? 2 : 1);   // a igual fecha gana lo más específico: caja > negocio > general
+  const ord = [...aplica].sort((a, b) => String(a.vigente_desde).localeCompare(String(b.vigente_desde)) || prio(a) - prio(b));
+  const hasta = fecha ? ord.filter(v => String(v.vigente_desde) <= String(fecha)) : [];
+  const grupo = hasta.length ? hasta : ord;                    // sin vigencia anterior a la fecha: la más antigua
+  const f0 = hasta.length ? grupo[grupo.length - 1].vigente_desde : grupo[0].vigente_desde;
+  const empate = grupo.filter(v => String(v.vigente_desde) === String(f0));
+  const elegido = empate.reduce((m, v) => (prio(v) >= prio(m) ? v : m), empate[0]);
+  return Number(elegido.tc) || tcBase;
+}
+async function guardarTcCajaVigencia(businessId, caja, tc, desde, nota) {
+  const cod = codigoMonedaDeCaja(caja.nombre, caja.tc_reporte);
+  const ex = await sb.from('fz_tipos_cambio_vigencia').select('id').eq('caja_id', caja.id).limit(1);
+  if (ex.error) return { error: ex.error };
+  const email = STATE.user?.email || null, filas = [];
+  if (!(ex.data || []).length) filas.push({ business_id: businessId, caja_id: caja.id, moneda: cod, tc: Number(caja.tc_reporte) || 1, vigente_desde: '1900-01-01', fuente: 'base', nota: 'TC que tenía la caja antes de manejar vigencias', created_by: email });
+  filas.push({ business_id: businessId, caja_id: caja.id, moneda: cod, tc, vigente_desde: desde, fuente: 'manual', nota: nota || null, created_by: email });
+  const del = await sb.from('fz_tipos_cambio_vigencia').delete().eq('caja_id', caja.id).eq('vigente_desde', desde);
+  if (del.error) return { error: del.error };
+  const ins = await sb.from('fz_tipos_cambio_vigencia').insert(filas);
+  if (ins.error) return { error: ins.error };
+  // «TC de referencia» de la caja (lo que ven Efectivo y el Dashboard) = el vigente hoy
+  const todas = await sb.from('fz_tipos_cambio_vigencia').select('*').eq('caja_id', caja.id);
+  const hoyTc = tcVigenteDeCaja(todas.data || [], caja, todayStr());
+  await sb.from('fz_efectivo_monedas').update({ tc_reporte: hoyTc }).eq('id', caja.id);
+  return { ok: true, tcHoy: hoyTc };
+}
+function pedirVigenciaTC(caja, tcNuevo) {
+  return new Promise((resolve) => {
+    document.getElementById('modalVigenciaTC')?.remove();
+    const hoy = todayStr(), cod = codigoMonedaDeCaja(caja.nombre, caja.tc_reporte);
+    const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalVigenciaTC';
+    bg.innerHTML = `<div class="modal" style="max-width:460px;">
+      <h3 style="margin-bottom:6px;">Tipo de cambio de ${escHtml(caja.nombre)}</h3>
+      <p class="hint" style="margin:0 0 12px;">${escHtml(cod)}: ${fmtNum(caja.tc_reporte)} → <b>${fmtNum(tcNuevo)}</b></p>
+      <div class="field"><label>Rige desde</label><input type="date" id="vtcDesde" value="${hoy}"></div>
+      <div class="field"><label>Nota (opcional)</label><input type="text" id="vtcNota" placeholder="Ej. TC publicado por el DOF"></div>
+      <p class="hint" id="vtcAviso" style="margin:0 0 12px;">Los movimientos y periodos anteriores a esa fecha se quedan con el TC que tenían.</p>
+      <div style="display:flex;gap:8px;justify-content:flex-end;"><button class="btn btn-ghost" id="vtcCancelar">Cancelar</button><button class="btn btn-gold" id="vtcGuardar">Guardar</button></div></div>`;
+    document.body.appendChild(bg);
+    const cerrar = (v) => { bg.remove(); resolve(v); };
+    const fe = bg.querySelector('#vtcDesde'), av = bg.querySelector('#vtcAviso');
+    fe.addEventListener('input', () => { const pasada = fe.value && fe.value < hoy; av.style.color = pasada ? 'var(--red)' : ''; av.textContent = pasada ? 'Atención: con una fecha anterior a hoy SÍ cambian los movimientos desde esa fecha (y su ganancia o pérdida cambiaria).' : 'Los movimientos y periodos anteriores a esa fecha se quedan con el TC que tenían.'; });
+    bg.querySelector('#vtcCancelar').addEventListener('click', () => cerrar(null));
+    bg.querySelector('#vtcGuardar').addEventListener('click', () => { if (!fe.value) { toast('Indica desde qué fecha rige.', 'error'); return; } cerrar({ desde: fe.value, nota: bg.querySelector('#vtcNota').value.trim() }); });
+  });
+}
+async function cambiarTcCajaConVigencia(businessId, caja, tcNuevo) {
+  const r = await pedirVigenciaTC(caja, tcNuevo); if (!r) return false;
+  const res = await guardarTcCajaVigencia(businessId, caja, tcNuevo, r.desde, r.nota);
+  if (res.error) { toast('No se pudo guardar el tipo de cambio: ' + res.error.message + ' (¿ya corriste el SQL 06.36?)', 'error'); return false; }
+  registrarAuditoria(businessId, 'editar', 'Efectivo', `Tipo de cambio de "${caja.nombre}": ${caja.tc_reporte} → ${tcNuevo}, rige desde ${r.desde}${r.nota ? ' · ' + r.nota : ''}`);
+  toast('Tipo de cambio guardado: rige desde ' + fechaCorta(r.desde) + '.');
+  return true;
+}
+
 async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha = null, opciones = {}) {
   const filas = [];
   const push = (origen, clave, tipo, cargo, abono) => {
@@ -22801,6 +22879,7 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   const lanzar = (consulta) => { const p = Promise.resolve(consulta); p.catch(() => {}); return p; }; // arranca ya; un fallo se reporta donde se espera
   const esFinanciero0 = ventasAfectaFueraDeSuRegistro(businessId);
   const cargaNegocio = lanzar(sb.from('businesses').select('iva_realizacion_desde').eq('id', businessId).maybeSingle());
+  const cargaVigenciasTC = lanzar(cargarVigenciasTC(businessId));   // 06.36: TC por vigencia (vacío = como antes, con el TC de la caja)
   const cargaPolizas = lanzar(conDesde(sb.from('fz_polizas').select('id,fecha,numero,concepto').eq('business_id', businessId).lte('fecha', hastaFecha)))
     .then(async (r) => { const ids = (r.data || []).map(x => x.id); return { polizas: r, lineas: ids.length ? await sb.from('fz_polizas_lineas').select('*').in('poliza_id', ids) : { data: [] } }; });
   cargaPolizas.catch(() => {});
@@ -22848,6 +22927,8 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
   // reconoce por estar ligado a su pago o por su leyenda. Las notas de crédito de proveedor sí son
   // distintas: bajan lo que se debe y deben reducir el gasto aunque no estén desglosadas.
   const esCreditoPorPagoExceso = (f) => !!f.origen_id || String(f.factura || '').startsWith('Crédito a favor (pago del');
+  const vigenciasTCraw = await cargaVigenciasTC, vigenciasTC = Array.isArray(vigenciasTCraw) ? vigenciasTCraw : [];
+  const tcDeCaja = (caja, fecha) => tcVigenteDeCaja(vigenciasTC, caja, fecha);
   const esMonedaPesos = (monedaId) => {
     const n = (monedas.find(x => x.id === monedaId)?.nombre || '').trim().toLowerCase();
     return n.includes('mxn') || n.includes('peso');
@@ -23050,7 +23131,7 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
         // el de reporte) — la MISMA regla con la que se valúa el depósito, para que la cuenta puente cierre.
         if (monto && cv.moneda_id && !esMonedaPesos(cv.moneda_id)) {
           const tcDia = Number(entradaRecon?.tc) || 0;
-          monto = redondearMoneda(monto * (tcDia > 0 ? tcDia : (Number(monedas.find(x=>x.id===cv.moneda_id)?.tc_reporte)||1)));
+          monto = redondearMoneda(monto * (tcDia > 0 ? tcDia : (tcDeCaja(monedas.find(x=>x.id===cv.moneda_id) || {}, v.fecha) || 1)));
         }
         // 06.19: un concepto CxC con «cuenta destino» (sin banco/efectivo) deja su monto como saldo por cobrar en esa subcuenta, en lugar de la cuenta puente de depósitos.
         if (monto && cv.subcuenta_id && !cv.banco_cuenta_id && !cv.moneda_id) push({ modulo: 'Ventas', tipoOrigen: 'venta_recibido', id: v.id+':'+cv.id, fecha: v.fecha, referencia: `Venta ${v.fecha} — ${cv.nombre}`, detalle: '', cuenta: 'Cuenta por cobrar de ventas' }, 'sub:'+cv.subcuenta_id, 'activo', monto, 0);
@@ -23375,9 +23456,9 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
       (vs||[]).forEach(v => { reconPorVenta[v.id] = v.recon_data || {}; });
     }
     for (const mon of monedasForaneas) {
-      const tcRep = Number(mon.tc_reporte) || 1;
+      const tcRep0 = tcDeCaja(mon, null);   // saldo inicial: el TC más antiguo de la caja
       let unidades = Number(mon.saldo_inicial) || 0;
-      let costo = unidades * tcRep;
+      let costo = unidades * tcRep0;
       movsForaneos.filter(m => m.moneda_id === mon.id)
         .sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)) || String(a.created_at||'').localeCompare(String(b.created_at||'')) || String(a.id).localeCompare(String(b.id)))
         .forEach(m => {
@@ -23386,15 +23467,15 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
             let mxn;
             if (m.tipo_entrada === 'venta_conciliada' && m.venta_id) {
               const tcDia = Number(reconPorVenta[m.venta_id]?.[m.concepto_venta_id]?.tc) || 0;
-              mxn = dep * (tcDia > 0 ? tcDia : tcRep);
+              mxn = dep * (tcDia > 0 ? tcDia : tcDeCaja(mon, m.fecha));
             } else if (m.tipo_entrada === 'traspaso' && montoPesosPorId.has(m.id)) mxn = montoPesosPorId.get(m.id);
-            else mxn = dep * tcRep;
+            else mxn = dep * tcDeCaja(mon, m.fecha);
             mxn = redondearMoneda(mxn);
             unidades += dep; costo += mxn;
             if (['venta_conciliada', 'traspaso', 'otro'].includes(m.tipo_entrada || 'otro')) valuacionEfectivo.set(m.id, { mxn });
           }
           if (car) {
-            const promedio = unidades > 1e-7 ? costo / unidades : tcRep;
+            const promedio = unidades > 1e-7 ? costo / unidades : tcDeCaja(mon, m.fecha);
             const costoSale = redondearMoneda(car * promedio);
             unidades -= car; costo -= costoSale;
             if (['traspaso', 'gasto', 'otro'].includes(m.tipo_salida || 'otro')) {
@@ -23421,7 +23502,7 @@ async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha 
       else { push({ ...b0, cuenta: nombre }, clave, 'activo', 0, -monto); push({ ...b0, cuenta: 'Saldos iniciales' }, 'saldos_iniciales', 'capital', -monto, 0); }
     };
     cuentasBanco.forEach(c => empujarApertura('banco:' + c.id, `Banco: ${c.nombre}`, Number(c.saldo_inicial) || 0));
-    monedas.forEach(mn => empujarApertura('efectivo:' + mn.id, `Efectivo: ${mn.nombre}`, (Number(mn.saldo_inicial) || 0) * (esMonedaPesos(mn.id) ? 1 : (Number(mn.tc_reporte) || 1))));
+    monedas.forEach(mn => empujarApertura('efectivo:' + mn.id, `Efectivo: ${mn.nombre}`, (Number(mn.saldo_inicial) || 0) * (esMonedaPesos(mn.id) ? 1 : tcDeCaja(mn, null))));
   }
   procesarMovimientos(bancosMovQ.data, true, 'banco_mov', 'Movimiento de Banco', 'fz_bancos_mov');
   procesarMovimientos(efvoMovQ.data, false, 'efectivo_mov', 'Movimiento de Efectivo', 'fz_efectivo_mov');
@@ -27332,7 +27413,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.35';
+const APP_VERSION = '2026-11-06.36';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
