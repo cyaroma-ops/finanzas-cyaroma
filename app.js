@@ -2912,6 +2912,7 @@ async function renderVentas() {
           <button class="btn btn-ghost btn-sm" id="openConceptosBtn">${iconoConfigurar()}Conceptos de recibido</button>
           <button class="btn btn-ghost btn-sm" id="descargarPlantillaBtn">Descargar plantilla</button>
           <button class="btn btn-ghost btn-sm" id="importVentasBtn">Importar ventas (Excel)</button>
+          ${puede('capturar_ventas') ? '<button class="btn btn-gold btn-sm" id="cargarHojaBtn">Cargar desde hoja</button>' : ''}
           ${ventasAfectaFueraDeSuRegistro(b.id) ? '<button class="btn btn-ghost btn-sm" id="materializarHistoricoVentasBtn">Materializar depósitos ya conciliados</button>' : ''}
           <button class="btn btn-gold btn-sm" id="addVentaRow">+ Agregar día</button>
         </div>
@@ -2968,6 +2969,7 @@ async function renderVentas() {
   document.getElementById('openSistemaConceptosBtn').addEventListener('click', () => openSistemaConceptosModal(b.id));
   document.getElementById('descargarPlantillaBtn').addEventListener('click', () => descargarPlantillaVentas(b.id));
   document.getElementById('importVentasBtn').addEventListener('click', () => openImportExcelModal('ventas', b.id, renderVentas));
+  const hojaBtn = document.getElementById('cargarHojaBtn'); if (hojaBtn) hojaBtn.addEventListener('click', () => abrirCargaHoja(b));
   const btnMaterializar = document.getElementById('materializarHistoricoVentasBtn'); // solo existe en negocios financieros
   if (btnMaterializar) btnMaterializar.addEventListener('click', async () => {
     const btn = document.getElementById('materializarHistoricoVentasBtn');
@@ -23636,6 +23638,177 @@ function abrirConfirmarMonedasCajas(businessId, cajas, alTerminar) {
     toast('Monedas guardadas.'); cerrar(); if (alTerminar) alTerminar();
   });
 }
+
+// ===== 06.48 — Cargar ventas desde la hoja de cálculo (pegado manual, con vista previa) =====
+// Usa EXACTAMENTE los mismos registros de siempre (fz_ventas: venta_data / sistema_data / recon_data). No toca ningún cálculo.
+// Importante: un día con «Sistema» y sin «Recibido» produce un faltante falso en el Estado de resultados (la diferencia es Sistema − Recibido),
+// por eso los días con recibido pendiente NO se cargan por omisión; si el usuario lo decide, puede cargar solo sus ventas.
+const HOJA_ENCABEZADOS = ['FECHA', 'VENTAS ALIMENTOS', 'VENTAS BEBIDAS', 'OTROS VENTAS', 'DESCUENTOS', 'VENTAS TOTALES', 'EFECTIVO SISTEMA', 'TARJETAS SISTEMA', 'CXC STAFF', 'CXC TOMATO', 'CXC SOCIOS', 'CXC UBER', 'CXC RAPPI', 'TOTAL PAGADO', 'PESOS', 'DOLARES', 'CONVERSION MXN', 'EUROS', 'CONVERSION MXN', 'TOTAL CASH RECEIVED', 'TERMINAL CLIP', 'TERMINAL SANTANDER', 'TRANS', 'TOTAL CARDS RECEIVED', 'CXC UBER', 'CXC STAFF', 'CXC SOCIOS', 'CXC TOMATO', 'CXC RAPPI', 'TOTAL RECIBIDO', 'DIFERENCIAS RECIBIDAS SISTEMA', 'EFECTIVO DIFERENCIAS', 'DIFERENCIAS TARJETAS', 'TOTAL DIFFERENCES', 'TIPS CASH', 'PROPINAS CLIP', 'PROPINAS SOCIOS', 'TOTAL TIPS'];
+function hojaNum(t) {
+  const x = String(t == null ? '' : t).replace(/\s+/g, '').replace(/[$,]/g, '');
+  if (x === '' || x === '-' || x === '—') return 0;
+  const n = Number(x); return Number.isFinite(n) ? n : 0;
+}
+function hojaFecha(t) {
+  const x = String(t == null ? '' : t).trim(); let m;
+  if ((m = x.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/))) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  if ((m = x.match(/^(\d{4})-(\d{2})-(\d{2})$/))) return x;
+  return null;
+}
+function hojaLeerTexto(texto) {
+  const lineas = String(texto || '').replace(/\r/g, '').split('\n').filter(l => l.trim() !== '');
+  if (!lineas.length) return { error: 'Pega primero las filas de tu hoja.' };
+  if (!lineas.some(l => l.includes('\t'))) return { error: 'No veo columnas separadas. Selecciona las celdas en tu hoja de cálculo, cópialas (Ctrl+C) y pégalas aquí tal cual.' };
+  const filas = lineas.map(l => l.split('\t'));
+  let encabezados = null;
+  if (normalizarEncabezado(filas[0][0] || '') === 'fecha') encabezados = filas.shift().map(x => String(x).trim());
+  return { filas, encabezados };
+}
+function hojaClaveMapeo(bid) { return 'finanzas_hoja_mapeo_' + bid; }
+async function hojaMapeoLeer(bid) {
+  try { const { data, error } = await sb.from('fz_ventas_hoja_mapeo').select('mapeo').eq('business_id', bid).maybeSingle(); if (!error && data && data.mapeo) return data.mapeo; } catch (_) { /* tabla aún no creada: se usa la copia local */ }
+  try { return JSON.parse(localStorage.getItem(hojaClaveMapeo(bid)) || 'null'); } catch (_) { return null; }
+}
+async function hojaMapeoGuardar(bid, mapeo) {
+  try { localStorage.setItem(hojaClaveMapeo(bid), JSON.stringify(mapeo)); } catch (_) {}
+  try {
+    const { error } = await sb.from('fz_ventas_hoja_mapeo').upsert({ business_id: bid, mapeo, updated_by: STATE.user?.email || null, updated_at: new Date().toISOString() }, { onConflict: 'business_id' });
+    if (error) { toast('La asignación se guardó solo en este navegador (falta correr el SQL de la versión 06.48).'); return false; }
+    return true;
+  } catch (_) { return false; }
+}
+// Sugerencia inicial por nombre; los encabezados repetidos (CXC) van primero a «Sistema» y luego a «Recibido».
+function hojaSugerirMapeo(encabezados, cv, cs, cr) {
+  const mapeo = {}, vistos = {}, norm = (x) => normalizarEncabezado(x);
+  encabezados.forEach((h, i) => {
+    if (i === 0) return; const n = norm(h); if (!n || /^(total|difer|conversion|tips)/.test(n)) return;
+    vistos[n] = (vistos[n] || 0) + 1;
+    const v = cv.find(c => norm(c.nombre) === n), s = cs.find(c => norm(c.nombre) === n), r = cr.find(c => norm(c.nombre) === n);
+    if (v) mapeo[i] = { g: 'v', id: v.id };
+    else if (s && (vistos[n] === 1 || !r)) mapeo[i] = { g: 's', id: s.id };
+    else if (r) mapeo[i] = { g: 'r', id: r.id };
+  });
+  return mapeo;
+}
+const hojaRecibidoCuenta = (rd, cr) => Object.keys(rd).some(id => { const c = cr.find(x => x.id === id); return c && c.categoria !== 'propinas' && Math.abs((rd[id] || {}).monto || 0) > 0.004; });
+function hojaPlan({ filas, encabezados, mapeo, desde, existentes, cv, cs, cr, cerrados }) {
+  const colTotal = (() => { const i = (encabezados || HOJA_ENCABEZADOS).findIndex(h => normalizarEncabezado(h) === 'ventastotales'); return i >= 0 ? i : 5; })();
+  const vistas = new Set(), out = []; let anteriores = 0, repetidas = 0, sinFecha = 0;
+  filas.forEach(c => {
+    const fecha = hojaFecha(c[0]); if (!fecha) { sinFecha++; return; }
+    if (fecha < desde) { anteriores++; return; }
+    if (vistas.has(fecha)) { repetidas++; return; } vistas.add(fecha);
+    const vd = {}, sd = {}, rd = {};
+    Object.keys(mapeo).forEach(i => {
+      const m = mapeo[i], val = hojaNum(c[i]); if (!m || !m.id) return;
+      if (m.g === 'v') vd[m.id] = Math.round(((vd[m.id] || 0) + val) * 100) / 100;
+      else if (m.g === 's') sd[m.id] = Math.round(((sd[m.id] || 0) + val) * 100) / 100;
+      else if (m.g === 'r') rd[m.id] = { monto: Math.round((((rd[m.id] || {}).monto || 0) + val) * 100) / 100 };
+    });
+    const totalApp = cv.reduce((t, k) => t + (k.tipo === 'resta' ? -1 : 1) * (Number(vd[k.id]) || 0), 0), totalHoja = hojaNum(c[colTotal]);
+    const tieneVentas = Object.values(vd).some(x => Math.abs(x) > 0.004), tieneSistema = Object.values(sd).some(x => Math.abs(x) > 0.004), tieneRecibido = hojaRecibidoCuenta(rd, cr);
+    const catSum = (obj, lista, cats) => Object.keys(obj).reduce((t, id) => { const c = lista.find(x => x.id === id); const v = typeof obj[id] === 'object' ? (obj[id] || {}).monto : obj[id]; return c && cats.includes(c.categoria) ? t + Math.abs(Number(v) || 0) : t; }, 0);
+    const incompleto = [['efectivo', ['efectivo']], ['tarjetas', ['tarjetas', 'bancos']], ['cxc', ['cxc']]].some(([k, rc]) => catSum(sd, cs, [k]) > 0.004 && catSum(rd, cr, rc) < 0.004);
+    const ex = existentes[fecha] || null, exCompleto = ex && hojaRecibidoCuenta(ex.recon_data || {}, cr), exVentas = ex ? cv.reduce((t, k) => t + (k.tipo === 'resta' ? -1 : 1) * (Number((ex.venta_data || {})[k.id]) || 0), 0) : 0;
+    const f = { fecha, vd, sd, rd, totalApp, totalHoja, cuadra: totalHoja ? Math.abs(totalApp - totalHoja) < 0.06 : null, tieneVentas, tieneRecibido, ex, exVentas, cerrado: !!cerrados[fecha] };
+    if (!tieneVentas && !tieneSistema && !tieneRecibido) { f.estado = 'Sin datos'; f.opciones = ['omitir']; f.accion = 'omitir'; }
+    else if (f.cerrado) { f.estado = 'Periodo cerrado'; f.opciones = ['omitir']; f.accion = 'omitir'; }
+    else if (ex && exCompleto) { f.estado = Math.abs(exVentas - totalApp) < 0.06 ? 'Ya está cargado (igual)' : `Ya está cargado · ventas distintas (app ${fmt(exVentas)} / hoja ${fmt(totalApp)})`; f.opciones = ['omitir', 'actualizar']; f.accion = 'omitir'; }
+    else if (ex && tieneRecibido && !incompleto) { f.estado = 'Cargado sin recibido: se completa'; f.opciones = ['completar', 'omitir']; f.accion = 'completar'; }
+    else if (ex) { f.estado = 'Ya está cargado · recibido aún pendiente'; f.opciones = ['omitir']; f.accion = 'omitir'; }
+    else if (!tieneRecibido || incompleto) { f.estado = 'Recibido pendiente'; f.opciones = ['omitir', 'solo', 'cargar']; f.accion = 'omitir'; f.pendiente = true; }
+    else { f.estado = 'Nuevo'; f.opciones = ['cargar', 'omitir']; f.accion = 'cargar'; }
+    out.push(f);
+  });
+  return { dias: out, anteriores, repetidas, sinFecha };
+}
+const HOJA_ACCION_TXT = { omitir: 'No cargar', cargar: 'Cargar completo', solo: 'Solo ventas (sin sistema ni recibido)', completar: 'Completar sistema y recibido', actualizar: 'Reemplazar con lo de la hoja' };
+async function abrirCargaHoja(b) {
+  if (document.getElementById('modalHojaVentas')) return;
+  const [cv, cr, cs, ult] = await Promise.all([loadConceptosVenta(b.id), loadConceptos(b.id), loadConceptosSistema(b.id), sb.from('fz_ventas').select('fecha').eq('business_id', b.id).order('fecha', { ascending: false }).limit(1)]);
+  const crr = cr.filter(c => c.categoria !== 'bancos' || true);
+  let mapeo = (await hojaMapeoLeer(b.id)) || null, encabezados = HOJA_ENCABEZADOS, lectura = null;
+  const ultima = ult && ult.data && ult.data[0] ? ult.data[0].fecha : null, desdeIni = ultima ? sumarDias(ultima, 1) : todayStr().slice(0, 7) + '-01';
+  const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalHojaVentas';
+  bg.innerHTML = `<div class="modal hoja-modal"><div class="card-head"><h3>Cargar ventas desde tu hoja — ${escHtml(b.name)}</h3><button class="btn btn-ghost btn-sm" id="hojaCerrar">Cerrar</button></div>
+    <p class="hint" style="margin:0 0 10px;">Copia las filas de tu hoja de cálculo (Ctrl+C) y pégalas aquí. No se guarda nada hasta que confirmes la vista previa.</p>
+    <textarea id="hojaTexto" class="hoja-texto" placeholder="Pega aquí las filas copiadas de tu hoja"></textarea>
+    <div class="hoja-fila"><label>Cargar desde <input type="date" id="hojaDesde" value="${desdeIni}"></label><span class="hint">${ultima ? 'Último día cargado en la app: ' + fechaCorta(ultima) + '. Las fechas anteriores a «Cargar desde» se ignoran.' : 'Aún no hay ventas cargadas.'}</span><button class="btn btn-gold btn-sm" id="hojaLeer">Leer filas</button></div>
+    <div id="hojaMapeoBox"></div><div id="hojaPrevia"></div></div>`;
+  document.body.appendChild(bg);
+  const cerrar = () => { bg.remove(); document.removeEventListener('keydown', esc, true); }, esc = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cerrar(); } };
+  document.addEventListener('keydown', esc, true); bg.querySelector('#hojaCerrar').addEventListener('click', cerrar); bg.addEventListener('click', (e) => { if (e.target === bg) cerrar(); });
+  const opcionesDestino = (sel) => `<option value="">— No cargar —</option>`
+    + `<optgroup label="Ventas">${cv.map(c => `<option value="v:${c.id}" ${sel === 'v:' + c.id ? 'selected' : ''}>${escHtml(c.nombre)}</option>`).join('')}</optgroup>`
+    + (cs.length ? `<optgroup label="Sistema">${cs.map(c => `<option value="s:${c.id}" ${sel === 's:' + c.id ? 'selected' : ''}>${escHtml(c.nombre)} (${escHtml(c.categoria)})</option>`).join('')}</optgroup>` : '')
+    + `<optgroup label="Recibido">${crr.map(c => `<option value="r:${c.id}" ${sel === 'r:' + c.id ? 'selected' : ''}>${escHtml(c.nombre)} (${escHtml(c.categoria)})</option>`).join('')}</optgroup>`;
+  const pintarMapeo = () => {
+    const muestra = lectura && lectura.filas[0] ? lectura.filas[0] : [];
+    bg.querySelector('#hojaMapeoBox').innerHTML = `<h4 class="hoja-t">1 · Asignar columnas <span class="hint">(se guarda y se reutiliza)</span></h4><div class="hoja-mapeo"><table class="tabla-contable"><thead><tr><th>#</th><th>Columna de tu hoja</th><th>Ejemplo</th><th>Va a</th></tr></thead><tbody>${encabezados.map((h, i) => i === 0 ? '' : `<tr><td>${i + 1}</td><td>${escHtml(h)}</td><td class="hint">${escHtml(String(muestra[i] == null ? '' : muestra[i]).trim())}</td><td><select class="hoja-dest" data-i="${i}">${opcionesDestino(mapeo && mapeo[i] ? mapeo[i].g + ':' + mapeo[i].id : '')}</select></td></tr>`).join('')}</tbody></table></div>
+      <div class="hoja-fila"><button class="btn btn-ghost btn-sm" id="hojaGuardarMapeo">Guardar asignación</button><button class="btn btn-gold btn-sm" id="hojaVerPrevia">Ver vista previa</button></div>`;
+  };
+  const leerMapeoUI = () => { const m = {}; bg.querySelectorAll('.hoja-dest').forEach(sel => { if (sel.value) { const [g, id] = sel.value.split(':'); m[sel.dataset.i] = { g, id }; } }); return m; };
+  bg.querySelector('#hojaLeer').addEventListener('click', () => {
+    const r = hojaLeerTexto(bg.querySelector('#hojaTexto').value); if (r.error) { toast(r.error, 'error'); return; }
+    lectura = r; encabezados = r.encabezados || HOJA_ENCABEZADOS;
+    if (!mapeo || !Object.keys(mapeo).length) mapeo = hojaSugerirMapeo(encabezados, cv, cs, crr);
+    pintarMapeo(); bg.querySelector('#hojaPrevia').innerHTML = '';
+    bg.querySelector('#hojaGuardarMapeo').addEventListener('click', async () => { mapeo = leerMapeoUI(); await hojaMapeoGuardar(b.id, mapeo); toast('Asignación guardada.'); });
+    bg.querySelector('#hojaVerPrevia').addEventListener('click', () => previa());
+  });
+  const previa = async () => {
+    mapeo = leerMapeoUI(); const desde = bg.querySelector('#hojaDesde').value; if (!desde) { toast('Elige desde qué fecha cargar.', 'error'); return; }
+    await hojaMapeoGuardar(b.id, mapeo);
+    const fechas = lectura.filas.map(c => hojaFecha(c[0])).filter(f => f && f >= desde);
+    const existentes = {}; if (fechas.length) { const { data } = await sb.from('fz_ventas').select('id,fecha,venta_data,sistema_data,recon_data,gastos').eq('business_id', b.id).gte('fecha', fechas.reduce((a, x) => x < a ? x : a)).lte('fecha', fechas.reduce((a, x) => x > a ? x : a)); (data || []).forEach(r => { existentes[r.fecha] = r; }); }
+    const cerrados = {}; for (const f of [...new Set(fechas)]) { try { if (await periodoEstaCerrado(b.id, f)) cerrados[f] = true; } catch (_) {} }
+    const plan = hojaPlan({ filas: lectura.filas, encabezados, mapeo, desde, existentes, cv, cs, cr: crr, cerrados });
+    pintarPrevia(plan);
+  };
+  const pintarPrevia = (plan) => {
+    const box = bg.querySelector('#hojaPrevia');
+    if (!plan.dias.length) { box.innerHTML = `<h4 class="hoja-t">2 · Vista previa</h4><p class="hint">No hay días desde la fecha elegida${plan.anteriores ? ` (se ignoraron ${plan.anteriores} anteriores)` : ''}.</p>`; return; }
+    box.innerHTML = `<h4 class="hoja-t">2 · Vista previa — tú decides qué cargar</h4>
+      <div class="hoja-mapeo"><table class="tabla-contable"><thead><tr><th>Día</th><th class="num">Ventas (hoja)</th><th>Cuadre</th><th>Recibido</th><th>Estado</th><th>Acción</th></tr></thead><tbody>${plan.dias.map((d, k) => `<tr class="${d.pendiente ? 'hoja-pend' : ''}"><td>${fechaCorta(d.fecha)}</td><td class="num">${d.tieneVentas ? fmt(d.totalApp) : '—'}</td><td>${d.cuadra === null ? '—' : (d.cuadra ? '<span class="hoja-ok">Cuadra</span>' : `<span class="hoja-aviso">Difiere ${fmt(d.totalApp - d.totalHoja)}</span>`)}</td><td>${d.tieneRecibido ? '<span class="hoja-ok">Completo</span>' : '<span class="hoja-aviso">Pendiente</span>'}</td><td>${escHtml(d.estado)}</td><td><select class="hoja-accion" data-k="${k}" ${d.opciones.length < 2 ? 'disabled' : ''}>${d.opciones.map(o => `<option value="${o}" ${o === d.accion ? 'selected' : ''}>${HOJA_ACCION_TXT[o]}</option>`).join('')}</select></td></tr>`).join('')}</tbody></table></div>
+      <p class="hint" id="hojaResumen"></p>
+      <p class="hint">Los días con <b>recibido pendiente</b> no se cargan por omisión: con «Sistema» y sin «Recibido», el Estado de resultados mostraría un faltante de caja falso. «Solo ventas» registra el ingreso sin generar ese faltante; cuando llegue el corte, vuelve a pegar la hoja y la app lo completa.${plan.anteriores ? ` Se ignoraron ${plan.anteriores} día(s) anteriores a la fecha elegida.` : ''}${plan.repetidas ? ` ${plan.repetidas} fila(s) con fecha repetida se ignoraron.` : ''}</p>
+      <div class="hoja-fila"><button class="btn btn-gold" id="hojaCargar">Cargar lo seleccionado</button></div>`;
+    const resumen = () => { const c = {}; box.querySelectorAll('.hoja-accion').forEach(s => { c[s.value] = (c[s.value] || 0) + 1; }); box.querySelector('#hojaResumen').textContent = Object.keys(c).filter(a => a !== 'omitir').map(a => `${c[a]} · ${HOJA_ACCION_TXT[a]}`).join('  ·  ') || 'Nada seleccionado para cargar.'; };
+    box.querySelectorAll('.hoja-accion').forEach(s => s.addEventListener('change', resumen)); resumen();
+    box.querySelector('#hojaCargar').addEventListener('click', async () => {
+      const acciones = [...box.querySelectorAll('.hoja-accion')].map(s => ({ d: plan.dias[Number(s.dataset.k)], a: s.value })).filter(x => x.a !== 'omitir');
+      if (!acciones.length) { toast('No hay nada seleccionado para cargar.', 'error'); return; }
+      if (acciones.some(x => x.a === 'cargar' && x.d.pendiente) && !confirm('Hay días con recibido pendiente marcados como «Cargar completo». Eso generará un faltante de caja falso en esos días. ¿Cargar de todos modos?')) return;
+      const btn = box.querySelector('#hojaCargar'); btn.disabled = true;
+      const r = await hojaAplicar(b, acciones, crr); btn.disabled = false;
+      if (r.ok) { toast(r.msg); cerrar(); if (STATE.currentSection === 'ventas') renderVentas(); }
+    });
+  };
+  if (mapeo && Object.keys(mapeo).length) { /* ya hay asignación guardada: se muestra al leer las filas */ }
+}
+async function hojaAplicar(b, acciones, cr) {
+  try {
+    const nuevos = acciones.filter(x => x.a === 'cargar' || x.a === 'solo').map(x => ({ business_id: b.id, fecha: x.d.fecha, venta_data: x.d.vd, sistema_data: x.a === 'solo' ? {} : x.d.sd, recon_data: x.a === 'solo' ? {} : x.d.rd, gastos: 0 }));
+    const cambios = acciones.filter(x => x.a === 'completar' || x.a === 'actualizar');
+    if (await importacionBloqueadaPorCierre(b.id, acciones.map(x => x.d.fecha))) return { ok: false };
+    let creados = [];
+    if (nuevos.length) { const { data, error } = await sb.from('fz_ventas').insert(nuevos).select(); if (error) { toast('No se pudo cargar: ' + error.message, 'error'); return { ok: false }; } creados = data || []; }
+    const tocados = creados.slice();
+    for (const x of cambios) {
+      const exv = x.d.ex, vacio = !exv.venta_data || !Object.values(exv.venta_data).some(v => Math.abs(Number(v) || 0) > 0.004);
+      const patch = { sistema_data: x.d.sd, recon_data: x.d.rd }; if (x.a === 'actualizar' || vacio) patch.venta_data = x.d.vd;
+      const { data, error } = await sb.from('fz_ventas').update(patch).eq('id', exv.id).select().single();
+      if (error) { toast(`No se pudo actualizar ${x.d.fecha}: ${error.message}`, 'error'); return { ok: false }; }
+      tocados.push(data || { ...exv, ...patch });
+    }
+    const props = cr.filter(c => c.categoria === 'propinas');
+    for (const v of tocados) for (const c of props) { const m = Number((v.recon_data || {})[c.id]?.monto) || 0; if (m) await provisionarPropina(b.id, v.id, c, m, v.fecha); }
+    const n = (a) => acciones.filter(x => x.a === a).length;
+    registrarAuditoria(b.id, 'crear', 'Ventas', `Carga desde hoja: ${n('cargar')} completo(s), ${n('solo')} solo ventas, ${n('completar')} completado(s), ${n('actualizar')} reemplazado(s)`);
+    return { ok: true, msg: `Listo: ${acciones.length} día(s) cargados desde la hoja.` };
+  } catch (e) { console.error(e); toast('No se pudo cargar: ' + ((e && e.message) || e), 'error'); return { ok: false }; }
+}
+
 async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha = null, opciones = {}) {
   const filas = [];
   const push = (origen, clave, tipo, cargo, abono) => {
@@ -28184,7 +28357,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.47';
+const APP_VERSION = '2026-11-06.48';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
