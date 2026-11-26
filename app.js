@@ -1846,7 +1846,7 @@ async function repConstruirPL(b, S) {
   const start = S.desde + '-01', end = monthBounds(S.hasta).end;
   const h = await repCapturarPantalla('sec-pl', () => { STATE.currentMonth = S.hasta; STATE_plVista = 'mensual'; STATE_plRangoDesde = start; STATE_plRangoHasta = end; STATE_plComparacion = 'ninguna'; }, renderPLCuerpo,
     () => { STATE.currentMonth = g.m; STATE_plVista = g.v; STATE_plRangoDesde = g.d; STATE_plRangoHasta = g.h; STATE_plComparacion = g.c; });
-  return repFormalizar({ k: 'pl', kind: 'dom', titulo: 'Estado de resultados', subtitulo: `${b.razon_social && b.razon_social !== b.name ? b.razon_social + ' · ' : ''}Del ${fechaCorta(start)} al ${fechaCorta(end)}`, periodo: `Del ${fechaCorta(start)} al ${fechaCorta(end)}`, orient: 'portrait', holder: h, secId: 'sec-pl' });
+  return repFormalizar({ k: 'pl', kind: 'dom', titulo: 'Estado de resultados', subtitulo: `Del ${fechaCorta(start)} al ${fechaCorta(end)}`, periodo: `Del ${fechaCorta(start)} al ${fechaCorta(end)}`, orient: 'portrait', holder: h, secId: 'sec-pl' });
 }
 async function repConstruirBalanza(b, S) {
   const mes = repMesElegido(S, 'balanza'), g = { m: STATE.currentMonth };
@@ -2120,11 +2120,7 @@ function repHojaFormal(it, b) {
   ws['!margins'] = { left: 0.6, right: 0.6, top: 0.7, bottom: 0.7, header: 0.3, footer: 0.3 };
   return ws;
 }
-function repPdfFormal(doc, b, it) {
-  const { jsPDF } = window.jspdf, orient = it.orient || 'portrait', f = it.formal, e = repFormalEnc(b, it);
-  let d = doc; if (d) d.addPage('letter', orient); else d = new jsPDF({ unit: 'pt', format: 'letter', orientation: orient });
-  const W = d.internal.pageSize.getWidth(), H = d.internal.pageSize.getHeight(), margin = 48, land = orient === 'landscape';
-  const mayus = (t) => f.mayus ? String(t).toUpperCase() : String(t);
+function repPdfEnc(d, e, W, margin) {
   let y = 60;
   d.setTextColor(10, 31, 61); d.setFont('helvetica', 'bold'); d.setFontSize(15); d.text(pdfLimpiaTexto(e.razon), W / 2, y, { align: 'center' });
   if (e.ident) { y += 16; d.setFont('helvetica', 'normal'); d.setFontSize(9); d.setTextColor(90, 100, 120); d.text(pdfLimpiaTexto(e.ident), W / 2, y, { align: 'center' }); }
@@ -2132,6 +2128,14 @@ function repPdfFormal(doc, b, it) {
   y += 17; d.setFont('helvetica', 'normal'); d.setFontSize(10); d.setTextColor(60, 70, 90); d.text(pdfLimpiaTexto(e.periodo), W / 2, y, { align: 'center' });
   y += 14; d.setFont('helvetica', 'italic'); d.setFontSize(8.5); d.setTextColor(110, 118, 135); d.text(e.moneda, W / 2, y, { align: 'center' });
   y += 14; d.setDrawColor(10, 31, 61); d.setLineWidth(0.8); d.line(margin, y, W - margin, y); y += 20;
+  return y;
+}
+function repPdfFormal(doc, b, it) {
+  const { jsPDF } = window.jspdf, orient = it.orient || 'portrait', f = it.formal, e = repFormalEnc(b, it);
+  let d = doc; if (d) d.addPage('letter', orient); else d = new jsPDF({ unit: 'pt', format: 'letter', orientation: orient });
+  const W = d.internal.pageSize.getWidth(), H = d.internal.pageSize.getHeight(), margin = 48, land = orient === 'landscape';
+  const mayus = (t) => f.mayus ? String(t).toUpperCase() : String(t);
+  let y = repPdfEnc(d, e, W, margin);
   const unidades = f.porSeccion ? f.secciones.map(s => ({ titulo: s.titulo, cols: s.cols || f.cols, secs: [{ titulo: '', rows: s.rows }] })) : [{ titulo: '', cols: f.cols, secs: f.secciones }];
   const MIN = { Cuenta: it.k === 'balanza' ? 170 : 150, Tipo: 78, Tercero: 100, Documento: 90, 'Factura o Nota': 84, Fecha: 58, 'Concepto o descripción': 150, 'Descripción': 150 };
   unidades.forEach((u, ui) => {
@@ -2182,10 +2186,61 @@ function repPdfFormal(doc, b, it) {
   return d;
 }
 
+
+// ===== 06.44 — Resumen ejecutivo (primera hoja del paquete) =====
+function repResumenDatos(b, S, items) {
+  const val = (it, re, ultimo) => { let v = null; if (it && it.formal) it.formal.secciones.forEach(sec => sec.rows.forEach(r => { if (typeof r.celdas[1] === 'number' && re.test(String(r.celdas[0]).trim())) { if (ultimo || v === null) v = r.celdas[1]; } })); return v; };
+  const secs = [], pl = items.find(i => i.k === 'pl'), bg = items.find(i => i.k === 'balance'), bz = items.find(i => i.k === 'balanza');
+  if (pl && pl.formal) {
+    const L = [['Total ingresos', val(pl, /^total ingresos/i)], ['Costo de ventas', val(pl, /^costo de ventas$/i, true)], ['Utilidad bruta', val(pl, /^utilidad bruta$/i, true)], ['Gastos de operación', val(pl, /^total gastos de operaci/i, true)], ['Resultado de operación', val(pl, /^resultado de operaci/i, true)], ['Utilidad / pérdida neta', val(pl, /^utilidad \/ p/i, true)]].filter(x => x[1] !== null);
+    if (L.length) secs.push({ titulo: 'Estado de resultados', periodo: pl.periodo, lineas: L.map((x, i) => ({ t: x[0], v: x[1], neg: i === L.length - 1 })) });
+  }
+  if (bg && bg.formal) {
+    const act = val(bg, /^total activo$/i), pas = val(bg, /^total pasivo$/i), cap = val(bg, /^total capital/i), pc = val(bg, /^total pasivo\s*(\+|y)\s*capital/i);
+    const L = [['Total activo', act], ['Total pasivo', pas], ['Total capital', cap]].filter(x => x[1] !== null);
+    if (L.length) { const dif = (act !== null && pc !== null) ? Math.abs(act - pc) : null; secs.push({ titulo: 'Balance general', periodo: bg.periodo, lineas: L.map(x => ({ t: x[0], v: x[1] })), nota: dif === null ? '' : (dif < 0.01 ? 'Activo = Pasivo + Capital: el balance cuadra.' : 'Activo y Pasivo + Capital no coinciden: diferencia de ' + repFormalFmt(dif) + '.') }); }
+  }
+  if (bz && bz.formal) {
+    let tot = null; bz.formal.secciones.forEach(sec => sec.rows.forEach(r => { if (r.tipo === 'gran' && /^totales?/i.test(String(r.celdas[0]))) tot = r.celdas; }));
+    if (tot && typeof tot[4] === 'number' && typeof tot[5] === 'number') secs.push({ titulo: 'Balanza de comprobación', periodo: bz.periodo, lineas: [{ t: 'Total de cargos', v: tot[4] }, { t: 'Total de abonos', v: tot[5] }], nota: Math.abs(tot[4] - tot[5]) < 0.01 ? 'Cargos = Abonos: la balanza cuadra.' : 'Cargos y abonos no coinciden: diferencia de ' + repFormalFmt(Math.abs(tot[4] - tot[5])) + '.' });
+  }
+  return { secs, contenido: items.map(it => ({ t: it.titulo, per: it.periodo || it.subtitulo || '' })) };
+}
+function repResumenHtml(b, S, items) {
+  const e = repFormalEnc(b, { titulo: 'Resumen ejecutivo', periodo: repPeriodoTxt(S) }), r = repResumenDatos(b, S, items);
+  const bloques = r.secs.map(sc => `<h4 class="rf-sec-t">${escHtml(sc.titulo)} <span class="rf-sec-per">${escHtml(sc.periodo)}</span></h4><table class="rf-tabla"><tbody>${sc.lineas.map(l => `<tr class="${l.neg ? 'rf-gran' : ''}"><td>${escHtml(l.t)}</td><td class="num">${escHtml(repFormalFmt(l.v))}</td></tr>`).join('')}</tbody></table>${sc.nota ? `<p class="rf-nota">${escHtml(sc.nota)}</p>` : ''}`).join('');
+  return `<article class="rep-hoja"><header class="rf-enc"><div class="rf-razon">${escHtml(e.razon)}</div>${e.ident ? `<div class="rf-ident">${escHtml(e.ident)}</div>` : ''}<div class="rf-titulo">RESUMEN EJECUTIVO</div><div class="rf-per">Periodo: ${escHtml(repPeriodoTxt(S))}</div><div class="rf-mon">${e.moneda}</div></header><p class="rf-datos"><b>Generado:</b> ${new Date().toLocaleString('es-MX')}${STATE.nombreUsuario ? ' &nbsp;·&nbsp; <b>Preparó:</b> ' + escHtml(STATE.nombreUsuario) : ''}</p>${bloques}<h4 class="rf-sec-t">Contenido</h4><ol class="rf-cont">${r.contenido.map(c => `<li>${escHtml(c.t)} <span class="rf-sec-per">${escHtml(c.per)}</span></li>`).join('')}</ol></article>`;
+}
+function repPdfResumen(d, b, S, items, paginas) {
+  const W = d.internal.pageSize.getWidth(), margin = 48, e = repFormalEnc(b, { titulo: 'Resumen ejecutivo', periodo: 'Periodo: ' + repPeriodoTxt(S) }), r = repResumenDatos(b, S, items);
+  let y = repPdfEnc(d, e, W, margin);
+  d.setFont('helvetica', 'normal'); d.setFontSize(9); d.setTextColor(90, 100, 120);
+  d.text(pdfLimpiaTexto('Generado: ' + new Date().toLocaleString('es-MX') + (STATE.nombreUsuario ? '   ·   Preparó: ' + STATE.nombreUsuario : '')), margin, y); y += 26;
+  r.secs.forEach(sc => {
+    d.setFont('helvetica', 'bold'); d.setFontSize(10.5); d.setTextColor(10, 31, 61); d.text(pdfLimpiaTexto(sc.titulo.toUpperCase()), margin, y);
+    d.setFont('helvetica', 'normal'); d.setFontSize(8.5); d.setTextColor(110, 118, 135); d.text(pdfLimpiaTexto(sc.periodo), W - margin, y, { align: 'right' });
+    y += 5; d.setDrawColor(207, 213, 226); d.setLineWidth(0.6); d.line(margin, y, W - margin, y); y += 15;
+    sc.lineas.forEach(l => {
+      d.setFont('helvetica', l.neg ? 'bold' : 'normal'); d.setFontSize(10); d.setTextColor(30, 41, 59);
+      d.text(pdfLimpiaTexto(l.t), margin + 8, y); d.text(repFormalFmt(l.v), W - margin - 6, y, { align: 'right' });
+      if (l.neg) { d.setDrawColor(40, 50, 70); d.setLineWidth(0.6); d.line(W - margin - 120, y - 10, W - margin - 4, y - 10); d.line(W - margin - 120, y + 3, W - margin - 4, y + 3); d.line(W - margin - 120, y + 5, W - margin - 4, y + 5); }
+      y += 16;
+    });
+    if (sc.nota) { d.setFont('helvetica', 'italic'); d.setFontSize(8.5); d.setTextColor(110, 118, 135); d.text(pdfLimpiaTexto(sc.nota), margin + 8, y); y += 14; }
+    y += 14;
+  });
+  d.setFont('helvetica', 'bold'); d.setFontSize(10.5); d.setTextColor(10, 31, 61); d.text('CONTENIDO', margin, y); y += 5; d.setDrawColor(207, 213, 226); d.line(margin, y, W - margin, y); y += 15;
+  r.contenido.forEach((c, i) => {
+    d.setFont('helvetica', 'normal'); d.setFontSize(10); d.setTextColor(30, 41, 59); d.text(pdfLimpiaTexto(`${i + 1}.  ${c.t}`), margin + 8, y);
+    d.setFontSize(8.5); d.setTextColor(110, 118, 135); d.text(pdfLimpiaTexto(c.per), margin + 230, y);
+    d.setFontSize(10); d.setTextColor(30, 41, 59); d.text('Pág. ' + paginas[i], W - margin - 6, y, { align: 'right' }); y += 16;
+  });
+}
+
 function reportesAbrirVista(b, S, build) {
   document.getElementById('modalReportesVista')?.remove();
   const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalReportesVista';
-  const cuerpo = build.items.map(it => {
+  const cuerpo = (build.items.length > 1 ? repResumenHtml(b, S, build.items) : '') + build.items.map(it => {
     let inner;
     if (it.kind === 'formal') return repFormalHtml(it, b);
     if (it.kind === 'dom') { inner = it.holder.innerHTML; }
@@ -2245,9 +2300,12 @@ function repHojaDeItem(it, b, S) {
 function reportesDescargarExcel(b, S, build) {
   const wb = XLSX.utils.book_new(), usados = new Set();
   const nombreHoja = (t) => { let n = String(t).replace(/[\\\/?*\[\]:]/g, ' ').slice(0, 31) || 'Reporte', i = 2; const base = n; while (usados.has(n.toLowerCase())) n = base.slice(0, 28) + ' ' + (i++); usados.add(n.toLowerCase()); return n; };
-  const portada = [[b.razon_social || b.name], ['Reportes financieros'], ['Periodo: ' + repPeriodoTxt(S)], ['Generado: ' + new Date().toLocaleString('es-MX') + (STATE.nombreUsuario ? ' · ' + STATE.nombreUsuario : '')], [], ['Reportes incluidos']].concat(build.items.map(it => [it.titulo + ' — ' + it.subtitulo]));
-  const wp = XLSX.utils.aoa_to_sheet(portada); wp['!cols'] = [{ wch: 80 }];
-  XLSX.utils.book_append_sheet(wb, wp, nombreHoja('Portada'));
+  const enc0 = repFormalEnc(b, { titulo: 'Resumen ejecutivo', periodo: 'Periodo: ' + repPeriodoTxt(S) }), res = repResumenDatos(b, S, build.items), portada = [[enc0.razon]].concat(enc0.ident ? [[enc0.ident]] : [], [['RESUMEN EJECUTIVO'], [enc0.periodo], [enc0.moneda], ['Generado: ' + new Date().toLocaleString('es-MX') + (STATE.nombreUsuario ? ' · Preparó: ' + STATE.nombreUsuario : '')], []]), fm = {};
+  res.secs.forEach(sc => { portada.push([sc.titulo.toUpperCase() + ' — ' + sc.periodo]); sc.lineas.forEach(l => { fm[portada.length + ':1'] = '#,##0.00;(#,##0.00);"-"'; portada.push([l.t, l.v]); }); if (sc.nota) portada.push([sc.nota]); portada.push([]); });
+  portada.push(['CONTENIDO']); res.contenido.forEach((c, i) => portada.push([`${i + 1}. ${c.t} — ${c.per}`]));
+  const wp = XLSX.utils.aoa_to_sheet(portada); wp['!cols'] = [{ wch: 70 }, { wch: 18 }];
+  Object.keys(fm).forEach(k => { const [r, c] = k.split(':').map(Number); const cel = wp[XLSX.utils.encode_cell({ r, c })]; if (cel) cel.z = fm[k]; });
+  XLSX.utils.book_append_sheet(wb, wp, nombreHoja('Resumen ejecutivo'));
   const HOJAS = { pl: 'Estado de resultados', balanza: 'Balanza', balance: 'Balance general', polizas: 'Pólizas de diario', auxiliares: 'Auxiliares', bancos: 'Bancos', efectivo: 'Efectivo y divisas' };
   build.items.forEach(it => XLSX.utils.book_append_sheet(wb, repHojaDeItem(it, b, S), nombreHoja(HOJAS[it.k] || it.titulo)));
   XLSX.writeFile(wb, repNombreArchivo(b, S, 'xlsx'));
@@ -2277,21 +2335,18 @@ function reportesDescargarPdf(b, S, build) {
   const { jsPDF } = window.jspdf; if (!jsPDF) throw new Error('Falta la librería de PDF.');
   const items = build.items, multi = items.length > 1; let doc = null;
   if (multi) {
-    doc = new jsPDF({ unit: 'pt', format: 'letter', orientation: 'portrait' });
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(22); doc.setTextColor(10, 31, 61); doc.text(pdfLimpiaTexto(b.razon_social || b.name), 48, 150);
-    doc.setFontSize(15); doc.text('Reportes financieros', 48, 178);
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(11); doc.setTextColor(102, 112, 133); doc.text('Periodo: ' + pdfLimpiaTexto(repPeriodoTxt(S)), 48, 202);
-    doc.text('Generado: ' + new Date().toLocaleString('es-MX') + (STATE.nombreUsuario ? ' · ' + pdfLimpiaTexto(STATE.nombreUsuario) : ''), 48, 220);
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(10, 31, 61); doc.text('Contenido', 48, 262);
-    doc.setFont('helvetica', 'normal'); doc.setTextColor(30, 41, 59); items.forEach((it, i) => doc.text(`${i + 1}. ${pdfLimpiaTexto(it.titulo)} — ${pdfLimpiaTexto(it.subtitulo)}`, 56, 282 + i * 17));
+    doc = new jsPDF({ unit: 'pt', format: 'letter', orientation: 'portrait' });   // la página 1 es el Resumen ejecutivo; se dibuja al final, cuando ya se sabe en qué página cae cada reporte
   }
+  const paginas = [];
   items.forEach(it => {
+    paginas.push(doc ? doc.getNumberOfPages() + 1 : 1);
     if (it.kind === 'formal') { doc = repPdfFormal(doc, b, it); return; }
     if (it.kind === 'dom') {
       it.holder.id = it.secId;
       try { const d = pdfDePantalla(it.holder, { titulo: it.titulo, subtitulo: it.subtitulo, orientacion: it.orient, doc }); if (!doc) doc = d; } finally { it.holder.removeAttribute('id'); }
     } else doc = repPdfBloques(doc, b, it);
   });
+  if (multi) { doc.setPage(1); repPdfResumen(doc, b, S, items, paginas); }
   if (multi || items[0].kind !== 'dom') {
     const n = doc.getNumberOfPages(); for (let i = 1; i <= n; i++) { doc.setPage(i); const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(); doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(150, 150, 150); doc.text(`Página ${i} de ${n}`, W / 2, H - 14, { align: 'center' }); doc.text('Generado: ' + new Date().toLocaleString('es-MX'), 48, H - 14); }
   }
@@ -28074,7 +28129,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.43';
+const APP_VERSION = '2026-11-06.44';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
