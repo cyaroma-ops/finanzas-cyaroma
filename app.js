@@ -293,6 +293,11 @@ function codigoMonedaDeCaja(nombre, tcReporte) {
   if (Number(tcReporte) === 1) return 'MXN';
   return t;
 }
+// 06.40: la moneda guardada en la caja manda; si no la tiene (cajas anteriores o sin el SQL 06.40), se infiere del nombre como siempre.
+function codigoDeCaja(c) {
+  const m = c && c.moneda && /^[A-Za-z]{3}$/.test(String(c.moneda).trim()) ? String(c.moneda).trim().toUpperCase() : null;
+  return m || codigoMonedaDeCaja(c && c.nombre, c && c.tc_reporte);
+}
 
 function resolverMovimientoMultimoneda(monedaCuenta, monedaDocumento, montoDocumento, tcHistoricoDocumento, tcLiquidacion) {
   const monedaCta = monedaCuenta || 'MXN';
@@ -1982,8 +1987,11 @@ function reportesAbrirVista(b, S, build) {
   }).join('');
   bg.innerHTML = `<div class="modal rep-vista"><div class="card-head"><h3>Vista previa — ${escHtml(b.name)}</h3><div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-ghost btn-sm" id="repVPdf">Descargar PDF</button><button class="btn btn-gold btn-sm" id="repVExcel">Descargar Excel</button><button class="btn btn-ghost btn-sm" id="repVCerrar">Cerrar</button></div></div><div class="hint" style="margin-bottom:10px;">${escHtml(repPeriodoTxt(S))}</div>${cuerpo}</div>`;
   document.body.appendChild(bg);
-  bg.querySelector('#repVCerrar').addEventListener('click', () => bg.remove());
-  bg.addEventListener('click', (e) => { if (e.target === bg) bg.remove(); });
+  const escRep = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cerrarRep(); } };
+  const cerrarRep = () => { bg.remove(); document.removeEventListener('keydown', escRep, true); };
+  document.addEventListener('keydown', escRep, true);
+  bg.querySelector('#repVCerrar').addEventListener('click', cerrarRep);
+  bg.addEventListener('click', (e) => { if (e.target === bg) cerrarRep(); });
   bg.querySelector('#repVPdf').addEventListener('click', () => { try { reportesDescargarPdf(b, S, build); } catch (e) { toast('No se pudo generar el PDF: ' + ((e && e.message) || e), 'error'); } });
   bg.querySelector('#repVExcel').addEventListener('click', () => { try { reportesDescargarExcel(b, S, build); } catch (e) { toast('No se pudo generar el Excel: ' + ((e && e.message) || e), 'error'); } });
 }
@@ -17527,7 +17535,7 @@ async function openMovimientoModal(contexto, movimientoExistente) {
       const { data: cuentaRowMov } = contexto.tipo === 'efectivo'
         ? await sb.from('fz_efectivo_monedas').select('nombre,tc_reporte').eq('id', contexto.refId).maybeSingle()
         : await sb.from('fz_bancos_cuentas').select('moneda').eq('id', contexto.refId).maybeSingle();
-      const monedaCuenta = contexto.tipo === 'efectivo' ? codigoMonedaDeCaja(cuentaRowMov?.nombre, cuentaRowMov?.tc_reporte) : (cuentaRowMov?.moneda || 'MXN');
+      const monedaCuenta = contexto.tipo === 'efectivo' ? codigoDeCaja(cuentaRowMov) : (cuentaRowMov?.moneda || 'MXN');
       const montoDocumentoTotal = tipoElegido === 'proveedor' ? cargos : depositos;
       const resuelto = resolverMovimientoMultimoneda(monedaCuenta, monedaDocumento, montoDocumentoTotal, tcHistoricoDocumento, tcLiquidacion);
       if (!resuelto) { toast(`Esta cuenta está en una divisa distinta a la del documento (${monedaDocumento}) — este cruce todavía no está soportado.`, 'error'); return; }
@@ -18042,8 +18050,8 @@ async function getMonedaLedgerRows(businessId, moneda, conceptosEfectivo, mesFil
 // ===== 06.34 — Efectivo: «Liquidez» en tres cifras (Pesos · Divisas en pesos · Total) en lugar de una tabla larga =====
 // Solo presentación. El total es el mismo del resumen anterior (cajas × su TC de reporte + saldos de bancos). Una cuenta de banco en divisa se convierte con el TC de la caja de esa misma divisa (si no hay, queda a 1.00, como antes).
 function efectivoLiquidezCalcular(monedasConSaldo, bancosConSaldo) {
-  const esDivisaCaja = m => codigoMonedaDeCaja(m.nombre, m.tc_reporte) !== 'MXN';
-  const tcDeDivisa = (cod) => { const c = monedasConSaldo.find(m => m.activo !== false && codigoMonedaDeCaja(m.nombre, m.tc_reporte) === cod); return c ? (Number(c.tc_reporte) || 1) : 1; };
+  const esDivisaCaja = m => codigoDeCaja(m) !== 'MXN';
+  const tcDeDivisa = (cod) => { const c = monedasConSaldo.find(m => m.activo !== false && codigoDeCaja(m) === cod); return c ? (Number(c.tc_reporte) || 1) : 1; };
   const cajasPesos = monedasConSaldo.filter(m => m.activo !== false && !esDivisaCaja(m));
   const cajasDivisa = monedasConSaldo.filter(m => esDivisaCaja(m) && (m.activo !== false || Math.abs(Number(m.saldo) || 0) > 0.004));
   const bancosPesos = bancosConSaldo.filter(c => c.activo !== false && (c.moneda || 'MXN') === 'MXN');
@@ -18055,11 +18063,12 @@ function efectivoLiquidezCalcular(monedasConSaldo, bancosConSaldo) {
 }
 function efectivoLiquidezHtml(b, monedasConSaldo, bancosConSaldo) {
   const r = efectivoLiquidezCalcular(monedasConSaldo, bancosConSaldo);
-  const lineasDivisa = r.cajasDivisa.map(m => { const cod = codigoMonedaDeCaja(m.nombre, m.tc_reporte); return `<div class="liq-linea${m.activo === false ? ' liq-inactiva' : ''}">
+  const lineasDivisa = r.cajasDivisa.map(m => { const cod = codigoDeCaja(m); return `<div class="liq-linea${m.activo === false ? ' liq-inactiva' : ''}">
       <span>${escHtml(m.nombre)}${m.activo === false ? ' (inactiva)' : ''}</span>
       <span class="num">${fmtMon(m.saldo, cod)} × <span class="tc-reporte-fijo" title="Tipo de cambio operativo vigente. Se cambia en Configuración › Divisas y tipos de cambio.">${fmtTc(m.tc_reporte)}</span>${puede('capturar_tc') ? ' <a href="#" class="tc-reporte-ir">Cambiar</a>' : ''} = <strong>${fmt(m.pesoEquiv)}</strong></span></div>`; }).join('')
     + r.bancosDivisa.map(c => `<div class="liq-linea"><span>Banco — ${escHtml(c.nombre)}</span><span class="num">${fmtMon(c.saldo, c.moneda)} × ${fmtNum(c.tc)} = <strong>${fmt(c.eq)}</strong></span></div>`).join('');
   return `
+    ${bannerMonedasCajasHtml(monedasConSaldo)}
     <div class="card liq-resumen">
       <div class="card-head"><h3>Liquidez — ${escHtml(b.name)}</h3><span class="hint">Al día de hoy · el tipo de cambio operativo se cambia en Configuración › Divisas y tipos de cambio</span></div>
       <div class="liq-grid">
@@ -18122,7 +18131,8 @@ async function renderEfectivo() {
     </div>
   `;
 
-  el.querySelectorAll('.tc-reporte-ir').forEach(a => a.addEventListener('click', (e) => { e.preventDefault(); irASeccion('divisas'); }));   // 06.39: el TC ya no se edita aquí
+  el.querySelectorAll('.tc-reporte-ir').forEach(a => a.addEventListener('click', (e) => { e.preventDefault(); irASeccion('divisas'); }));
+  const btnCajasMon = el.querySelector('#cajasMonedaConfirmar'); if (btnCajasMon) btnCajasMon.addEventListener('click', () => abrirConfirmarMonedasCajas(b.id, monedas, renderEfectivo));   // 06.39: el TC ya no se edita aquí
   document.getElementById('traspasoBtnEfvo').addEventListener('click', () => openTraspasoModal(b.id, renderEfectivo));
   const filasEfvo = filasCuentasDinero('efectivo', monedasConSaldo);
   const alTerminarEfvo = (idNuevo) => { if (idNuevo) STATE_monedaAbierta = idNuevo; renderEfectivo(); };
@@ -18326,7 +18336,7 @@ async function hayPeriodosCerradosNegocio(businessId) {
 function filasCuentasDinero(tipo, lista) {
   return lista.map(x => tipo === 'banco'
     ? { id: x.id, nombre: x.nombre, moneda: x.moneda || 'MXN', saldoInicial: Number(x.saldo_inicial) || 0, tc: null, saldo: Number(x.saldo) || 0, activo: x.activo !== false }
-    : { id: x.id, nombre: x.nombre, moneda: codigoMonedaDeCaja(x.nombre, x.tc_reporte), saldoInicial: Number(x.saldo_inicial) || 0, tc: Number(x.tc_reporte) || 1, saldo: Number(x.saldo) || 0, activo: x.activo !== false });
+    : { id: x.id, nombre: x.nombre, moneda: codigoDeCaja(x), monedaGuardada: (x.moneda || null), saldoInicial: Number(x.saldo_inicial) || 0, tc: Number(x.tc_reporte) || 1, saldo: Number(x.saldo) || 0, activo: x.activo !== false });
 }
 function panelCuentasDineroHtml(tipo, filas) {
   const esBanco = tipo === 'banco';
@@ -18366,7 +18376,8 @@ async function abrirModalCuentaDinero({ tipo, businessId, fila, filas, alTermina
   if (document.getElementById('modalCuentaDinero')) return;
   const uso = editando ? await contarUsoCuentaDinero(tipo, fila.id, businessId) : { total: 0, movs: 0, polizas: 0, conceptos: 0 };
   const cierres = editando ? await hayPeriodosCerradosNegocio(businessId) : { error: false, periodos: [] };
-  const monedaBloqueada = editando && uso.total > 0;
+  const colMoneda = esBanco ? false : await cajaTieneColumnaMoneda();   // 06.40: con la columna, la moneda se guarda explícita y el nombre es libre
+  const monedaBloqueada = editando && uso.total > 0 && !colMoneda;
   const saldoBloqueado = editando && (cierres.error || cierres.periodos.length > 0);
   const monedaActual = editando ? fila.moneda : 'MXN';
   const opcionesMoneda = MONEDAS_CUENTA_DINERO.slice();
@@ -18409,7 +18420,7 @@ async function abrirModalCuentaDinero({ tipo, businessId, fila, filas, alTermina
       const nuevo = leerMonto($('cdSaldo').value);
       if (Math.abs(nuevo - fila.saldoInicial) > 0.004) lineas.push(`Saldo actual: <strong>${prefijoMoneda(fila.moneda)} ${fmtNum(fila.saldo)}</strong> → <strong>${prefijoMoneda(fila.moneda)} ${fmtNum(fila.saldo + (nuevo - fila.saldoInicial))}</strong> (${nuevo - fila.saldoInicial >= 0 ? '+' : '−'}${fmtNum(Math.abs(nuevo - fila.saldoInicial))})`);
     }
-    if (!esBanco) {
+    if (!esBanco && !colMoneda) {
       const nom = $('cdNombre').value.trim();
       const tc = moneda === 'MXN' ? 1 : (leerMonto($('cdTc').value) || 0);
       if (nom && tc > 0) { const fin = nombreFinalEfectivo(nom, moneda, tc); if (fin !== nom) lineas.push(`La moneda de una caja se reconoce por su nombre, así que se guardará como «${escHtml(fin)}».`); }
@@ -18431,14 +18442,14 @@ async function abrirModalCuentaDinero({ tipo, businessId, fila, filas, alTermina
     if (!nombre) { toast('Escribe un nombre.', 'error'); $('cdNombre').focus(); return; }
     let tc = 1;
     if (!esBanco) { tc = moneda === 'MXN' ? 1 : (leerMonto($('cdTc').value) || 0); if (!(tc > 0)) { toast('Escribe el tipo de cambio de referencia (mayor que 0).', 'error'); $('cdTc').focus(); return; } }
-    if (!esBanco) { const senal = codigoMonedaDeCaja(nombre, 0); if (/^[A-Z]{3}$/.test(senal) && senal !== moneda) { toast(`El nombre «${nombre}» sugiere ${senal}, pero la moneda elegida es ${moneda}. Cambia el nombre o la moneda.`, 'error'); $('cdNombre').focus(); return; } }
-    const nombreFinal = esBanco ? nombre : nombreFinalEfectivo(nombre, moneda, tc);
-    if (!esBanco && codigoMonedaDeCaja(nombreFinal, tc) !== moneda) { toast('No se pudo asociar la moneda al nombre. Prueba con otro nombre.', 'error'); return; }
+    if (!esBanco && !colMoneda) { const senal = codigoMonedaDeCaja(nombre, 0); if (/^[A-Z]{3}$/.test(senal) && senal !== moneda) { toast(`El nombre «${nombre}» sugiere ${senal}, pero la moneda elegida es ${moneda}. Cambia el nombre o la moneda.`, 'error'); $('cdNombre').focus(); return; } }
+    const nombreFinal = (esBanco || colMoneda) ? nombre : nombreFinalEfectivo(nombre, moneda, tc);
+    if (!esBanco && !colMoneda && codigoMonedaDeCaja(nombreFinal, tc) !== moneda) { toast('No se pudo asociar la moneda al nombre. Prueba con otro nombre.', 'error'); return; }
     if ((filas || []).some(f => (!editando || f.id !== fila.id) && String(f.nombre).trim().toLowerCase() === nombreFinal.toLowerCase())) { toast(`Ya existe «${nombreFinal}».`, 'error'); return; }
     if (editando && !activa && Math.abs(fila.saldo) > 0.004) { toast(`No se puede desactivar con saldo (${fmtNum(fila.saldo)}). Primero traspasa o ajusta el saldo a cero.`, 'error'); return; }
     const cambiaSaldo = editando && Math.abs(saldoInicial - fila.saldoInicial) > 0.004;
     if (cambiaSaldo && saldoBloqueado) { toast('El saldo inicial no se puede cambiar ahora.', 'error'); return; }
-    if (editando && monedaBloqueada && !esBanco && codigoMonedaDeCaja(nombreFinal, tc) !== fila.moneda) { toast('Ese nombre cambiaría la moneda de la caja, y ya tiene movimientos.', 'error'); return; }
+    if (editando && monedaBloqueada && !esBanco && !colMoneda && codigoMonedaDeCaja(nombreFinal, tc) !== fila.moneda) { toast('Ese nombre cambiaría la moneda de la caja, y ya tiene movimientos.', 'error'); return; }
     if (cambiaSaldo && !confirm(`Vas a cambiar el saldo inicial de «${fila.nombre}»: ${fmtNum(fila.saldoInicial)} → ${fmtNum(saldoInicial)}.\nEl saldo actual pasará de ${fmtNum(fila.saldo)} a ${fmtNum(fila.saldo + (saldoInicial - fila.saldoInicial))} y se reflejará en Balance, Balanza y reportes. ¿Continuar?`)) return;
     guardando = true; $('cdGuardar').disabled = true;
     try {
@@ -18448,7 +18459,7 @@ async function abrirModalCuentaDinero({ tipo, businessId, fila, filas, alTermina
       if (!editando) {
         const payload = esBanco
           ? { business_id: businessId, nombre: nombreFinal, saldo_inicial: saldoInicial, moneda, activo: true }
-          : { business_id: businessId, nombre: nombreFinal, saldo_inicial: saldoInicial, tc_reporte: tc, activo: true, orden: (filas || []).length };
+          : { business_id: businessId, nombre: nombreFinal, saldo_inicial: saldoInicial, tc_reporte: tc, activo: true, orden: (filas || []).length, ...(colMoneda ? { moneda } : {}) };
         const { data, error } = await sb.from(esBanco ? 'fz_bancos_cuentas' : 'fz_efectivo_monedas').insert(payload).select().single();
         if (error) { toast('Error: ' + error.message, 'error'); return; }
         idResultado = data.id;
@@ -18459,6 +18470,10 @@ async function abrirModalCuentaDinero({ tipo, businessId, fila, filas, alTermina
         if (nombreFinal !== fila.nombre) { payload.nombre = nombreFinal; cambios.push(`nombre "${fila.nombre}" → "${nombreFinal}"`); }
         if (cambiaSaldo) { payload.saldo_inicial = saldoInicial; cambios.push(`saldo inicial ${fmtNum(fila.saldoInicial)} → ${fmtNum(saldoInicial)}`); }
         if (esBanco && !monedaBloqueada && moneda !== fila.moneda) { payload.moneda = moneda; cambios.push(`moneda ${fila.moneda} → ${moneda}`); }
+        if (!esBanco && colMoneda && (moneda !== fila.moneda || !fila.monedaGuardada)) {
+          if (moneda !== fila.moneda && uso.total > 0 && !confirm(`Vas a corregir la moneda de «${fila.nombre}»: ${fila.moneda} → ${moneda}.\nLos importes y saldos no cambian; solo se interpretan como ${moneda} (tipo de cambio y reportes de divisas). ¿Continuar?`)) return;
+          payload.moneda = moneda; cambios.push(moneda !== fila.moneda ? `moneda ${fila.moneda} → ${moneda}` : `moneda confirmada: ${moneda}`);
+        }
         let cambioTc = null;
         if (!esBanco && Math.abs(tc - fila.tc) > 0.000001) { cambioTc = tc; cambios.push(`tipo de cambio ${fila.tc} → ${tc} (rige desde la fecha que elijas)`); }   // 06.36: ya no se pisa el TC de la caja; se guarda como vigencia
         if (activa !== fila.activo) { payload.activo = activa; cambios.push(activa ? 'reactivada' : 'desactivada'); }
@@ -19350,7 +19365,7 @@ async function getTransaccionesProveedor(businessId, facturas) {
     }
   }
   const monedaCuentaBanco = Object.fromEntries((cuentasQ.data || []).map(c => [c.id, String(c.moneda || 'MXN').toUpperCase()]));
-  const monedaCaja = Object.fromEntries((cajasQ.data || []).map(c => [c.id, codigoMonedaDeCaja(c.nombre, c.tc_reporte)]));
+  const monedaCaja = Object.fromEntries((cajasQ.data || []).map(c => [c.id, codigoDeCaja(c)]));
   // Un pago en divisa: monto en la MONEDA DE LA FACTURA (lo que aplicó), tipo de cambio real del pago y su equivalente en pesos
   const pagoEnDivisa = (m, tabla, monedaCuenta) => {
     const ligadas = facturaIdsDe(m).filter(id => facturaPorId[id]);
@@ -20391,7 +20406,7 @@ document.getElementById('aplicarElegirFacturaCobro').addEventListener('click', a
     const { data: cuentaRow } = tipo === 'banco'
       ? await sb.from('fz_bancos_cuentas').select('moneda').eq('id', refId).maybeSingle()
       : await sb.from('fz_efectivo_monedas').select('nombre,tc_reporte').eq('id', refId).maybeSingle();
-    const monedaCuenta = tipo === 'banco' ? (cuentaRow?.moneda || 'MXN') : codigoMonedaDeCaja(cuentaRow?.nombre, cuentaRow?.tc_reporte);
+    const monedaCuenta = tipo === 'banco' ? (cuentaRow?.moneda || 'MXN') : codigoDeCaja(cuentaRow);
     const resuelto = resolverMovimientoMultimoneda(monedaCuenta, monedaDocumento, monto, tcHistoricoDocumento, tipoCambioEfc);
     if (!resuelto) { toast(`La cuenta destino está en una divisa distinta a la del documento (${monedaDocumento}) — este cruce todavía no está soportado. Elige una cuenta en ${monedaDocumento} o en MXN.`, 'error'); return; }
     const nombreTerceroCobro = checksMarcados[0]?.dataset.tercero || '';
@@ -20623,7 +20638,7 @@ document.getElementById('aplicarElegirFacturaPago').addEventListener('click', as
     const { data: cuentaRow } = tipo === 'banco'
       ? await sb.from('fz_bancos_cuentas').select('moneda,nombre').eq('id', refId).maybeSingle()
       : await sb.from('fz_efectivo_monedas').select('nombre,tc_reporte').eq('id', refId).maybeSingle();
-    const monedaCuenta = tipo === 'banco' ? (cuentaRow?.moneda || 'MXN') : codigoMonedaDeCaja(cuentaRow?.nombre, cuentaRow?.tc_reporte);
+    const monedaCuenta = tipo === 'banco' ? (cuentaRow?.moneda || 'MXN') : codigoDeCaja(cuentaRow);
     bancoMetodoDescr = tipo === 'banco' ? (cuentaRow?.nombre || 'Banco') : `Efectivo (${cuentaRow?.nombre || ''})`;
     const resuelto = resolverMovimientoMultimoneda(monedaCuenta, monedaDocumento, monto, tcHistoricoDocumento, tipoCambioEfp);
     if (!resuelto) { toast(`La cuenta origen está en una divisa distinta a la del documento (${monedaDocumento}) — este cruce todavía no está soportado. Elige una cuenta en ${monedaDocumento} o en MXN.`, 'error'); return; }
@@ -22857,7 +22872,7 @@ async function cargarVigenciasTC(businessId) {
 // fecha vacía = saldo inicial de la caja: toma el TC más antiguo (el que tenía la caja antes de manejar vigencias).
 function tcVigenteDeCaja(vigencias, caja, fecha) {
   const tcBase = Number(caja && caja.tc_reporte) || 1;
-  const cod = codigoMonedaDeCaja(caja && caja.nombre, caja && caja.tc_reporte);
+  const cod = codigoDeCaja(caja);
   const aplica = (Array.isArray(vigencias) ? vigencias : []).filter(v => v.caja_id ? v.caja_id === caja.id : String(v.moneda || '').toUpperCase() === cod);
   if (!aplica.length) return tcBase;
   const prio = (v) => v.caja_id ? 3 : (v.business_id ? 2 : 1);   // a igual fecha gana lo más específico: caja > negocio > general
@@ -22870,7 +22885,7 @@ function tcVigenteDeCaja(vigencias, caja, fecha) {
   return Number(elegido.tc) || tcBase;
 }
 async function guardarTcCajaVigencia(businessId, caja, tc, desde, nota) {
-  const cod = codigoMonedaDeCaja(caja.nombre, caja.tc_reporte);
+  const cod = codigoDeCaja(caja);
   const ex = await sb.from('fz_tipos_cambio_vigencia').select('id').eq('caja_id', caja.id).limit(1);
   if (ex.error) return { error: ex.error };
   const email = STATE.user?.email || null, filas = [];
@@ -22889,7 +22904,7 @@ async function guardarTcCajaVigencia(businessId, caja, tc, desde, nota) {
 function pedirVigenciaTC(caja, tcNuevo) {
   return new Promise((resolve) => {
     document.getElementById('modalVigenciaTC')?.remove();
-    const hoy = todayStr(), cod = codigoMonedaDeCaja(caja.nombre, caja.tc_reporte);
+    const hoy = todayStr(), cod = codigoDeCaja(caja);
     const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalVigenciaTC';
     bg.innerHTML = `<div class="modal" style="max-width:460px;">
       <h3 style="margin-bottom:6px;">Tipo de cambio de ${escHtml(caja.nombre)}</h3>
@@ -22899,7 +22914,9 @@ function pedirVigenciaTC(caja, tcNuevo) {
       <p class="hint" id="vtcAviso" style="margin:0 0 12px;">Los movimientos y periodos anteriores a esa fecha se quedan con el TC que tenían.</p>
       <div style="display:flex;gap:8px;justify-content:flex-end;"><button class="btn btn-ghost" id="vtcCancelar">Cancelar</button><button class="btn btn-gold" id="vtcGuardar">Guardar</button></div></div>`;
     document.body.appendChild(bg);
-    const cerrar = (v) => { bg.remove(); resolve(v); };
+    const esc = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cerrar(null); } };
+    const cerrar = (v) => { bg.remove(); document.removeEventListener('keydown', esc, true); resolve(v); };
+    document.addEventListener('keydown', esc, true);
     const fe = bg.querySelector('#vtcDesde'), av = bg.querySelector('#vtcAviso');
     fe.addEventListener('input', () => { const pasada = fe.value && fe.value < hoy; av.style.color = pasada ? 'var(--red)' : ''; av.textContent = pasada ? 'Atención: con una fecha anterior a hoy SÍ cambian los movimientos desde esa fecha (y su ganancia o pérdida cambiaria).' : 'Los movimientos y periodos anteriores a esa fecha se quedan con el TC que tenían.'; });
     bg.querySelector('#vtcCancelar').addEventListener('click', () => cerrar(null));
@@ -22922,7 +22939,7 @@ async function cambiarTcCajaConVigencia(businessId, caja, tcNuevo) {
 // para que ningún periodo anterior cambie. «Todos los negocios» (fila general) solo lo puede hacer un administrador.
 const fmtTc = (n) => (Number(n) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
 function tcFmtHoyDeMoneda(vigencias, cajas, moneda, fecha) {   // TC vigente de una moneda en una fecha, o null si no hay de dónde tomarlo
-  const delaMoneda = (cajas || []).filter(c => codigoMonedaDeCaja(c.nombre, c.tc_reporte) === moneda);
+  const delaMoneda = (cajas || []).filter(c => codigoDeCaja(c) === moneda);
   if (delaMoneda.length) return tcVigenteDeCaja(vigencias, delaMoneda[0], fecha);
   const filas = (vigencias || []).filter(v => !v.caja_id && String(v.moneda || '').toUpperCase() === moneda);
   return filas.length ? tcVigenteDeCaja(vigencias, { id: null, nombre: moneda, tc_reporte: 1 }, fecha) : null;
@@ -22937,7 +22954,7 @@ async function espejarTcCajas(cajas) {   // «TC de referencia» de cada caja = 
 async function cajasDeMoneda(businessId, moneda) {
   let q = sb.from('fz_efectivo_monedas').select('*'); if (businessId) q = q.eq('business_id', businessId);
   const r = await q; if (r.error) return { error: r.error };
-  return { cajas: (r.data || []).filter(c => codigoMonedaDeCaja(c.nombre, c.tc_reporte) === moneda) };
+  return { cajas: (r.data || []).filter(c => codigoDeCaja(c) === moneda) };
 }
 async function guardarTcMonedaVigencia(businessId, moneda, tc, desde, nota) {
   const rc = await cajasDeMoneda(businessId, moneda); if (rc.error) return { error: rc.error };
@@ -22974,7 +22991,7 @@ async function renderDivisas() {
     cargarVigenciasTC(b.id)]);
   const cajas = rc.data || [], bancos = rb.data || [], hoy = todayStr();
   const puedeCap = puede('capturar_tc', b.id), esAdm = !!STATE.esAdministrador;
-  const cod = (c) => codigoMonedaDeCaja(c.nombre, c.tc_reporte);
+  const cod = (c) => codigoDeCaja(c);
   const monedas = new Set();
   cajas.forEach(c => { if (cod(c) !== 'MXN') monedas.add(cod(c)); });
   bancos.forEach(x => { const m = String(x.moneda || 'MXN').toUpperCase(); if (m !== 'MXN') monedas.add(m); });
@@ -23003,6 +23020,7 @@ async function renderDivisas() {
   const opcMon = [...new Set([...lista, ...MONEDAS_CUENTA_DINERO.map(x => x[0]).filter(m => m !== 'MXN')])];
   el.innerHTML = `
     <p class="hint" style="margin:0 0 12px;">Un tipo de cambio nuevo rige desde la fecha que elijas: lo anterior no se mueve. Es independiente de la revaluación de divisas al cierre.</p>
+    ${bannerMonedasCajasHtml(cajas)}
     <div class="dv-grid">${tarjetas || '<div class="empty">Este negocio no tiene cajas de efectivo ni cuentas en divisas.</div>'}</div>
     ${puedeCap ? `<div class="card" style="margin-bottom:16px;"><div class="card-head"><h3>Nuevo tipo de cambio</h3></div>
       <div class="dv-form">
@@ -23022,6 +23040,7 @@ async function renderDivisas() {
         <div class="field"><label>A la fecha</label><input type="date" id="dvCvFecha" value="${hoy}"></div>
         <div class="dv-res" id="dvCvRes"></div></div></div>`;
   agregarBotonVolverConfig(el);
+  const btnMon = el.querySelector('#cajasMonedaConfirmar'); if (btnMon) btnMon.addEventListener('click', () => abrirConfirmarMonedasCajas(b.id, cajas, renderDivisas));
   const convertir = () => {
     const m = el.querySelector('#dvCvMon').value, f = el.querySelector('#dvCvFecha').value || hoy, monto = Number(el.querySelector('#dvCvMonto').value) || 0;
     const tc = tcFmtHoyDeMoneda(vigencias, cajas, m, f), r = el.querySelector('#dvCvRes');
@@ -23207,7 +23226,9 @@ function abrirCapacidades(email, negocio, actuales) {
       ${grupos.map(g => `<div class="cap-grupo"><strong>${escHtml(g)}</strong>${CAPACIDADES.filter(c => c.g === g).map(c => `<label class="cap-item"><input type="checkbox" class="cap-chk" value="${c.k}" ${sel.has(c.k) ? 'checked' : ''}> <span>${escHtml(c.t)}<small>${escHtml(c.d)}</small></span></label>`).join('')}</div>`).join('')}
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;"><button class="btn btn-ghost" id="capCancelar">Cancelar</button><button class="btn btn-gold" id="capGuardar">Guardar</button></div></div>`;
     document.body.appendChild(bg);
-    const cerrar = (v) => { bg.remove(); resolve(v); };
+    const esc = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cerrar(null); } };
+    const cerrar = (v) => { bg.remove(); document.removeEventListener('keydown', esc, true); resolve(v); };
+    document.addEventListener('keydown', esc, true);
     bg.querySelector('#capPerfil').addEventListener('change', (e) => { const p = PERFILES[e.target.value]; if (!p) return; bg.querySelectorAll('.cap-chk').forEach(ch => { ch.checked = p.caps.includes(ch.value); }); });
     bg.querySelector('#capCancelar').addEventListener('click', () => cerrar(null));
     bg.querySelector('#capGuardar').addEventListener('click', () => { const caps = [...bg.querySelectorAll('.cap-chk')].filter(c => c.checked).map(c => c.value); if (!caps.length) { toast('Marca al menos una capacidad, o quita el perfil para volver a los niveles de siempre.', 'error'); return; } cerrar(caps); });
@@ -23223,7 +23244,7 @@ async function tcOperativoMoneda(businessId, moneda, fecha) {   // TC operativo 
     if (!businessId || !moneda || moneda === 'MXN') return null;
     const [rc, vig] = await Promise.all([sb.from('fz_efectivo_monedas').select('*').eq('business_id', businessId), cargarVigenciasTC(businessId)]);
     const cajas = rc.data || [];
-    const hay = cajas.some(c => codigoMonedaDeCaja(c.nombre, c.tc_reporte) === moneda) || vig.some(v => String(v.moneda || '').toUpperCase() === moneda);
+    const hay = cajas.some(c => codigoDeCaja(c) === moneda) || vig.some(v => String(v.moneda || '').toUpperCase() === moneda);
     return hay ? tcFmtHoyDeMoneda(vig, cajas, moneda, fecha || todayStr()) : null;
   } catch (_) { return null; }
 }
@@ -23253,6 +23274,46 @@ function tcSugerirEnFactura(businessId, selMoneda, inputTc, inputFecha, avisoId)
   setTimeout(sugerir, 0);
 }
 
+// ===== 06.40 — Moneda explícita de la caja =====
+// Antes la moneda de una caja se ADIVINABA por su nombre («Dólares», «Euro»…) y un nombre mal escrito («Dolar Canandiense») caía en USD.
+// Ahora la caja puede guardar su moneda (columna «moneda»); si no la tiene, se infiere por el nombre como siempre.
+let CAJA_COL_MONEDA = null;
+async function cajaTieneColumnaMoneda() {
+  if (CAJA_COL_MONEDA !== null) return CAJA_COL_MONEDA;
+  try { const r = await sb.from('fz_efectivo_monedas').select('moneda').limit(1); CAJA_COL_MONEDA = !r.error; } catch (_) { CAJA_COL_MONEDA = false; }
+  return CAJA_COL_MONEDA;
+}
+function cajasSinMoneda(cajas) { return (cajas || []).filter(c => c && 'moneda' in c && !(c.moneda && /^[A-Za-z]{3}$/.test(String(c.moneda).trim()))); }
+function bannerMonedasCajasHtml(cajas) {
+  const n = cajasSinMoneda(cajas).length;
+  return n ? `<div class="card cajas-moneda-banner" id="cajasMonedaBanner"><span>${n === 1 ? '1 caja de efectivo no tiene su moneda confirmada' : n + ' cajas de efectivo no tienen su moneda confirmada'}: hoy se deduce del nombre.</span> <button class="btn btn-gold btn-sm" id="cajasMonedaConfirmar">Confirmar monedas</button></div>` : '';
+}
+function abrirConfirmarMonedasCajas(businessId, cajas, alTerminar) {
+  document.getElementById('modalMonedasCajas')?.remove();
+  const lista = cajasSinMoneda(cajas);
+  const opciones = MONEDAS_CUENTA_DINERO.slice();
+  const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalMonedasCajas';
+  const filas = lista.map(c => { const inf = codigoDeCaja(c); const ops = opciones.some(o => o[0] === inf) ? opciones : [...opciones, [inf, inf]];
+    return `<tr><td>${escHtml(c.nombre)}</td><td><select class="cmc-sel" data-id="${c.id}">${ops.map(([k, n]) => `<option value="${escAttr(k)}" ${k === inf ? 'selected' : ''}>${escHtml(n)}</option>`).join('')}</select></td></tr>`; }).join('');
+  bg.innerHTML = `<div class="modal" style="max-width:520px;"><h3 style="margin-bottom:6px;">Confirmar la moneda de cada caja</h3>
+    <p class="hint" style="margin:0 0 10px;">Elegimos la que se deduce del nombre. Corrige la que no sea y guarda: así ya no depende de cómo se escriba el nombre. Los saldos y movimientos no cambian.</p>
+    <table class="cmc-tabla"><thead><tr><th>Caja</th><th>Moneda</th></tr></thead><tbody>${filas}</tbody></table>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;"><button class="btn btn-ghost" id="cmcCancelar">Cancelar</button><button class="btn btn-gold" id="cmcGuardar">Guardar monedas</button></div></div>`;
+  document.body.appendChild(bg);
+  const esc = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cerrar(); } };
+  const cerrar = () => { bg.remove(); document.removeEventListener('keydown', esc, true); };
+  document.addEventListener('keydown', esc, true);
+  bg.querySelector('#cmcCancelar').addEventListener('click', cerrar);
+  bg.querySelector('#cmcGuardar').addEventListener('click', async () => {
+    const cambios = [...bg.querySelectorAll('.cmc-sel')].map(s => ({ id: s.dataset.id, moneda: s.value }));
+    for (const c of cambios) {
+      const r = await sb.from('fz_efectivo_monedas').update({ moneda: c.moneda }).eq('id', c.id);
+      if (r.error) { toast('No se pudo guardar la moneda: ' + r.error.message, 'error'); return; }
+    }
+    registrarAuditoria(businessId, 'editar', 'Efectivo', 'Moneda confirmada en cajas: ' + cambios.map(c => `${(lista.find(x => x.id === c.id) || {}).nombre} = ${c.moneda}`).join('; '));
+    toast('Monedas guardadas.'); cerrar(); if (alTerminar) alTerminar();
+  });
+}
 async function getLibroPartidaDobleConOrigen(businessId, hastaFecha, desdeFecha = null, opciones = {}) {
   const filas = [];
   const push = (origen, clave, tipo, cargo, abono) => {
@@ -25313,7 +25374,7 @@ async function cuentasEnDivisa(businessId, monedas) {
   ]);
   const out = [];
   (b.data || []).forEach(x => { const m = String(x.moneda || 'MXN').toUpperCase(); if (m !== 'MXN' && monedas.includes(m)) out.push({ clave: 'banco:' + x.id, tabla: 'fz_bancos_mov', id: x.id, nombre: x.nombre, moneda: m, saldoInicial: Number(x.saldo_inicial) || 0 }); });
-  (c.data || []).forEach(x => { const m = codigoMonedaDeCaja(x.nombre, x.tc_reporte); if (m !== 'MXN' && monedas.includes(m)) out.push({ clave: 'efectivo:' + x.id, tabla: 'fz_efectivo_mov', id: x.id, nombre: x.nombre, moneda: m, saldoInicial: Number(x.saldo_inicial) || 0 }); });
+  (c.data || []).forEach(x => { const m = codigoDeCaja(x); if (m !== 'MXN' && monedas.includes(m)) out.push({ clave: 'efectivo:' + x.id, tabla: 'fz_efectivo_mov', id: x.id, nombre: x.nombre, moneda: m, saldoInicial: Number(x.saldo_inicial) || 0 }); });
   return out;
 }
 // ============================================================================================================
@@ -25334,7 +25395,7 @@ async function abrirModalTcCierre(businessId) {
   const foraneas = [...prov, ...cli];
   const cuentasForaneas = [
     ...(bancosC.data || []).map(x => ({ tabla: 'fz_bancos_mov', campo: 'cuenta_id', id: x.id, moneda: String(x.moneda || 'MXN').toUpperCase() })),
-    ...(cajasC.data || []).map(x => ({ tabla: 'fz_efectivo_mov', campo: 'moneda_id', id: x.id, moneda: codigoMonedaDeCaja(x.nombre, x.tc_reporte) })),
+    ...(cajasC.data || []).map(x => ({ tabla: 'fz_efectivo_mov', campo: 'moneda_id', id: x.id, moneda: codigoDeCaja(x) })),
   ].filter(x => x.moneda !== 'MXN');
   const tcs = tcRes.filas || [];
   const monedas = [...new Set([...foraneas.map(f => String(f.moneda).toUpperCase()), ...cuentasForaneas.map(x => x.moneda), ...(configurado ? [] : tcs.map(t => t.moneda))])].sort();
@@ -27543,7 +27604,7 @@ async function abrirDevolucionCliente(b, opciones = {}, alCambiar) {
   const nota0 = opciones.notaId ? notas.find(n => n.id === opciones.notaId) : null;
   if (opciones.notaId && !nota0) { toast('Esa nota ya no tiene nada pendiente de devolver.', 'error'); return; }
   if (opciones.clienteId && !delCli(opciones.clienteId).length) { toast('Ese cliente no tiene notas de crédito pendientes de devolver.', 'error'); return; }
-  const cuentas = [...(cuentasQ.data || []).filter(c => (c.moneda || 'MXN') === 'MXN').map(c => ({ value: 'banco:' + c.id, label: 'Banco — ' + c.nombre })), ...(monedasQ.data || []).filter(m => codigoMonedaDeCaja(m.nombre, m.tc_reporte) === 'MXN').map(m => ({ value: 'efectivo:' + m.id, label: 'Efectivo — ' + m.nombre }))];
+  const cuentas = [...(cuentasQ.data || []).filter(c => (c.moneda || 'MXN') === 'MXN').map(c => ({ value: 'banco:' + c.id, label: 'Banco — ' + c.nombre })), ...(monedasQ.data || []).filter(m => codigoDeCaja(m) === 'MXN').map(m => ({ value: 'efectivo:' + m.id, label: 'Efectivo — ' + m.nombre }))];
   if (!cuentas.length) { toast('No hay una cuenta de Banco o Efectivo en pesos de donde pueda salir la devolución.', 'error'); return; }
   const E = { clienteId: nota0 ? nota0.cliente_id : (opciones.clienteId || (conNotas.length === 1 ? conNotas[0].id : '')), sel: new Set(nota0 ? [nota0.id] : []), fecha: todayStr(), destino: cuentas[0].value, montoTocado: false };
   if (E.clienteId && !nota0) delCli(E.clienteId).forEach(n => E.sel.add(n.id));
@@ -27568,7 +27629,7 @@ async function abrirDevolucionCliente(b, opciones = {}, alCambiar) {
     if (!E.fecha) return falla('Falta la fecha de la devolución.'); if (await bloqueadoPorCierre(b.id, E.fecha)) { pintar(); return; }
     const cli = clientes.find(c => c.id === E.clienteId), monto = montoVal(), ids = elegidas().map(n => n.id), [tipo, refId] = E.destino.split(':'), tabla = tipo === 'banco' ? 'fz_bancos_mov' : 'fz_efectivo_mov';
     const { data: cuentaRow } = tipo === 'banco' ? await sb.from('fz_bancos_cuentas').select('moneda,nombre').eq('id', refId).maybeSingle() : await sb.from('fz_efectivo_monedas').select('nombre,tc_reporte').eq('id', refId).maybeSingle();
-    const monedaCuenta = tipo === 'banco' ? ((cuentaRow && cuentaRow.moneda) || 'MXN') : codigoMonedaDeCaja(cuentaRow && cuentaRow.nombre, cuentaRow && cuentaRow.tc_reporte), res = resolverMovimientoMultimoneda(monedaCuenta, 'MXN', monto, 1, null);
+    const monedaCuenta = tipo === 'banco' ? ((cuentaRow && cuentaRow.moneda) || 'MXN') : codigoDeCaja(cuentaRow), res = resolverMovimientoMultimoneda(monedaCuenta, 'MXN', monto, 1, null);
     if (!res) return falla('La cuenta elegida no está en pesos: elige una cuenta en MXN.');
     const refTexto = `Devolución ${elegidas().map(n => n.numero_factura || '#' + n.folio).join(', ')}`.slice(0, 120);
     const payload = tipo === 'banco' ? { business_id: b.id, cuenta_id: refId, fecha: E.fecha, concepto: 'Devolución a cliente', proveedor: nombreCli(cli), referencia: refTexto, descripcion: '', cargos: res.montoCuenta, depositos: 0, tipo_salida: 'cliente', tipo_cambio_historico: res.tcHistorico, equivalente_mxn_historico: res.equivalenteMxn }
@@ -27801,7 +27862,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.39';
+const APP_VERSION = '2026-11-06.40';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
@@ -31510,7 +31571,7 @@ function revPagosReubicables(ctx) {
   if (!grupos.length) return { ...base, items: [] };
   const facturaPorId = Object.fromEntries(proveedores.map(f => [f.id, f]));
   const idsEnGrupo = new Set(grupos.flatMap(g => g.facturas));
-  const esPesos = (id) => { const mo = monedas.find(x => x.id === id); if (!mo) return false; const n = String(mo.nombre || '').toLowerCase(); return n.includes('mxn') || n.includes('peso') || codigoMonedaDeCaja(mo.nombre, mo.tc_reporte) === 'MXN'; };
+  const esPesos = (id) => { const mo = monedas.find(x => x.id === id); if (!mo) return false; const n = String(mo.nombre || '').toLowerCase(); return n.includes('mxn') || n.includes('peso') || codigoDeCaja(mo) === 'MXN'; };
   const pagos = [...bancosMov.map(m => ({ m, t: 'fz_bancos_mov' })), ...efectivoMov.filter(m => esPesos(m.moneda_id)).map(m => ({ m, t: 'fz_efectivo_mov' }))]
     .filter(x => x.m.tipo_salida === 'proveedor' && Number(x.m.cargos) > 0);
   const dias = (a, c) => Math.round((new Date(a + 'T00:00:00') - new Date(c + 'T00:00:00')) / 86400000);
@@ -31770,7 +31831,7 @@ function revTcCierre(ctx) {
   // cuentas de banco y cajas en divisa (la moneda de una caja se toma de su nombre)
   const cuentasF = [
     ...(bancosCuentas || []).map(c => ({ clave: 'banco:' + c.id, moneda: String(c.moneda || 'MXN').toUpperCase(), saldoInicial: Number(c.saldo_inicial) || 0 })),
-    ...(monedas || []).map(c => ({ clave: 'efectivo:' + c.id, moneda: codigoMonedaDeCaja(c.nombre, c.tc_reporte), saldoInicial: Number(c.saldo_inicial) || 0 })),
+    ...(monedas || []).map(c => ({ clave: 'efectivo:' + c.id, moneda: codigoDeCaja(c), saldoInicial: Number(c.saldo_inicial) || 0 })),
   ].filter(c => c.moneda !== 'MXN');
   const movsDe = (c) => c.clave.startsWith('banco:') ? bancosMov.filter(m => 'banco:' + m.cuenta_id === c.clave) : efectivoMov.filter(m => 'efectivo:' + m.moneda_id === c.clave);
   const cuentasConUso = cuentasF.filter(c => Math.abs(c.saldoInicial) > 0.004 || movsDe(c).length > 0); // una caja en dólares sin saldo ni movimientos no obliga a nada
