@@ -360,6 +360,19 @@ window.AYUDA = {
       auditoria: '',
       relacionadas: ['revision', 'balanza', 'guia_cierre']
     },
+    reportes: {
+      resumen: 'Un solo lugar para pedir varios reportes de un periodo y bajarlos en Excel o PDF, sin entrar a cada pantalla.',
+      pasos: [
+        'Elige el periodo con **Desde** y **Hasta** (por mes) o con un atajo como **Año a la fecha**.',
+        'Marca los reportes que necesitas. La **Balanza** y el **Balance** se toman al cierre de un mes del periodo (por omisión, el último).',
+        'En Auxiliares, Bancos y Efectivo puedes elegir una cuenta o todas.',
+        'Pulsa **Vista previa**, **Descargar PDF** o **Descargar Excel**. Con varios reportes, el archivo trae portada y una hoja o sección por reporte.'
+      ],
+      faq: [{ q: '¿Las cifras son las mismas que en cada pantalla?', a: 'Sí. Cada reporte sale del mismo cálculo de su pantalla; aquí solo se junta y se exporta.' }],
+      cuidado: ['Un periodo muy largo con todas las cuentas puede tardar unos segundos en generarse.'],
+      auditoria: '',
+      relacionadas: ['pl', 'balanza', 'balance']
+    },
     balanza: {
       resumen: 'La lista de cuentas con sus saldos iniciales, cargos, abonos y saldos actuales. Sirve para comprobar que la contabilidad cuadra.',
       pasos: [
