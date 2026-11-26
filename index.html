@@ -1432,7 +1432,8 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
 @media (max-width:700px){#modalProveedoresCat .mcp-edit-campos{grid-template-columns:1fr;}}
 /* ===== 06.34 — Efectivo: liquidez en tres cifras ===== */
 .liq-grid{display:grid;grid-template-columns:1fr 1.5fr 1fr;gap:10px;}
-.liq-kpi{background:#f4f6fa;border-radius:10px;padding:12px 14px;min-width:0;text-align:center;}
+.liq-kpi{background:#f4f6fa;border-radius:10px;padding:12px 14px;min-width:0;text-align:center;display:flex;flex-direction:column;justify-content:center;}
+.liq-kpi .liq-divisas{width:100%;}
 .liq-kpi .label{font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:3px;}
 .liq-kpi .value{font-size:22px;font-weight:700;text-align:center;}
 .liq-total{background:#eaf6ee;}
@@ -1868,6 +1869,7 @@ Transacciones recurrentes
             <button type="button" class="print-control-opcion" data-val="landscape">Horizontal</button>
           </div>
           <button class="btn btn-ghost btn-sm" id="printBtn" style="display:none;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;flex-shrink:0;"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>Imprimir</button>
+          <button class="btn btn-ghost btn-sm" id="printExcelBtn" style="display:none;">Excel</button>
           <input type="month" class="month-picker" id="monthPicker">
         </div>
       </div>
@@ -4056,7 +4058,7 @@ Transacciones recurrentes
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-06.45"></script>
+<script src="/app.js?v=2026-11-06.46"></script>
 <div id="alertasPanel" class="alertas-panel" role="dialog" aria-label="Alertas de la Revisión de consistencia" hidden></div>
 </body>
 </html>

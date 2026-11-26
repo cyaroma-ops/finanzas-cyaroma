@@ -1614,6 +1614,9 @@ function updateTopbar() {
   const printBtn = document.getElementById('printBtn');
   const printOrientacion = document.getElementById('printOrientacion');
   const printOrientacionToggle = document.getElementById('printOrientacionToggle');
+  const printExcelBtn = document.getElementById('printExcelBtn');
+  const conExcelFormal = ['pl', 'balance'].includes(STATE.currentSection) && !(STATE.currentSection === 'pl' && STATE_plVista === 'anual');
+  if (printExcelBtn) { printExcelBtn.style.display = conExcelFormal ? 'inline-flex' : 'none'; printExcelBtn.onclick = async () => { if (!(await pantallaFormalExportar(STATE.currentSection, 'excel'))) toast('No se pudo generar el Excel de esta pantalla.', 'error'); }; }
   if (SECCIONES_IMPRIMIBLES.includes(STATE.currentSection)) {
     printBtn.style.display = 'inline-flex';
     printOrientacionToggle.style.display = 'inline-flex';
@@ -1630,7 +1633,8 @@ function updateTopbar() {
         printOrientacionToggle.querySelectorAll('.print-control-opcion').forEach(b => b.classList.toggle('activa', b === btn));
       }));
     }
-    printBtn.onclick = () => {
+    printBtn.onclick = async () => {
+      if (['pl', 'balance'].includes(STATE.currentSection) && !(STATE.currentSection === 'pl' && STATE_plVista === 'anual') && await pantallaFormalExportar(STATE.currentSection, 'pdf', printOrientacion.value)) return;   // 06.46: presentación formal
       document.body.dataset.printSection = STATE.currentSection;
       let tituloImpresion = titulo;
       if (STATE.currentSection === 'pl') {
@@ -1829,14 +1833,14 @@ function pintarReportes() {
 
 // ---- Construcción de cada reporte ----
 // Pide la pantalla indicada que se dibuje para el periodo elegido, copia lo que muestra y deja la pantalla/estado como estaban.
-async function repCapturarPantalla(secId, preparar, dibujar, restaurar) {
+async function repCapturarPantalla(secId, preparar, dibujar, restaurar, conservar) {
   const real = document.getElementById(secId);
   try { preparar(); await dibujar(); } finally { restaurar(); }
-  const h = document.createElement('section'); h.className = 'section active'; h.innerHTML = real.innerHTML; real.innerHTML = '';
+  const h = document.createElement('section'); h.className = 'section active'; h.innerHTML = real.innerHTML; if (!conservar) real.innerHTML = '';
   h.querySelectorAll('[id]').forEach(x => x.removeAttribute('id'));
   h.querySelectorAll(PDF_OMITIR + ', ' + PDF_SOLO_MOVIL).forEach(x => x.remove());
   h.dataset.repSec = secId;
-  document.getElementById('reportesCaptura').appendChild(h);
+  repCapturaAsegurar().appendChild(h);
   [...h.querySelectorAll('tr, td, th')].forEach(x => { try { if (x.isConnected && getComputedStyle(x).display === 'none') x.remove(); } catch (_) { /* si no se puede medir, se deja */ } });   // lo que la pantalla tenía oculto (cuentas contraídas…) no sale en el reporte
   return h;
 }
@@ -2235,6 +2239,50 @@ function repPdfResumen(d, b, S, items, paginas) {
     d.setFontSize(8.5); d.setTextColor(110, 118, 135); d.text(pdfLimpiaTexto(c.per), margin + 230, y);
     d.setFontSize(10); d.setTextColor(30, 41, 59); d.text('Pág. ' + paginas[i], W - margin - 6, y, { align: 'right' }); y += 16;
   });
+}
+
+
+// ===== 06.46 — Estados financieros desde su propia pantalla (Imprimir / Excel) con la presentación formal =====
+function repCapturaAsegurar() {
+  let c = document.getElementById('reportesCaptura');
+  if (!c) { c = document.createElement('div'); c.id = 'reportesCaptura'; c.setAttribute('aria-hidden', 'true'); c.style.cssText = 'position:absolute;left:-12000px;top:0;width:1150px;pointer-events:none;'; document.body.appendChild(c); }
+  return c;
+}
+function repPdfPies(doc) {
+  const n = doc.getNumberOfPages(), W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
+  for (let i = 1; i <= n; i++) { doc.setPage(i); doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(150, 150, 150); doc.text(`Página ${i} de ${n}`, W / 2, H - 14, { align: 'center' }); doc.text('Generado: ' + new Date().toLocaleString('es-MX'), 48, H - 14); }
+}
+// Lo que está en pantalla, tal cual (mismo periodo, mismas cifras), con la presentación formal. La pantalla no se modifica.
+async function pantallaFormalItem(k) {
+  const b = biz();
+  if (k === 'pl') {
+    let per = periodoPL(STATE.currentMonth, STATE_plVista);
+    if (STATE_plVista === 'mensual' && STATE_plRangoDesde && STATE_plRangoHasta) per = { ...per, start: STATE_plRangoDesde, end: STATE_plRangoHasta };
+    const g = STATE_plComparacion; let h;
+    try { h = await repCapturarPantalla('sec-pl', () => { STATE_plComparacion = 'ninguna'; }, renderPLCuerpo, () => { STATE_plComparacion = g; }, true); }
+    finally { if (g !== 'ninguna') await renderPLCuerpo(); }   // el comparativo es de la pantalla; el reporte formal lleva un solo periodo
+    const txt = `Del ${fechaCorta(per.start)} al ${fechaCorta(per.end)}`;
+    return repFormalizar({ k: 'pl', kind: 'dom', titulo: 'Estado de resultados', subtitulo: txt, periodo: txt, orient: 'portrait', holder: h, secId: 'sec-pl' });
+  }
+  if (k === 'balanza') {
+    const h = await repCapturarPantalla('sec-balanza', () => {}, renderBalanzaCuerpo, () => {}, true), txt = `Al cierre de ${repEtiquetaMes(STATE.currentMonth)}`;
+    return repFormalizar({ k: 'balanza', kind: 'dom', titulo: 'Balanza de comprobación', subtitulo: txt, periodo: txt, orient: 'landscape', holder: h, secId: 'sec-balanza' });
+  }
+  const hoy = !STATE_balanceHastaYm && STATE.currentMonth === todayStr().slice(0, 7), txt = hoy ? `Al ${fechaCorta(todayStr())}` : `Al cierre de ${repEtiquetaMes(STATE_balanceHastaYm || STATE.currentMonth)}`;
+  const h = await repCapturarPantalla('sec-balance', () => {}, renderBalanceGeneralCuerpo, () => {}, true);
+  return repFormalizar({ k: 'balance', kind: 'dom', titulo: 'Balance general', subtitulo: txt, periodo: txt, orient: 'portrait', holder: h, secId: 'sec-balance' });
+}
+async function pantallaFormalExportar(k, formato, orient) {
+  let it = null;
+  try {
+    it = await pantallaFormalItem(k);
+    if (it.kind !== 'formal') return false;      // si algo no cuadró, el llamador usa el método de siempre
+    const b = biz(), nom = `${it.titulo} - ${String(b.name).replace(/[\\\/:*?"<>|]/g, ' ')} - ${it.periodo.replace(/[\\\/:*?"<>|]/g, '-')}`;
+    if (formato === 'excel') { const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, repHojaFormal(it, b), it.titulo.slice(0, 31)); XLSX.writeFile(wb, nom + '.xlsx'); }
+    else { if (orient === 'portrait' || orient === 'landscape') it.orient = orient; const d = repPdfFormal(null, b, it); repPdfPies(d); d.save(nom + '.pdf'); toast('PDF generado: ábrelo para imprimirlo o compartirlo.'); }
+    return true;
+  } catch (e) { console.error(e); return false; }
+  finally { if (it && it.holder) it.holder.remove(); }
 }
 
 function reportesAbrirVista(b, S, build) {
@@ -13340,15 +13388,17 @@ async function renderBalanzaCuerpo() {
 
   wirePrintControl(contenido);
 
-  document.getElementById('balanzaExcelBtn').addEventListener('click', () => {
+  document.getElementById('balanzaExcelBtn').addEventListener('click', async () => {
+    if (await pantallaFormalExportar('balanza', 'excel')) return;   // 06.46: presentación formal
     const encabezados = ['Cuenta','Tipo','Saldo inicial Deudor','Saldo inicial Acreedor','Cargos','Abonos','Saldo actual Deudor','Saldo actual Acreedor'];
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.aoa_to_sheet([encabezados, ...filasExport.map(f=>f.v)]);
     XLSX.utils.book_append_sheet(wb, ws, 'Balanza');
     XLSX.writeFile(wb, `Balanza de Comprobación - ${b.name} - ${STATE.currentMonth}.xlsx`);
   });
-  document.getElementById('balanzaPdfBtn').addEventListener('click', () => {
+  document.getElementById('balanzaPdfBtn').addEventListener('click', async () => {
     const orientacion = document.getElementById('balanzaPdfOrientacion').value; // 'landscape' | 'portrait'
+    if (await pantallaFormalExportar('balanza', 'pdf', orientacion)) return;   // 06.46: presentación formal
     const esVertical = orientacion === 'portrait';
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({ unit: 'pt', format: 'letter', orientation: orientacion });
@@ -28129,7 +28179,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.45';
+const APP_VERSION = '2026-11-06.46';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
