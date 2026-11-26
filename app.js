@@ -2148,7 +2148,7 @@ function repPdfFormal(doc, b, it) {
         if (r.tipo === 'texto') { metas.push({ tipo: 'texto', grp }); body.push([{ content: pdfLimpiaTexto(String(r.celdas[0])), colSpan: n, styles: { fontStyle: 'italic', textColor: [110, 118, 135] } }]); return; }
         metas.push(Object.assign({}, r, { grp }));
         const neg = r.negr || ['sub', 'total', 'gran'].includes(r.tipo);
-        body.push(cols.map((c, i) => ({ content: pdfLimpiaTexto(i === 0 ? String(r.celdas[0] === undefined ? '' : r.celdas[0]) : repFormalCelda(r.celdas[i])), styles: Object.assign({ fontStyle: neg ? 'bold' : 'normal' }, i === 0 && r.nivel ? { cellPadding: { top: 2.2, bottom: 2.2, left: 2 + r.nivel * 12, right: 2 } } : {}) })));
+        body.push(cols.map((c, i) => ({ content: pdfLimpiaTexto(repFormalCelda(r.celdas[i])), styles: Object.assign({ fontStyle: neg ? 'bold' : 'normal' }, i === 0 && r.nivel ? { cellPadding: { top: 2.2, bottom: 2.2, left: 2 + r.nivel * 12, right: 2 } } : {}) })));
       });
     });
     const numIdx = cols.map((c, i) => c.num && i ? i : -1).filter(i => i >= 0), colSt = {};
@@ -28129,7 +28129,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.44';
+const APP_VERSION = '2026-11-06.45';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
