@@ -23767,31 +23767,41 @@ function hojaSugerirMapeo(encabezados, cv, cs, cr) {
 }
 const hojaRecibidoCuenta = (rd, cr) => Object.keys(rd).some(id => { const c = cr.find(x => x.id === id); return c && c.categoria !== 'propinas' && Math.abs((rd[id] || {}).monto || 0) > 0.004; });
 function hojaEsConversion(h) { return normalizarEncabezado(h || '').includes('conversion'); }
-function hojaPlan({ filas, encabezados, mapeo, desde, existentes, cv, cs, cr, cerrados }) {
+function hojaPlan({ filas, encabezados, mapeo, desde, existentes, cv, cs, cr, cerrados, tcDe }) {
   const colTotal = (() => { const i = (encabezados || HOJA_ENCABEZADOS).findIndex(h => normalizarEncabezado(h) === 'ventastotales'); return i >= 0 ? i : 5; })();
   const anioHoja = hojaAnio(filas, desde), vistas = new Set(), out = []; let anteriores = 0, repetidas = 0, sinFecha = 0;
   filas.forEach(c => {
     const fecha = hojaFecha(c[0], anioHoja); if (!fecha) { sinFecha++; return; }
     if (fecha < desde) { anteriores++; return; }
     if (vistas.has(fecha)) { repetidas++; return; } vistas.add(fecha);
-    const vd = {}, sd = {}, rd = {};
+    const vd = {}, sd = {}, rd = {}, tcHoja = {};
     Object.keys(mapeo).forEach(i => {
       const m = mapeo[i], val = hojaNum(c[i]); if (!m || !m.id) return;
       if (hojaEsConversion((encabezados || HOJA_ENCABEZADOS)[i])) return;   // «CONVERSION MXN»: la app convierte los dólares/euros con el TC de Divisas
       if (m.g === 'v') vd[m.id] = Math.round(((vd[m.id] || 0) + val) * 100) / 100;
       else if (m.g === 's') sd[m.id] = Math.round(((sd[m.id] || 0) + val) * 100) / 100;
-      else if (m.g === 'r') rd[m.id] = { monto: Math.round((((rd[m.id] || {}).monto || 0) + val) * 100) / 100 };
+      else if (m.g === 'r') {
+        rd[m.id] = { monto: Math.round((((rd[m.id] || {}).monto || 0) + val) * 100) / 100 };
+        const conv = hojaNum(c[Number(i) + 1]); if (hojaEsConversion((encabezados || HOJA_ENCABEZADOS)[Number(i) + 1]) && val > 0 && conv > 0) tcHoja[m.id] = conv / val;   // respaldo: el tipo de cambio que usó tu hoja
+      }
+    });
+    // Divisas: la conciliación guarda el tipo de cambio del día, igual que al capturar el día a mano (sin él, Ventas valúa la divisa en 0).
+    let sinTc = false;
+    Object.keys(rd).forEach(id => {
+      const cc = cr.find(x => x.id === id); if (!cc || !cc.es_moneda || !rd[id].monto) return;
+      const tc = (tcDe ? Number(tcDe(cc, fecha)) : 0) || tcHoja[id] || 0;
+      if (tc > 0) rd[id].tc = Math.round(tc * 10000) / 10000; else sinTc = true;
     });
     const totalApp = cv.reduce((t, k) => t + (k.tipo === 'resta' ? -1 : 1) * (Number(vd[k.id]) || 0), 0), totalHoja = hojaNum(c[colTotal]);
     const tieneVentas = Object.values(vd).some(x => Math.abs(x) > 0.004), tieneSistema = Object.values(sd).some(x => Math.abs(x) > 0.004), tieneRecibido = hojaRecibidoCuenta(rd, cr);
     const catSum = (obj, lista, cats) => Object.keys(obj).reduce((t, id) => { const c = lista.find(x => x.id === id); const v = typeof obj[id] === 'object' ? (obj[id] || {}).monto : obj[id]; return c && cats.includes(c.categoria) ? t + Math.abs(Number(v) || 0) : t; }, 0);
     const incompleto = [['efectivo', ['efectivo']], ['tarjetas', ['tarjetas', 'bancos']], ['cxc', ['cxc']]].some(([k, rc]) => catSum(sd, cs, [k]) > 0.004 && catSum(rd, cr, rc) < 0.004);
     const ex = existentes[fecha] || null, exCompleto = ex && hojaRecibidoCuenta(ex.recon_data || {}, cr), exVentas = ex ? cv.reduce((t, k) => t + (k.tipo === 'resta' ? -1 : 1) * (Number((ex.venta_data || {})[k.id]) || 0), 0) : 0;
-    const f = { fecha, vd, sd, rd, incompleto, totalApp, totalHoja, cuadra: totalHoja ? Math.abs(totalApp - totalHoja) < 0.06 : null, tieneVentas, tieneRecibido, ex, exVentas, cerrado: !!cerrados[fecha] };
+    const f = { fecha, vd, sd, rd, sinTc, incompleto, totalApp, totalHoja, cuadra: totalHoja ? Math.abs(totalApp - totalHoja) < 0.06 : null, tieneVentas, tieneRecibido, ex, exVentas, cerrado: !!cerrados[fecha] };
     if (!tieneVentas && !tieneSistema && !tieneRecibido) { f.estado = 'Sin datos'; f.opciones = ['omitir']; f.accion = 'omitir'; }
     else if (f.cerrado) { f.estado = 'Periodo cerrado'; f.opciones = ['omitir']; f.accion = 'omitir'; }
     else if (ex && exCompleto) {
-      const recDist = Object.keys(rd).some(id => Math.abs((Number(((ex.recon_data || {})[id] || {}).monto) || 0) - (Number(rd[id].monto) || 0)) > 0.004), vDist = Math.abs(exVentas - totalApp) >= 0.06;
+      const recDist = Object.keys(rd).some(id => Math.abs((Number(((ex.recon_data || {})[id] || {}).monto) || 0) - (Number(rd[id].monto) || 0)) > 0.004 || (rd[id].tc !== undefined && Math.abs((Number(((ex.recon_data || {})[id] || {}).tc) || 0) - rd[id].tc) > 0.00005)), vDist = Math.abs(exVentas - totalApp) >= 0.06;
       f.recDist = recDist;
       f.estado = (!vDist && !recDist) ? 'Ya está cargado (igual)' : 'Ya está cargado · ' + [vDist ? `ventas distintas (app ${fmt(exVentas)} / hoja ${fmt(totalApp)})` : '', recDist ? 'recibido distinto' : ''].filter(Boolean).join(' y ');
       f.opciones = (!vDist && !recDist) ? ['omitir', 'actualizar'] : ['omitir', 'actualizar']; f.accion = 'omitir';
@@ -23800,6 +23810,7 @@ function hojaPlan({ filas, encabezados, mapeo, desde, existentes, cv, cs, cr, ce
     else if (ex) { f.estado = 'Ya está cargado · recibido aún pendiente'; f.opciones = ['omitir']; f.accion = 'omitir'; }
     else if (!tieneRecibido || incompleto) { f.estado = 'Recibido pendiente'; f.opciones = ['omitir', 'solo', 'cargar']; f.accion = 'omitir'; f.pendiente = true; }
     else { f.estado = 'Nuevo'; f.opciones = ['cargar', 'omitir']; f.accion = 'cargar'; }
+    if (sinTc && f.estado && f.estado !== 'Sin datos') f.estado += ' · sin tipo de cambio (configura Divisas)';
     out.push(f);
   });
   return { dias: out, anteriores, repetidas, sinFecha };
@@ -23940,7 +23951,9 @@ async function abrirCargaHoja(b) {
     const anioH = hojaAnio(lectura.filas, desde), fechas = lectura.filas.map(c => hojaFecha(c[0], anioH)).filter(f => f && f >= desde);
     const existentes = {}; if (fechas.length) { const { data } = await sb.from('fz_ventas').select('id,fecha,venta_data,sistema_data,recon_data,gastos').eq('business_id', b.id).gte('fecha', fechas.reduce((a, x) => x < a ? x : a)).lte('fecha', fechas.reduce((a, x) => x > a ? x : a)); (data || []).forEach(r => { existentes[r.fecha] = r; }); }
     const cerrados = {}; for (const f of [...new Set(fechas)]) { try { if (await periodoEstaCerrado(b.id, f)) cerrados[f] = true; } catch (_) {} }
-    const plan = hojaPlan({ filas: lectura.filas, encabezados, mapeo, desde, existentes, cv, cs, cr: crr, cerrados });
+    const [cajasTc, vigTc] = await Promise.all([sb.from('fz_efectivo_monedas').select('*').eq('business_id', b.id).then(r => r.data || []), cargarVigenciasTC(b.id)]);
+    const tcDe = (c, fecha) => { const caja = cajasTc.find(x => x.id === c.moneda_id); return caja ? tcVigenteDeCaja(vigTc, caja, fecha) : 0; };
+    const plan = hojaPlan({ filas: lectura.filas, encabezados, mapeo, desde, existentes, cv, cs, cr: crr, cerrados, tcDe });
     pintarPrevia(plan);
   };
   const pintarPrevia = (plan) => {
@@ -28543,7 +28556,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.53';
+const APP_VERSION = '2026-11-06.54';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
