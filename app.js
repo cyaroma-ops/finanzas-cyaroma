@@ -3017,11 +3017,13 @@ async function renderVentas() {
     btn.addEventListener('click', async () => {
       const rowActual = rows.find(r => r.id === btn.dataset.id);
       if (rowActual && await bloqueadoPorCierre(b.id, rowActual.fecha)) return;
-      if (!confirm(`¿Eliminar el día ${rowActual ? fechaCorta(rowActual.fecha) : ''} de Ventas? También se quitarán sus depósitos automáticos de Bancos/Efectivo (los que ya cambiaste de tipo o tienen archivos adjuntos se conservan).`)) return;
+      if (!confirm(`¿Eliminar el día ${rowActual ? fechaCorta(rowActual.fecha) : ''} de Ventas? También se quitarán sus depósitos automáticos de Bancos/Efectivo y sus propinas por repartir que estén limpias (los depósitos que ya cambiaste de tipo o tienen adjuntos, y las propinas con pagos, se conservan).`)) return;
       let dep = { quitados: 0, conservados: 0 };
-      try { dep = await quitarDepositosAutomaticosDeVenta(b.id, btn.dataset.id); } catch (e) { toast('No se pudieron quitar los depósitos del día: ' + (e.message || e) + '. El día no se eliminó.', 'error'); return; }
+      let prop = { quitadas: 0, conservadas: 0 };
+      try { dep = await quitarDepositosAutomaticosDeVenta(b.id, btn.dataset.id); prop = await quitarPropinasDeVenta(b.id, btn.dataset.id); } catch (e) { toast('No se pudieron quitar los depósitos o propinas del día: ' + (e.message || e) + '. El día no se eliminó.', 'error'); return; }
       await sb.from('fz_ventas').delete().eq('id', btn.dataset.id);
-      if (rowActual) registrarAuditoria(b.id, 'eliminar', 'Ventas', `Día ${rowActual.fecha} eliminado${dep.quitados ? ` (con ${dep.quitados} depósito(s) automático(s))` : ''}`);
+      if (rowActual) registrarAuditoria(b.id, 'eliminar', 'Ventas', `Día ${rowActual.fecha} eliminado${dep.quitados ? ` (con ${dep.quitados} depósito(s) automático(s)${prop.quitadas ? ` y ${prop.quitadas} propina(s)` : ''})` : (prop.quitadas ? ` (con ${prop.quitadas} propina(s))` : '')}`);
+      if (prop.conservadas) toast(`${prop.conservadas} propina(s) de ese día se conservaron porque ya tienen pagos: revísalas en Proveedores.`, 'error');
       if (dep.conservados) toast(`${dep.conservados} depósito(s) de ese día se conservaron (adjuntos o ya modificados): revísalos en Bancos/Efectivo.`, 'error');
       renderVentas();
     });
@@ -3081,6 +3083,19 @@ async function renderVentas() {
   window.scrollTo(0, scrollY);
 }
 
+// 06.56: al borrar un día de Ventas también se quitan sus propinas provisionadas («Propinas por repartir» con la marca de ese día),
+// siempre que estén limpias: Pendiente, sin pagos y sin aplicaciones. Si ya tienen pagos se conservan y se avisa.
+async function quitarPropinasDeVenta(businessId, ventaId) {
+  const r = { quitadas: 0, conservadas: 0 };
+  if (!ventasAfectaFueraDeSuRegistro(businessId)) return r;
+  const { data } = await sb.from('fz_proveedores').select('id,estatus,importe_pagado,fecha').eq('origen_venta_id', ventaId);
+  for (const f of (data || [])) {
+    const { data: apl } = await sb.from('fz_pagos_aplicados').select('id').eq('factura_id', f.id).limit(1);
+    if (f.estatus !== 'Pendiente' || Number(f.importe_pagado) > 0 || (apl || []).length || await bloqueadoPorCierre(businessId, f.fecha)) { r.conservadas++; continue; }
+    const { error } = await sb.from('fz_proveedores').delete().eq('id', f.id); if (error) throw error; r.quitadas++;
+  }
+  return r;
+}
 // 06.55: al borrar un día de Ventas también se quitan sus depósitos automáticos de Bancos/Efectivo (antes quedaban sueltos y,
 // al volver a cargar el día, se duplicaban). No se tocan los que ya cambiaste de tipo ni los que tienen archivos adjuntos.
 async function quitarDepositosAutomaticosDeVenta(businessId, ventaId) {
@@ -28577,7 +28592,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.55';
+const APP_VERSION = '2026-11-06.56';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
@@ -31531,6 +31546,31 @@ function revPropinas(ctx) {
   return r;
 }
 
+// 06.56: propinas por repartir cuyo día de Ventas ya no existe (día borrado y vuelto a cargar). Su pasivo quedó sin la venta que lo respalda,
+// y descuadra la Balanza por el importe de la propina. Se quitan SOLO las limpias (Pendiente, sin pagos ni aplicaciones, fuera de meses cerrados).
+function revPropinasHuerfanas(ctx) {
+  if (!ctx.financiero) return null;
+  const { ventas, proveedores, pagosAplicados, b } = ctx;
+  const ids = new Set(ventas.map(v => v.id)), conAplic = new Set((pagosAplicados || []).map(a => a.factura_id));
+  const hu = (proveedores || []).filter(f => f.origen_venta_id && !ids.has(f.origen_venta_id)).sort((a, z) => String(a.fecha).localeCompare(String(z.fecha)));
+  if (!hu.length) return null;
+  const limpia = (f) => (f.estatus || 'Pendiente') === 'Pendiente' && !(Number(f.importe_pagado) > 0) && !conAplic.has(f.id);
+  const r = { id: 'propinas_huerfanas', titulo: 'Propinas por repartir de un día de Ventas que ya no existe',
+    ayuda: 'Cada una nació de un día de Ventas que se eliminó (por ejemplo, un día que se borró y se volvió a cargar). Su cuenta por pagar quedó sin la venta que la respalda y descuadra la Balanza por ese importe. Se quitan solo las que están limpias (Pendiente, sin pagos).',
+    items: hu.map(f => ({ fecha: String(f.fecha).slice(0, 10), texto: `${fechaCorta(String(f.fecha).slice(0, 10))} · ${f.factura}: ${fmt(Number(f.importe) || 0)} — su día de Ventas ya no existe${limpia(f) ? '; se puede quitar' : '; tiene pagos, revísala en Proveedores'}`, monto: Number(f.importe) || 0 })) };
+  const aplicables = hu.filter(limpia);
+  if (aplicables.length) r.accion = { etiqueta: `Quitar ${aplicables.length} propina${aplicables.length === 1 ? '' : 's'} sin venta`,
+    confirmar: `Se quitarán ${aplicables.length} propina(s) por repartir (${fmt(aplicables.reduce((t, f) => t + (Number(f.importe) || 0), 0))}) cuyo día de Ventas ya no existe. Solo las que están pendientes y sin pagos. ¿Continuar?`,
+    ejecutar: async () => { let q = 0, o = 0; for (const f of aplicables) {
+        if (await bloqueadoPorCierre(b.id, f.fecha)) { o++; continue; }
+        const { data: fresca } = await sb.from('fz_proveedores').select('*').eq('id', f.id).maybeSingle();
+        const { data: apl } = await sb.from('fz_pagos_aplicados').select('id').eq('factura_id', f.id).limit(1);
+        if (!fresca || (fresca.estatus || 'Pendiente') !== 'Pendiente' || Number(fresca.importe_pagado) > 0 || (apl || []).length) { o++; continue; }
+        const { error } = await sb.from('fz_proveedores').delete().eq('id', f.id); if (error) throw error; q++; }
+      registrarAuditoria(b.id, 'eliminar', 'Ventas', `Propinas sin venta quitadas: ${q}`); return `Propinas quitadas: ${q}${o ? `; ${o} se omitieron (con pagos o mes cerrado)` : ''}.`; } };
+  return r;
+}
+
 // 06.55: depósitos automáticos de Ventas cuyo día ya no existe (por ejemplo, un día que se borró y se volvió a cargar).
 // Cada uno infla de más Bancos/Efectivo. Se quitan SOLO los automáticos sin archivos adjuntos.
 function revDepositosHuerfanos(ctx) {
@@ -32641,7 +32681,7 @@ function revTraspasosCompletos(ctx) {
 
 async function ejecutarRevisionConsistencia(b) {
   const ctx = await cargarContextoRevision(b);
-  const checks = [revVentasCategorias, revCentavosRecibido, revDuplicadosProveedor, revPropinas, revPropinasSinMarca, revPropinasDuplicadas, revDepositosVentas, revDepositosHuerfanos, revPagosProveedor, revPagosReubicables, revGruposConFaltante, revCreditosDuplicados, revFacturasPagoIncoherente, revDescuadreLibro, revVinculosPagoFactura, revCreditosClientes, revVinculosCobroFactura, revDevolucionesCliente, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar, revTcCierre, revCfdiClasificados, revTraspasosCompletos];
+  const checks = [revVentasCategorias, revCentavosRecibido, revDuplicadosProveedor, revPropinas, revPropinasSinMarca, revPropinasDuplicadas, revDepositosVentas, revDepositosHuerfanos, revPropinasHuerfanas, revPagosProveedor, revPagosReubicables, revGruposConFaltante, revCreditosDuplicados, revFacturasPagoIncoherente, revDescuadreLibro, revVinculosPagoFactura, revCreditosClientes, revVinculosCobroFactura, revDevolucionesCliente, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar, revTcCierre, revCfdiClasificados, revTraspasosCompletos];
   const out = [];
   for (const fn of checks) {
     try { const r = fn(ctx); if (r) out.push(r); }
