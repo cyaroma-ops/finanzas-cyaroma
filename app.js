@@ -3303,7 +3303,7 @@ async function renderConceptosList(businessId) {
         <option value="">— no vincular —</option>
         ${cuentasBanco.map(cb => `<option value="${cb.id}" ${c.banco_cuenta_id===cb.id?'selected':''}>${escHtml(cb.nombre)}</option>`).join('')}
       </select>` : ''}
-      <button class="row-del concepto-del" data-id="${c.id}" style="font-size:16px;flex-shrink:0;">✕</button>
+      ${menuConceptoHtml('concepto', c.id)}
     </div>`).join('');
   box.querySelectorAll('.concepto-moneda-vinculo').forEach(sel => {
     sel.addEventListener('change', async () => {
@@ -3324,8 +3324,11 @@ async function renderConceptosList(businessId) {
       toast('Vínculo actualizado.');
     });
   });
+  cablearMenusConcepto(box);
+  box.querySelectorAll('.concepto-edit').forEach(btn => btn.addEventListener('click', () => editarConceptoVentas('recibido', conceptos.find(c => c.id === btn.dataset.id), conceptos, businessId, () => renderConceptosList(businessId))));
   box.querySelectorAll('.concepto-del').forEach(btn => {
     btn.addEventListener('click', async () => {
+      const cc = conceptos.find(c => c.id === btn.dataset.id); if (!confirm(`¿Eliminar el concepto «${cc ? cc.nombre : ''}»? Las cifras ya capturadas con él dejarán de verse en Ventas.`)) return;
       await sb.from('fz_conceptos').delete().eq('id', btn.dataset.id);
       renderConceptosList(businessId);
     });
@@ -3379,6 +3382,61 @@ function opcionesSubcuentasIngreso(subcuentas, mayores, selectedId) {
   }).join('');
   return partes;
 }
+
+// ===== 06.53 — Editar conceptos de Ventas (menú discreto «···»: Editar / Eliminar) =====
+function menuConceptoHtml(clase, id) {
+  return `<span class="cc-acc"><button type="button" class="cc-mas" title="Acciones" aria-haspopup="menu" aria-expanded="false">···</button><span class="cc-menu" role="menu"><button type="button" class="${clase}-edit" data-id="${id}">Editar</button><button type="button" class="row-del ${clase}-del" data-id="${id}">Eliminar</button></span></span>`;
+}
+function cablearMenusConcepto(box) {
+  box.querySelectorAll('.cc-mas').forEach(b => b.addEventListener('click', (e) => {
+    e.stopPropagation(); const acc = b.closest('.cc-acc'), ab = !acc.classList.contains('abierto');
+    document.querySelectorAll('.cc-acc.abierto').forEach(x => x.classList.remove('abierto'));
+    acc.classList.toggle('abierto', ab); b.setAttribute('aria-expanded', ab ? 'true' : 'false');
+    const menu = acc.querySelector('.cc-menu'); if (ab && menu) { const r = b.getBoundingClientRect(); menu.style.top = (r.bottom + 4) + 'px'; menu.style.left = Math.max(8, r.right - 210) + 'px'; }
+  }));
+  box.querySelectorAll('.cc-menu button').forEach(x => x.addEventListener('click', () => { const a = x.closest('.cc-acc'); if (a) a.classList.remove('abierto'); }));
+  if (!window.__menusConceptoGlobal) {
+    window.__menusConceptoGlobal = true;
+    const cerrar = () => document.querySelectorAll('.cc-acc.abierto').forEach(x => x.classList.remove('abierto'));
+    document.addEventListener('click', (e) => { if (!e.target.closest || !e.target.closest('.cc-acc')) cerrar(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') cerrar(); });
+    window.addEventListener('scroll', cerrar, true);
+  }
+}
+const CONCEPTO_EDIT = {
+  venta: { tabla: 'fz_conceptos_venta', titulo: 'Editar categoría de venta', campo2: 'tipo', etiqueta2: 'Cómo se suma', opciones2: [['suma', 'Suma'], ['resta', 'Resta (ej. descuentos)']], aviso2: 'Cambiar entre Suma y Resta cambia el total de ventas de todos los días ya capturados.' },
+  sistema: { tabla: 'fz_conceptos_sistema', titulo: 'Editar concepto de sistema', campo2: 'categoria', etiqueta2: 'Se compara contra', opciones2: [['efectivo', 'Efectivo recibido'], ['tarjetas', 'Tarjetas recibido'], ['cxc', 'CxC recibido']], aviso2: 'Cambiar la categoría cambia contra qué se comparan las diferencias de los días ya capturados.' },
+  recibido: { tabla: 'fz_conceptos', titulo: 'Editar concepto recibido', campo2: 'categoria', etiqueta2: 'Categoría', opciones2: [['efectivo', 'Efectivo'], ['tarjetas', 'Tarjetas'], ['bancos', 'Bancos'], ['cxc', 'CxC'], ['propinas', 'Propinas']], aviso2: 'Cambiar la categoría cambia en qué diferencia (Efectivo, Tarjetas, CxC) entra lo ya capturado. Si no estás seguro, deja la categoría y cambia solo el nombre.' },
+};
+function editarConceptoVentas(tipo, concepto, hermanos, businessId, onDone) {
+  const cfg = CONCEPTO_EDIT[tipo]; if (!cfg || document.getElementById('modalEditarConcepto')) return;
+  const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalEditarConcepto'; bg.style.zIndex = '960';
+  const medioHtml = tipo === 'recibido' && concepto.categoria === 'propinas' ? `<div class="field"><label>Medio de la propina</label><select id="ecMedio"><option value="efectivo" ${concepto.medio !== 'tarjetas' ? 'selected' : ''}>Efectivo</option><option value="tarjetas" ${concepto.medio === 'tarjetas' ? 'selected' : ''}>Tarjetas</option></select></div>` : '';
+  bg.innerHTML = `<div class="modal" style="max-width:460px;"><div class="card-head"><h3>${cfg.titulo}</h3></div>
+    <div class="field"><label>Nombre</label><input type="text" id="ecNombre" value="${escAttr(concepto.nombre)}" maxlength="80"></div>
+    <div class="field"><label>${cfg.etiqueta2}</label><select id="ecCampo2">${cfg.opciones2.map(([v, t]) => `<option value="${v}" ${concepto[cfg.campo2] === v ? 'selected' : ''}>${t}</option>`).join('')}</select><div style="margin-top:4px;font-size:12px;color:var(--muted);">${cfg.aviso2}</div></div>
+    ${medioHtml}
+    ${tipo === 'recibido' && concepto.es_moneda ? '<p class="hint">Este concepto maneja tipo de cambio; esa opción no se cambia aquí.</p>' : ''}
+    <div class="hoja-fila" style="justify-content:flex-end;"><button class="btn btn-ghost" id="ecCancelar">Cancelar</button><button class="btn btn-gold" id="ecGuardar">Guardar</button></div></div>`;
+  document.body.appendChild(bg);
+  const cerrar = () => { bg.remove(); document.removeEventListener('keydown', esc, true); }, esc = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cerrar(); } };
+  document.addEventListener('keydown', esc, true); bg.querySelector('#ecCancelar').addEventListener('click', cerrar); bg.addEventListener('click', (e) => { if (e.target === bg) cerrar(); });
+  bg.querySelector('#ecNombre').focus();
+  bg.querySelector('#ecGuardar').addEventListener('click', async () => {
+    const nombre = bg.querySelector('#ecNombre').value.trim(), valor2 = bg.querySelector('#ecCampo2').value, med = bg.querySelector('#ecMedio');
+    if (!nombre) { toast('Escribe un nombre.', 'error'); return; }
+    const norm = (x) => normalizarEncabezado(x);
+    if ((hermanos || []).some(h => h.id !== concepto.id && norm(h.nombre) === norm(nombre))) { toast('Ya existe otro concepto con ese nombre.', 'error'); return; }
+    const patch = {}; if (nombre !== concepto.nombre) patch.nombre = nombre; if (valor2 !== concepto[cfg.campo2]) patch[cfg.campo2] = valor2;
+    if (med && (med.value !== (concepto.medio === 'tarjetas' ? 'tarjetas' : 'efectivo'))) patch.medio = med.value;
+    if (!Object.keys(patch).length) { cerrar(); return; }
+    if ((patch[cfg.campo2] !== undefined) && !confirm(cfg.aviso2 + '\n\n¿Guardar el cambio?')) return;
+    const { error } = await sb.from(cfg.tabla).update(patch).eq('id', concepto.id);
+    if (error) { toast('No se pudo guardar: ' + error.message, 'error'); return; }
+    registrarAuditoria(businessId, 'editar', 'Ventas', `Concepto «${concepto.nombre}» editado: ${Object.entries(patch).map(([k, v]) => `${k} → ${v}`).join(', ')}`);
+    toast('Cambios guardados.'); cerrar(); onDone();
+  });
+}
 async function renderVentaConceptosList(businessId) {
   const [conceptos, subcuentas, mayores] = await Promise.all([loadConceptosVenta(businessId), loadSubcuentas(businessId), loadCuentasMayor(businessId)]);
   const box = document.getElementById('conceptosVentaList');
@@ -3388,7 +3446,7 @@ async function renderVentaConceptosList(businessId) {
     <div style="padding:8px 4px;border-bottom:1px solid var(--line);">
       <div style="display:flex;align-items:center;justify-content:space-between;">
         <div style="display:flex;align-items:center;">${botonesOrdenHtml(idx, conceptos.length, 'cv-orden')}<div><strong>${escHtml(c.nombre)}</strong> <span style="color:var(--muted);font-size:12px;">— ${c.tipo === 'resta' ? 'Resta (ej. descuentos)' : 'Suma'}</span></div></div>
-        <button class="row-del conceptoventa-del" data-id="${c.id}" style="font-size:16px;">✕</button>
+        ${menuConceptoHtml('conceptoventa', c.id)}
       </div>
       ${hayCatalogoIngreso ? `<div style="margin:6px 0 0 26px;">
         <select class="cell cv-vinculo" data-id="${c.id}" style="font-size:12px;max-width:280px;">
@@ -3404,8 +3462,11 @@ async function renderVentaConceptosList(businessId) {
     if (error) { toast('Error: ' + error.message, 'error'); return; }
     toast('Agrupación guardada.');
   }));
+  cablearMenusConcepto(box);
+  box.querySelectorAll('.conceptoventa-edit').forEach(btn => btn.addEventListener('click', () => editarConceptoVentas('venta', conceptos.find(c => c.id === btn.dataset.id), conceptos, businessId, () => renderVentaConceptosList(businessId))));
   box.querySelectorAll('.conceptoventa-del').forEach(btn => {
     btn.addEventListener('click', async () => {
+      const cc = conceptos.find(c => c.id === btn.dataset.id); if (!confirm(`¿Eliminar la categoría «${cc ? cc.nombre : ''}»? Las cifras ya capturadas con ella dejarán de verse en Ventas.`)) return;
       await sb.from('fz_conceptos_venta').delete().eq('id', btn.dataset.id);
       renderVentaConceptosList(businessId);
     });
@@ -3442,11 +3503,14 @@ async function renderSistemaConceptosList(businessId) {
     box.innerHTML = conceptos.map(c => `
       <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 4px;border-bottom:1px solid var(--line);">
         <div><strong>${escHtml(c.nombre)}</strong> <span style="color:var(--muted);font-size:12px;">— se compara contra "${escHtml(SISTEMA_CAT_LABEL[c.categoria])} recibido"</span></div>
-        <button class="row-del conceptosistema-del" data-id="${c.id}" style="font-size:16px;">✕</button>
+        ${menuConceptoHtml('conceptosistema', c.id)}
       </div>`).join('');
   }
+  cablearMenusConcepto(box);
+  box.querySelectorAll('.conceptosistema-edit').forEach(btn => btn.addEventListener('click', () => editarConceptoVentas('sistema', conceptos.find(c => c.id === btn.dataset.id), conceptos, businessId, () => renderSistemaConceptosList(businessId))));
   box.querySelectorAll('.conceptosistema-del').forEach(btn => {
     btn.addEventListener('click', async () => {
+      const cc = conceptos.find(c => c.id === btn.dataset.id); if (!confirm(`¿Eliminar el concepto «${cc ? cc.nombre : ''}»? Las cifras ya capturadas con él dejarán de verse en Ventas.`)) return;
       await sb.from('fz_conceptos_sistema').delete().eq('id', btn.dataset.id);
       renderSistemaConceptosList(businessId);
     });
@@ -23702,6 +23766,7 @@ function hojaSugerirMapeo(encabezados, cv, cs, cr) {
   return mapeo;
 }
 const hojaRecibidoCuenta = (rd, cr) => Object.keys(rd).some(id => { const c = cr.find(x => x.id === id); return c && c.categoria !== 'propinas' && Math.abs((rd[id] || {}).monto || 0) > 0.004; });
+function hojaEsConversion(h) { return normalizarEncabezado(h || '').includes('conversion'); }
 function hojaPlan({ filas, encabezados, mapeo, desde, existentes, cv, cs, cr, cerrados }) {
   const colTotal = (() => { const i = (encabezados || HOJA_ENCABEZADOS).findIndex(h => normalizarEncabezado(h) === 'ventastotales'); return i >= 0 ? i : 5; })();
   const anioHoja = hojaAnio(filas, desde), vistas = new Set(), out = []; let anteriores = 0, repetidas = 0, sinFecha = 0;
@@ -23712,6 +23777,7 @@ function hojaPlan({ filas, encabezados, mapeo, desde, existentes, cv, cs, cr, ce
     const vd = {}, sd = {}, rd = {};
     Object.keys(mapeo).forEach(i => {
       const m = mapeo[i], val = hojaNum(c[i]); if (!m || !m.id) return;
+      if (hojaEsConversion((encabezados || HOJA_ENCABEZADOS)[i])) return;   // «CONVERSION MXN»: la app convierte los dólares/euros con el TC de Divisas
       if (m.g === 'v') vd[m.id] = Math.round(((vd[m.id] || 0) + val) * 100) / 100;
       else if (m.g === 's') sd[m.id] = Math.round(((sd[m.id] || 0) + val) * 100) / 100;
       else if (m.g === 'r') rd[m.id] = { monto: Math.round((((rd[m.id] || {}).monto || 0) + val) * 100) / 100 };
@@ -23724,7 +23790,12 @@ function hojaPlan({ filas, encabezados, mapeo, desde, existentes, cv, cs, cr, ce
     const f = { fecha, vd, sd, rd, incompleto, totalApp, totalHoja, cuadra: totalHoja ? Math.abs(totalApp - totalHoja) < 0.06 : null, tieneVentas, tieneRecibido, ex, exVentas, cerrado: !!cerrados[fecha] };
     if (!tieneVentas && !tieneSistema && !tieneRecibido) { f.estado = 'Sin datos'; f.opciones = ['omitir']; f.accion = 'omitir'; }
     else if (f.cerrado) { f.estado = 'Periodo cerrado'; f.opciones = ['omitir']; f.accion = 'omitir'; }
-    else if (ex && exCompleto) { f.estado = Math.abs(exVentas - totalApp) < 0.06 ? 'Ya está cargado (igual)' : `Ya está cargado · ventas distintas (app ${fmt(exVentas)} / hoja ${fmt(totalApp)})`; f.opciones = ['omitir', 'actualizar']; f.accion = 'omitir'; }
+    else if (ex && exCompleto) {
+      const recDist = Object.keys(rd).some(id => Math.abs((Number(((ex.recon_data || {})[id] || {}).monto) || 0) - (Number(rd[id].monto) || 0)) > 0.004), vDist = Math.abs(exVentas - totalApp) >= 0.06;
+      f.recDist = recDist;
+      f.estado = (!vDist && !recDist) ? 'Ya está cargado (igual)' : 'Ya está cargado · ' + [vDist ? `ventas distintas (app ${fmt(exVentas)} / hoja ${fmt(totalApp)})` : '', recDist ? 'recibido distinto' : ''].filter(Boolean).join(' y ');
+      f.opciones = (!vDist && !recDist) ? ['omitir', 'actualizar'] : ['omitir', 'actualizar']; f.accion = 'omitir';
+    }
     else if (ex && tieneRecibido && !incompleto) { f.estado = 'Cargado sin recibido: se completa'; f.opciones = ['completar', 'omitir']; f.accion = 'completar'; }
     else if (ex) { f.estado = 'Ya está cargado · recibido aún pendiente'; f.opciones = ['omitir']; f.accion = 'omitir'; }
     else if (!tieneRecibido || incompleto) { f.estado = 'Recibido pendiente'; f.opciones = ['omitir', 'solo', 'cargar']; f.accion = 'omitir'; f.pendiente = true; }
@@ -23840,11 +23911,11 @@ async function abrirCargaHoja(b) {
     + `<optgroup label="Recibido">${crr.map(c => `<option value="r:${c.id}" ${sel === 'r:' + c.id ? 'selected' : ''}>${escHtml(c.nombre)} (${escHtml(c.categoria)})</option>`).join('')}</optgroup>`;
   const pintarMapeo = () => {
     const muestra = lectura && lectura.filas[0] ? lectura.filas[0] : [];
-    bg.querySelector('#hojaMapeoBox').innerHTML = `<details id="hojaDetMapeo" open><summary class="hoja-t hoja-sum">1 · Asignar columnas <span class="hint">(se guarda y se reutiliza; se oculta al ver la vista previa)</span></summary><div class="hoja-mapeo"><table class="tabla-contable"><thead><tr><th>#</th><th>Columna de tu hoja</th><th>Ejemplo</th><th>Va a</th></tr></thead><tbody>${encabezados.map((h, i) => i === 0 ? '' : `<tr><td>${i + 1}</td><td>${escHtml(h)}</td><td class="hint">${escHtml(String(muestra[i] == null ? '' : muestra[i]).trim())}</td><td><select class="hoja-dest" data-i="${i}">${opcionesDestino(mapeo && mapeo[i] ? mapeo[i].g + ':' + mapeo[i].id : '')}</select></td></tr>`).join('')}</tbody></table></div>
+    bg.querySelector('#hojaMapeoBox').innerHTML = `<details id="hojaDetMapeo" open><summary class="hoja-t hoja-sum">1 · Asignar columnas <span class="hint">(se guarda y se reutiliza; se oculta al ver la vista previa)</span></summary><div class="hoja-mapeo"><table class="tabla-contable"><thead><tr><th>#</th><th>Columna de tu hoja</th><th>Ejemplo</th><th>Va a</th></tr></thead><tbody>${encabezados.map((h, i) => i === 0 ? '' : `<tr><td>${i + 1}</td><td>${escHtml(h)}</td><td class="hint">${escHtml(String(muestra[i] == null ? '' : muestra[i]).trim())}</td><td>${hojaEsConversion(h) ? `<select class="hoja-dest" data-i="${i}" disabled title="Los dólares y euros se convierten con el tipo de cambio de Configuración › Divisas; esta columna solo es informativa."><option value="">— No se carga: la app convierte con el TC de Divisas —</option></select>` : `<select class="hoja-dest" data-i="${i}">${opcionesDestino(mapeo && mapeo[i] ? mapeo[i].g + ':' + mapeo[i].id : '')}</select>`}</td></tr>`).join('')}</tbody></table></div>
       <div class="hoja-fila"><button class="btn btn-ghost btn-sm" id="hojaGuardarMapeo">Guardar asignación</button><button class="btn btn-gold btn-sm" id="hojaVerPrevia">Ver vista previa</button></div></details>`;
   };
   let desdeBandeja = false;
-  const etiquetaDestino = (i) => { const m = mapeo && mapeo[i]; if (!m || !m.id) return '<span class="hoja-nc">no se carga</span>'; const lista = m.g === 'v' ? cv : (m.g === 's' ? cs : crr), c = lista.find(x => x.id === m.id); return `<span class="hoja-dest-t hoja-dest-${m.g}">${m.g === 'v' ? 'Ventas' : (m.g === 's' ? 'Sistema' : 'Recibido')}: ${escHtml(c ? c.nombre : '?')}</span>`; };
+  const etiquetaDestino = (i) => { const m = mapeo && mapeo[i]; if (hojaEsConversion(encabezados[i])) return '<span class="hoja-nc">la app convierte con el TC</span>'; if (!m || !m.id) return '<span class="hoja-nc">no se carga</span>'; const lista = m.g === 'v' ? cv : (m.g === 's' ? cs : crr), c = lista.find(x => x.id === m.id); return `<span class="hoja-dest-t hoja-dest-${m.g}">${m.g === 'v' ? 'Ventas' : (m.g === 's' ? 'Sistema' : 'Recibido')}: ${escHtml(c ? c.nombre : '?')}</span>`; };
   const pintarDatos = (abierto) => {
     if (!lectura) return;
     const desde = bg.querySelector('#hojaDesde').value, anio = hojaAnio(lectura.filas, desde), enc = encabezados, n = Math.max(enc.length, ...lectura.filas.map(f => f.length));
@@ -23858,6 +23929,7 @@ async function abrirCargaHoja(b) {
     const r = hojaLeerTexto(bg.querySelector('#hojaTexto').value); if (r.error) { toast(r.error, 'error'); return; }
     lectura = r; encabezados = r.encabezados || HOJA_ENCABEZADOS;
     if (!mapeo || !Object.keys(mapeo).length) mapeo = hojaSugerirMapeo(encabezados, cv, cs, crr);
+    encabezados.forEach((h, i) => { if (hojaEsConversion(h)) delete mapeo[i]; });
     pintarMapeo(); pintarDatos(true); bg.querySelector('#hojaPrevia').innerHTML = ''; const tx = bg.querySelector('#hojaTexto'); if (desdeBandeja) tx.style.display = 'none'; else tx.classList.add('hoja-texto-chico'); desdeBandeja = false;
     bg.querySelector('#hojaGuardarMapeo').addEventListener('click', async () => { mapeo = leerMapeoUI(); await hojaMapeoGuardar(b.id, mapeo); toast('Asignación guardada.'); });
     bg.querySelector('#hojaVerPrevia').addEventListener('click', () => previa());
@@ -23903,16 +23975,23 @@ async function hojaAplicar(b, acciones, cr) {
     const tocados = creados.slice();
     for (const x of cambios) {
       const exv = x.d.ex, vacio = !exv.venta_data || !Object.values(exv.venta_data).some(v => Math.abs(Number(v) || 0) > 0.004);
-      const patch = { sistema_data: x.d.sd, recon_data: x.d.rd }; if (x.a === 'actualizar' || vacio) patch.venta_data = x.d.vd;
+      const patch = { sistema_data: { ...(exv.sistema_data || {}), ...x.d.sd }, recon_data: { ...(exv.recon_data || {}), ...x.d.rd } }; if (x.a === 'actualizar' || vacio) patch.venta_data = x.d.vd;
       const { data, error } = await sb.from('fz_ventas').update(patch).eq('id', exv.id).select().single();
       if (error) { toast(`No se pudo actualizar ${x.d.fecha}: ${error.message}`, 'error'); return { ok: false }; }
       tocados.push(data || { ...exv, ...patch });
+    }
+    // Depósitos en Bancos/Efectivo: igual que al editar la conciliación en Ventas (crea, ajusta o deja igual; no toca los que ya cambiaste a mano).
+    const conCuenta = cr.filter(c => c.banco_cuenta_id || c.moneda_id); let deps = 0, depsFallo = 0;
+    for (const v of tocados) for (const c of conCuenta) {
+      if (!(v.recon_data || {})[c.id] && !(cambios.find(x => x.d.ex.id === v.id) || {}).d) continue;
+      const m = Number((v.recon_data || {})[c.id]?.monto) || 0;
+      try { const r = await sincronizarDepositoVenta(b.id, v.id, v.fecha, c, m); if (['creado', 'actualizado', 'eliminado'].includes(r.accion)) deps++; } catch (e) { depsFallo++; console.error(e); }
     }
     const props = cr.filter(c => c.categoria === 'propinas');
     for (const v of tocados) for (const c of props) { const m = Number((v.recon_data || {})[c.id]?.monto) || 0; if (m) await provisionarPropina(b.id, v.id, c, m, v.fecha); }
     const n = (a) => acciones.filter(x => x.a === a).length;
     registrarAuditoria(b.id, 'crear', 'Ventas', `Carga desde hoja: ${n('cargar')} completo(s), ${n('solo')} solo ventas, ${n('completar')} completado(s), ${n('actualizar')} reemplazado(s)`);
-    return { ok: true, msg: `Listo: ${acciones.length} día(s) cargados desde la hoja.` };
+    return { ok: true, msg: `Listo: ${acciones.length} día(s) cargados desde la hoja.${deps ? ` Depósitos en Bancos/Efectivo: ${deps}.` : ''}${depsFallo ? ` ${depsFallo} depósito(s) no se pudieron crear: usa «Materializar depósitos ya conciliados».` : ''}` };
   } catch (e) { console.error(e); toast('No se pudo cargar: ' + ((e && e.message) || e), 'error'); return { ok: false }; }
 }
 
@@ -28464,7 +28543,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.52';
+const APP_VERSION = '2026-11-06.53';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
