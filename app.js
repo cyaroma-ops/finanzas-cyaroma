@@ -18162,8 +18162,30 @@ async function openMovimientoModal(contexto, movimientoExistente) {
   };
 }
 
+// 06.58 — Documento soporte del traspaso: se sube al guardar y queda en AMBAS patas (la cuenta origen y la destino lo muestran).
+let STATE_traspasoArchivos = [];
+function renderTraspasoAdjunto() {
+  const box = document.getElementById('traspasoAdjuntoCell');
+  if (!box) return;
+  const pendientes = STATE_traspasoArchivos;
+  box.innerHTML = documentoSoporteBloqueHtml(pendientes, 'traspaso-adjunto-input');
+  const agregar = (files) => {
+    files.forEach(file => {
+      const ext = (file.name.split('.').pop() || '').toLowerCase();
+      if (!ADJUNTOS_EXT_PERMITIDAS.includes(ext)) { toast(`"${file.name}": solo se permiten archivos PDF, JPG o PNG.`, 'error'); return; }
+      if (file.size > ADJUNTOS_MAX_MB * 1024 * 1024) { toast(`"${file.name}" pesa más de ${ADJUNTOS_MAX_MB} MB.`, 'error'); return; }
+      pendientes.push(file);
+    });
+    renderTraspasoAdjunto();
+  };
+  const input = box.querySelector('.traspaso-adjunto-input');
+  if (input) input.addEventListener('change', () => agregar(Array.from(input.files)));
+  wireDocumentoSoporteVerQuitar(box, pendientes, renderTraspasoAdjunto, null);
+  habilitarDragDropAdjunto(box.querySelector('.doc-adjunto-bloque'), agregar);
+}
 async function openTraspasoModal(businessId, onDone) {
   await populateTraspasoSelects(businessId);
+  STATE_traspasoArchivos = []; renderTraspasoAdjunto();
   document.getElementById('traspasoFecha').value = todayStr();
   document.getElementById('traspasoMonto').value = '';
   document.getElementById('traspasoMontoDestino').value = '';
@@ -18217,11 +18239,27 @@ async function openTraspasoModal(businessId, onDone) {
         business_id: businessId, fecha, tipo_salida: 'traspaso', tipo_entrada: 'traspaso', traspaso_id: traspasoId,
         cargos: esOrigen ? monto : 0, depositos: esOrigen ? 0 : monto,
       };
-      if (tipo === 'banco') return sb.from('fz_bancos_mov').insert({ ...payload, cuenta_id: id, descripcion, concepto: 'Traspaso' });
-      return sb.from('fz_efectivo_mov').insert({ ...payload, moneda_id: id, proveedor: 'Traspaso', descripcion });
+      if (tipo === 'banco') return sb.from('fz_bancos_mov').insert({ ...payload, cuenta_id: id, descripcion, concepto: 'Traspaso' }).select().single();
+      return sb.from('fz_efectivo_mov').insert({ ...payload, moneda_id: id, proveedor: 'Traspaso', descripcion }).select().single();
     };
+    const btnGuardar = document.getElementById('saveTraspaso'); btnGuardar.disabled = true;
+    try {
     const [r1, r2] = await Promise.all([insertLeg(oTipo, oId, true), insertLeg(dTipo, dId, false)]);
     if (r1.error || r2.error) { toast('Error al registrar el traspaso.', 'error'); return; }
+    // 06.58: documento soporte en las dos patas (cada una con su propia copia, para que quitarlo de una cuenta no afecte a la otra)
+    let fallaronAdj = 0;
+    for (const file of STATE_traspasoArchivos) {
+      for (const [tabla, reg] of [[oTipo === 'banco' ? 'fz_bancos_mov' : 'fz_efectivo_mov', r1.data], [dTipo === 'banco' ? 'fz_bancos_mov' : 'fz_efectivo_mov', r2.data]]) {
+        const subido = reg && await subirAdjunto(tabla, reg.id, businessId, file);
+        if (!subido) { fallaronAdj++; continue; }
+        const { error: eAdj } = await sb.from('fz_adjuntos').insert({ business_id: businessId, tabla, registro_id: reg.id, archivo_path: subido.path, archivo_nombre: subido.nombre });
+        if (eAdj) fallaronAdj++;
+      }
+    }
+    if (STATE_traspasoArchivos.length) registrarAuditoria(businessId, 'crear', 'Traspasos', `Traspaso con ${STATE_traspasoArchivos.length} documento(s) soporte`);
+    STATE_traspasoArchivos = [];
+    if (fallaronAdj) toast('El traspaso se registró, pero ' + fallaronAdj + ' archivo(s) no se pudieron adjuntar. Ábrelo en la cuenta y adjúntalo de nuevo.', 'error');
+    } finally { btnGuardar.disabled = false; }
     document.getElementById('modalTraspaso').classList.remove('show');
     toast('Traspaso registrado.');
     if (onDone) onDone();
@@ -28624,7 +28662,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.57';
+const APP_VERSION = '2026-11-06.58';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
