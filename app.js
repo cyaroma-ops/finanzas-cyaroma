@@ -23722,6 +23722,79 @@ function hojaPlan({ filas, encabezados, mapeo, desde, existentes, cv, cs, cr, ce
   });
   return { dias: out, anteriores, repetidas, sinFecha };
 }
+// ===== 06.49 — Enviar ventas desde la hoja de Google (bandeja) =====
+function hojaFilasATexto(filas) {
+  return (filas || []).map(r => (Array.isArray(r) ? r : []).map(c => String(c == null ? '' : c).replace(/[\t\r\n]+/g, ' ')).join('\t')).join('\n');
+}
+function hojaScriptDrive(neg, token) {
+  return `// Finanzas CYAROMA — enviar ventas a la app. Pega esto en Extensiones → Apps Script, guarda y recarga tu hoja.
+const FINANZAS = {
+  url: '${SUPABASE_URL}',
+  key: '${SUPABASE_ANON_KEY}',
+  negocio: '${neg}',
+  llave: '${token}',
+  hoja: ''   // deja vacío para enviar la pestaña que tengas abierta, o escribe el nombre exacto de la pestaña
+};
+function onOpen() {
+  SpreadsheetApp.getUi().createMenu('Finanzas').addItem('Enviar ventas a la app', 'enviarVentas').addToUi();
+}
+function enviarVentas() {
+  const ui = SpreadsheetApp.getUi(), libro = SpreadsheetApp.getActive();
+  const hoja = FINANZAS.hoja ? libro.getSheetByName(FINANZAS.hoja) : libro.getActiveSheet();
+  if (!hoja) { ui.alert('No encuentro la pestaña «' + FINANZAS.hoja + '».'); return; }
+  const filas = hoja.getDataRange().getDisplayValues().filter(function (r) { return r.some(function (c) { return String(c).trim() !== ''; }); });
+  if (!filas.length) { ui.alert('La pestaña no tiene datos.'); return; }
+  const resp = UrlFetchApp.fetch(FINANZAS.url + '/rest/v1/rpc/fz_recibir_hoja', {
+    method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+    headers: { apikey: FINANZAS.key, Authorization: 'Bearer ' + FINANZAS.key },
+    payload: JSON.stringify({ p_negocio: FINANZAS.negocio, p_token: FINANZAS.llave, p_filas: filas, p_origen: libro.getName() + ' / ' + hoja.getName() })
+  });
+  if (resp.getResponseCode() === 200) ui.alert('Listo: se enviaron ' + filas.length + ' filas a la bandeja. Entra a Ventas → Cargar desde hoja → Usar bandeja para confirmarlas.');
+  else ui.alert('No se pudo enviar. ' + resp.getContentText().slice(0, 200));
+}`;
+}
+async function hojaBandejaLeer(bid) {
+  try { const { data, error } = await sb.from('fz_hoja_bandeja').select('filas,filas_n,origen,recibido_en').eq('business_id', bid).maybeSingle(); if (!error && data) return data; } catch (_) { /* tabla aún no creada */ }
+  return null;
+}
+async function abrirConexionHoja(b) {
+  if (document.getElementById('modalConexionHoja')) return;
+  let con = null; try { const r = await sb.from('fz_hoja_conexion').select('activo,creado_en,ultimo_envio').eq('business_id', b.id).maybeSingle(); if (!r.error) con = r.data; } catch (_) { /* sin tabla */ }
+  const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalConexionHoja';
+  const f = (x) => x ? new Date(x).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }) : '—';
+  const estado = !con ? 'Sin conectar.' : (con.activo ? `Conectada. Último envío: ${f(con.ultimo_envio)}.` : 'Apagada.');
+  bg.innerHTML = `<div class="modal hoja-modal"><div class="card-head"><h3>Conectar tu hoja de Google — ${escHtml(b.name)}</h3><button class="btn btn-ghost btn-sm" id="conCerrar">Cerrar</button></div>
+    <p class="hint" style="margin:0 0 8px;">Estado: <b>${escHtml(estado)}</b></p>
+    <p class="hint" style="margin:0 0 10px;">Esto crea un menú «Finanzas → Enviar ventas a la app» en tu hoja. Al usarlo, las filas llegan a una bandeja de este negocio; no se carga nada a Ventas hasta que lo confirmes aquí. La llave es solo de este negocio: quien tenga acceso de edición a tu hoja podrá verla, por eso conviene que la hoja sea solo tuya o de gente de confianza.</p>
+    <div class="hoja-fila"><button class="btn btn-gold btn-sm" id="conGenerar">${con ? 'Generar llave nueva (la anterior deja de servir)' : 'Generar llave y script'}</button>${con && con.activo ? '<button class="btn btn-ghost btn-sm" id="conApagar">Apagar conexión</button>' : ''}</div>
+    <div id="conResultado"></div></div>`;
+  document.body.appendChild(bg);
+  const cerrar = () => { bg.remove(); document.removeEventListener('keydown', esc, true); }, esc = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cerrar(); } };
+  document.addEventListener('keydown', esc, true); bg.querySelector('#conCerrar').addEventListener('click', cerrar); bg.addEventListener('click', (e) => { if (e.target === bg) cerrar(); });
+  bg.querySelector('#conGenerar').addEventListener('click', async () => {
+    if (con && !confirm('La llave anterior dejará de funcionar y tendrás que pegar el script nuevo en tu hoja. ¿Continuar?')) return;
+    const { data, error } = await sb.rpc('fz_hoja_crear_token', { p_negocio: b.id });
+    if (error || !data) { toast('No se pudo crear la llave: ' + ((error && error.message) || 'sin respuesta') + '. ¿Ya corriste el SQL 06.49?', 'error'); return; }
+    await registrarAuditoria(b.id, 'editar', 'Ventas', 'Conexión con hoja de Google: llave ' + (con ? 'renovada' : 'creada'));
+    const script = hojaScriptDrive(b.id, data);
+    bg.querySelector('#conResultado').innerHTML = `<h4 class="hoja-t">Pasos (una sola vez)</h4>
+      <ol class="hint" style="margin:0 0 8px 18px;line-height:1.6;"><li>Copia el script de abajo.</li><li>En tu hoja de Google: Extensiones → Apps Script. Borra lo que aparezca, pega el script y guarda.</li><li>Recarga tu hoja. Aparece el menú «Finanzas».</li><li>Finanzas → Enviar ventas a la app. La primera vez Google pide autorización: acéptala.</li></ol>
+      <textarea id="conScript" class="hoja-texto" readonly style="height:170px;font-family:monospace;font-size:11px;">${escHtml(script)}</textarea>
+      <div class="hoja-fila"><button class="btn btn-gold btn-sm" id="conCopiar">Copiar script</button><span class="hint">Esta llave no se vuelve a mostrar. Si la pierdes, genera una nueva.</span></div>`;
+    bg.querySelector('#conCopiar').addEventListener('click', async () => {
+      const ta = bg.querySelector('#conScript');
+      try { await navigator.clipboard.writeText(ta.value); } catch (_) { ta.select(); document.execCommand('copy'); }
+      toast('Script copiado.');
+    });
+  });
+  const ap = bg.querySelector('#conApagar');
+  if (ap) ap.addEventListener('click', async () => {
+    if (!confirm('La hoja ya no podrá enviar ventas a este negocio. ¿Apagar la conexión?')) return;
+    const { error } = await sb.rpc('fz_hoja_apagar', { p_negocio: b.id });
+    if (error) { toast('No se pudo apagar: ' + error.message, 'error'); return; }
+    await registrarAuditoria(b.id, 'editar', 'Ventas', 'Conexión con hoja de Google apagada'); toast('Conexión apagada.'); cerrar();
+  });
+}
 const HOJA_ACCION_TXT = { omitir: 'No cargar', cargar: 'Cargar completo', solo: 'Solo ventas (sin sistema ni recibido)', completar: 'Completar sistema y recibido', actualizar: 'Reemplazar con lo de la hoja' };
 async function abrirCargaHoja(b) {
   if (document.getElementById('modalHojaVentas')) return;
@@ -23732,12 +23805,22 @@ async function abrirCargaHoja(b) {
   const bg = document.createElement('div'); bg.className = 'modal-bg show'; bg.id = 'modalHojaVentas';
   bg.innerHTML = `<div class="modal hoja-modal"><div class="card-head"><h3>Cargar ventas desde tu hoja — ${escHtml(b.name)}</h3><button class="btn btn-ghost btn-sm" id="hojaCerrar">Cerrar</button></div>
     <p class="hint" style="margin:0 0 10px;">Copia las filas de tu hoja de cálculo (Ctrl+C) y pégalas aquí. No se guarda nada hasta que confirmes la vista previa.</p>
+    <div class="hoja-fila" id="hojaBandejaBox"><span class="hint">Buscando la bandeja…</span></div>
     <textarea id="hojaTexto" class="hoja-texto" placeholder="Pega aquí las filas copiadas de tu hoja"></textarea>
     <div class="hoja-fila"><label>Cargar desde <input type="date" id="hojaDesde" value="${desdeIni}"></label><span class="hint">${ultima ? 'Último día cargado en la app: ' + fechaCorta(ultima) + '. Las fechas anteriores a «Cargar desde» se ignoran.' : 'Aún no hay ventas cargadas.'}</span><button class="btn btn-gold btn-sm" id="hojaLeer">Leer filas</button></div>
     <div id="hojaMapeoBox"></div><div id="hojaPrevia"></div></div>`;
   document.body.appendChild(bg);
   const cerrar = () => { bg.remove(); document.removeEventListener('keydown', esc, true); }, esc = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cerrar(); } };
   document.addEventListener('keydown', esc, true); bg.querySelector('#hojaCerrar').addEventListener('click', cerrar); bg.addEventListener('click', (e) => { if (e.target === bg) cerrar(); });
+  (async () => {
+    const box = bg.querySelector('#hojaBandejaBox'); const ban = await hojaBandejaLeer(b.id);
+    const cuando = ban ? new Date(ban.recibido_en).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }) : '';
+    box.innerHTML = (ban ? `<span class="hint">Bandeja de tu hoja: ${ban.filas_n} filas recibidas el ${escHtml(cuando)}${ban.origen ? ' (' + escHtml(ban.origen) + ')' : ''}.</span><button class="btn btn-gold btn-sm" id="hojaUsarBandeja">Usar bandeja</button>` : `<span class="hint">La bandeja está vacía.</span>`)
+      + `<button class="btn btn-ghost btn-sm" id="hojaConectar">Conectar mi hoja de Google</button>`;
+    const ub = box.querySelector('#hojaUsarBandeja');
+    if (ub) ub.addEventListener('click', () => { bg.querySelector('#hojaTexto').value = hojaFilasATexto(ban.filas); bg.querySelector('#hojaLeer').click(); });
+    box.querySelector('#hojaConectar').addEventListener('click', () => abrirConexionHoja(b));
+  })();
   const opcionesDestino = (sel) => `<option value="">— No cargar —</option>`
     + `<optgroup label="Ventas">${cv.map(c => `<option value="v:${c.id}" ${sel === 'v:' + c.id ? 'selected' : ''}>${escHtml(c.nombre)}</option>`).join('')}</optgroup>`
     + (cs.length ? `<optgroup label="Sistema">${cs.map(c => `<option value="s:${c.id}" ${sel === 's:' + c.id ? 'selected' : ''}>${escHtml(c.nombre)} (${escHtml(c.categoria)})</option>`).join('')}</optgroup>` : '')
@@ -28357,7 +28440,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.48';
+const APP_VERSION = '2026-11-06.49';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
