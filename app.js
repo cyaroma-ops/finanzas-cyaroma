@@ -325,22 +325,45 @@ function resolverMovimientoMultimoneda(monedaCuenta, monedaDocumento, montoDocum
 }
 
 
-// Inicia un PDF con el encabezado estándar: razón social (o nombre comercial si no hay razón
-// social distinta) + "Nombre comercial: X" cuando ambos existen y difieren + el subtítulo del
-// reporte. Devuelve {doc, margin, y} — "y" es el siguiente renglón libre para continuar (tabla, etc.)
+// 06.60 — Membrete del negocio (razón social, RFC, nombre comercial, domicilio y logo). Una sola fuente para PDF formal, PDF genérico e impresión del navegador.
+// Es solo presentación: lee datos del negocio y nunca toca cálculos. Lo que no esté capturado simplemente no se imprime.
+function membreteDe(b) {
+  b = b || {};
+  const razon = String(b.razon_social || b.name || 'Finanzas'), nc = (b.razon_social && b.razon_social !== b.name) ? String(b.name || '') : '';
+  const ident = [b.rfc ? 'RFC ' + b.rfc : '', nc ? 'Nombre comercial: ' + nc : ''].filter(Boolean).join('  ·  ');
+  const l1 = [b.domicilio_calle, b.domicilio_colonia, b.domicilio_cp ? 'C.P. ' + b.domicilio_cp : ''].map(x => String(x || '').trim()).filter(Boolean).join(', ');
+  const l2 = [[b.domicilio_municipio, b.domicilio_estado].map(x => String(x || '').trim()).filter(Boolean).join(', '), b.telefono ? 'Tel. ' + String(b.telefono).trim() : ''].filter(Boolean).join(' · ');
+  return { razon, ident, dom: [l1, l2].filter(Boolean), logo: (b.logo_data && /^data:image\/(png|jpeg);base64,/.test(b.logo_data)) ? b.logo_data : null };
+}
+// Dibuja el logo (si hay) en la esquina izquierda sin deformarlo; devuelve el alto ocupado (0 si no hay o falla).
+function pdfLogoMembrete(doc, logo, x, y, maxW = 64, maxH = 48) {
+  if (!logo) return 0;
+  try {
+    const p = doc.getImageProperties(logo), r = Math.min(maxW / p.width, maxH / p.height), w = p.width * r, h = p.height * r;
+    doc.addImage(logo, p.fileType || (logo.startsWith('data:image/png') ? 'PNG' : 'JPEG'), x, y, w, h);
+    return h;
+  } catch (_) { return 0; }
+}
+// Inicia un PDF con el membrete estándar centrado (logo a la izquierda) + el título del reporte.
+// Devuelve {doc, margin, y} — "y" es el siguiente renglón libre para continuar (tabla, etc.)
 function iniciarPdfConEncabezado(b, subtitulo, opts = {}) {
   const { jsPDF } = window.jspdf;
   const orientation = opts.orientation || 'landscape';
   const doc = opts.doc || new jsPDF({ unit: 'pt', format: 'letter', orientation });
   if (opts.doc) doc.addPage('letter', orientation); // 06.35: un solo PDF con varios reportes (cada uno en hoja nueva)
   const margin = opts.margin || (orientation === 'portrait' ? 24 : 30);
+  const W = doc.internal.pageSize.getWidth(), m = membreteDe(b);
+  const hLogo = pdfLogoMembrete(doc, m.logo, margin, 22);
+  let y = 32;
   doc.setFont('helvetica', 'bold'); doc.setFontSize(15); doc.setTextColor(10, 31, 61);
-  doc.text(b?.razon_social || b?.name || 'Finanzas', margin, 32);
-  doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(102, 112, 133);
-  let y = 46;
-  if (b?.razon_social && b.razon_social !== b.name) { doc.text(`Nombre comercial: ${b.name}`, margin, y); y += 13; }
-  doc.text(subtitulo, margin, y);
-  y += 18;
+  doc.text(pdfLimpiaTexto(m.razon), W / 2, y, { align: 'center' });
+  doc.setFont('helvetica', 'normal'); doc.setTextColor(90, 100, 120);
+  if (m.ident) { y += 14; doc.setFontSize(9.5); doc.text(pdfLimpiaTexto(m.ident), W / 2, y, { align: 'center' }); }
+  m.dom.forEach(t => { y += 11.5; doc.setFontSize(8.5); doc.setTextColor(102, 112, 133); doc.text(pdfLimpiaTexto(t), W / 2, y, { align: 'center' }); });
+  y = Math.max(y, 22 + hLogo) + 8;
+  if (m.ident || m.dom.length || hLogo) { doc.setDrawColor(10, 31, 61); doc.setLineWidth(0.8); doc.line(margin, y, W - margin, y); y += 14; }
+  if (subtitulo) { doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(10, 31, 61); doc.text(pdfLimpiaTexto(subtitulo), W / 2, y, { align: 'center' }); y += 6; }
+  y += 14;
   return { doc, margin, y };
 }
 const sumarDias = (fechaStr, dias) => {
@@ -1200,6 +1223,22 @@ function setupBizControls() {
     toast('Negocio agregado.');
     if (STATE.currentSection === 'negocios') renderNegocios();
   });
+  // 06.60 — Logo del negocio: se reduce aquí mismo (máx. 300 px) y se guarda dentro del propio negocio; así está disponible al instante en cualquier PDF.
+  const pintarLogoEdicion = () => {
+    const v = document.getElementById('editBizLogoVista'), q = document.getElementById('editBizLogoQuitar');
+    v.innerHTML = STATE_editBizLogo ? `<img src="${escAttr(STATE_editBizLogo)}" alt="Logo" style="max-width:100%;max-height:100%;object-fit:contain;">` : 'Sin logo';
+    q.style.display = STATE_editBizLogo ? '' : 'none';
+  };
+  window.__pintarLogoEdicion = pintarLogoEdicion;
+  document.getElementById('editBizLogoInput').addEventListener('change', async (e) => {
+    const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+    const ext = (f.name.split('.').pop() || '').toLowerCase();
+    if (!['png', 'jpg', 'jpeg'].includes(ext)) { toast('El logo debe ser PNG o JPG.', 'error'); return; }
+    if (f.size > 8 * 1024 * 1024) { toast('El logo pesa más de 8 MB. Usa uno más ligero.', 'error'); return; }
+    try { STATE_editBizLogo = await reducirLogoNegocio(f); pintarLogoEdicion(); }
+    catch (_) { toast('No se pudo leer esa imagen. Prueba con otro archivo PNG o JPG.', 'error'); }
+  });
+  document.getElementById('editBizLogoQuitar').addEventListener('click', () => { STATE_editBizLogo = null; pintarLogoEdicion(); });
   document.getElementById('cancelEditBiz').addEventListener('click', () => {
     document.getElementById('modalEditBiz').classList.remove('show');
   });
@@ -1233,7 +1272,15 @@ function setupBizControls() {
     if (facilidad_art5_1_excluido && !motivoExclusionInput) { toast('Si marcas la exclusión, indica el motivo.', 'error'); return; }
     const facilidad_art5_1_motivo_exclusion = facilidad_art5_1_excluido ? motivoExclusionInput : null;
 
-    const { error } = await sb.from('businesses').update({ name, razon_social, modo, iva_realizacion_desde, rfc, tipo_persona, facilidad_art5_1_excluido, facilidad_art5_1_motivo_exclusion }).eq('id', bizId);
+    const val = (id) => (document.getElementById(id).value || '').trim() || null;
+    const membrete = { domicilio_calle: val('editBizCalle'), domicilio_colonia: val('editBizColonia'), domicilio_cp: val('editBizCp'), domicilio_municipio: val('editBizMunicipio'), domicilio_estado: val('editBizEstado'), telefono: val('editBizTelefono') };
+    if (STATE_editBizLogo !== STATE_editBizLogoOriginal) membrete.logo_data = STATE_editBizLogo || null;   // solo se toca el logo si cambió
+    const base = { name, razon_social, modo, iva_realizacion_desde, rfc, tipo_persona, facilidad_art5_1_excluido, facilidad_art5_1_motivo_exclusion };
+    let { error } = await sb.from('businesses').update({ ...base, ...membrete }).eq('id', bizId);
+    if (error && /domicilio_|telefono|logo_data/.test(error.message || '')) {   // aún no se corrió el SQL de 06.60: el resto del perfil se guarda igual
+      ({ error } = await sb.from('businesses').update(base).eq('id', bizId));
+      if (!error) toast('Perfil guardado, pero el logo y el domicilio no: falta correr el SQL de la versión 06.60.', 'error');
+    }
     if (error) { toast('Error: ' + error.message, 'error'); return; }
 
     // Régimen fiscal — si se capturó uno nuevo, cierra la vigencia del anterior (si había) y este
@@ -1258,9 +1305,35 @@ function setupBizControls() {
     if (STATE.currentSection === 'negocios') renderNegocios();
   });
 }
+let STATE_editBizLogoOriginal = null;
+let STATE_editBizLogo;   // undefined = sin cambios · null = quitar · texto = logo nuevo (data URL)
+// Reduce el logo a máx. 300 px por lado y lo devuelve como data URL (PNG; si pesa mucho, JPG sobre fondo blanco). Mantiene la proporción.
+function reducirLogoNegocio(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file), img = new Image();
+    img.onload = () => {
+      try {
+        const r = Math.min(1, 300 / Math.max(img.width, img.height)), w = Math.max(1, Math.round(img.width * r)), h = Math.max(1, Math.round(img.height * r));
+        const c = document.createElement('canvas'); c.width = w; c.height = h; const cx = c.getContext('2d'); cx.drawImage(img, 0, 0, w, h);
+        let out = c.toDataURL('image/png');
+        if (out.length > 160000) { cx.globalCompositeOperation = 'destination-over'; cx.fillStyle = '#fff'; cx.fillRect(0, 0, w, h); out = c.toDataURL('image/jpeg', 0.85); }
+        URL.revokeObjectURL(url); resolve(out);
+      } catch (e) { URL.revokeObjectURL(url); reject(e); }
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('imagen')); };
+    img.src = url;
+  });
+}
 async function abrirEditarNegocio(negocio) {
   document.getElementById('editBizName').value = negocio.name || '';
   document.getElementById('editBizRazonSocial').value = negocio.razon_social || '';
+  document.getElementById('editBizCalle').value = negocio.domicilio_calle || '';
+  document.getElementById('editBizColonia').value = negocio.domicilio_colonia || '';
+  document.getElementById('editBizCp').value = negocio.domicilio_cp || '';
+  document.getElementById('editBizMunicipio').value = negocio.domicilio_municipio || '';
+  document.getElementById('editBizEstado').value = negocio.domicilio_estado || '';
+  document.getElementById('editBizTelefono').value = negocio.telefono || '';
+  STATE_editBizLogo = negocio.logo_data || null; STATE_editBizLogoOriginal = negocio.logo_data || null; if (window.__pintarLogoEdicion) window.__pintarLogoEdicion();
   document.getElementById('editBizModo').value = negocio.modo || 'financiero';
   document.getElementById('editBizIvaRealizacionDesde').value = negocio.iva_realizacion_desde || '';
   document.getElementById('editBizRfc').value = negocio.rfc || '';
@@ -1650,6 +1723,10 @@ function updateTopbar() {
       }
       const mesLegible = MESES_LARGO[Number(STATE.currentMonth.slice(5,7)) - 1] + ' ' + STATE.currentMonth.slice(0,4);
       document.getElementById('printTitle').textContent = tituloImpresion;
+      { // 06.60: membrete del negocio (logo + razón social, RFC, domicilio) arriba del título; sin datos capturados queda vacío y la impresión sale como siempre
+        const mb = membreteDe(b), pm = document.getElementById('printMembrete');
+        if (pm) pm.innerHTML = b ? `${mb.logo ? `<img class="pm-logo" src="${escAttr(mb.logo)}" alt="">` : ''}<div class="pm-razon">${escHtml(mb.razon)}</div>${mb.ident ? `<div class="pm-lin">${escHtml(mb.ident)}</div>` : ''}${mb.dom.map(t => `<div class="pm-lin">${escHtml(t)}</div>`).join('')}` : '';
+      }
       const razonSocialLinea = (b?.razon_social && b.razon_social !== b?.name) ? `${b.razon_social} · ` : '';
       document.getElementById('printSub').textContent = `${razonSocialLinea}${STATE.nombreUsuario ? STATE.nombreUsuario + ' · ' : ''}${meta.showMonth ? mesLegible + ' · ' : ''}Impreso el ${new Date().toLocaleDateString('es-MX', { year:'numeric', month:'long', day:'numeric' })}`;
       document.getElementById('printOrientationStyle').textContent = `@media print { @page { size: ${printOrientacion.value}; margin: 12mm 12mm 20mm 12mm; @bottom-center { content: "Página " counter(page) " de " counter(pages); font-size: 9px; color: #999; } } }`;
@@ -2073,8 +2150,8 @@ const repFormalCelda = (v) => {
   return typeof v === 'number' ? repFormalFmt(v) : (v === undefined || v === null ? '' : String(v));
 };
 function repFormalEnc(b, it) {
-  const razon = String(b.razon_social || b.name || ''), nc = (b.razon_social && b.razon_social !== b.name) ? b.name : '';
-  return { razon, ident: [b.rfc ? 'RFC ' + b.rfc : '', nc ? 'Nombre comercial: ' + nc : ''].filter(Boolean).join('  ·  '), titulo: String(it.titulo).toUpperCase(), periodo: String(it.periodo || it.subtitulo || ''), moneda: 'Cifras en pesos mexicanos' };
+  const m = membreteDe(b);
+  return { razon: m.razon, ident: m.ident, dom: m.dom, logo: m.logo, titulo: String(it.titulo).toUpperCase(), periodo: String(it.periodo || it.subtitulo || ''), moneda: 'Cifras en pesos mexicanos' };
 }
 function repFormalHtml(it, b, limite = 400) {
   const f = it.formal, e = repFormalEnc(b, it); let cuenta = 0, cortado = false;
@@ -2127,8 +2204,11 @@ function repHojaFormal(it, b) {
 }
 function repPdfEnc(d, e, W, margin) {
   let y = 60;
+  const hLogo = pdfLogoMembrete(d, e.logo, margin, 34, 70, 54);
   d.setTextColor(10, 31, 61); d.setFont('helvetica', 'bold'); d.setFontSize(15); d.text(pdfLimpiaTexto(e.razon), W / 2, y, { align: 'center' });
   if (e.ident) { y += 16; d.setFont('helvetica', 'normal'); d.setFontSize(9); d.setTextColor(90, 100, 120); d.text(pdfLimpiaTexto(e.ident), W / 2, y, { align: 'center' }); }
+  (e.dom || []).forEach(t => { y += 11.5; d.setFont('helvetica', 'normal'); d.setFontSize(8.5); d.setTextColor(102, 112, 133); d.text(pdfLimpiaTexto(t), W / 2, y, { align: 'center' }); });
+  y = Math.max(y, 34 + hLogo);
   y += 24; d.setFont('helvetica', 'bold'); d.setFontSize(12); d.setTextColor(10, 31, 61); d.text(pdfLimpiaTexto(e.titulo), W / 2, y, { align: 'center' });
   y += 17; d.setFont('helvetica', 'normal'); d.setFontSize(10); d.setTextColor(60, 70, 90); d.text(pdfLimpiaTexto(e.periodo), W / 2, y, { align: 'center' });
   y += 14; d.setFont('helvetica', 'italic'); d.setFontSize(8.5); d.setTextColor(110, 118, 135); d.text(e.moneda, W / 2, y, { align: 'center' });
@@ -28670,7 +28750,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.59';
+const APP_VERSION = '2026-11-06.60';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.

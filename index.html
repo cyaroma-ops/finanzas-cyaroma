@@ -970,6 +970,11 @@ input.cell:focus,select.cell:focus{outline:none;border-color:var(--navy-3);backg
   body{background:#fff;}
   .main{width:100%;}
   .print-header{display:block !important;margin-bottom:16px;border-bottom:2px solid #000;padding-bottom:10px;}
+  #printMembrete:not(:empty){position:relative;text-align:center;min-height:56px;padding:0 90px 8px;margin-bottom:8px;border-bottom:1px solid #999;}
+  #printMembrete .pm-logo{position:absolute;left:0;top:0;max-width:78px;max-height:58px;object-fit:contain;}
+  #printMembrete .pm-razon{font-family:Georgia,'Times New Roman',serif;font-size:17px;font-weight:700;color:#000;}
+  #printMembrete .pm-lin{font-size:10.5px;color:#444;line-height:1.35;}
+  body:has(#printMembrete:not(:empty)) .print-header h2,body:has(#printMembrete:not(:empty)) .print-header p{text-align:center;}
   .print-header h2{font-size:23px;color:#000;}
   .print-header p{font-size:11.5px;color:#555;}
   .print-footer{display:block !important;position:fixed;bottom:0;left:0;right:0;text-align:center;font-size:9px;color:#999;letter-spacing:.3px;}
@@ -1900,6 +1905,7 @@ Transacciones recurrentes
       </div>
       <div class="content" id="content">
         <div class="print-header">
+          <div id="printMembrete"></div>
           <h2 id="printTitle"></h2>
           <p id="printSub"></p>
         </div>
@@ -2135,6 +2141,27 @@ Transacciones recurrentes
     <div class="field">
       <label>Razón social</label>
       <input type="text" id="editBizRazonSocial" placeholder="Ej. Operadora Charlies S.A. de C.V.">
+    </div>
+    <div class="field" style="border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:#fafbfd;">
+      <label style="margin-bottom:8px;">Membrete de impresión <span style="color:var(--muted);font-weight:400;">(logo y domicilio — salen en PDF e impresiones de este negocio)</span></label>
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;">
+        <div id="editBizLogoVista" style="width:64px;height:64px;border:1px dashed #b8c0cc;border-radius:8px;display:flex;align-items:center;justify-content:center;color:#8a94a6;font-size:11px;background:#fff;flex-shrink:0;overflow:hidden;">Sin logo</div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          <label class="btn btn-ghost btn-sm" style="cursor:pointer;margin:0;display:inline-block;">Subir logo<input type="file" id="editBizLogoInput" accept=".png,.jpg,.jpeg" style="display:none;"></label>
+          <button type="button" class="btn btn-ghost btn-sm" id="editBizLogoQuitar" style="display:none;">Quitar logo</button>
+        </div>
+        <div style="font-size:11px;color:var(--muted);">PNG o JPG. Se ajusta solo a un tamaño ligero. Lo mejor: fondo blanco o transparente.</div>
+      </div>
+      <input type="text" id="editBizCalle" placeholder="Calle y número (ej. Calle 20 No. 145)" style="margin-bottom:6px;">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:6px;">
+        <input type="text" id="editBizColonia" placeholder="Colonia">
+        <input type="text" id="editBizCp" inputmode="numeric" maxlength="5" placeholder="C.P.">
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:6px;">
+        <input type="text" id="editBizMunicipio" placeholder="Municipio o ciudad">
+        <input type="text" id="editBizEstado" placeholder="Estado">
+      </div>
+      <input type="text" id="editBizTelefono" placeholder="Teléfono (opcional)">
     </div>
     <div class="field">
       <label>Tipo de negocio</label>
@@ -4095,7 +4122,7 @@ Transacciones recurrentes
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-06.59"></script>
+<script src="/app.js?v=2026-11-06.60"></script>
 <div id="alertasPanel" class="alertas-panel" role="dialog" aria-label="Alertas de la Revisión de consistencia" hidden></div>
 </body>
 </html>
