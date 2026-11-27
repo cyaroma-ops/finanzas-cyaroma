@@ -3017,7 +3017,12 @@ async function renderVentas() {
     btn.addEventListener('click', async () => {
       const rowActual = rows.find(r => r.id === btn.dataset.id);
       if (rowActual && await bloqueadoPorCierre(b.id, rowActual.fecha)) return;
+      if (!confirm(`¿Eliminar el día ${rowActual ? fechaCorta(rowActual.fecha) : ''} de Ventas? También se quitarán sus depósitos automáticos de Bancos/Efectivo (los que ya cambiaste de tipo o tienen archivos adjuntos se conservan).`)) return;
+      let dep = { quitados: 0, conservados: 0 };
+      try { dep = await quitarDepositosAutomaticosDeVenta(b.id, btn.dataset.id); } catch (e) { toast('No se pudieron quitar los depósitos del día: ' + (e.message || e) + '. El día no se eliminó.', 'error'); return; }
       await sb.from('fz_ventas').delete().eq('id', btn.dataset.id);
+      if (rowActual) registrarAuditoria(b.id, 'eliminar', 'Ventas', `Día ${rowActual.fecha} eliminado${dep.quitados ? ` (con ${dep.quitados} depósito(s) automático(s))` : ''}`);
+      if (dep.conservados) toast(`${dep.conservados} depósito(s) de ese día se conservaron (adjuntos o ya modificados): revísalos en Bancos/Efectivo.`, 'error');
       renderVentas();
     });
   });
@@ -3076,6 +3081,22 @@ async function renderVentas() {
   window.scrollTo(0, scrollY);
 }
 
+// 06.55: al borrar un día de Ventas también se quitan sus depósitos automáticos de Bancos/Efectivo (antes quedaban sueltos y,
+// al volver a cargar el día, se duplicaban). No se tocan los que ya cambiaste de tipo ni los que tienen archivos adjuntos.
+async function quitarDepositosAutomaticosDeVenta(businessId, ventaId) {
+  const r = { quitados: 0, conservados: 0 };
+  if (!ventasAfectaFueraDeSuRegistro(businessId)) return r;
+  for (const tabla of ['fz_bancos_mov', 'fz_efectivo_mov']) {
+    const { data } = await sb.from(tabla).select('id,tipo_entrada').eq('venta_id', ventaId);
+    for (const m of (data || [])) {
+      if (m.tipo_entrada !== 'venta_conciliada') { r.conservados++; continue; }
+      const { data: adj } = await sb.from('fz_adjuntos').select('id').eq('tabla', tabla).eq('registro_id', m.id).limit(1);
+      if ((adj || []).length) { r.conservados++; continue; }
+      const { error } = await sb.from(tabla).delete().eq('id', m.id); if (error) throw error; r.quitados++;
+    }
+  }
+  return r;
+}
 // Sincroniza el depósito real de UNA conciliación (venta + concepto) con lo que dice la conciliación ahora:
 //  · monto > 0 y no hay depósito → lo crea;  · monto distinto → actualiza el depósito;  · monto vacío o 0 → quita el
 //    depósito automático.
@@ -28556,7 +28577,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.54';
+const APP_VERSION = '2026-11-06.55';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
@@ -31510,6 +31531,24 @@ function revPropinas(ctx) {
   return r;
 }
 
+// 06.55: depósitos automáticos de Ventas cuyo día ya no existe (por ejemplo, un día que se borró y se volvió a cargar).
+// Cada uno infla de más Bancos/Efectivo. Se quitan SOLO los automáticos sin archivos adjuntos.
+function revDepositosHuerfanos(ctx) {
+  if (!ctx.financiero) return null;
+  const { ventas, bancosMov, efectivoMov, conceptos, b } = ctx;
+  const ids = new Set(ventas.map(v => v.id)), nomC = {}; (conceptos || []).forEach(c => { nomC[c.id] = c.nombre; });
+  const hu = [...bancosMov.map(m => ({ ...m, _t: 'fz_bancos_mov', _l: 'Bancos' })), ...efectivoMov.map(m => ({ ...m, _t: 'fz_efectivo_mov', _l: 'Efectivo' }))]
+    .filter(m => m.venta_id && !ids.has(m.venta_id) && m.tipo_entrada === 'venta_conciliada').sort((a, z) => String(a.fecha).localeCompare(String(z.fecha)));
+  if (!hu.length) return null;
+  const r = { id: 'depositos_huerfanos', titulo: 'Depósitos de ventas que ya no existen',
+    ayuda: 'Son depósitos automáticos de un día de Ventas que se eliminó (por ejemplo, un día que se borró y se volvió a cargar). Duplican lo que ya está en Bancos/Efectivo. Se quitan solo los automáticos sin archivos adjuntos.',
+    items: hu.map(m => ({ fecha: String(m.fecha).slice(0, 10), texto: `${fechaCorta(String(m.fecha).slice(0, 10))} · ${m._l}: ${fmt(Number(m.depositos) || 0)}${nomC[m.concepto_venta_id] ? ' (' + nomC[m.concepto_venta_id] + ')' : ''} — el día de Ventas ya no existe`, monto: Number(m.depositos) || 0 })) };
+  r.accion = { etiqueta: `Quitar ${hu.length} depósito${hu.length === 1 ? '' : 's'} sin venta`,
+    confirmar: `Se quitarán ${hu.length} depósito(s) automático(s) de Bancos/Efectivo cuyo día de Ventas ya no existe. No se borran los que tienen archivos adjuntos. ¿Continuar?`,
+    ejecutar: async () => { let q = 0, c = 0; for (const m of hu) { const { data: adj } = await sb.from('fz_adjuntos').select('id').eq('tabla', m._t).eq('registro_id', m.id).limit(1); if ((adj || []).length) { c++; continue; } const { error } = await sb.from(m._t).delete().eq('id', m.id); if (error) throw error; q++; } registrarAuditoria(b.id, 'eliminar', 'Ventas', `Depósitos sin venta quitados: ${q}`); return `Depósitos quitados: ${q}${c ? `; ${c} se conservaron por tener adjuntos` : ''}.`; } };
+  return r;
+}
+
 function revDepositosVentas(ctx) {
   if (!ctx.financiero) return null; // en Fiscal Contable Ventas es solo auditoría
   const { ventas, conceptos, bancosMov, efectivoMov, b } = ctx;
@@ -32602,7 +32641,7 @@ function revTraspasosCompletos(ctx) {
 
 async function ejecutarRevisionConsistencia(b) {
   const ctx = await cargarContextoRevision(b);
-  const checks = [revVentasCategorias, revCentavosRecibido, revDuplicadosProveedor, revPropinas, revPropinasSinMarca, revPropinasDuplicadas, revDepositosVentas, revPagosProveedor, revPagosReubicables, revGruposConFaltante, revCreditosDuplicados, revFacturasPagoIncoherente, revDescuadreLibro, revVinculosPagoFactura, revCreditosClientes, revVinculosCobroFactura, revDevolucionesCliente, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar, revTcCierre, revCfdiClasificados, revTraspasosCompletos];
+  const checks = [revVentasCategorias, revCentavosRecibido, revDuplicadosProveedor, revPropinas, revPropinasSinMarca, revPropinasDuplicadas, revDepositosVentas, revDepositosHuerfanos, revPagosProveedor, revPagosReubicables, revGruposConFaltante, revCreditosDuplicados, revFacturasPagoIncoherente, revDescuadreLibro, revVinculosPagoFactura, revCreditosClientes, revVinculosCobroFactura, revDevolucionesCliente, revFacturasSinDesglose, revPolizasDescuadradas, revFechasRaras, revSalidasSinClasificar, revTcCierre, revCfdiClasificados, revTraspasosCompletos];
   const out = [];
   for (const fn of checks) {
     try { const r = fn(ctx); if (r) out.push(r); }
