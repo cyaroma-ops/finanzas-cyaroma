@@ -13335,6 +13335,31 @@ async function renderBalanzaCuerpo() {
     gasto: listaCuentas.filter(c => c.tipo === 'gasto'),
   };
 
+  // 06.57 — Orden de presentación (solo pantalla; no toca importes ni totales). Activo: Efectivo → Bancos → Clientes → catálogo por
+  // cuenta mayor y subcuenta (en su 'orden', igual que el Balance General) → otras cuentas. Pasivo: Proveedores → catálogo → otras.
+  const agruparBalanza = (lista, tipo) => {
+    const ordMayor = new Map((mayores || []).map((m, i) => [m.id, Number.isFinite(Number(m.orden)) ? Number(m.orden) : i]));
+    const grupos = [];
+    const g = (clave, titulo, ord) => { let x = grupos.find(y => y.clave === clave); if (!x) { x = { clave, titulo, ord, lista: [] }; grupos.push(x); } return x; };
+    lista.forEach(c => {
+      const k = c.clave;
+      if (tipo === 'activo' && k.startsWith('efectivo:')) g('efectivo', 'Efectivo y equivalentes', 0).lista.push(c);
+      else if (tipo === 'activo' && k.startsWith('banco:')) g('banco', 'Bancos', 1).lista.push(c);
+      else if (tipo === 'activo' && (k === 'clientes' || k === 'valuacion_clientes_divisas')) g('clientes', 'Cuentas por cobrar (Clientes)', 2).lista.push(c);
+      else if (tipo === 'pasivo' && (k === 'proveedores' || k === 'valuacion_proveedores_divisas')) g('proveedores', 'Proveedores por pagar', 0).lista.push(c);
+      else if (k.startsWith('sub:')) {
+        const sub = subcuentas.find(x => x.id === k.slice(4)); const m = sub ? mayores.find(x => x.id === sub.cuenta_mayor_id) : null;
+        if (m) { const x = g('m:' + m.id, m.nombre, 10 + (ordMayor.get(m.id) ?? 0)); x.lista.push(c); c._ordSub = Number.isFinite(Number(sub.orden)) ? Number(sub.orden) : 0; }
+        else g('otras', 'Otras cuentas', 9999).lista.push(c);
+      } else g('otras', 'Otras cuentas', 9999).lista.push(c);
+    });
+    grupos.forEach(x => x.lista.sort((a, b) => (a._ordSub ?? 0) - (b._ordSub ?? 0) || String(a.nombre).localeCompare(String(b.nombre), 'es')));
+    return grupos.sort((a, b) => a.ord - b.ord);
+  };
+  const ordenarPlano = (lista, tipo) => { const out = agruparBalanza(lista, tipo).flatMap(x => x.lista); lista.length = 0; lista.push(...out); };
+  const gruposActivo = agruparBalanza(porTipo.activo, 'activo'), gruposPasivo = agruparBalanza(porTipo.pasivo, 'pasivo');
+  ordenarPlano(porTipo.activo, 'activo'); ordenarPlano(porTipo.pasivo, 'pasivo');
+
   // Resultado del ejercicio (acumulado del año a la fecha de corte) — calculado SIEMPRE a partir
   // de Ingresos, Costo de Ventas y Gastos; nunca capturado a mano.
   const montoIngresos = porTipo.ingreso.reduce((s,c)=>s + (-c.saldoActualNeto), 0);
@@ -13396,6 +13421,12 @@ async function renderBalanzaCuerpo() {
     return filaSeccion(tituloSeccion) + lista.map(filaCuenta).join('') + filaSubtotal(tituloSubtotal, lista);
   };
 
+  const filaGrupo = (t) => `<tr><td colspan="8" style="font-weight:600;color:var(--navy-3);padding-top:8px;">${escHtml(t)}</td></tr>`;
+  const seccionAgrupada = (tituloSeccion, tituloSubtotal, grupos, lista) => {
+    if (!lista.length) return '';
+    return filaSeccion(tituloSeccion) + grupos.map(x => filaGrupo(x.titulo) + x.lista.map(filaCuenta).join('') + (x.lista.length > 1 ? filaSubtotal(x.titulo, x.lista) : '')).join('') + filaSubtotal(tituloSubtotal, lista);
+  };
+
   contenido.innerHTML = `
     <div class="card">
       <div class="card-head">
@@ -13413,8 +13444,8 @@ async function renderBalanzaCuerpo() {
         <table class="tabla-contable">
           <thead><tr><th>Cuenta</th><th style="width:80px;">Tipo</th><th style="width:110px;">Saldo inicial Deudor</th><th style="width:110px;">Saldo inicial Acreedor</th><th style="width:100px;">Cargos</th><th style="width:100px;">Abonos</th><th style="width:110px;">Saldo actual Deudor</th><th style="width:110px;">Saldo actual Acreedor</th></tr></thead>
           <tbody>
-            ${seccionCompleta('ACTIVO', 'Activo', porTipo.activo)}
-            ${seccionCompleta('PASIVO', 'Pasivo', porTipo.pasivo)}
+            ${seccionAgrupada('ACTIVO', 'Activo', gruposActivo, porTipo.activo)}
+            ${seccionAgrupada('PASIVO', 'Pasivo', gruposPasivo, porTipo.pasivo)}
 
             ${filaSeccion('CAPITAL CONTABLE')}
             ${porTipo.capital.length ? `<tr><td colspan="8" style="font-weight:600;color:var(--navy-3);">Capital</td></tr>` : ''}
@@ -13471,17 +13502,18 @@ async function renderBalanzaCuerpo() {
 
   // Construye las filas para exportar (Excel/PDF), en el mismo orden y agrupación que la pantalla.
   const filasExport = [];
-  const agregarSeccionExport = (titulo, lista, tituloSubtotal) => {
+  const agregarSeccionExport = (titulo, lista, tituloSubtotal, grupos) => {
     if (!lista.length) return;
     filasExport.push({ tipo:'seccion', v:[titulo,'','','','','','',''] });
-    lista.forEach(c => filasExport.push({ tipo:'cuenta', v:[c.nombre, TIPO_CUENTA_LABEL[c.tipo]||c.tipo, c.saldoInicialDeudor||'', c.saldoInicialAcreedor||'', c.cargosPeriodo||'', c.abonosPeriodo||'', c.saldoActualDeudor||'', c.saldoActualAcreedor||''] }));
+    const filaEx = c => filasExport.push({ tipo:'cuenta', v:[c.nombre, TIPO_CUENTA_LABEL[c.tipo]||c.tipo, c.saldoInicialDeudor||'', c.saldoInicialAcreedor||'', c.cargosPeriodo||'', c.abonosPeriodo||'', c.saldoActualDeudor||'', c.saldoActualAcreedor||''] });
+    if (grupos) grupos.forEach(x => { filasExport.push({ tipo:'subseccion', v:[x.titulo,'','','','','','',''] }); x.lista.forEach(filaEx); }); else lista.forEach(filaEx);
     const si_d=lista.reduce((s,c)=>s+c.saldoInicialDeudor,0), si_a=lista.reduce((s,c)=>s+c.saldoInicialAcreedor,0);
     const ca=lista.reduce((s,c)=>s+c.cargosPeriodo,0), ab=lista.reduce((s,c)=>s+c.abonosPeriodo,0);
     const sa_d=lista.reduce((s,c)=>s+c.saldoActualDeudor,0), sa_a=lista.reduce((s,c)=>s+c.saldoActualAcreedor,0);
     filasExport.push({ tipo:'subtotal', v:[`Subtotal ${tituloSubtotal}`,'',si_d,si_a,ca,ab,sa_d,sa_a] });
   };
-  agregarSeccionExport('ACTIVO', porTipo.activo, 'Activo');
-  agregarSeccionExport('PASIVO', porTipo.pasivo, 'Pasivo');
+  agregarSeccionExport('ACTIVO', porTipo.activo, 'Activo', gruposActivo);
+  agregarSeccionExport('PASIVO', porTipo.pasivo, 'Pasivo', gruposPasivo);
   filasExport.push({ tipo:'seccion', v:['CAPITAL CONTABLE','','','','','','',''] });
   if (porTipo.capital.length) { filasExport.push({ tipo:'subseccion', v:['Capital','','','','','','',''] }); porTipo.capital.forEach(c => filasExport.push({ tipo:'cuenta', v:[c.nombre,'Capital',c.saldoInicialDeudor||'',c.saldoInicialAcreedor||'',c.cargosPeriodo||'',c.abonosPeriodo||'',c.saldoActualDeudor||'',c.saldoActualAcreedor||''] })); }
   if (porTipo.resultados_anteriores.length) { filasExport.push({ tipo:'subseccion', v:['Resultados de ejercicios anteriores','','','','','','',''] }); porTipo.resultados_anteriores.forEach(c => filasExport.push({ tipo:'cuenta', v:[c.nombre,'Capital',c.saldoInicialDeudor||'',c.saldoInicialAcreedor||'',c.cargosPeriodo||'',c.abonosPeriodo||'',c.saldoActualDeudor||'',c.saldoActualAcreedor||''] })); }
@@ -28592,7 +28624,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.56';
+const APP_VERSION = '2026-11-06.57';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
