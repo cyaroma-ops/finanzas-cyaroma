@@ -336,13 +336,28 @@ function membreteDe(b) {
   return { razon, ident, dom: [l1, l2].filter(Boolean), logo: (b.logo_data && /^data:image\/(png|jpeg);base64,/.test(b.logo_data)) ? b.logo_data : null };
 }
 // Dibuja el logo (si hay) en la esquina izquierda sin deformarlo; devuelve el alto ocupado (0 si no hay o falla).
+function pdfLogoMedidas(doc, logo, maxW, maxH) {
+  if (!logo) return null;
+  try { const p = doc.getImageProperties(logo), r = Math.min(maxW / p.width, maxH / p.height); return { w: p.width * r, h: p.height * r, tipo: p.fileType || (logo.startsWith('data:image/png') ? 'PNG' : 'JPEG') }; } catch (_) { return null; }
+}
 function pdfLogoMembrete(doc, logo, x, y, maxW = 64, maxH = 48) {
-  if (!logo) return 0;
-  try {
-    const p = doc.getImageProperties(logo), r = Math.min(maxW / p.width, maxH / p.height), w = p.width * r, h = p.height * r;
-    doc.addImage(logo, p.fileType || (logo.startsWith('data:image/png') ? 'PNG' : 'JPEG'), x, y, w, h);
-    return h;
-  } catch (_) { return 0; }
+  const m = pdfLogoMedidas(doc, logo, maxW, maxH); if (!m) return 0;
+  try { doc.addImage(logo, m.tipo, x, y, m.w, m.h); return m.h; } catch (_) { return 0; }
+}
+// Membrete alineado a la izquierda para documentos que se entregan a terceros (factura, orden de venta): logo + razón social + nombre comercial + RFC + domicilio.
+// Devuelve la "y" más baja que ocupó, para que el documento no se encime con lo que sigue.
+function pdfMembreteIzquierda(doc, b, margin, yRazon = 56, maxY = 112) {
+  const m = membreteDe(b), lg = pdfLogoMedidas(doc, m.logo, 62, 56);
+  let x = margin; if (lg) { try { doc.addImage(m.logo, lg.tipo, margin, yRazon - 20, lg.w, lg.h); x = margin + lg.w + 12; } catch (_) { /* sin logo */ } }
+  doc.setFont('helvetica', 'bold'); doc.setTextColor(10, 31, 61);
+  const disp = doc.internal.pageSize.getWidth() - margin - 150 - x, razonTxt = pdfLimpiaTexto(m.razon); let fz = 18;   // 150 pt se reservan para el título del documento (FACTURA / ORDEN DE VENTA) a la derecha
+  doc.setFontSize(fz); while (fz > 11 && doc.getTextWidth(razonTxt) > disp) { fz -= 1; doc.setFontSize(fz); }
+  doc.text(razonTxt, x, yRazon);
+  let y = yRazon; doc.setFont('helvetica', 'normal'); doc.setTextColor(102, 112, 133);
+  const nc = (b && b.razon_social && b.name && b.razon_social !== b.name) ? b.name : '';
+  const lineas = [nc, b && b.rfc ? 'RFC ' + b.rfc : '', ...m.dom].filter(Boolean);
+  lineas.forEach((t, i) => { const paso = i === 0 && nc ? 16 : 12; if (y + paso > maxY) return; y += paso; doc.setFontSize(i === 0 && nc ? 10 : 8.5); doc.text(pdfLimpiaTexto(t), x, y); });
+  return Math.max(y, lg ? yRazon - 20 + lg.h : 0);
 }
 // Inicia un PDF con el membrete estándar centrado (logo a la izquierda) + el título del reporte.
 // Devuelve {doc, margin, y} — "y" es el siguiente renglón libre para continuar (tabla, etc.)
@@ -1688,8 +1703,8 @@ function updateTopbar() {
   const printOrientacion = document.getElementById('printOrientacion');
   const printOrientacionToggle = document.getElementById('printOrientacionToggle');
   const printExcelBtn = document.getElementById('printExcelBtn');
-  const conExcelFormal = ['pl', 'balance'].includes(STATE.currentSection);
-  if (printExcelBtn) { printExcelBtn.style.display = conExcelFormal ? 'inline-flex' : 'none'; printExcelBtn.onclick = async () => { if (!(await pantallaFormalExportar(STATE.currentSection === 'pl' && STATE_plVista === 'anual' ? 'plAnual' : STATE.currentSection, 'excel'))) toast('No se pudo generar el Excel de esta pantalla.', 'error'); }; }
+  const conExcelFormal = ['pl', 'balance', 'proveedores', 'clientes', 'bancos', 'efectivo', 'flujo'].includes(STATE.currentSection);
+  if (printExcelBtn) { printExcelBtn.style.display = conExcelFormal ? 'inline-flex' : 'none'; printExcelBtn.onclick = async () => { if (!(await pantallaFormalExportar(['proveedores', 'clientes', 'bancos', 'efectivo', 'flujo'].includes(STATE.currentSection) ? 'generica' : (STATE.currentSection === 'pl' && STATE_plVista === 'anual' ? 'plAnual' : STATE.currentSection), 'excel'))) toast('No se pudo generar el Excel de esta pantalla.', 'error'); }; }
   if (SECCIONES_IMPRIMIBLES.includes(STATE.currentSection)) {
     printBtn.style.display = 'inline-flex';
     printOrientacionToggle.style.display = 'inline-flex';
@@ -1707,6 +1722,7 @@ function updateTopbar() {
       }));
     }
     printBtn.onclick = async () => {
+      if (['proveedores', 'clientes', 'bancos', 'efectivo', 'flujo'].includes(STATE.currentSection) && await pantallaFormalExportar('generica', 'pdf', printOrientacion.value)) return;   // 06.61: formato formal también aquí; si la pantalla no tiene tablas que convertir, sigue la impresión de siempre
       if (['pl', 'balance'].includes(STATE.currentSection) && await pantallaFormalExportar(STATE.currentSection === 'pl' && STATE_plVista === 'anual' ? 'plAnual' : STATE.currentSection, 'pdf', STATE_plVista === 'anual' && STATE.currentSection === 'pl' ? 'landscape' : printOrientacion.value)) return;   // 06.46: presentación formal
       document.body.dataset.printSection = STATE.currentSection;
       let tituloImpresion = titulo;
@@ -2151,7 +2167,7 @@ const repFormalCelda = (v) => {
 };
 function repFormalEnc(b, it) {
   const m = membreteDe(b);
-  return { razon: m.razon, ident: m.ident, dom: m.dom, logo: m.logo, titulo: String(it.titulo).toUpperCase(), periodo: String(it.periodo || it.subtitulo || ''), moneda: 'Cifras en pesos mexicanos' };
+  return { razon: m.razon, ident: m.ident, dom: m.dom, logo: m.logo, titulo: String(it.titulo).toUpperCase(), periodo: String(it.periodo || it.subtitulo || ''), moneda: it.moneda !== undefined ? it.moneda : 'Cifras en pesos mexicanos' };
 }
 function repFormalHtml(it, b, limite = 400) {
   const f = it.formal, e = repFormalEnc(b, it); let cuenta = 0, cortado = false;
@@ -2171,7 +2187,7 @@ function repFormalHtml(it, b, limite = 400) {
 }
 function repHojaFormal(it, b) {
   const f = it.formal, e = repFormalEnc(b, it), aoa = [], fmts = {}, ncols = Math.max(...f.secciones.map(s => (s.cols || f.cols).length), f.cols.length);
-  const enc = [e.razon].concat(e.ident ? [e.ident] : [], [e.titulo, e.periodo, e.moneda]);
+  const enc = [e.razon].concat(e.ident ? [e.ident] : [], e.dom || [], [e.titulo, e.periodo], e.moneda ? [e.moneda] : []);
   enc.forEach(t => aoa.push([t])); aoa.push([]);
   const mayus = (t) => f.mayus ? String(t).toUpperCase() : String(t);
   const poner = (r, cols) => {
@@ -2211,7 +2227,7 @@ function repPdfEnc(d, e, W, margin) {
   y = Math.max(y, 34 + hLogo);
   y += 24; d.setFont('helvetica', 'bold'); d.setFontSize(12); d.setTextColor(10, 31, 61); d.text(pdfLimpiaTexto(e.titulo), W / 2, y, { align: 'center' });
   y += 17; d.setFont('helvetica', 'normal'); d.setFontSize(10); d.setTextColor(60, 70, 90); d.text(pdfLimpiaTexto(e.periodo), W / 2, y, { align: 'center' });
-  y += 14; d.setFont('helvetica', 'italic'); d.setFontSize(8.5); d.setTextColor(110, 118, 135); d.text(e.moneda, W / 2, y, { align: 'center' });
+  if (e.moneda) { y += 14; d.setFont('helvetica', 'italic'); d.setFontSize(8.5); d.setTextColor(110, 118, 135); d.text(e.moneda, W / 2, y, { align: 'center' }); }
   y += 14; d.setDrawColor(10, 31, 61); d.setLineWidth(0.8); d.line(margin, y, W - margin, y); y += 20;
   return y;
 }
@@ -2334,8 +2350,95 @@ function repPdfPies(doc) {
   for (let i = 1; i <= n; i++) { doc.setPage(i); doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(150, 150, 150); doc.text(`Página ${i} de ${n}`, W / 2, H - 14, { align: 'center' }); doc.text('Generado: ' + new Date().toLocaleString('es-MX'), 48, H - 14); }
 }
 // Lo que está en pantalla, tal cual (mismo periodo, mismas cifras), con la presentación formal. La pantalla no se modifica.
+// ===== 06.61 — Impresión formal de pantallas con listados (Proveedores, Clientes, Bancos, Efectivo, Flujo) =====
+// Toma EXACTAMENTE lo que la pantalla ya muestra (no recalcula ni consulta nada): lee las tablas visibles, deja fuera botones y columnas de acciones,
+// y las presenta con el mismo formato formal de los estados financieros (membrete con logo, título, tabla, totales, pie con página).
+const GEN_COLS_FUERA = {
+  proveedores: /^(tc|d[ií]as retraso|desglose|adjuntos?)$/i,
+  clientes: /^(adjuntos?)$/i,
+};
+const genTexto = (n) => String(n || '').replace(/[▲▼▴▾↑↓⇅]/g, '').replace(/\s+/g, ' ').trim();
+// Texto de una celda tal como se ve: los campos editables (importes, fechas, listas) se leen por su valor actual, los botones y vínculos de acción no cuentan.
+function genTextoCelda(td) {
+  const c = td.cloneNode(true), vivos = [...td.querySelectorAll('input, select, textarea')], copias = [...c.querySelectorAll('input, select, textarea')];
+  copias.forEach((x, i) => {
+    const v = vivos[i]; let t = '';
+    if (v) { if (v.tagName === 'SELECT') { t = v.selectedOptions && v.selectedOptions[0] ? v.selectedOptions[0].textContent : ''; if (!v.value || /^[—–-]+\s*(elegir|selecciona|seleccionar|sin)/i.test(genTexto(t))) t = ''; } else if (v.type === 'checkbox') t = v.checked ? '✓' : ''; else t = v.value || ''; }
+    x.replaceWith(document.createTextNode(t));
+  });
+  c.querySelectorAll(PDF_OMITIR + ', ' + PDF_SOLO_MOVIL + ', .solo-pantalla, svg').forEach(x => x.remove());
+  return genTexto(c.textContent.replace(/[▸▾›»↗⤴]/g, ''));
+}
+const genVisible = (x) => { try { const cs = getComputedStyle(x); return cs.display !== 'none' && cs.visibility !== 'hidden'; } catch (_) { return true; } };
+const GEN_FECHA = /^\d{4}-\d{2}-\d{2}$/;
+function repFormalGenericoDeSeccion(sec, opts = {}) {
+  const fuera = opts.fuera || null, secciones = [];
+  const kpis = [...sec.querySelectorAll('.kpi')].filter(genVisible).map(k => { const l = k.querySelector('.label'), v = k.querySelector('.value'); return l && v ? `${genTexto(l.textContent)}: ${genTexto(v.textContent)}` : ''; }).filter(Boolean);
+  [...sec.querySelectorAll('table')].filter(t => !t.parentElement.closest('table') && genVisible(t) && !t.closest('.modal-bg, .solo-pantalla')).forEach(t => {
+    const hdrRow = t.tHead && t.tHead.rows.length ? t.tHead.rows[t.tHead.rows.length - 1] : null;
+    const th = hdrRow ? [...hdrRow.cells].filter(genVisible) : [];
+    const bodyRows = [...t.tBodies].concat(t.tFoot ? [t.tFoot] : []).flatMap(tb => [...tb.rows]).filter(genVisible);
+    const filas = [];   // {tipo, celdas[] | texto}
+    bodyRows.forEach(tr => {
+      const tds = [...tr.cells].filter(genVisible); if (!tds.length) return;
+      const anid = tds.length === 1 && tds[0].querySelector('table');
+      if (anid) { [...tds[0].querySelectorAll('tr')].filter(r2 => !r2.querySelector('th')).forEach(r2 => { const tx = [...r2.cells].map(genTextoCelda).filter(Boolean).join('  ·  '); if (tx) filas.push({ tipo: 'texto', texto: '      ' + tx.replace(/\b(\d{4})-(\d{2})-(\d{2})\b/g, '$3/$2/$1') }); }); return; }
+      if (tds.length === 1 && (tds[0].colSpan || 1) > 1) { const tx = genTextoCelda(tds[0]); if (tx) filas.push({ tipo: 'texto', texto: tx }); return; }
+      filas.push({ tipo: tr.classList.contains('total-row') ? 'total' : 'cuenta', celdas: tds.flatMap(td => [{ t: genTextoCelda(td), num: td.classList.contains('num') }].concat(Array.from({ length: Math.max(0, (td.colSpan || 1) - 1) }, () => ({ t: '', num: false })))), neg: tds.some(td => /font-weight:\s*(6|7)00/.test(td.getAttribute('style') || '')) });
+    });
+    const datos = filas.filter(f => f.celdas);
+    if (!datos.length) return;
+    const n = Math.max(th.length, ...datos.map(f => f.celdas.length));
+    const hdr = Array.from({ length: n }, (_, i) => genTexto(th[i] ? th[i].textContent : ''));
+    // columnas que se conservan: con encabezado o con contenido, sin ser de acciones/adjuntos, y sin las que el reporte deja fuera por ancho
+    const conserva = hdr.map((h, i) => { const vacia = datos.every(f => !(f.celdas[i] && f.celdas[i].t)); if (vacia) return false; if (!h && vacia) return false; if (/^(acciones?|✓)$/i.test(h)) return false; if (fuera && fuera.test(h)) return false; return true; });
+    const idx = conserva.map((v, i) => v ? i : -1).filter(i => i >= 0); if (!idx.length) return;
+    const cols = idx.map(i => {
+      const cuerpo = datos.filter(f => f.tipo === 'cuenta');   // los totales no deciden de qué tipo es la columna
+      const vals = cuerpo.map(f => (f.celdas[i] ? f.celdas[i].t : '')).filter(v => v !== '' && v !== '-' && v !== '—');
+      const marcada = (th[i] && th[i].classList.contains('num')) || cuerpo.some(f => f.celdas[i] && f.celdas[i].num);
+      // número = la pantalla lo marca como cifra, o todos sus valores parecen importes (con centavos o signo $); folios y conteos enteros se quedan como texto
+      const esNum = vals.length > 0 && vals.every(v => repNumero(v) !== null) && (marcada || vals.every(v => /[$.]/.test(v)));
+      const esFecha = !esNum && vals.length > 0 && vals.every(v => GEN_FECHA.test(v));
+      return { h: hdr[i] || '', num: !!esNum, fecha: esFecha };
+    });
+    if (cols.length) cols[0].num = false;   // la primera columna es la etiqueta
+    const rows = filas.map(f => {
+      if (f.tipo === 'texto') return { tipo: 'texto', nivel: 0, celdas: [f.texto] };
+      return { tipo: f.tipo, nivel: 0, negr: !!f.neg, celdas: idx.map((i, j) => { const v = f.celdas[i] ? f.celdas[i].t : ''; if (v === '' || v === '-' || v === '—') return ''; if (cols[j].num) { const x = repNumero(v); return x === null ? v : x; } if (cols[j].fecha && GEN_FECHA.test(v)) return { f: v }; return v; }) };
+    });
+    const card = t.closest('.card'), h3 = card && card.querySelector('.card-head h3, h3, h4');
+    let titulo = h3 ? genTexto(h3.textContent) : ''; if (titulo.length > 90) titulo = titulo.slice(0, 87) + '…';
+    secciones.push({ titulo, cols, rows });
+  });
+  if (!secciones.length) return null;
+  if (kpis.length) secciones[0].rows.unshift({ tipo: 'texto', nivel: 0, celdas: [kpis.join('   ·   ')] });
+  return { cols: secciones[0].cols, secciones, porSeccion: true, mayus: false };
+}
+async function pantallaGenericaItem() {
+  const b = biz(), sec = STATE.currentSection, el = document.getElementById('sec-' + sec), hoy = fechaCorta(todayStr());
+  const mes = MESES_LARGO[Number(STATE.currentMonth.slice(5, 7)) - 1] + ' ' + STATE.currentMonth.slice(0, 4);
+  let titulo = '', periodo = '', fuera = GEN_COLS_FUERA[sec] || null;
+  if (sec === 'proveedores') {
+    if (STATE_provVista === 'directorio') { titulo = 'Directorio de proveedores'; periodo = `Saldos pendientes al ${hoy}`; }
+    else if (STATE_provVista === 'detalle') { titulo = `Estado de cuenta — ${STATE_provDetalleNombre || 'proveedor'}`; periodo = `Al ${hoy}`; }
+    else { titulo = 'Cuentas por pagar — facturas'; periodo = `Filtro: ${STATE_provFiltro} · al ${hoy}`; }
+  } else if (sec === 'clientes') {
+    if (STATE_clientesVista === 'detalle') { titulo = `Estado de cuenta — ${STATE_clienteDetalleNombre || 'cliente'}`; periodo = `Al ${hoy}`; }
+    else if (STATE_clientesVista === 'directorio') { titulo = 'Directorio de clientes'; periodo = `Saldos pendientes al ${hoy}`; }
+    else { titulo = 'Cuentas por cobrar — facturas'; periodo = `Al ${hoy}`; }
+  } else if (sec === 'bancos') { titulo = 'Bancos'; periodo = mes; }
+  else if (sec === 'efectivo') { titulo = 'Efectivo y divisas'; periodo = mes; }
+  else if (sec === 'flujo') { titulo = 'Flujo de efectivo'; periodo = mes; }
+  else return { kind: 'ninguno' };
+  const formal = el ? repFormalGenericoDeSeccion(el, { fuera }) : null;
+  if (!formal) return { kind: 'ninguno' };
+  const ancho = Math.max(...formal.secciones.map(s => s.cols.length));
+  return { k: 'generica', kind: 'formal', titulo, subtitulo: periodo, periodo, moneda: '', orient: ancho > 6 ? 'landscape' : 'portrait', formal, secId: 'sec-' + sec };
+}
 async function pantallaFormalItem(k) {
   const b = biz();
+  if (k === 'generica') return pantallaGenericaItem();
   if (k === 'pl') {
     let per = periodoPL(STATE.currentMonth, STATE_plVista);
     if (STATE_plVista === 'mensual' && STATE_plRangoDesde && STATE_plRangoHasta) per = { ...per, start: STATE_plRangoDesde, end: STATE_plRangoHasta };
@@ -21338,10 +21441,7 @@ async function descargarFacturaPDF(facturaId, businessId) {
   const fmtPdf = (n) => simbolo + Number(n || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   // Encabezado
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(18); doc.setTextColor(10, 31, 61);
-  doc.text(negocio?.razon_social || negocio?.name || 'Finanzas', margin, 56);
-  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(102, 112, 133);
-  if (negocio?.razon_social && negocio?.name && negocio.razon_social !== negocio.name) doc.text(negocio.name, margin, 72);
+  pdfMembreteIzquierda(doc, negocio, margin, 56, 112);   // 06.61: logo, RFC y domicilio del negocio
 
   doc.setFont('helvetica', 'bold'); doc.setFontSize(22); doc.setTextColor(185, 138, 46);
   doc.text('FACTURA', pageW - margin, 56, { align: 'right' });
@@ -21440,10 +21540,7 @@ async function descargarOrdenPDF(ordenId, businessId) {
   const simbolo = orden.moneda === 'USD' ? 'US$' : '$';
   const fmtPdf = (n) => simbolo + Number(n || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(18); doc.setTextColor(10, 31, 61);
-  doc.text(negocio?.razon_social || negocio?.name || 'Finanzas', margin, 56);
-  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(102, 112, 133);
-  if (negocio?.razon_social && negocio?.name && negocio.razon_social !== negocio.name) doc.text(negocio.name, margin, 72);
+  pdfMembreteIzquierda(doc, negocio, margin, 56, 112);   // 06.61: logo, RFC y domicilio del negocio
 
   doc.setFont('helvetica', 'bold'); doc.setFontSize(22); doc.setTextColor(185, 138, 46);
   doc.text('ORDEN DE VENTA', pageW - margin, 56, { align: 'right' });
@@ -25568,13 +25665,11 @@ async function abrirModalMovimientosCuenta(nombre, subcuentaIds, businessId, nom
     const { filas, saldoInicialPorSubcuenta, saldoFinal, desde, hasta } = ultimoResultado;
     const negocio = biz();
     const { jsPDF } = window.jspdf;
-    const doc = new jsPDF({ unit: 'pt', format: 'letter', orientation: 'landscape' });
-    const margin = 40;
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.setTextColor(10, 31, 61);
-    doc.text(negocio?.razon_social || negocio?.name || 'Finanzas', margin, 44);
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(102, 112, 133);
-    doc.text(`Movimientos de: ${nombre}`, margin, 60);
-    doc.text(`${desde||'Inicio'} a ${hasta} · Saldo inicial: ${fmt(ultimoResultado.saldoInicial)} · Saldo final: ${fmt(saldoFinal)}`, margin, 74);
+    const ini = iniciarPdfConEncabezado(negocio, `Movimientos de: ${nombre}`, { orientation: 'landscape', margin: 40 });   // 06.61: membrete formal con logo
+    const doc = ini.doc, margin = ini.margin;
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(102, 112, 133);
+    doc.text(pdfLimpiaTexto(`${desde||'Inicio'} a ${hasta} · Saldo inicial: ${fmt(ultimoResultado.saldoInicial)} · Saldo final: ${fmt(saldoFinal)}`), doc.internal.pageSize.getWidth() / 2, ini.y - 6, { align: 'center' });
+    const yInicioTabla = ini.y + 8;
 
     // Arma el cuerpo agrupado por hija (encabezado + movimientos + subtotal), igual que en pantalla,
     // llevando registro de qué filas son encabezado/subtotal para pintarlas distinto.
@@ -25602,7 +25697,7 @@ async function abrirModalMovimientosCuenta(nombre, subcuentaIds, businessId, nom
     }
 
     doc.autoTable({
-      startY: 90, margin: { left: margin, right: margin },
+      startY: yInicioTabla, margin: { left: margin, right: margin },
       head: [['Fecha', 'Tipo de documento', 'Proveedor / Cliente', 'Concepto o Descripción', 'Factura', 'Cargo', 'Abono', 'Saldo']],
       body,
       styles: { fontSize: 8 }, headStyles: { fillColor: [10,31,61] },
@@ -28750,7 +28845,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.60';
+const APP_VERSION = '2026-11-06.61';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
