@@ -23821,7 +23821,7 @@ async function abrirCargaHoja(b) {
     <div class="hoja-fila" id="hojaBandejaBox"><span class="hint">Buscando la bandeja…</span></div>
     <textarea id="hojaTexto" class="hoja-texto" placeholder="Pega aquí las filas copiadas de tu hoja"></textarea>
     <div class="hoja-fila"><label>Cargar desde <input type="date" id="hojaDesde" value="${desdeIni}"></label><span class="hint">${ultima ? 'Último día cargado en la app: ' + fechaCorta(ultima) + '. Las fechas anteriores a «Cargar desde» se ignoran.' : 'Aún no hay ventas cargadas.'}</span><button class="btn btn-gold btn-sm" id="hojaLeer">Leer filas</button></div>
-    <div id="hojaMapeoBox"></div><div id="hojaPrevia"></div></div>`;
+    <div id="hojaDatos"></div><div id="hojaMapeoBox"></div><div id="hojaPrevia"></div></div>`;
   document.body.appendChild(bg);
   const cerrar = () => { bg.remove(); document.removeEventListener('keydown', esc, true); }, esc = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cerrar(); } };
   document.addEventListener('keydown', esc, true); bg.querySelector('#hojaCerrar').addEventListener('click', cerrar); bg.addEventListener('click', (e) => { if (e.target === bg) cerrar(); });
@@ -23831,7 +23831,7 @@ async function abrirCargaHoja(b) {
     box.innerHTML = (ban ? `<span class="hint">Bandeja de tu hoja: ${ban.filas_n} filas recibidas el ${escHtml(cuando)}${ban.origen ? ' (' + escHtml(ban.origen) + ')' : ''}.</span><button class="btn btn-gold btn-sm" id="hojaUsarBandeja">Usar bandeja</button>` : `<span class="hint">La bandeja está vacía.</span>`)
       + `<button class="btn btn-ghost btn-sm" id="hojaConectar">Conectar mi hoja de Google</button>`;
     const ub = box.querySelector('#hojaUsarBandeja');
-    if (ub) ub.addEventListener('click', () => { bg.querySelector('#hojaTexto').value = hojaFilasATexto(ban.filas); bg.querySelector('#hojaLeer').click(); });
+    if (ub) ub.addEventListener('click', () => { desdeBandeja = true; bg.querySelector('#hojaTexto').value = hojaFilasATexto(ban.filas); bg.querySelector('#hojaLeer').click(); });
     box.querySelector('#hojaConectar').addEventListener('click', () => abrirConexionHoja(b));
   })();
   const opcionesDestino = (sel) => `<option value="">— No cargar —</option>`
@@ -23843,18 +23843,28 @@ async function abrirCargaHoja(b) {
     bg.querySelector('#hojaMapeoBox').innerHTML = `<details id="hojaDetMapeo" open><summary class="hoja-t hoja-sum">1 · Asignar columnas <span class="hint">(se guarda y se reutiliza; se oculta al ver la vista previa)</span></summary><div class="hoja-mapeo"><table class="tabla-contable"><thead><tr><th>#</th><th>Columna de tu hoja</th><th>Ejemplo</th><th>Va a</th></tr></thead><tbody>${encabezados.map((h, i) => i === 0 ? '' : `<tr><td>${i + 1}</td><td>${escHtml(h)}</td><td class="hint">${escHtml(String(muestra[i] == null ? '' : muestra[i]).trim())}</td><td><select class="hoja-dest" data-i="${i}">${opcionesDestino(mapeo && mapeo[i] ? mapeo[i].g + ':' + mapeo[i].id : '')}</select></td></tr>`).join('')}</tbody></table></div>
       <div class="hoja-fila"><button class="btn btn-ghost btn-sm" id="hojaGuardarMapeo">Guardar asignación</button><button class="btn btn-gold btn-sm" id="hojaVerPrevia">Ver vista previa</button></div></details>`;
   };
+  let desdeBandeja = false;
+  const etiquetaDestino = (i) => { const m = mapeo && mapeo[i]; if (!m || !m.id) return '<span class="hoja-nc">no se carga</span>'; const lista = m.g === 'v' ? cv : (m.g === 's' ? cs : crr), c = lista.find(x => x.id === m.id); return `<span class="hoja-dest-t hoja-dest-${m.g}">${m.g === 'v' ? 'Ventas' : (m.g === 's' ? 'Sistema' : 'Recibido')}: ${escHtml(c ? c.nombre : '?')}</span>`; };
+  const pintarDatos = (abierto) => {
+    if (!lectura) return;
+    const desde = bg.querySelector('#hojaDesde').value, anio = hojaAnio(lectura.filas, desde), enc = encabezados, n = Math.max(enc.length, ...lectura.filas.map(f => f.length));
+    const dias = lectura.filas.filter(f => hojaFecha(f[0], anio)).length;
+    const celda = (x) => { const t = String(x == null ? '' : x).trim(); return /^-?\s*-?\s*$/.test(t) ? '<span class="hoja-nc">·</span>' : escHtml(t); };
+    bg.querySelector('#hojaDatos').innerHTML = `<details id="hojaDetDatos" ${abierto ? 'open' : ''}><summary class="hoja-t hoja-sum">0 · Datos recibidos de tu hoja <span class="hint">(${lectura.filas.length} filas, ${dias} días con fecha válida; revísalos antes de seguir)</span></summary>
+      <div class="hoja-datos"><table class="tabla-contable"><thead><tr><th class="hoja-c1">Día leído</th>${Array.from({ length: n }, (_, i) => `<th>${escHtml(enc[i] || '')}<div>${i === 0 ? '' : etiquetaDestino(i)}</div></th>`).join('')}</tr></thead><tbody>${lectura.filas.map(f => { const fe = hojaFecha(f[0], anio), antes = fe && fe < desde; return `<tr class="${fe ? (antes ? 'hoja-antes' : '') : 'hoja-nodia'}"><td class="hoja-c1">${fe ? fechaCorta(fe) + (antes ? ' <span class="hoja-nc">(anterior)</span>' : '') : '<span class="hoja-nc">no es un día</span>'}</td>${Array.from({ length: n }, (_, i) => `<td class="${i === 0 ? '' : 'num'}">${celda(f[i])}</td>`).join('')}</tr>`; }).join('')}</tbody></table></div></details>`;
+  };
   const leerMapeoUI = () => { const m = {}; bg.querySelectorAll('.hoja-dest').forEach(sel => { if (sel.value) { const [g, id] = sel.value.split(':'); m[sel.dataset.i] = { g, id }; } }); return m; };
   bg.querySelector('#hojaLeer').addEventListener('click', () => {
     const r = hojaLeerTexto(bg.querySelector('#hojaTexto').value); if (r.error) { toast(r.error, 'error'); return; }
     lectura = r; encabezados = r.encabezados || HOJA_ENCABEZADOS;
     if (!mapeo || !Object.keys(mapeo).length) mapeo = hojaSugerirMapeo(encabezados, cv, cs, crr);
-    pintarMapeo(); bg.querySelector('#hojaPrevia').innerHTML = ''; bg.querySelector('#hojaTexto').classList.add('hoja-texto-chico');
+    pintarMapeo(); pintarDatos(true); bg.querySelector('#hojaPrevia').innerHTML = ''; const tx = bg.querySelector('#hojaTexto'); if (desdeBandeja) tx.style.display = 'none'; else tx.classList.add('hoja-texto-chico'); desdeBandeja = false;
     bg.querySelector('#hojaGuardarMapeo').addEventListener('click', async () => { mapeo = leerMapeoUI(); await hojaMapeoGuardar(b.id, mapeo); toast('Asignación guardada.'); });
     bg.querySelector('#hojaVerPrevia').addEventListener('click', () => previa());
   });
   const previa = async () => {
     mapeo = leerMapeoUI(); const desde = bg.querySelector('#hojaDesde').value; if (!desde) { toast('Elige desde qué fecha cargar.', 'error'); return; }
-    await hojaMapeoGuardar(b.id, mapeo);
+    await hojaMapeoGuardar(b.id, mapeo); pintarDatos(false);
     const anioH = hojaAnio(lectura.filas, desde), fechas = lectura.filas.map(c => hojaFecha(c[0], anioH)).filter(f => f && f >= desde);
     const existentes = {}; if (fechas.length) { const { data } = await sb.from('fz_ventas').select('id,fecha,venta_data,sistema_data,recon_data,gastos').eq('business_id', b.id).gte('fecha', fechas.reduce((a, x) => x < a ? x : a)).lte('fecha', fechas.reduce((a, x) => x > a ? x : a)); (data || []).forEach(r => { existentes[r.fecha] = r; }); }
     const cerrados = {}; for (const f of [...new Set(fechas)]) { try { if (await periodoEstaCerrado(b.id, f)) cerrados[f] = true; } catch (_) {} }
@@ -23869,7 +23879,7 @@ async function abrirCargaHoja(b) {
       <div class="hoja-barra"><span class="hint" id="hojaResumen"></span><button class="btn btn-gold" id="hojaCargar">Cargar lo seleccionado</button></div>
       <p class="hint">Los días con <b>recibido pendiente</b> no se cargan por omisión: con «Sistema» y sin «Recibido», el Estado de resultados mostraría un faltante de caja falso. «Solo ventas» registra el ingreso sin generar ese faltante; cuando llegue el corte, vuelve a pegar la hoja y la app lo completa.${plan.anteriores ? ` Se ignoraron ${plan.anteriores} día(s) anteriores a la fecha elegida.` : ''}${plan.repetidas ? ` ${plan.repetidas} fila(s) con fecha repetida se ignoraron.` : ''}</p>
 `;
-    const det = bg.querySelector('#hojaDetMapeo'); if (det) det.open = false; bg.querySelector('#hojaTexto').style.display = 'none'; box.scrollIntoView({ block: 'start' });
+    const det = bg.querySelector('#hojaDetMapeo'); if (det) det.open = false; const dd = bg.querySelector('#hojaDetDatos'); if (dd) dd.open = false; bg.querySelector('#hojaTexto').style.display = 'none'; box.scrollIntoView({ block: 'start' });
     const resumen = () => { const c = {}; box.querySelectorAll('.hoja-accion').forEach(s => { c[s.value] = (c[s.value] || 0) + 1; }); box.querySelector('#hojaResumen').textContent = Object.keys(c).filter(a => a !== 'omitir').map(a => `${c[a]} · ${HOJA_ACCION_TXT[a]}`).join('  ·  ') || 'Nada seleccionado para cargar.'; };
     box.querySelectorAll('.hoja-accion').forEach(s => s.addEventListener('change', resumen)); resumen();
     box.querySelector('#hojaCargar').addEventListener('click', async () => {
@@ -28454,7 +28464,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.51';
+const APP_VERSION = '2026-11-06.52';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.

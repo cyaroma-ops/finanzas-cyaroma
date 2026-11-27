@@ -1534,7 +1534,17 @@ input.tc-bloqueado{background:var(--bg,#f4f5f8);color:var(--muted);cursor:not-al
 .hoja-t{margin:18px 0 6px;font-size:14px}
 .hoja-sum{cursor:pointer;font-weight:700}
 .hoja-mapeo{max-height:none;overflow:visible;border:1px solid var(--line);border-radius:8px}
-#hojaDetMapeo .hoja-mapeo{max-height:52vh;overflow:auto}
+#hojaDetMapeo .hoja-mapeo{max-height:40vh;overflow:auto}
+.hoja-datos{max-height:48vh;overflow:auto;border:1px solid var(--line);border-radius:8px}
+.hoja-datos table{border-collapse:separate;border-spacing:0;font-size:13px}
+.hoja-datos th{position:sticky;top:0;background:#f4f6fa;z-index:2;white-space:nowrap;vertical-align:top}
+.hoja-datos td{white-space:nowrap}
+.hoja-datos .hoja-c1{position:sticky;left:0;background:#f8fafc;z-index:3;min-width:110px;border-right:1px solid var(--line)}
+.hoja-datos thead .hoja-c1{z-index:4}
+.hoja-nc{color:#9aa3b2;font-weight:400}
+.hoja-dest-t{display:inline-block;font-size:11px;font-weight:600;border-radius:6px;padding:1px 6px;margin-top:2px}
+.hoja-dest-v{background:#e6f4ec;color:#1e7a46}.hoja-dest-s{background:#e8eefb;color:#2a4fa3}.hoja-dest-r{background:#fff1dc;color:#9a6a00}
+.hoja-nodia td{background:#f6f6f6;color:#8a93a3}.hoja-antes td{color:#8a93a3}
 .hoja-mapeo th{position:sticky;top:0;background:#f4f6fa;z-index:1}
 .hoja-barra{position:sticky;bottom:0;background:#fff;border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 0;margin-top:8px;z-index:2}
 .hoja-ok{color:#1e7a46;font-weight:600}.hoja-aviso{color:#9a6a00;font-weight:600}
@@ -4073,7 +4083,7 @@ Transacciones recurrentes
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-06.51"></script>
+<script src="/app.js?v=2026-11-06.52"></script>
 <div id="alertasPanel" class="alertas-panel" role="dialog" aria-label="Alertas de la Revisión de consistencia" hidden></div>
 </body>
 </html>
