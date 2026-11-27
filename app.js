@@ -23649,11 +23649,22 @@ function hojaNum(t) {
   if (x === '' || x === '-' || x === '—') return 0;
   const n = Number(x); return Number.isFinite(n) ? n : 0;
 }
-function hojaFecha(t) {
+const HOJA_MESES = { enero: 1, febrero: 2, marzo: 3, abril: 4, mayo: 5, junio: 6, julio: 7, agosto: 8, septiembre: 9, setiembre: 9, octubre: 10, noviembre: 11, diciembre: 12 };
+function hojaFecha(t, anio) {
   const x = String(t == null ? '' : t).trim(); let m;
   if ((m = x.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/))) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
   if ((m = x.match(/^(\d{4})-(\d{2})-(\d{2})$/))) return x;
+  // «viernes, noviembre 20,» (con o sin año): el año se toma de la hoja (ver hojaAnio)
+  if ((m = x.match(/^(?:[a-záéíóúñ]+,?\s+)?([a-záéíóúñ]+)\s+(\d{1,2})(?:\s*,?\s*(\d{4}))?\s*,?$/i))) {
+    const mes = HOJA_MESES[normalizarEncabezado(m[1])], dia = Number(m[2]), a = m[3] || anio;
+    if (mes && a && dia >= 1 && dia <= 31) return `${a}-${String(mes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
+  }
   return null;
+}
+// Año para fechas escritas sin año: el de los renglones «TOTAL NOVIEMBRE.2026» de la hoja; si no hay, el de «Cargar desde».
+function hojaAnio(filas, desde) {
+  for (const c of filas) { const m = String(c[0] || '').match(/(?:^|[^\d])(20\d{2})\s*$/); if (m && !hojaFecha(c[0])) return m[1]; }
+  return (desde || todayStr()).slice(0, 4);
 }
 function hojaLeerTexto(texto) {
   const lineas = String(texto || '').replace(/\r/g, '').split('\n').filter(l => l.trim() !== '');
@@ -23693,9 +23704,9 @@ function hojaSugerirMapeo(encabezados, cv, cs, cr) {
 const hojaRecibidoCuenta = (rd, cr) => Object.keys(rd).some(id => { const c = cr.find(x => x.id === id); return c && c.categoria !== 'propinas' && Math.abs((rd[id] || {}).monto || 0) > 0.004; });
 function hojaPlan({ filas, encabezados, mapeo, desde, existentes, cv, cs, cr, cerrados }) {
   const colTotal = (() => { const i = (encabezados || HOJA_ENCABEZADOS).findIndex(h => normalizarEncabezado(h) === 'ventastotales'); return i >= 0 ? i : 5; })();
-  const vistas = new Set(), out = []; let anteriores = 0, repetidas = 0, sinFecha = 0;
+  const anioHoja = hojaAnio(filas, desde), vistas = new Set(), out = []; let anteriores = 0, repetidas = 0, sinFecha = 0;
   filas.forEach(c => {
-    const fecha = hojaFecha(c[0]); if (!fecha) { sinFecha++; return; }
+    const fecha = hojaFecha(c[0], anioHoja); if (!fecha) { sinFecha++; return; }
     if (fecha < desde) { anteriores++; return; }
     if (vistas.has(fecha)) { repetidas++; return; } vistas.add(fecha);
     const vd = {}, sd = {}, rd = {};
@@ -23742,7 +23753,9 @@ function enviarVentas() {
   const ui = SpreadsheetApp.getUi(), libro = SpreadsheetApp.getActive();
   const hoja = FINANZAS.hoja ? libro.getSheetByName(FINANZAS.hoja) : libro.getActiveSheet();
   if (!hoja) { ui.alert('No encuentro la pestaña «' + FINANZAS.hoja + '».'); return; }
-  const filas = hoja.getDataRange().getDisplayValues().filter(function (r) { return r.some(function (c) { return String(c).trim() !== ''; }); });
+  const rango = hoja.getDataRange(), texto = rango.getDisplayValues(), reales = rango.getValues(), zona = libro.getSpreadsheetTimeZone();
+  reales.forEach(function (r, i) { if (r[0] instanceof Date) texto[i][0] = Utilities.formatDate(r[0], zona, 'dd/MM/yyyy'); });
+  const filas = texto.filter(function (r) { return r.some(function (c) { return String(c).trim() !== ''; }); });
   if (!filas.length) { ui.alert('La pestaña no tiene datos.'); return; }
   const resp = UrlFetchApp.fetch(FINANZAS.url + '/rest/v1/rpc/fz_recibir_hoja', {
     method: 'post', contentType: 'application/json', muteHttpExceptions: true,
@@ -23842,7 +23855,7 @@ async function abrirCargaHoja(b) {
   const previa = async () => {
     mapeo = leerMapeoUI(); const desde = bg.querySelector('#hojaDesde').value; if (!desde) { toast('Elige desde qué fecha cargar.', 'error'); return; }
     await hojaMapeoGuardar(b.id, mapeo);
-    const fechas = lectura.filas.map(c => hojaFecha(c[0])).filter(f => f && f >= desde);
+    const anioH = hojaAnio(lectura.filas, desde), fechas = lectura.filas.map(c => hojaFecha(c[0], anioH)).filter(f => f && f >= desde);
     const existentes = {}; if (fechas.length) { const { data } = await sb.from('fz_ventas').select('id,fecha,venta_data,sistema_data,recon_data,gastos').eq('business_id', b.id).gte('fecha', fechas.reduce((a, x) => x < a ? x : a)).lte('fecha', fechas.reduce((a, x) => x > a ? x : a)); (data || []).forEach(r => { existentes[r.fecha] = r; }); }
     const cerrados = {}; for (const f of [...new Set(fechas)]) { try { if (await periodoEstaCerrado(b.id, f)) cerrados[f] = true; } catch (_) {} }
     const plan = hojaPlan({ filas: lectura.filas, encabezados, mapeo, desde, existentes, cv, cs, cr: crr, cerrados });
@@ -28440,7 +28453,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.49';
+const APP_VERSION = '2026-11-06.50';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
