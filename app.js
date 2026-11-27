@@ -18164,6 +18164,13 @@ async function openMovimientoModal(contexto, movimientoExistente) {
 
 // 06.58 — Documento soporte del traspaso: se sube al guardar y queda en AMBAS patas (la cuenta origen y la destino lo muestran).
 let STATE_traspasoArchivos = [];
+const IDS_PANEL_DOC_TRASP = { workspace: 'traspasoWorkspace', panel: 'traspasoPanelDoc', nombre: 'traspasoPanelDocNombre', embed: 'traspasoPanelDocEmbed', toggleBtn: 'traspasoTogglePanelDoc' };
+// La ventana crece a «dos paneles» (documento a la izquierda, captura a la derecha) solo cuando hay un archivo; sin archivo se ve chica como siempre.
+function traspasoPanelActualizar() {
+  const caja = document.getElementById('traspasoModalBox'); if (!caja) return;
+  caja.classList.toggle('modal-workspace', STATE_traspasoArchivos.length > 0);
+  actualizarPanelDocumentoEmbebido(IDS_PANEL_DOC_TRASP, STATE_traspasoArchivos);
+}
 function renderTraspasoAdjunto() {
   const box = document.getElementById('traspasoAdjuntoCell');
   if (!box) return;
@@ -18180,12 +18187,13 @@ function renderTraspasoAdjunto() {
   };
   const input = box.querySelector('.traspaso-adjunto-input');
   if (input) input.addEventListener('change', () => agregar(Array.from(input.files)));
-  wireDocumentoSoporteVerQuitar(box, pendientes, renderTraspasoAdjunto, null);
+  wireDocumentoSoporteVerQuitar(box, pendientes, renderTraspasoAdjunto, IDS_PANEL_DOC_TRASP);
   habilitarDragDropAdjunto(box.querySelector('.doc-adjunto-bloque'), agregar);
+  traspasoPanelActualizar();
 }
 async function openTraspasoModal(businessId, onDone) {
   await populateTraspasoSelects(businessId);
-  STATE_traspasoArchivos = []; renderTraspasoAdjunto();
+  STATE_traspasoArchivos = []; { const pn = document.getElementById('traspasoPanelDoc'); if (pn) pn.dataset.oculto = ''; } renderTraspasoAdjunto();
   document.getElementById('traspasoFecha').value = todayStr();
   document.getElementById('traspasoMonto').value = '';
   document.getElementById('traspasoMontoDestino').value = '';
@@ -18218,7 +18226,7 @@ async function openTraspasoModal(businessId, onDone) {
   document.getElementById('traspasoOrigen').onchange = (e) => handleNuevo(e.target);
   document.getElementById('traspasoDestino').onchange = (e) => handleNuevo(e.target);
 
-  document.getElementById('cancelTraspaso').onclick = () => document.getElementById('modalTraspaso').classList.remove('show');
+  document.getElementById('cancelTraspaso').onclick = () => { document.getElementById('modalTraspaso').classList.remove('show'); STATE_traspasoArchivos = []; traspasoPanelActualizar(); };
   document.getElementById('saveTraspaso').onclick = async () => {
     const origen = document.getElementById('traspasoOrigen').value;
     const destino = document.getElementById('traspasoDestino').value;
@@ -18257,7 +18265,7 @@ async function openTraspasoModal(businessId, onDone) {
       }
     }
     if (STATE_traspasoArchivos.length) registrarAuditoria(businessId, 'crear', 'Traspasos', `Traspaso con ${STATE_traspasoArchivos.length} documento(s) soporte`);
-    STATE_traspasoArchivos = [];
+    STATE_traspasoArchivos = []; traspasoPanelActualizar();
     if (fallaronAdj) toast('El traspaso se registró, pero ' + fallaronAdj + ' archivo(s) no se pudieron adjuntar. Ábrelo en la cuenta y adjúntalo de nuevo.', 'error');
     } finally { btnGuardar.disabled = false; }
     document.getElementById('modalTraspaso').classList.remove('show');
@@ -28662,7 +28670,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.58';
+const APP_VERSION = '2026-11-06.59';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.

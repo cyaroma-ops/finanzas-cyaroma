@@ -3842,8 +3842,10 @@ Transacciones recurrentes
 
 <!-- Modal: traspaso entre cuentas -->
 <div class="modal-bg" id="modalTraspaso">
-  <div class="modal">
+  <div class="modal" id="traspasoModalBox">
     <h3>Traspaso entre cuentas</h3>
+    <div class="doc-workspace" id="traspasoWorkspace">
+    <div class="doc-workspace-panel-captura">
     <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px;">Mueve dinero entre bancos y/o cajas de efectivo del mismo negocio. Se registra automáticamente en ambas cuentas.</p>
     <div class="field">
       <label>Origen</label>
@@ -3871,7 +3873,16 @@ Transacciones recurrentes
       <label>Descripción (opcional)</label>
       <input type="text" id="traspasoDescripcion" placeholder="Ej. Traspaso para pago de nómina">
     </div>
-    <div class="field" id="traspasoAdjuntoCell"></div>
+    <div class="field"><label>Documento soporte <span style="color:var(--muted);font-weight:400;">(opcional — comprobante, ficha, imagen)</span></label><div id="traspasoAdjuntoCell"></div></div>
+    </div>
+    <div class="doc-workspace-panel-doc" id="traspasoPanelDoc" style="display:none;">
+      <div class="doc-viewer-toolbar">
+        <strong id="traspasoPanelDocNombre">Documento</strong>
+        <button type="button" class="doc-toggle-viewer" id="traspasoTogglePanelDoc">Ocultar</button>
+      </div>
+      <div class="doc-viewer-embed" id="traspasoPanelDocEmbed"></div>
+    </div>
+    </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="cancelTraspaso">Cancelar</button>
       <button class="btn btn-gold" id="saveTraspaso">Realizar traspaso</button>
@@ -4084,7 +4095,7 @@ Transacciones recurrentes
 </div>
 
 <script src="/config.js"></script>
-<script src="/app.js?v=2026-11-06.58"></script>
+<script src="/app.js?v=2026-11-06.59"></script>
 <div id="alertasPanel" class="alertas-panel" role="dialog" aria-label="Alertas de la Revisión de consistencia" hidden></div>
 </body>
 </html>
