@@ -23721,7 +23721,7 @@ function hojaPlan({ filas, encabezados, mapeo, desde, existentes, cv, cs, cr, ce
     const catSum = (obj, lista, cats) => Object.keys(obj).reduce((t, id) => { const c = lista.find(x => x.id === id); const v = typeof obj[id] === 'object' ? (obj[id] || {}).monto : obj[id]; return c && cats.includes(c.categoria) ? t + Math.abs(Number(v) || 0) : t; }, 0);
     const incompleto = [['efectivo', ['efectivo']], ['tarjetas', ['tarjetas', 'bancos']], ['cxc', ['cxc']]].some(([k, rc]) => catSum(sd, cs, [k]) > 0.004 && catSum(rd, cr, rc) < 0.004);
     const ex = existentes[fecha] || null, exCompleto = ex && hojaRecibidoCuenta(ex.recon_data || {}, cr), exVentas = ex ? cv.reduce((t, k) => t + (k.tipo === 'resta' ? -1 : 1) * (Number((ex.venta_data || {})[k.id]) || 0), 0) : 0;
-    const f = { fecha, vd, sd, rd, totalApp, totalHoja, cuadra: totalHoja ? Math.abs(totalApp - totalHoja) < 0.06 : null, tieneVentas, tieneRecibido, ex, exVentas, cerrado: !!cerrados[fecha] };
+    const f = { fecha, vd, sd, rd, incompleto, totalApp, totalHoja, cuadra: totalHoja ? Math.abs(totalApp - totalHoja) < 0.06 : null, tieneVentas, tieneRecibido, ex, exVentas, cerrado: !!cerrados[fecha] };
     if (!tieneVentas && !tieneSistema && !tieneRecibido) { f.estado = 'Sin datos'; f.opciones = ['omitir']; f.accion = 'omitir'; }
     else if (f.cerrado) { f.estado = 'Periodo cerrado'; f.opciones = ['omitir']; f.accion = 'omitir'; }
     else if (ex && exCompleto) { f.estado = Math.abs(exVentas - totalApp) < 0.06 ? 'Ya está cargado (igual)' : `Ya está cargado · ventas distintas (app ${fmt(exVentas)} / hoja ${fmt(totalApp)})`; f.opciones = ['omitir', 'actualizar']; f.accion = 'omitir'; }
@@ -23840,15 +23840,15 @@ async function abrirCargaHoja(b) {
     + `<optgroup label="Recibido">${crr.map(c => `<option value="r:${c.id}" ${sel === 'r:' + c.id ? 'selected' : ''}>${escHtml(c.nombre)} (${escHtml(c.categoria)})</option>`).join('')}</optgroup>`;
   const pintarMapeo = () => {
     const muestra = lectura && lectura.filas[0] ? lectura.filas[0] : [];
-    bg.querySelector('#hojaMapeoBox').innerHTML = `<h4 class="hoja-t">1 · Asignar columnas <span class="hint">(se guarda y se reutiliza)</span></h4><div class="hoja-mapeo"><table class="tabla-contable"><thead><tr><th>#</th><th>Columna de tu hoja</th><th>Ejemplo</th><th>Va a</th></tr></thead><tbody>${encabezados.map((h, i) => i === 0 ? '' : `<tr><td>${i + 1}</td><td>${escHtml(h)}</td><td class="hint">${escHtml(String(muestra[i] == null ? '' : muestra[i]).trim())}</td><td><select class="hoja-dest" data-i="${i}">${opcionesDestino(mapeo && mapeo[i] ? mapeo[i].g + ':' + mapeo[i].id : '')}</select></td></tr>`).join('')}</tbody></table></div>
-      <div class="hoja-fila"><button class="btn btn-ghost btn-sm" id="hojaGuardarMapeo">Guardar asignación</button><button class="btn btn-gold btn-sm" id="hojaVerPrevia">Ver vista previa</button></div>`;
+    bg.querySelector('#hojaMapeoBox').innerHTML = `<details id="hojaDetMapeo" open><summary class="hoja-t hoja-sum">1 · Asignar columnas <span class="hint">(se guarda y se reutiliza; se oculta al ver la vista previa)</span></summary><div class="hoja-mapeo"><table class="tabla-contable"><thead><tr><th>#</th><th>Columna de tu hoja</th><th>Ejemplo</th><th>Va a</th></tr></thead><tbody>${encabezados.map((h, i) => i === 0 ? '' : `<tr><td>${i + 1}</td><td>${escHtml(h)}</td><td class="hint">${escHtml(String(muestra[i] == null ? '' : muestra[i]).trim())}</td><td><select class="hoja-dest" data-i="${i}">${opcionesDestino(mapeo && mapeo[i] ? mapeo[i].g + ':' + mapeo[i].id : '')}</select></td></tr>`).join('')}</tbody></table></div>
+      <div class="hoja-fila"><button class="btn btn-ghost btn-sm" id="hojaGuardarMapeo">Guardar asignación</button><button class="btn btn-gold btn-sm" id="hojaVerPrevia">Ver vista previa</button></div></details>`;
   };
   const leerMapeoUI = () => { const m = {}; bg.querySelectorAll('.hoja-dest').forEach(sel => { if (sel.value) { const [g, id] = sel.value.split(':'); m[sel.dataset.i] = { g, id }; } }); return m; };
   bg.querySelector('#hojaLeer').addEventListener('click', () => {
     const r = hojaLeerTexto(bg.querySelector('#hojaTexto').value); if (r.error) { toast(r.error, 'error'); return; }
     lectura = r; encabezados = r.encabezados || HOJA_ENCABEZADOS;
     if (!mapeo || !Object.keys(mapeo).length) mapeo = hojaSugerirMapeo(encabezados, cv, cs, crr);
-    pintarMapeo(); bg.querySelector('#hojaPrevia').innerHTML = '';
+    pintarMapeo(); bg.querySelector('#hojaPrevia').innerHTML = ''; bg.querySelector('#hojaTexto').classList.add('hoja-texto-chico');
     bg.querySelector('#hojaGuardarMapeo').addEventListener('click', async () => { mapeo = leerMapeoUI(); await hojaMapeoGuardar(b.id, mapeo); toast('Asignación guardada.'); });
     bg.querySelector('#hojaVerPrevia').addEventListener('click', () => previa());
   });
@@ -23865,10 +23865,11 @@ async function abrirCargaHoja(b) {
     const box = bg.querySelector('#hojaPrevia');
     if (!plan.dias.length) { box.innerHTML = `<h4 class="hoja-t">2 · Vista previa</h4><p class="hint">No hay días desde la fecha elegida${plan.anteriores ? ` (se ignoraron ${plan.anteriores} anteriores)` : ''}.</p>`; return; }
     box.innerHTML = `<h4 class="hoja-t">2 · Vista previa — tú decides qué cargar</h4>
-      <div class="hoja-mapeo"><table class="tabla-contable"><thead><tr><th>Día</th><th class="num">Ventas (hoja)</th><th>Cuadre</th><th>Recibido</th><th>Estado</th><th>Acción</th></tr></thead><tbody>${plan.dias.map((d, k) => `<tr class="${d.pendiente ? 'hoja-pend' : ''}"><td>${fechaCorta(d.fecha)}</td><td class="num">${d.tieneVentas ? fmt(d.totalApp) : '—'}</td><td>${d.cuadra === null ? '—' : (d.cuadra ? '<span class="hoja-ok">Cuadra</span>' : `<span class="hoja-aviso">Difiere ${fmt(d.totalApp - d.totalHoja)}</span>`)}</td><td>${d.tieneRecibido ? '<span class="hoja-ok">Completo</span>' : '<span class="hoja-aviso">Pendiente</span>'}</td><td>${escHtml(d.estado)}</td><td><select class="hoja-accion" data-k="${k}" ${d.opciones.length < 2 ? 'disabled' : ''}>${d.opciones.map(o => `<option value="${o}" ${o === d.accion ? 'selected' : ''}>${HOJA_ACCION_TXT[o]}</option>`).join('')}</select></td></tr>`).join('')}</tbody></table></div>
-      <p class="hint" id="hojaResumen"></p>
+      <div class="hoja-mapeo"><table class="tabla-contable"><thead><tr><th>Día</th><th class="num">Ventas (hoja)</th><th>Cuadre</th><th>Recibido</th><th>Estado</th><th>Acción</th></tr></thead><tbody>${plan.dias.map((d, k) => `<tr class="${d.pendiente ? 'hoja-pend' : ''}"><td>${fechaCorta(d.fecha)}</td><td class="num">${d.tieneVentas ? fmt(d.totalApp) : '—'}</td><td>${d.cuadra === null ? '—' : (d.cuadra ? '<span class="hoja-ok">Cuadra</span>' : `<span class="hoja-aviso">Difiere ${fmt(d.totalApp - d.totalHoja)}</span>`)}</td><td>${d.tieneRecibido && !d.incompleto ? '<span class="hoja-ok">Completo</span>' : (d.tieneRecibido ? '<span class="hoja-aviso">Incompleto</span>' : '<span class="hoja-aviso">Pendiente</span>')}</td><td>${escHtml(d.estado)}</td><td><select class="hoja-accion" data-k="${k}" ${d.opciones.length < 2 ? 'disabled' : ''}>${d.opciones.map(o => `<option value="${o}" ${o === d.accion ? 'selected' : ''}>${HOJA_ACCION_TXT[o]}</option>`).join('')}</select></td></tr>`).join('')}</tbody></table></div>
+      <div class="hoja-barra"><span class="hint" id="hojaResumen"></span><button class="btn btn-gold" id="hojaCargar">Cargar lo seleccionado</button></div>
       <p class="hint">Los días con <b>recibido pendiente</b> no se cargan por omisión: con «Sistema» y sin «Recibido», el Estado de resultados mostraría un faltante de caja falso. «Solo ventas» registra el ingreso sin generar ese faltante; cuando llegue el corte, vuelve a pegar la hoja y la app lo completa.${plan.anteriores ? ` Se ignoraron ${plan.anteriores} día(s) anteriores a la fecha elegida.` : ''}${plan.repetidas ? ` ${plan.repetidas} fila(s) con fecha repetida se ignoraron.` : ''}</p>
-      <div class="hoja-fila"><button class="btn btn-gold" id="hojaCargar">Cargar lo seleccionado</button></div>`;
+`;
+    const det = bg.querySelector('#hojaDetMapeo'); if (det) det.open = false; bg.querySelector('#hojaTexto').style.display = 'none'; box.scrollIntoView({ block: 'start' });
     const resumen = () => { const c = {}; box.querySelectorAll('.hoja-accion').forEach(s => { c[s.value] = (c[s.value] || 0) + 1; }); box.querySelector('#hojaResumen').textContent = Object.keys(c).filter(a => a !== 'omitir').map(a => `${c[a]} · ${HOJA_ACCION_TXT[a]}`).join('  ·  ') || 'Nada seleccionado para cargar.'; };
     box.querySelectorAll('.hoja-accion').forEach(s => s.addEventListener('change', resumen)); resumen();
     box.querySelector('#hojaCargar').addEventListener('click', async () => {
@@ -28453,7 +28454,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.50';
+const APP_VERSION = '2026-11-06.51';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
