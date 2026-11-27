@@ -2231,6 +2231,53 @@ function repPdfEnc(d, e, W, margin) {
   y += 14; d.setDrawColor(10, 31, 61); d.setLineWidth(0.8); d.line(margin, y, W - margin, y); y += 20;
   return y;
 }
+// 06.62 — Ajuste de columnas para listados (impresión formal de pantallas): reparte el ancho según lo que realmente dice cada columna, baja la letra si hace falta
+// y parte las palabras larguísimas (correos, referencias, nombres sin espacios) para que NUNCA se monten sobre la celda de al lado.
+function pdfQuebrarLargas(d, txt, ancho) {
+  return String(txt).split(' ').map(tok => {
+    if (!tok || d.getTextWidth(tok) <= ancho) return tok;
+    const partes = []; let ac = '';
+    for (const ch of tok) { if (d.getTextWidth(ac + ch) > ancho && ac) { partes.push(ac); ac = ch; } else ac += ch; }
+    if (ac) partes.push(ac); return partes.join(' ');
+  }).join(' ');
+}
+function pdfLayoutListado(d, cols, body, metas, avail, land) {
+  const PAD = 2.5, textoDe = (c) => String(c && typeof c === 'object' ? c.content : (c == null ? '' : c));
+  const filas = body.map((r, i) => ({ r, m: metas[i] })).filter(x => x.r.length === cols.length && x.m && !['grupo', 'texto', 'sec'].includes(x.m.tipo));
+  let fs = land ? 8.5 : 8.5, ancho = [], total = Infinity;
+  for (; fs >= 6; fs -= 0.5) {
+    const medida = (t, neg) => { d.setFont('helvetica', neg ? 'bold' : 'normal'); d.setFontSize(fs); return d.getTextWidth(t) * 1.06 + 1; };   // margen: autoTable mide un poco más ancho que jsPDF
+    const minimos = [], plenos = [];
+    cols.forEach((c, i) => {
+      let mn = 0, pl = 0;
+      const mide = (t, neg) => { const tx = String(t); const largo = medida(tx, neg); pl = Math.max(pl, largo); const pal = tx.split(' ').reduce((m, w) => Math.max(m, medida(w, neg)), 0); mn = Math.max(mn, pal); };
+      mide(c.h, true);
+      filas.forEach(x => { const neg = ['sub', 'total', 'gran'].includes(x.m.tipo); mide(textoDe(x.r[i]), neg); });
+      mn = c.num ? pl + 8 : (c.fecha ? pl : Math.min(mn, 58)); pl = Math.min(pl, c.num ? pl : 230);   // las palabras de más de ~58 pt (correos, referencias) se parten; fechas e importes nunca
+      minimos.push(mn + PAD * 2); plenos.push(Math.max(pl + (c.num ? 8 : 0), mn) + PAD * 2);
+    });
+    const sumMin = minimos.reduce((a, b) => a + b, 0); total = sumMin;
+    ancho = minimos.slice();
+    if (sumMin <= avail || fs <= 6) {
+      let sobra = avail - sumMin;
+      if (sobra > 0) {   // primero lo que necesita cada columna para no partirse, luego el resto en proporción
+        const falta = plenos.map((p, i) => Math.max(0, p - minimos[i])), tf = falta.reduce((a, b) => a + b, 0);
+        if (tf > 0) { const dar = Math.min(sobra, tf); falta.forEach((f, i) => { ancho[i] += dar * f / tf; }); sobra -= dar; }
+        if (sobra > 0.5) {
+          const soloCifras = cols.length > 1 && cols.slice(1).every(c => c.num);   // cuadro de resumen: el espacio se reparte entre las cifras, no en la etiqueta
+          if (soloCifras) cols.forEach((c, i) => { if (i) ancho[i] += sobra / (cols.length - 1); });
+          else { const txt = cols.map((c, i) => (c.num ? 0 : plenos[i])), tt = txt.reduce((a, b) => a + b, 0) || 1; cols.forEach((c, i) => { ancho[i] += sobra * (c.num ? 0.15 / cols.length : (txt[i] / tt) * 0.85); }); }
+        }
+      } else if (sobra < 0) { const k = avail / sumMin; ancho = ancho.map(w => w * k); }   // aun a 6 pt no cabe: se comprime parejo y las palabras largas se parten
+      break;
+    }
+  }
+  // normaliza para que sume exacto el ancho disponible
+  const sm = ancho.reduce((a, b) => a + b, 0); ancho = ancho.map(w => w * avail / sm);
+  d.setFont('helvetica', 'normal'); d.setFontSize(fs);
+  filas.forEach(x => x.r.forEach((c, i) => { if (cols[i].num) return; const neg = ['sub', 'total', 'gran'].includes(x.m.tipo); d.setFont('helvetica', neg ? 'bold' : 'normal'); d.setFontSize(fs); const t = textoDe(c); const q = pdfQuebrarLargas(d, t, ancho[i] - PAD * 2 - 0.5); if (typeof c === 'object') c.content = q; else x.r[i] = q; }));
+  return { fs, ancho, PAD };
+}
 function repPdfFormal(doc, b, it) {
   const { jsPDF } = window.jspdf, orient = it.orient || 'portrait', f = it.formal, e = repFormalEnc(b, it);
   let d = doc; if (d) d.addPage('letter', orient); else d = new jsPDF({ unit: 'pt', format: 'letter', orientation: orient });
@@ -2258,10 +2305,12 @@ function repPdfFormal(doc, b, it) {
       else colSt[i] = { minCellWidth: ancha && i === 0 ? 138 : (MIN[c.h] || (i === 0 ? 60 : 40)) };
       if (c.pct) colSt[i].textColor = [110, 118, 135];
     });
+    let fsz = ancha ? 6.5 : (land ? 8 : 9);
+    if (it.k === 'generica') { const L = pdfLayoutListado(d, cols, body, metas, W - 2 * margin, land); fsz = L.fs; cols.forEach((c, i) => { colSt[i] = { cellWidth: L.ancho[i], halign: c.num && i ? 'right' : 'left' }; }); }
     const iniPag = d.internal.getCurrentPageInfo().pageNumber, primera = {};
     d.autoTable({
       startY: y, margin: { left: margin, right: margin, top: 44, bottom: 46 }, theme: 'plain', head: [cols.map(c => c.h)], body, columnStyles: colSt, showHead: 'everyPage',
-      styles: { fontSize: ancha ? 6.5 : (land ? 8 : 9), cellPadding: { top: 2.2, bottom: 2.2, left: ancha ? 1.5 : 2, right: ancha ? 1.5 : 2 }, textColor: [30, 41, 59], overflow: 'linebreak' },
+      styles: { fontSize: fsz, cellPadding: { top: 2.2, bottom: 2.2, left: ancha ? 1.5 : 2, right: ancha ? 1.5 : 2 }, textColor: [30, 41, 59], overflow: 'linebreak' },
       headStyles: { fontStyle: 'bold', textColor: [10, 31, 61], fillColor: false, halign: 'left', lineWidth: 0, cellPadding: { top: 4, bottom: 4, left: 2, right: 2 } },
       didParseCell: (data) => {
         if (data.section === 'head' && numIdx.includes(data.column.index)) data.cell.styles.halign = 'right';
@@ -2373,7 +2422,7 @@ const genVisible = (x) => { try { const cs = getComputedStyle(x); return cs.disp
 const GEN_FECHA = /^\d{4}-\d{2}-\d{2}$/;
 function repFormalGenericoDeSeccion(sec, opts = {}) {
   const fuera = opts.fuera || null, secciones = [];
-  const kpis = [...sec.querySelectorAll('.kpi')].filter(genVisible).map(k => { const l = k.querySelector('.label'), v = k.querySelector('.value'); return l && v ? `${genTexto(l.textContent)}: ${genTexto(v.textContent)}` : ''; }).filter(Boolean);
+  const kpis = [...sec.querySelectorAll('.kpi')].filter(genVisible).map(k => { const l = k.querySelector('.label'), v = k.querySelector('.value'); return l && v ? { h: genTexto(l.textContent), v: genTexto(v.textContent) } : null; }).filter(Boolean);
   [...sec.querySelectorAll('table')].filter(t => !t.parentElement.closest('table') && genVisible(t) && !t.closest('.modal-bg, .solo-pantalla')).forEach(t => {
     const hdrRow = t.tHead && t.tHead.rows.length ? t.tHead.rows[t.tHead.rows.length - 1] : null;
     const th = hdrRow ? [...hdrRow.cells].filter(genVisible) : [];
@@ -2405,14 +2454,18 @@ function repFormalGenericoDeSeccion(sec, opts = {}) {
     if (cols.length) cols[0].num = false;   // la primera columna es la etiqueta
     const rows = filas.map(f => {
       if (f.tipo === 'texto') return { tipo: 'texto', nivel: 0, celdas: [f.texto] };
-      return { tipo: f.tipo, nivel: 0, negr: !!f.neg, celdas: idx.map((i, j) => { const v = f.celdas[i] ? f.celdas[i].t : ''; if (v === '' || v === '-' || v === '—') return ''; if (cols[j].num) { const x = repNumero(v); return x === null ? v : x; } if (cols[j].fecha && GEN_FECHA.test(v)) return { f: v }; return v; }) };
+      return { tipo: f.tipo, nivel: 0, negr: false, celdas: idx.map((i, j) => { const v = f.celdas[i] ? f.celdas[i].t : ''; if (v === '' || v === '-' || v === '—') return ''; if (cols[j].num) { if (/^(tc|tipo de cambio)$/i.test(cols[j].h)) return v; const x = repNumero(v); return x === null ? v : x; } if (cols[j].fecha && GEN_FECHA.test(v)) return { f: v }; return v; }) };
     });
     const card = t.closest('.card'), h3 = card && card.querySelector('.card-head h3, h3, h4');
     let titulo = h3 ? genTexto(h3.textContent) : ''; if (titulo.length > 90) titulo = titulo.slice(0, 87) + '…';
     secciones.push({ titulo, cols, rows });
   });
   if (!secciones.length) return null;
-  if (kpis.length) secciones[0].rows.unshift({ tipo: 'texto', nivel: 0, celdas: [kpis.join('   ·   ')] });
+  if (kpis.length) {   // los indicadores de arriba de la pantalla (por pagar, pagado este mes…) salen como un cuadro de resumen, con sus títulos en negritas
+    const cols = [{ h: 'Resumen', num: false }].concat(kpis.map(k => ({ h: k.h, num: true })));
+    const celdas = ['Cifras actuales'].concat(kpis.map(k => { const x = repNumero(k.v); return x !== null && /[$.]/.test(k.v) ? x : k.v; }));
+    secciones.unshift({ titulo: '', cols, rows: [{ tipo: 'cuenta', nivel: 0, negr: false, celdas }] });
+  }
   return { cols: secciones[0].cols, secciones, porSeccion: true, mayus: false };
 }
 async function pantallaGenericaItem() {
@@ -28845,7 +28898,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.61';
+const APP_VERSION = '2026-11-06.62';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
