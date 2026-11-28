@@ -2435,6 +2435,7 @@ function genTextoCelda(td) {
 }
 const genVisible = (x) => { try { const cs = getComputedStyle(x); return cs.display !== 'none' && cs.visibility !== 'hidden'; } catch (_) { return true; } };
 const GEN_FECHA = /^\d{4}-\d{2}-\d{2}$/;
+const genSinPref = (v) => String(v).replace(/^(US|USD|EUR|MXN|€|\$)\s*/i, '');   // 06.64 — «US 15.00», «€ 0.00»: la cifra se alinea como cualquier importe
 function repFormalGenericoDeSeccion(sec, opts = {}) {
   const fuera = opts.fuera || null, secciones = [];
   const kpiTxt = (v) => { const c = v.cloneNode(true); c.querySelectorAll('br').forEach(x => x.replaceWith(' / ')); c.querySelectorAll('div').forEach(x => x.prepend(' · ')); return genTexto(c.textContent); };
@@ -2453,27 +2454,35 @@ function repFormalGenericoDeSeccion(sec, opts = {}) {
     });
     const datos = filas.filter(f => f.celdas);
     if (!datos.length) return;
+    // 06.64 — tabla de movimientos de una caja/cuenta: su título es «Movimientos — <caja>» (no el de la tarjeta de arriba) y el resumen del mes sale como línea
+    let tituloMov = '', resumenMov = '';
+    if (t.classList.contains('tabla-operativa--ledger')) {
+      const cab = t.closest('.table-wrap') && t.closest('.table-wrap').previousElementSibling, hint = cab && cab.querySelector('.hint');
+      if (hint) { let tx = genTexto(hint.textContent); const m = tx.match(/^(.+?) · (?:.+? )?— (.*)$/); if (m) { tituloMov = 'Movimientos — ' + m[1]; resumenMov = m[2]; } else tituloMov = 'Movimientos'; }
+    }
     const n = Math.max(th.length, ...datos.map(f => f.celdas.length));
     const hdr = Array.from({ length: n }, (_, i) => genTexto(th[i] ? th[i].textContent : ''));
     // columnas que se conservan: con encabezado o con contenido, sin ser de acciones/adjuntos, y sin las que el reporte deja fuera por ancho
-    const conserva = hdr.map((h, i) => { const vacia = datos.every(f => !(f.celdas[i] && f.celdas[i].t)); if (vacia) return false; if (!h && vacia) return false; if (/^(acciones?|✓)$/i.test(h)) return false; if (fuera && fuera.test(h)) return false; return true; });
+    const nomMov = tituloMov.replace(/^Movimientos — /, '');
+    const conserva = hdr.map((h, i) => { const vacia = datos.every(f => !(f.celdas[i] && f.celdas[i].t)); if (vacia) return false; if (!h && vacia) return false; if (/^(acciones?|✓)$/i.test(h)) return false; if (nomMov && /^moneda$/i.test(h) && datos.filter(f => f.tipo === 'cuenta').every(f => !f.celdas[i] || !f.celdas[i].t || f.celdas[i].t === nomMov)) return false; if (fuera && fuera.test(h)) return false; return true; });
     const idx = conserva.map((v, i) => v ? i : -1).filter(i => i >= 0); if (!idx.length) return;
     const cols = idx.map(i => {
       const cuerpo = datos.filter(f => f.tipo === 'cuenta');   // los totales no deciden de qué tipo es la columna
       const vals = cuerpo.map(f => (f.celdas[i] ? f.celdas[i].t : '')).filter(v => v !== '' && v !== '-' && v !== '—');
       const marcada = (th[i] && th[i].classList.contains('num')) || cuerpo.some(f => f.celdas[i] && f.celdas[i].num);
       // número = la pantalla lo marca como cifra, o todos sus valores parecen importes (con centavos o signo $); folios y conteos enteros se quedan como texto
-      const esNum = vals.length > 0 && vals.every(v => repNumero(v) !== null) && (marcada || vals.every(v => /[$.]/.test(v)));
+      const esNum = vals.length > 0 && vals.every(v => repNumero(genSinPref(v)) !== null) && (marcada || vals.every(v => /[$.]/.test(v)));
       const esFecha = !esNum && vals.length > 0 && vals.every(v => GEN_FECHA.test(v));
       return { h: hdr[i] || '', num: !!esNum, fecha: esFecha };
     });
     if (cols.length) cols[0].num = false;   // la primera columna es la etiqueta
     const rows = filas.map(f => {
       if (f.tipo === 'texto') return { tipo: 'texto', nivel: 0, celdas: [f.texto] };
-      return { tipo: f.tipo, nivel: 0, negr: false, celdas: idx.map((i, j) => { const v = f.celdas[i] ? f.celdas[i].t : ''; if (v === '' || v === '-' || v === '—') return ''; if (cols[j].num) { if (/^(tc|tipo de cambio)$/i.test(cols[j].h)) return v; const x = repNumero(v); return x === null ? v : x; } if (cols[j].fecha && GEN_FECHA.test(v)) return { f: v }; return v; }) };
+      return { tipo: f.tipo, nivel: 0, negr: false, celdas: idx.map((i, j) => { const v = f.celdas[i] ? f.celdas[i].t : ''; if (v === '' || v === '-' || v === '—') return ''; if (cols[j].num) { if (/^(tc|tipo de cambio)$/i.test(cols[j].h)) return v; const x = repNumero(genSinPref(v)); return x === null ? v : x; } if (cols[j].fecha && GEN_FECHA.test(v)) return { f: v }; return v; }) };
     });
     const card = t.closest('.card'), h3 = card && card.querySelector('.card-head h3, h3, h4');
     let titulo = h3 ? genTexto(h3.textContent) : ''; if (titulo.length > 90) titulo = titulo.slice(0, 87) + '…';
+    if (tituloMov) { titulo = tituloMov; if (resumenMov) rows.unshift({ tipo: 'texto', nivel: 0, celdas: [resumenMov.replace(/^[^:]*:\s*/, '').replace(/\b(\d{4})-(\d{2})\b/, '$2/$1') ] }); }
     secciones.push({ titulo, cols, rows });
   });
   if (!secciones.length) return null;
@@ -28920,7 +28929,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.63';
+const APP_VERSION = '2026-11-06.64';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
