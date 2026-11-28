@@ -2418,10 +2418,10 @@ function repPdfPies(doc) {
 // Toma EXACTAMENTE lo que la pantalla ya muestra (no recalcula ni consulta nada): lee las tablas visibles, deja fuera botones y columnas de acciones,
 // y las presenta con el mismo formato formal de los estados financieros (membrete con logo, título, tabla, totales, pie con página).
 const GEN_COLS_FUERA = {
-  proveedores: /^(tc|d[ií]as retraso|desglose|adjuntos?)$/i,
+  proveedores: /^(adjuntos?)$/i,   // 06.65 — solo se quita lo que son botones; TC, días de retraso y demás columnas con datos SÍ se imprimen
   clientes: /^(adjuntos?)$/i,
 };
-const genTexto = (n) => String(n || '').replace(/[▲▼▴▾↑↓⇅]/g, '').replace(/\s+/g, ' ').trim();
+const genTexto = (n) => String(n || '').replace(/[▲▼▴▾↑↓⇅↕]/g, '').replace(/\s+/g, ' ').replace(/(^|[ ·])(.{4,}?) — \2(?=$|[ ·])/gi, '$1$2').trim();   // 06.65: sin flechas de orden y «X — X» (razón social = nombre) sale una sola vez
 // Texto de una celda tal como se ve: los campos editables (importes, fechas, listas) se leen por su valor actual, los botones y vínculos de acción no cuentan.
 function genTextoCelda(td) {
   const c = td.cloneNode(true), vivos = [...td.querySelectorAll('input, select, textarea')], copias = [...c.querySelectorAll('input, select, textarea')];
@@ -2435,10 +2435,10 @@ function genTextoCelda(td) {
 }
 const genVisible = (x) => { try { const cs = getComputedStyle(x); return cs.display !== 'none' && cs.visibility !== 'hidden'; } catch (_) { return true; } };
 const GEN_FECHA = /^\d{4}-\d{2}-\d{2}$/;
-const genSinPref = (v) => String(v).replace(/^(US|USD|EUR|MXN|€|\$)\s*/i, '');   // 06.64 — «US 15.00», «€ 0.00»: la cifra se alinea como cualquier importe
+const genNum = (v) => { const m = String(v).match(/^(-)?\s*(US|USD|EUR|MXN|€)?\s*(-)?\s*(\$)?\s*(.+)$/i); if (!m) return null; const x = repNumero(m[5]); return x === null ? null : { x: (m[1] || m[3]) ? -Math.abs(x) : x, pref: m[2] || '' }; };   // 06.65 — la moneda («US», «€») se conserva en la cifra   // 06.64 — «US 15.00», «€ 0.00»: la cifra se alinea como cualquier importe
 function repFormalGenericoDeSeccion(sec, opts = {}) {
   const fuera = opts.fuera || null, secciones = [];
-  const kpiTxt = (v) => { const c = v.cloneNode(true); c.querySelectorAll('br').forEach(x => x.replaceWith(' / ')); c.querySelectorAll('div').forEach(x => x.prepend(' · ')); return genTexto(c.textContent); };
+  const kpiTxt = (v) => { const c = v.cloneNode(true); c.querySelectorAll('br').forEach(x => x.replaceWith(' / ')); c.querySelectorAll('div').forEach(x => x.prepend(' · ')); return genTexto(c.textContent).replace(/ · ≈ ([^·]*?) al tipo de cambio de cada factura/gi, ' (≈ $1)').replace(/ al tipo de cambio de cada factura/gi, ''); };
   const kpis = [...sec.querySelectorAll('.kpi')].filter(genVisible).map(k => { const l = k.querySelector('.label'), v = k.querySelector('.value'); return l && v ? { h: genTexto(l.textContent), v: kpiTxt(v) } : null; }).filter(Boolean);
   [...sec.querySelectorAll('table')].filter(t => !t.parentElement.closest('table') && genVisible(t) && !t.closest('.modal-bg, .solo-pantalla')).forEach(t => {
     const hdrRow = t.tHead && t.tHead.rows.length ? t.tHead.rows[t.tHead.rows.length - 1] : null;
@@ -2464,21 +2464,21 @@ function repFormalGenericoDeSeccion(sec, opts = {}) {
     const hdr = Array.from({ length: n }, (_, i) => genTexto(th[i] ? th[i].textContent : ''));
     // columnas que se conservan: con encabezado o con contenido, sin ser de acciones/adjuntos, y sin las que el reporte deja fuera por ancho
     const nomMov = tituloMov.replace(/^Movimientos — /, '');
-    const conserva = hdr.map((h, i) => { const vacia = datos.every(f => !(f.celdas[i] && f.celdas[i].t)); if (vacia) return false; if (!h && vacia) return false; if (/^(acciones?|✓)$/i.test(h)) return false; if (nomMov && /^moneda$/i.test(h) && datos.filter(f => f.tipo === 'cuenta').every(f => !f.celdas[i] || !f.celdas[i].t || f.celdas[i].t === nomMov)) return false; if (fuera && fuera.test(h)) return false; return true; });
+    const conserva = hdr.map((h, i) => { const vacia = datos.every(f => !(f.celdas[i] && f.celdas[i].t)); if (vacia && (!h || /^(desglose|adjuntos?|acciones?|documento|archivo)$/i.test(h))) return false; if (!vacia && datos.every(f => !(f.celdas[i] && f.celdas[i].t) || /^(ver|adjuntar|editar|desglosar|···|\.\.\.)$/i.test(f.celdas[i].t))) return false; if (/^(acciones?|✓)$/i.test(h)) return false; if (fuera && fuera.test(h)) return false; return true; });
     const idx = conserva.map((v, i) => v ? i : -1).filter(i => i >= 0); if (!idx.length) return;
     const cols = idx.map(i => {
       const cuerpo = datos.filter(f => f.tipo === 'cuenta');   // los totales no deciden de qué tipo es la columna
       const vals = cuerpo.map(f => (f.celdas[i] ? f.celdas[i].t : '')).filter(v => v !== '' && v !== '-' && v !== '—');
       const marcada = (th[i] && th[i].classList.contains('num')) || cuerpo.some(f => f.celdas[i] && f.celdas[i].num);
       // número = la pantalla lo marca como cifra, o todos sus valores parecen importes (con centavos o signo $); folios y conteos enteros se quedan como texto
-      const esNum = vals.length > 0 && vals.every(v => repNumero(genSinPref(v)) !== null) && (marcada || vals.every(v => /[$.]/.test(v)));
+      const esNum = vals.length > 0 && vals.every(v => genNum(v) !== null) && (marcada || vals.every(v => /[$.]/.test(v)));
       const esFecha = !esNum && vals.length > 0 && vals.every(v => GEN_FECHA.test(v));
       return { h: hdr[i] || '', num: !!esNum, fecha: esFecha };
     });
     if (cols.length) cols[0].num = false;   // la primera columna es la etiqueta
     const rows = filas.map(f => {
       if (f.tipo === 'texto') return { tipo: 'texto', nivel: 0, celdas: [f.texto] };
-      return { tipo: f.tipo, nivel: 0, negr: false, celdas: idx.map((i, j) => { const v = f.celdas[i] ? f.celdas[i].t : ''; if (v === '' || v === '-' || v === '—') return ''; if (cols[j].num) { if (/^(tc|tipo de cambio)$/i.test(cols[j].h)) return v; const x = repNumero(genSinPref(v)); return x === null ? v : x; } if (cols[j].fecha && GEN_FECHA.test(v)) return { f: v }; return v; }) };
+      return { tipo: f.tipo, nivel: 0, negr: false, celdas: idx.map((i, j) => { const v = f.celdas[i] ? f.celdas[i].t : ''; if (v === '' || v === '-' || v === '—') return ''; if (cols[j].num) { if (/^(tc|tipo de cambio)$/i.test(cols[j].h)) return v; const g = genNum(v); return g === null ? v : (g.pref ? g.pref + ' ' + (g.x === 0 ? '0.00' : repFormalCelda(g.x)) : g.x); } if (cols[j].fecha && GEN_FECHA.test(v)) return { f: v }; return v; }) };
     });
     const card = t.closest('.card'), h3 = card && card.querySelector('.card-head h3, h3, h4');
     let titulo = h3 ? genTexto(h3.textContent) : ''; if (titulo.length > 90) titulo = titulo.slice(0, 87) + '…';
@@ -2499,10 +2499,10 @@ async function pantallaGenericaItem() {
   let titulo = '', periodo = '', nombre = '', nombreSub = '', fuera = GEN_COLS_FUERA[sec] || null;
   if (sec === 'proveedores') {
     if (STATE_provVista === 'directorio') { titulo = 'Directorio de proveedores'; periodo = `Saldos pendientes al ${hoy}`; }
-    else if (STATE_provVista === 'detalle') { titulo = 'Estado de cuenta'; nombre = STATE_provDetalleNombre || ''; periodo = `Al ${hoy}`; }
+    else if (STATE_provVista === 'detalle') { titulo = 'Estado de cuenta'; nombre = genTexto(STATE_provDetalleNombre || ''); periodo = `Al ${hoy}`; }
     else { titulo = 'Cuentas por pagar — facturas'; periodo = `Filtro: ${STATE_provFiltro} · al ${hoy}`; }
   } else if (sec === 'clientes') {
-    if (STATE_clientesVista === 'detalle') { titulo = 'Estado de cuenta'; nombre = STATE_clienteDetalleNombre || ''; periodo = `Al ${hoy}`; }
+    if (STATE_clientesVista === 'detalle') { titulo = 'Estado de cuenta'; nombre = genTexto(STATE_clienteDetalleNombre || ''); periodo = `Al ${hoy}`; }
     else if (STATE_clientesVista === 'directorio') { titulo = 'Directorio de clientes'; periodo = `Saldos pendientes al ${hoy}`; }
     else { titulo = 'Cuentas por cobrar — facturas'; periodo = `Al ${hoy}`; }
   } else if (sec === 'bancos') { titulo = 'Bancos'; periodo = mes; }
@@ -28929,7 +28929,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.64';
+const APP_VERSION = '2026-11-06.65';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
