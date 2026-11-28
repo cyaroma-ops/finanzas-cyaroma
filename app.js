@@ -2167,7 +2167,7 @@ const repFormalCelda = (v) => {
 };
 function repFormalEnc(b, it) {
   const m = membreteDe(b);
-  return { razon: m.razon, ident: m.ident, dom: m.dom, logo: m.logo, titulo: String(it.titulo).toUpperCase(), periodo: String(it.periodo || it.subtitulo || ''), moneda: it.moneda !== undefined ? it.moneda : 'Cifras en pesos mexicanos' };
+  return { razon: m.razon, ident: m.ident, dom: m.dom, logo: m.logo, titulo: String(it.titulo).toUpperCase(), nombre: it.nombre ? String(it.nombre) : '', nombreSub: it.nombreSub ? String(it.nombreSub) : '', periodo: String(it.periodo || it.subtitulo || ''), moneda: it.moneda !== undefined ? it.moneda : 'Cifras en pesos mexicanos' };
 }
 function repFormalHtml(it, b, limite = 400) {
   const f = it.formal, e = repFormalEnc(b, it); let cuenta = 0, cortado = false;
@@ -2183,11 +2183,11 @@ function repFormalHtml(it, b, limite = 400) {
   let cuerpo;
   if (f.porSeccion) cuerpo = f.secciones.map(s => { const cols = s.cols || f.cols; return `${s.titulo ? `<h4 class="rf-sec-t">${escHtml(s.titulo)}</h4>` : ''}<div class="table-wrap"><table class="rf-tabla">${thead(cols)}<tbody>${s.rows.map(r => fila(r, cols)).join('')}</tbody></table></div>`; }).join('');
   else cuerpo = `<div class="table-wrap"><table class="rf-tabla">${thead(f.cols)}<tbody>${f.secciones.map(s => (s.titulo ? `<tr class="rf-sec"><td colspan="${f.cols.length}">${escHtml(s.titulo.toUpperCase())}</td></tr>` : '') + s.rows.map(r => fila(r, f.cols)).join('')).join('')}</tbody></table></div>`;
-  return `<article class="rep-hoja"><header class="rf-enc"><div class="rf-razon">${escHtml(e.razon)}</div>${e.ident ? `<div class="rf-ident">${escHtml(e.ident)}</div>` : ''}<div class="rf-titulo">${escHtml(e.titulo)}</div><div class="rf-per">${escHtml(e.periodo)}</div><div class="rf-mon">${e.moneda}</div></header>${cuerpo}${cortado ? `<p class="hint">Vista previa: se muestran los primeros ${limite} renglones; el PDF y el Excel traen todo.</p>` : ''}<footer class="rf-pie">Generado el ${new Date().toLocaleString('es-MX')}${STATE.nombreUsuario ? ' · ' + escHtml(STATE.nombreUsuario) : ''}</footer></article>`;
+  return `<article class="rep-hoja"><header class="rf-enc"><div class="rf-razon">${escHtml(e.razon)}</div>${e.ident ? `<div class="rf-ident">${escHtml(e.ident)}</div>` : ''}<div class="rf-titulo">${escHtml(e.titulo)}</div>${e.nombre ? `<div class="rf-per" style="font-weight:700;color:var(--navy-1);">${escHtml(e.nombre)}${e.nombreSub ? ` <span style="font-weight:400;">· ${escHtml(e.nombreSub)}</span>` : ''}</div>` : ''}<div class="rf-per">${escHtml(e.periodo)}</div><div class="rf-mon">${e.moneda}</div></header>${cuerpo}${cortado ? `<p class="hint">Vista previa: se muestran los primeros ${limite} renglones; el PDF y el Excel traen todo.</p>` : ''}<footer class="rf-pie">Generado el ${new Date().toLocaleString('es-MX')}${STATE.nombreUsuario ? ' · ' + escHtml(STATE.nombreUsuario) : ''}</footer></article>`;
 }
 function repHojaFormal(it, b) {
   const f = it.formal, e = repFormalEnc(b, it), aoa = [], fmts = {}, ncols = Math.max(...f.secciones.map(s => (s.cols || f.cols).length), f.cols.length);
-  const enc = [e.razon].concat(e.ident ? [e.ident] : [], e.dom || [], [e.titulo, e.periodo], e.moneda ? [e.moneda] : []);
+  const enc = [e.razon].concat(e.ident ? [e.ident] : [], e.dom || [], [e.titulo].concat(e.nombre ? [e.nombre + (e.nombreSub ? ' · ' + e.nombreSub : '')] : [], [e.periodo]), e.moneda ? [e.moneda] : []);
   enc.forEach(t => aoa.push([t])); aoa.push([]);
   const mayus = (t) => f.mayus ? String(t).toUpperCase() : String(t);
   const poner = (r, cols) => {
@@ -2226,7 +2226,12 @@ function repPdfEnc(d, e, W, margin) {
   (e.dom || []).forEach(t => { y += 11.5; d.setFont('helvetica', 'normal'); d.setFontSize(8.5); d.setTextColor(102, 112, 133); d.text(pdfLimpiaTexto(t), W / 2, y, { align: 'center' }); });
   y = Math.max(y, 34 + hLogo);
   y += 24; d.setFont('helvetica', 'bold'); d.setFontSize(12); d.setTextColor(10, 31, 61); d.text(pdfLimpiaTexto(e.titulo), W / 2, y, { align: 'center' });
-  y += 17; d.setFont('helvetica', 'normal'); d.setFontSize(10); d.setTextColor(60, 70, 90); d.text(pdfLimpiaTexto(e.periodo), W / 2, y, { align: 'center' });
+  if (e.nombre) {   // 06.63 — el nombre (proveedor / cliente) va solo, debajo del título, una sola vez
+    y += 17; d.setFont('helvetica', 'bold'); let fn = 11.5; d.setFontSize(fn); const nm = pdfLimpiaTexto(e.nombre).toUpperCase(); while (fn > 8 && d.getTextWidth(nm) > W - 2 * margin) { fn -= 0.5; d.setFontSize(fn); }
+    d.setTextColor(10, 31, 61); d.text(nm, W / 2, y, { align: 'center' });
+    if (e.nombreSub) { y += 12; d.setFont('helvetica', 'normal'); d.setFontSize(8.5); d.setTextColor(102, 112, 133); d.text(pdfLimpiaTexto(e.nombreSub), W / 2, y, { align: 'center' }); }
+  }
+  y += 16; d.setFont('helvetica', 'normal'); d.setFontSize(10); d.setTextColor(60, 70, 90); d.text(pdfLimpiaTexto(e.periodo), W / 2, y, { align: 'center' });
   if (e.moneda) { y += 14; d.setFont('helvetica', 'italic'); d.setFontSize(8.5); d.setTextColor(110, 118, 135); d.text(e.moneda, W / 2, y, { align: 'center' }); }
   y += 14; d.setDrawColor(10, 31, 61); d.setLineWidth(0.8); d.line(margin, y, W - margin, y); y += 20;
   return y;
@@ -2234,27 +2239,32 @@ function repPdfEnc(d, e, W, margin) {
 // 06.62 — Ajuste de columnas para listados (impresión formal de pantallas): reparte el ancho según lo que realmente dice cada columna, baja la letra si hace falta
 // y parte las palabras larguísimas (correos, referencias, nombres sin espacios) para que NUNCA se monten sobre la celda de al lado.
 function pdfQuebrarLargas(d, txt, ancho) {
-  return String(txt).split(' ').map(tok => {
+  const trocear = (tok) => {
     if (!tok || d.getTextWidth(tok) <= ancho) return tok;
+    const cortes = tok.split(/(?<=[-_\/@])/);   // 06.63 — primero se parte donde el texto ya trae guion, diagonal, arroba o punto
+    if (cortes.length > 1) return cortes.map(trocear).join(' ');
     const partes = []; let ac = '';
     for (const ch of tok) { if (d.getTextWidth(ac + ch) > ancho && ac) { partes.push(ac); ac = ch; } else ac += ch; }
-    if (ac) partes.push(ac); return partes.join(' ');
-  }).join(' ');
+    if (ac) partes.push(ac);
+    const n = partes.length; if (n > 1 && partes[n - 1].length === 1 && partes[n - 2].length > 2) { const p = partes[n - 2]; partes[n - 1] = p.slice(-1) + partes[n - 1]; partes[n - 2] = p.slice(0, -1); }   // nunca una letra sola en el renglón
+    return partes.join(' ');
+  };
+  return String(txt).split(' ').map(trocear).join(' ');
 }
-function pdfLayoutListado(d, cols, body, metas, avail, land) {
+function pdfLayoutListado(d, cols, body, metas, avail, land, resumen) {
   const PAD = 2.5, textoDe = (c) => String(c && typeof c === 'object' ? c.content : (c == null ? '' : c));
   const filas = body.map((r, i) => ({ r, m: metas[i] })).filter(x => x.r.length === cols.length && x.m && !['grupo', 'texto', 'sec'].includes(x.m.tipo));
   let fs = land ? 8.5 : 8.5, ancho = [], total = Infinity;
   for (; fs >= 6; fs -= 0.5) {
     const medida = (t, neg) => { d.setFont('helvetica', neg ? 'bold' : 'normal'); d.setFontSize(fs); return d.getTextWidth(t) * 1.06 + 1; };   // margen: autoTable mide un poco más ancho que jsPDF
-    const minimos = [], plenos = [];
+    const minimos = [], plenos = [], duros = [];
     cols.forEach((c, i) => {
-      let mn = 0, pl = 0;
+      let mn = 0, pl = 0, hd = 0;
       const mide = (t, neg) => { const tx = String(t); const largo = medida(tx, neg); pl = Math.max(pl, largo); const pal = tx.split(' ').reduce((m, w) => Math.max(m, medida(w, neg)), 0); mn = Math.max(mn, pal); };
-      mide(c.h, true);
+      mide(c.h, true); String(c.h).split(' ').forEach(w => { hd = Math.max(hd, medida(w, true)); });   // 06.63 — ninguna palabra del encabezado se parte nunca ("Estado")
       filas.forEach(x => { const neg = ['sub', 'total', 'gran'].includes(x.m.tipo); mide(textoDe(x.r[i]), neg); });
-      mn = c.num ? pl + 8 : (c.fecha ? pl : Math.min(mn, 58)); pl = Math.min(pl, c.num ? pl : 230);   // las palabras de más de ~58 pt (correos, referencias) se parten; fechas e importes nunca
-      minimos.push(mn + PAD * 2); plenos.push(Math.max(pl + (c.num ? 8 : 0), mn) + PAD * 2);
+      mn = c.num ? pl + 8 : (c.fecha ? pl : Math.min(mn, i === 0 ? 120 : 84)); pl = Math.min(pl, c.num ? pl : 230);   // las palabras de más de ~58 pt (correos, referencias) se parten; fechas e importes nunca
+      duros.push((c.num ? mn : (c.fecha ? mn : Math.min(mn, Math.max(hd, 30)))) + PAD * 2 + 1); minimos.push(mn + PAD * 2); plenos.push(Math.max(pl + (c.num ? 8 : 0), mn) + PAD * 2);
     });
     const sumMin = minimos.reduce((a, b) => a + b, 0); total = sumMin;
     ancho = minimos.slice();
@@ -2264,11 +2274,15 @@ function pdfLayoutListado(d, cols, body, metas, avail, land) {
         const falta = plenos.map((p, i) => Math.max(0, p - minimos[i])), tf = falta.reduce((a, b) => a + b, 0);
         if (tf > 0) { const dar = Math.min(sobra, tf); falta.forEach((f, i) => { ancho[i] += dar * f / tf; }); sobra -= dar; }
         if (sobra > 0.5) {
-          const soloCifras = cols.length > 1 && cols.slice(1).every(c => c.num);   // cuadro de resumen: el espacio se reparte entre las cifras, no en la etiqueta
-          if (soloCifras) cols.forEach((c, i) => { if (i) ancho[i] += sobra / (cols.length - 1); });
+          const soloCifras = resumen || (cols.length > 1 && cols.slice(1).every(c => c.num));   // cuadro de resumen: el espacio se reparte entre las cifras, no en la etiqueta
+          if (soloCifras) cols.forEach((c, i) => { ancho[i] += sobra / cols.length; });
           else { const txt = cols.map((c, i) => (c.num ? 0 : plenos[i])), tt = txt.reduce((a, b) => a + b, 0) || 1; cols.forEach((c, i) => { ancho[i] += sobra * (c.num ? 0.15 / cols.length : (txt[i] / tt) * 0.85); }); }
         }
-      } else if (sobra < 0) { const k = avail / sumMin; ancho = ancho.map(w => w * k); }   // aun a 6 pt no cabe: se comprime parejo y las palabras largas se parten
+      } else if (sobra < 0) {   // aun a 6 pt no cabe: primero se recortan las columnas de texto hasta su límite duro (encabezado, cifras y fechas intactos), el resto parejo
+        const dur = duros.reduce((a, b) => a + b, 0), holg = minimos.map((m, i) => Math.max(0, m - duros[i])), th = holg.reduce((a, b) => a + b, 0);
+        if (sumMin - th <= avail && th > 0) { const q = (sumMin - avail) / th; ancho = minimos.map((m, i) => m - holg[i] * q); }
+        else { const k = avail / Math.max(dur, 1); ancho = duros.map(w => w * Math.min(1, k)); }
+      }   // aun a 6 pt no cabe: se comprime parejo y las palabras largas se parten
       break;
     }
   }
@@ -2284,7 +2298,7 @@ function repPdfFormal(doc, b, it) {
   const W = d.internal.pageSize.getWidth(), H = d.internal.pageSize.getHeight(), land = orient === 'landscape', ancha = f.cols.length > 8, margin = ancha ? 32 : 48;   // ancha: 12 meses + acumulado
   const mayus = (t) => f.mayus ? String(t).toUpperCase() : String(t);
   let y = repPdfEnc(d, e, W, margin);
-  const unidades = f.porSeccion ? f.secciones.map(s => ({ titulo: s.titulo, cols: s.cols || f.cols, secs: [{ titulo: '', rows: s.rows }] })) : [{ titulo: '', cols: f.cols, secs: f.secciones }];
+  const unidades = f.porSeccion ? f.secciones.map(s => ({ titulo: s.titulo, cols: s.cols || f.cols, secs: [{ titulo: '', rows: s.rows }], resumen: !!s.resumen })) : [{ titulo: '', cols: f.cols, secs: f.secciones }];
   const MIN = { Cuenta: it.k === 'balanza' ? 170 : 150, Tipo: 78, Tercero: 100, Documento: 90, 'Factura o Nota': 84, Fecha: 58, 'Concepto o descripción': 150, 'Descripción': 150 };
   unidades.forEach((u, ui) => {
     if (f.porSeccion && u.titulo) { if (y > H - 110) { d.addPage('letter', orient); y = 56; } d.setFont('helvetica', 'bold'); d.setFontSize(10); d.setTextColor(10, 31, 61); d.text(pdfLimpiaTexto(u.titulo), margin, y); y += 8; }
@@ -2299,17 +2313,18 @@ function repPdfFormal(doc, b, it) {
         body.push(cols.map((c, i) => ({ content: pdfLimpiaTexto(repFormalCelda(r.celdas[i])), styles: Object.assign({ fontStyle: neg ? 'bold' : 'normal' }, i === 0 && r.nivel ? { cellPadding: { top: 2.2, bottom: 2.2, left: 2 + r.nivel * 12, right: 2 } } : {}) })));
       });
     });
-    const numIdx = cols.map((c, i) => c.num && i ? i : -1).filter(i => i >= 0), colSt = {};
+    const numIdx = cols.map((c, i) => c.num && (i || u.resumen) ? i : -1).filter(i => i >= 0), colSt = {};
     cols.forEach((c, i) => {
       if (c.num && i) colSt[i] = { halign: 'right', cellWidth: ancha ? Math.floor((W - 2 * margin - 138) / (n - 1)) : (land ? 74 : (c.pct ? 80 : 108)) };
       else colSt[i] = { minCellWidth: ancha && i === 0 ? 138 : (MIN[c.h] || (i === 0 ? 60 : 40)) };
       if (c.pct) colSt[i].textColor = [110, 118, 135];
     });
     let fsz = ancha ? 6.5 : (land ? 8 : 9);
-    if (it.k === 'generica') { const L = pdfLayoutListado(d, cols, body, metas, W - 2 * margin, land); fsz = L.fs; cols.forEach((c, i) => { colSt[i] = { cellWidth: L.ancho[i], halign: c.num && i ? 'right' : 'left' }; }); }
+    let tablaAncho = null;
+    if (it.k === 'generica') { const L = pdfLayoutListado(d, cols, body, metas, W - 2 * margin, land, !!u.resumen); fsz = L.fs; if (u.resumen) { const tope = Math.max(...L.ancho.map((w, i) => Math.min(w, 150)), 110); L.ancho = L.ancho.map((w, i) => Math.max(Math.min(w, tope), 0)); tablaAncho = L.ancho.reduce((x, y) => x + y, 0); } cols.forEach((c, i) => { colSt[i] = { cellWidth: L.ancho[i], halign: c.num && (i || u.resumen) ? 'right' : 'left' }; }); }
     const iniPag = d.internal.getCurrentPageInfo().pageNumber, primera = {};
     d.autoTable({
-      startY: y, margin: { left: margin, right: margin, top: 44, bottom: 46 }, theme: 'plain', head: [cols.map(c => c.h)], body, columnStyles: colSt, showHead: 'everyPage',
+      startY: y, margin: { left: margin, right: margin, top: 44, bottom: 46 }, theme: 'plain', ...(tablaAncho ? { tableWidth: tablaAncho } : {}), head: [cols.map(c => c.h)], body, columnStyles: colSt, showHead: 'everyPage',
       styles: { fontSize: fsz, cellPadding: { top: 2.2, bottom: 2.2, left: ancha ? 1.5 : 2, right: ancha ? 1.5 : 2 }, textColor: [30, 41, 59], overflow: 'linebreak' },
       headStyles: { fontStyle: 'bold', textColor: [10, 31, 61], fillColor: false, halign: 'left', lineWidth: 0, cellPadding: { top: 4, bottom: 4, left: 2, right: 2 } },
       didParseCell: (data) => {
@@ -2422,7 +2437,8 @@ const genVisible = (x) => { try { const cs = getComputedStyle(x); return cs.disp
 const GEN_FECHA = /^\d{4}-\d{2}-\d{2}$/;
 function repFormalGenericoDeSeccion(sec, opts = {}) {
   const fuera = opts.fuera || null, secciones = [];
-  const kpis = [...sec.querySelectorAll('.kpi')].filter(genVisible).map(k => { const l = k.querySelector('.label'), v = k.querySelector('.value'); return l && v ? { h: genTexto(l.textContent), v: genTexto(v.textContent) } : null; }).filter(Boolean);
+  const kpiTxt = (v) => { const c = v.cloneNode(true); c.querySelectorAll('br').forEach(x => x.replaceWith(' / ')); c.querySelectorAll('div').forEach(x => x.prepend(' · ')); return genTexto(c.textContent); };
+  const kpis = [...sec.querySelectorAll('.kpi')].filter(genVisible).map(k => { const l = k.querySelector('.label'), v = k.querySelector('.value'); return l && v ? { h: genTexto(l.textContent), v: kpiTxt(v) } : null; }).filter(Boolean);
   [...sec.querySelectorAll('table')].filter(t => !t.parentElement.closest('table') && genVisible(t) && !t.closest('.modal-bg, .solo-pantalla')).forEach(t => {
     const hdrRow = t.tHead && t.tHead.rows.length ? t.tHead.rows[t.tHead.rows.length - 1] : null;
     const th = hdrRow ? [...hdrRow.cells].filter(genVisible) : [];
@@ -2462,22 +2478,22 @@ function repFormalGenericoDeSeccion(sec, opts = {}) {
   });
   if (!secciones.length) return null;
   if (kpis.length) {   // los indicadores de arriba de la pantalla (por pagar, pagado este mes…) salen como un cuadro de resumen, con sus títulos en negritas
-    const cols = [{ h: 'Resumen', num: false }].concat(kpis.map(k => ({ h: k.h, num: true })));
-    const celdas = ['Cifras actuales'].concat(kpis.map(k => { const x = repNumero(k.v); return x !== null && /[$.]/.test(k.v) ? x : k.v; }));
-    secciones.unshift({ titulo: '', cols, rows: [{ tipo: 'cuenta', nivel: 0, negr: false, celdas }] });
+    const cols = kpis.map(k => ({ h: k.h, num: true }));   // 06.63 — los títulos de los indicadores son los encabezados y las cifras van debajo, sin columna de etiqueta
+    const celdas = kpis.map(k => { const x = repNumero(k.v); return x !== null && /[$.]/.test(k.v) ? x : k.v; });
+    secciones.unshift({ titulo: '', resumen: true, cols, rows: [{ tipo: 'cuenta', nivel: 0, negr: false, celdas }] });
   }
   return { cols: secciones[0].cols, secciones, porSeccion: true, mayus: false };
 }
 async function pantallaGenericaItem() {
   const b = biz(), sec = STATE.currentSection, el = document.getElementById('sec-' + sec), hoy = fechaCorta(todayStr());
   const mes = MESES_LARGO[Number(STATE.currentMonth.slice(5, 7)) - 1] + ' ' + STATE.currentMonth.slice(0, 4);
-  let titulo = '', periodo = '', fuera = GEN_COLS_FUERA[sec] || null;
+  let titulo = '', periodo = '', nombre = '', nombreSub = '', fuera = GEN_COLS_FUERA[sec] || null;
   if (sec === 'proveedores') {
     if (STATE_provVista === 'directorio') { titulo = 'Directorio de proveedores'; periodo = `Saldos pendientes al ${hoy}`; }
-    else if (STATE_provVista === 'detalle') { titulo = `Estado de cuenta — ${STATE_provDetalleNombre || 'proveedor'}`; periodo = `Al ${hoy}`; }
+    else if (STATE_provVista === 'detalle') { titulo = 'Estado de cuenta'; nombre = STATE_provDetalleNombre || ''; periodo = `Al ${hoy}`; }
     else { titulo = 'Cuentas por pagar — facturas'; periodo = `Filtro: ${STATE_provFiltro} · al ${hoy}`; }
   } else if (sec === 'clientes') {
-    if (STATE_clientesVista === 'detalle') { titulo = `Estado de cuenta — ${STATE_clienteDetalleNombre || 'cliente'}`; periodo = `Al ${hoy}`; }
+    if (STATE_clientesVista === 'detalle') { titulo = 'Estado de cuenta'; nombre = STATE_clienteDetalleNombre || ''; periodo = `Al ${hoy}`; }
     else if (STATE_clientesVista === 'directorio') { titulo = 'Directorio de clientes'; periodo = `Saldos pendientes al ${hoy}`; }
     else { titulo = 'Cuentas por cobrar — facturas'; periodo = `Al ${hoy}`; }
   } else if (sec === 'bancos') { titulo = 'Bancos'; periodo = mes; }
@@ -2486,8 +2502,14 @@ async function pantallaGenericaItem() {
   else return { kind: 'ninguno' };
   const formal = el ? repFormalGenericoDeSeccion(el, { fuera }) : null;
   if (!formal) return { kind: 'ninguno' };
+  if (nombre) {   // estado de cuenta: el nombre sale una sola vez bajo el título; si la tarjeta lo repite como encabezado se quita, y el RFC pasa a la línea del nombre
+    const norm = (x) => String(x || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    formal.secciones.forEach(s => { if (norm(s.titulo) === norm(nombre)) s.titulo = ''; });
+    const rf = el && [...el.querySelectorAll('.card-head .hint')].map(h => genTexto(h.textContent)).find(t => /^RFC\s*:/i.test(t));
+    if (rf && !/sin registrar/i.test(rf)) nombreSub = rf;
+  }
   const ancho = Math.max(...formal.secciones.map(s => s.cols.length));
-  return { k: 'generica', kind: 'formal', titulo, subtitulo: periodo, periodo, moneda: '', orient: ancho > 6 ? 'landscape' : 'portrait', formal, secId: 'sec-' + sec };
+  return { k: 'generica', kind: 'formal', titulo, nombre, nombreSub, subtitulo: periodo, periodo, moneda: '', orient: ancho > 6 ? 'landscape' : 'portrait', formal, secId: 'sec-' + sec };
 }
 async function pantallaFormalItem(k) {
   const b = biz();
@@ -2518,7 +2540,7 @@ async function pantallaFormalExportar(k, formato, orient) {
   try {
     it = await pantallaFormalItem(k);
     if (it.kind !== 'formal') return false;      // si algo no cuadró, el llamador usa el método de siempre
-    const b = biz(), nom = `${it.titulo} - ${String(b.name).replace(/[\\\/:*?"<>|]/g, ' ')} - ${it.periodo.replace(/[\\\/:*?"<>|]/g, '-')}`;
+    const b = biz(), nom = `${it.titulo}${it.nombre ? " " + it.nombre.replace(/[\\\/:*?"<>|]/g, " ") : ""} - ${String(b.name).replace(/[\\\/:*?"<>|]/g, ' ')} - ${it.periodo.replace(/[\\\/:*?"<>|]/g, '-')}`;
     if (formato === 'excel') { const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, repHojaFormal(it, b), it.titulo.slice(0, 31)); XLSX.writeFile(wb, nom + '.xlsx'); }
     else { if (orient === 'portrait' || orient === 'landscape') it.orient = orient; const d = repPdfFormal(null, b, it); repPdfPies(d); d.save(nom + '.pdf'); toast('PDF generado: ábrelo para imprimirlo o compartirlo.'); }
     return true;
@@ -28898,7 +28920,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.62';
+const APP_VERSION = '2026-11-06.63';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
