@@ -2209,7 +2209,7 @@ function repHojaFormal(it, b) {
     hdr = aoa.length; aoa.push(f.cols.map(c => c.h));
     f.secciones.forEach(s => { if (s.titulo) { aoa.push([]); aoa.push([s.titulo.toUpperCase()]); } s.rows.forEach(r => poner(r, f.cols)); });
   }
-  aoa.push([]); aoa.push(['Generado: ' + new Date().toLocaleString('es-MX') + (STATE.nombreUsuario ? ' · ' + STATE.nombreUsuario : '')]);
+  aoa.push([]); aoa.push([`Finanzas CYAROMA · versión ${APP_VERSION} · Generado: ${fechaCorta(todayStr())}${STATE.nombreUsuario ? ' · por ' + STATE.nombreUsuario : ''}`]);
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   Object.keys(fmts).forEach(k => { const [r, c] = k.split(':').map(Number); const cel = ws[XLSX.utils.encode_cell({ r, c })]; if (cel) cel.z = fmts[k]; });
   ws['!merges'] = enc.map((_, r) => ({ s: { r, c: 0 }, e: { r, c: Math.max(0, ncols - 1) } }));
@@ -2307,7 +2307,7 @@ function repPdfFormal(doc, b, it) {
       if (s.titulo) { grp = s.titulo.toUpperCase(); metas.push({ tipo: 'sec', grp }); body.push([{ content: pdfLimpiaTexto(grp), colSpan: n, styles: { fontStyle: 'bold', fontSize: 9, textColor: [10, 31, 61], cellPadding: { top: 12, bottom: 3, left: 2, right: 2 } } }]); }
       s.rows.forEach(r => {
         if (r.tipo === 'grupo') { grp = mayus(r.celdas[0]); metas.push({ tipo: 'grupo', grp }); body.push([{ content: pdfLimpiaTexto(grp), colSpan: n, styles: { fontStyle: 'bold', textColor: [10, 31, 61], cellPadding: { top: 9, bottom: 2.5, left: 2, right: 2 } } }]); return; }
-        if (r.tipo === 'texto') { metas.push({ tipo: 'texto', grp }); body.push([{ content: pdfLimpiaTexto(String(r.celdas[0])), colSpan: n, styles: { fontStyle: 'italic', textColor: [110, 118, 135] } }]); return; }
+        if (r.tipo === 'texto') { metas.push({ tipo: 'texto', grp }); body.push([{ content: pdfLimpiaTexto(String(r.celdas[0])), colSpan: n, styles: { fontStyle: 'italic', textColor: [110, 118, 135], halign: 'left' } }]); return; }
         metas.push(Object.assign({}, r, { grp }));
         const neg = r.negr || ['sub', 'total', 'gran'].includes(r.tipo);
         body.push(cols.map((c, i) => ({ content: pdfLimpiaTexto(repFormalCelda(r.celdas[i])), styles: Object.assign({ fontStyle: neg ? 'bold' : 'normal' }, i === 0 && r.nivel ? { cellPadding: { top: 2.2, bottom: 2.2, left: 2 + r.nivel * 12, right: 2 } } : {}) })));
@@ -2409,9 +2409,10 @@ function repCapturaAsegurar() {
   if (!c) { c = document.createElement('div'); c.id = 'reportesCaptura'; c.setAttribute('aria-hidden', 'true'); c.style.cssText = 'position:absolute;left:-12000px;top:0;width:1150px;pointer-events:none;'; document.body.appendChild(c); }
   return c;
 }
-function repPdfPies(doc) {
+function repPdfPies(doc) {   // 06.66 — pie discreto: versión de la app · página · fecha de la app y quién imprimió
   const n = doc.getNumberOfPages(), W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
-  for (let i = 1; i <= n; i++) { doc.setPage(i); doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(150, 150, 150); doc.text(`Página ${i} de ${n}`, W / 2, H - 14, { align: 'center' }); doc.text('Generado: ' + new Date().toLocaleString('es-MX'), 48, H - 14); }
+  const der = `Generado: ${fechaCorta(todayStr())}${STATE.nombreUsuario ? ' · por ' + STATE.nombreUsuario : ''}`, izq = `Finanzas CYAROMA · versión ${APP_VERSION}`;
+  for (let i = 1; i <= n; i++) { doc.setPage(i); doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(150, 150, 150); doc.text(pdfLimpiaTexto(izq), 48, H - 14); doc.text(`Página ${i} de ${n}`, W / 2, H - 14, { align: 'center' }); doc.text(pdfLimpiaTexto(der), W - 48, H - 14, { align: 'right' }); }
 }
 // Lo que está en pantalla, tal cual (mismo periodo, mismas cifras), con la presentación formal. La pantalla no se modifica.
 // ===== 06.61 — Impresión formal de pantallas con listados (Proveedores, Clientes, Bancos, Efectivo, Flujo) =====
@@ -2427,7 +2428,7 @@ function genTextoCelda(td) {
   const c = td.cloneNode(true), vivos = [...td.querySelectorAll('input, select, textarea')], copias = [...c.querySelectorAll('input, select, textarea')];
   copias.forEach((x, i) => {
     const v = vivos[i]; let t = '';
-    if (v) { if (v.tagName === 'SELECT') { t = v.selectedOptions && v.selectedOptions[0] ? v.selectedOptions[0].textContent : ''; if (!v.value || /^[—–-]+\s*(elegir|selecciona|seleccionar|sin)/i.test(genTexto(t))) t = ''; } else if (v.type === 'checkbox') t = v.checked ? '✓' : ''; else t = v.value || ''; }
+    if (v) { if (v.tagName === 'SELECT') { t = v.selectedOptions && v.selectedOptions[0] ? v.selectedOptions[0].textContent : ''; if (!v.value || /^[—–-]+\s*(elegir|selecciona|seleccionar|sin)/i.test(genTexto(t))) t = ''; } else if (v.type === 'checkbox') t = v.checked ? 'Sí' : ''; else t = v.value || ''; }
     x.replaceWith(document.createTextNode(t));
   });
   c.querySelectorAll(PDF_OMITIR + ', ' + PDF_SOLO_MOVIL + ', .solo-pantalla, svg').forEach(x => x.remove());
@@ -2435,9 +2436,28 @@ function genTextoCelda(td) {
 }
 const genVisible = (x) => { try { const cs = getComputedStyle(x); return cs.display !== 'none' && cs.visibility !== 'hidden'; } catch (_) { return true; } };
 const GEN_FECHA = /^\d{4}-\d{2}-\d{2}$/;
-const genNum = (v) => { const m = String(v).match(/^(-)?\s*(US|USD|EUR|MXN|€)?\s*(-)?\s*(\$)?\s*(.+)$/i); if (!m) return null; const x = repNumero(m[5]); return x === null ? null : { x: (m[1] || m[3]) ? -Math.abs(x) : x, pref: m[2] || '' }; };   // 06.65 — la moneda («US», «€») se conserva en la cifra   // 06.64 — «US 15.00», «€ 0.00»: la cifra se alinea como cualquier importe
+const genNum = (v) => { const m = String(v).match(/^(-)?\s*(US|USD|EUR|MXN|€)?\s*(-)?\s*(\$)?\s*(.+)$/i); if (!m) return null; const x = repNumero(m[5]); return x === null ? null : { x: (m[1] || m[3]) ? -Math.abs(x) : x, pref: ({ US: 'USD', '€': 'EUR' })[(m[2] || '').toUpperCase()] || (m[2] || '').toUpperCase() }; };   // 06.65 — la moneda («US», «€») se conserva en la cifra   // 06.64 — «US 15.00», «€ 0.00»: la cifra se alinea como cualquier importe
 function repFormalGenericoDeSeccion(sec, opts = {}) {
   const fuera = opts.fuera || null, secciones = [];
+  // 06.66 — avisos de la pantalla que traen cifras (cargos sin clasificar, traspasos incompletos, cajas sin moneda…): salen como línea de texto sobre la tabla que les sigue; las notas explicativas sin cifras no
+  const avisos = [...sec.querySelectorAll('.card')].filter(c => genVisible(c) && !c.querySelector('table, .kpi, .card-head, .liq-grid, .tag-row, input, select, textarea') && /\d/.test(c.textContent)).map(c => {
+    const k = c.cloneNode(true); k.querySelectorAll('button, a, .btn, .solo-pantalla').forEach(x => x.remove());
+    const tx = genTexto(k.textContent).split(/\.\s+(?=[A-ZÁÉÍÓÚ«"])/)[0].replace(/\s+—\s*$/, '').replace(/\.$/, ''); return { el: c, texto: tx };
+  }).filter(a => a.texto);
+  // bloque «Liquidez» de Efectivo (no es tabla): sus cifras sí se imprimen; la leyenda del tipo de cambio no
+  const liqSecs = [], liq = sec.querySelector('.liq-resumen');
+  if (liq && genVisible(liq)) {
+    const ks = [...liq.querySelectorAll('.liq-kpi')].filter(genVisible).map(k => { const l = k.querySelector('.label'), v = k.querySelector('.value'), sb = k.querySelector('.liq-sub'); return l && v ? { h: genTexto(l.textContent), v: genTexto(v.textContent), sub: sb ? genTexto(sb.textContent) : '' } : null; }).filter(Boolean);
+    const h3 = liq.querySelector('.card-head h3'), hoyTx = /^Al d[ií]a de hoy/i.test(genTexto((liq.querySelector('.card-head .hint') || {}).textContent || '')) ? 'Al día de hoy' : '';
+    if (ks.length) {
+      const filaT = [];
+      if (hoyTx) filaT.push({ tipo: 'texto', nivel: 0, celdas: [hoyTx] });
+      ks.filter(k => k.sub && /\d/.test(k.sub)).forEach(k => filaT.push({ tipo: 'texto', nivel: 0, celdas: [k.h + ': ' + k.sub] }));
+      liqSecs.push({ titulo: h3 ? genTexto(h3.textContent) : 'Liquidez', resumen: true, cols: ks.map(k => ({ h: k.h, num: true })), rows: [{ tipo: 'cuenta', nivel: 0, negr: false, celdas: ks.map(k => { const g = genNum(k.v); return g ? (g.pref ? g.pref + ' ' + repFormalCelda(g.x) : g.x) : k.v; }) }].concat(filaT) });
+    }
+    const lineas = [...liq.querySelectorAll('.liq-linea:not(.liq-head)')].filter(genVisible).map(l => { const q = l.cloneNode(true); q.querySelectorAll('a, button, .btn').forEach(x => x.remove()); return [...q.children].map(x => genTexto(x.textContent)); }).filter(r => r.length >= 4);
+    if (lineas.length) liqSecs.push({ titulo: '', cols: [{ h: 'Cuenta', num: false }, { h: 'Saldo', num: true }, { h: 'TC', num: true }, { h: 'En pesos', num: true }], rows: lineas.map(r => ({ tipo: 'cuenta', nivel: 0, negr: false, celdas: [r[0], (() => { const g = genNum(r[1]); return g ? (g.pref ? g.pref + ' ' + repFormalCelda(g.x) : g.x) : r[1]; })(), r[2], (() => { const g = genNum(r[3]); return g ? g.x : r[3]; })()] })) });
+  }
   const kpiTxt = (v) => { const c = v.cloneNode(true); c.querySelectorAll('br').forEach(x => x.replaceWith(' / ')); c.querySelectorAll('div').forEach(x => x.prepend(' · ')); return genTexto(c.textContent).replace(/ · ≈ ([^·]*?) al tipo de cambio de cada factura/gi, ' (≈ $1)').replace(/ al tipo de cambio de cada factura/gi, ''); };
   const kpis = [...sec.querySelectorAll('.kpi')].filter(genVisible).map(k => { const l = k.querySelector('.label'), v = k.querySelector('.value'); return l && v ? { h: genTexto(l.textContent), v: kpiTxt(v) } : null; }).filter(Boolean);
   [...sec.querySelectorAll('table')].filter(t => !t.parentElement.closest('table') && genVisible(t) && !t.closest('.modal-bg, .solo-pantalla')).forEach(t => {
@@ -2461,10 +2481,11 @@ function repFormalGenericoDeSeccion(sec, opts = {}) {
       if (hint) { let tx = genTexto(hint.textContent); const m = tx.match(/^(.+?) · (?:.+? )?— (.*)$/); if (m) { tituloMov = 'Movimientos — ' + m[1]; resumenMov = m[2]; } else tituloMov = 'Movimientos'; }
     }
     const n = Math.max(th.length, ...datos.map(f => f.celdas.length));
-    const hdr = Array.from({ length: n }, (_, i) => genTexto(th[i] ? th[i].textContent : ''));
+    const sinEnc = !th.length && n === 2;   // 06.66: tabla de 2 columnas sin encabezado (Posición de efectivo): «Concepto» / «Importe»
+    const hdr = Array.from({ length: n }, (_, i) => { if (sinEnc) return i ? 'Importe' : 'Concepto'; const x = genTexto(th[i] ? th[i].textContent : ''); return x === '✓' || x === '✔' ? 'Conciliado' : x; });   // 06.66: ✓ de la pantalla = columna «Conciliado» (Sí / en blanco)
     // columnas que se conservan: con encabezado o con contenido, sin ser de acciones/adjuntos, y sin las que el reporte deja fuera por ancho
     const nomMov = tituloMov.replace(/^Movimientos — /, '');
-    const conserva = hdr.map((h, i) => { const vacia = datos.every(f => !(f.celdas[i] && f.celdas[i].t)); if (vacia && (!h || /^(desglose|adjuntos?|acciones?|documento|archivo)$/i.test(h))) return false; if (!vacia && datos.every(f => !(f.celdas[i] && f.celdas[i].t) || /^(ver|adjuntar|editar|desglosar|···|\.\.\.)$/i.test(f.celdas[i].t))) return false; if (/^(acciones?|✓)$/i.test(h)) return false; if (fuera && fuera.test(h)) return false; return true; });
+    const conserva = hdr.map((h, i) => { const vacia = datos.every(f => !(f.celdas[i] && f.celdas[i].t)); if (vacia && (!h || /^(desglose|adjuntos?|acciones?|documento|archivo)$/i.test(h))) return false; if (!vacia && datos.every(f => !(f.celdas[i] && f.celdas[i].t) || /^(ver|adjuntar|editar|desglosar|···|\.\.\.)$/i.test(f.celdas[i].t))) return false; if (/^(acciones?)$/i.test(h)) return false; if (fuera && fuera.test(h)) return false; return true; });
     const idx = conserva.map((v, i) => v ? i : -1).filter(i => i >= 0); if (!idx.length) return;
     const cols = idx.map(i => {
       const cuerpo = datos.filter(f => f.tipo === 'cuenta');   // los totales no deciden de qué tipo es la columna
@@ -2481,11 +2502,15 @@ function repFormalGenericoDeSeccion(sec, opts = {}) {
       return { tipo: f.tipo, nivel: 0, negr: false, celdas: idx.map((i, j) => { const v = f.celdas[i] ? f.celdas[i].t : ''; if (v === '' || v === '-' || v === '—') return ''; if (cols[j].num) { if (/^(tc|tipo de cambio)$/i.test(cols[j].h)) return v; const g = genNum(v); return g === null ? v : (g.pref ? g.pref + ' ' + (g.x === 0 ? '0.00' : repFormalCelda(g.x)) : g.x); } if (cols[j].fecha && GEN_FECHA.test(v)) return { f: v }; return v; }) };
     });
     const card = t.closest('.card'), h3 = card && card.querySelector('.card-head h3, h3, h4');
+    const hoyH = card && [...card.querySelectorAll('.card-head .hint')].some(h => /^Al d[ií]a de hoy/i.test(genTexto(h.textContent)));
+    if (hoyH && !t.classList.contains('tabla-operativa--ledger')) rows.unshift({ tipo: 'texto', nivel: 0, celdas: ['Al día de hoy'] });   // 06.66: se imprime como en pantalla
+    avisos.filter(a => !a.usado && (a.el.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_FOLLOWING)).reverse().forEach(a => { a.usado = true; rows.unshift({ tipo: 'texto', nivel: 0, celdas: [a.texto] }); });
     let titulo = h3 ? genTexto(h3.textContent) : ''; if (titulo.length > 90) titulo = titulo.slice(0, 87) + '…';
     if (tituloMov) { titulo = tituloMov; if (resumenMov) rows.unshift({ tipo: 'texto', nivel: 0, celdas: [resumenMov.replace(/^[^:]*:\s*/, '').replace(/\b(\d{4})-(\d{2})\b/, '$2/$1') ] }); }
     secciones.push({ titulo, cols, rows });
   });
-  if (!secciones.length) return null;
+  if (!secciones.length && !liqSecs.length) return null;
+  liqSecs.reverse().forEach(x => secciones.unshift(x));
   if (kpis.length) {   // los indicadores de arriba de la pantalla (por pagar, pagado este mes…) salen como un cuadro de resumen, con sus títulos en negritas
     const cols = kpis.map(k => ({ h: k.h, num: true }));   // 06.63 — los títulos de los indicadores son los encabezados y las cifras van debajo, sin columna de etiqueta
     const celdas = kpis.map(k => { const x = repNumero(k.v); return x !== null && /[$.]/.test(k.v) ? x : k.v; });
@@ -2493,17 +2518,22 @@ function repFormalGenericoDeSeccion(sec, opts = {}) {
   }
   return { cols: secciones[0].cols, secciones, porSeccion: true, mayus: false };
 }
+const genOrdenTxt = (st, nombres) => {   // 06.66 — el subtítulo dice cómo está ordenada la lista que se imprime
+  if (!st || !st.col || !nombres[st.col]) return '';
+  const num = st.col === 'saldo' || st.col === 'cantidad';
+  return ` · Ordenado por ${nombres[st.col]}, ${num ? (st.dir === 'asc' ? 'de menor a mayor' : 'de mayor a menor') : (st.dir === 'asc' ? 'de A a Z' : 'de Z a A')}`;
+};
 async function pantallaGenericaItem() {
   const b = biz(), sec = STATE.currentSection, el = document.getElementById('sec-' + sec), hoy = fechaCorta(todayStr());
   const mes = MESES_LARGO[Number(STATE.currentMonth.slice(5, 7)) - 1] + ' ' + STATE.currentMonth.slice(0, 4);
   let titulo = '', periodo = '', nombre = '', nombreSub = '', fuera = GEN_COLS_FUERA[sec] || null;
   if (sec === 'proveedores') {
-    if (STATE_provVista === 'directorio') { titulo = 'Directorio de proveedores'; periodo = `Saldos pendientes al ${hoy}`; }
+    if (STATE_provVista === 'directorio') { titulo = 'Directorio de proveedores'; periodo = `Saldos pendientes al ${hoy}` + genOrdenTxt(STATE_provDirOrden, { nombre: 'proveedor', cantidad: 'número de facturas', saldo: 'saldo pendiente' }); }
     else if (STATE_provVista === 'detalle') { titulo = 'Estado de cuenta'; nombre = genTexto(STATE_provDetalleNombre || ''); periodo = `Al ${hoy}`; }
     else { titulo = 'Cuentas por pagar — facturas'; periodo = `Filtro: ${STATE_provFiltro} · al ${hoy}`; }
   } else if (sec === 'clientes') {
     if (STATE_clientesVista === 'detalle') { titulo = 'Estado de cuenta'; nombre = genTexto(STATE_clienteDetalleNombre || ''); periodo = `Al ${hoy}`; }
-    else if (STATE_clientesVista === 'directorio') { titulo = 'Directorio de clientes'; periodo = `Saldos pendientes al ${hoy}`; }
+    else if (STATE_clientesVista === 'directorio') { titulo = 'Directorio de clientes'; periodo = `Saldos pendientes al ${hoy}` + genOrdenTxt(STATE_cliDirOrden && STATE_cliDirOrden.col ? STATE_cliDirOrden : { col: STATE_clienteOrden === 'saldo' ? 'saldo' : 'nombre', dir: STATE_clienteOrden === 'saldo' ? 'desc' : 'asc' }, { razon: 'razón social', nombre: 'nombre comercial', saldo: 'saldo pendiente' }); }
     else { titulo = 'Cuentas por cobrar — facturas'; periodo = `Al ${hoy}`; }
   } else if (sec === 'bancos') { titulo = 'Bancos'; periodo = mes; }
   else if (sec === 'efectivo') { titulo = 'Efectivo y divisas'; periodo = mes; }
@@ -2514,8 +2544,10 @@ async function pantallaGenericaItem() {
   if (nombre) {   // estado de cuenta: el nombre sale una sola vez bajo el título; si la tarjeta lo repite como encabezado se quita, y el RFC pasa a la línea del nombre
     const norm = (x) => String(x || '').toLowerCase().replace(/\s+/g, ' ').trim();
     formal.secciones.forEach(s => { if (norm(s.titulo) === norm(nombre)) s.titulo = ''; });
-    const rf = el && [...el.querySelectorAll('.card-head .hint')].map(h => genTexto(h.textContent)).find(t => /^RFC\s*:/i.test(t));
-    if (rf && !/sin registrar/i.test(rf)) nombreSub = rf;
+    const hs = el ? [...el.querySelectorAll('.card-head .hint')].map(h => genTexto(h.textContent)) : [], ir = hs.findIndex(t => /^RFC\s*:/i.test(t));
+    const nc = sec === 'clientes' && ir > 0 ? hs[ir - 1] : '';   // 06.66: el nombre comercial del cliente también sale
+    const rf = ir >= 0 ? hs[ir] : '';
+    nombreSub = [nc && norm(nc) !== norm(nombre) ? 'Nombre comercial: ' + nc : '', rf && !/sin registrar/i.test(rf) ? rf : ''].filter(Boolean).join(' · ');
   }
   const ancho = Math.max(...formal.secciones.map(s => s.cols.length));
   return { k: 'generica', kind: 'formal', titulo, nombre, nombreSub, subtitulo: periodo, periodo, moneda: '', orient: ancho > 6 ? 'landscape' : 'portrait', formal, secId: 'sec-' + sec };
@@ -20710,11 +20742,11 @@ async function renderDirectorioClientes(el, b) {
       </div>
       <div class="tag-row" style="margin-bottom:12px;">
         <div class="tag ${STATE_clienteOrden==='nombre'?'active':''}" id="clienteOrdenNombre">Ordenar por nombre</div>
-        <div class="tag ${STATE_clienteOrden==='saldo'?'active':''}" id="clienteOrdenSaldo">Ordenar por saldo (Open Balance, en MXN)</div>
+        <div class="tag ${STATE_clienteOrden==='saldo'?'active':''}" id="clienteOrdenSaldo">Ordenar por saldo (Saldo pendiente, en MXN)</div>
       </div>
       <div class="table-wrap scroll-sticky">
         <table class="tabla-operativa tabla-operativa--scroll">
-          <thead><tr>${thOrdHtml('razon', 'Razón social', stOrdCli)}${thOrdHtml('nombre', 'Nombre comercial', stOrdCli)}<th>Teléfono</th><th>Moneda</th>${thOrdHtml('saldo', 'Open Balance', stOrdCli)}<th></th></tr></thead>
+          <thead><tr>${thOrdHtml('razon', 'Razón social', stOrdCli)}${thOrdHtml('nombre', 'Nombre comercial', stOrdCli)}<th>Teléfono</th><th>Moneda</th>${thOrdHtml('saldo', 'Saldo pendiente', stOrdCli)}<th></th></tr></thead>
           <tbody>
             ${ordenados.length ? ordenados.map(c => {
               const desglose = saldosPorClienteYMoneda[c.id] || {};
@@ -28929,7 +28961,7 @@ function busquedaPintar(cargandoServidor) {
 // El respaldo anterior por negocio (Excel/JSON) cubre solo 14 de estas tablas; este las cubre todas.
 // ============================================================================================================
 // Versión de la app: se muestra al final de Configuración y va también en index.html como app.js?v=… para que los navegadores (sobre todo el iPhone) bajen la copia nueva en cada entrega.
-const APP_VERSION = '2026-11-06.65';
+const APP_VERSION = '2026-11-06.66';
 // ===== Direcciones propias por pantalla (2026-11-05.3) ============================================================
 // /negocio/pantalla[/subvista][?mes=AAAA-MM]. La dirección se CONSTRUYE del estado de la app y el estado se RESTAURA de la dirección:
 // por eso Regresar/Adelante, recargar y abrir un enlace funcionan sin tocar cada pantalla. Solo se activa en la raíz del sitio.
@@ -30488,7 +30520,7 @@ async function renderFlujo() {
       <div class="kpi"><div class="label">Utilidad del mes</div><div class="value num ${resumenMes.utilidad>=0?'green':'red'}">${fmt(resumenMes.utilidad)}</div></div>
     </div>
     <div class="card">
-      <div class="card-head"><div style="display:flex;align-items:center;gap:8px;"><h3 style="margin-bottom:0;">Cash Position — ${escHtml(b.name)}</h3>${infoTipRicoHtml(NOTAS_AYUDA.posicionNeta)}</div><span class="hint">Al día de hoy</span></div>
+      <div class="card-head"><div style="display:flex;align-items:center;gap:8px;"><h3 style="margin-bottom:0;">Posición de efectivo — ${escHtml(b.name)}</h3>${infoTipRicoHtml(NOTAS_AYUDA.posicionNeta)}</div><span class="hint">Al día de hoy</span></div>
       <div class="table-wrap tabla-contable-wrap">
       <table>
         <tbody>
